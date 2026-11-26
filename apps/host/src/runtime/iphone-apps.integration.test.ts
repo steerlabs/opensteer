@@ -304,6 +304,44 @@ integration.sequential("iPhone integrations Host contract", () => {
     return { item, detail: await agent.call("discover", { id: item.id }) };
   };
 
+  /**
+   * The reasons discover gives for the Mac's Calendar: on the app in the root listing, on the
+   * app's own page, on each of its tools, and on one tool asked by id; and where each tool sends
+   * the agent. One reason everywhere, the call's own, or none.
+   */
+  const discoverReasons = async (
+    agent: Awaited<ReturnType<typeof connectAgent>>,
+    toolPath: string,
+  ) => {
+    const { item, detail } = await discovered(agent, "Calendar on Studio Mac");
+    const page = detail.structuredContent as {
+      item?: { blocked?: unknown; reachable?: boolean };
+      items: { blocked?: unknown; use: { tool: string } }[];
+    };
+    const byId = (await agent.call("discover", { id: toolPath })).structuredContent as {
+      item?: { blocked?: unknown; use: { tool: string } };
+    };
+    return {
+      app: (item as { blocked?: unknown }).blocked,
+      reachable: (item as { reachable?: boolean }).reachable,
+      tools: [...new Set(page.items.map(({ blocked }) => JSON.stringify(blocked)))].map(
+        (blocked) => (blocked === undefined ? undefined : JSON.parse(blocked)),
+      ),
+      use: [...new Set(page.items.map(({ use }) => use.tool))],
+      tool: byId.item?.blocked,
+      toolUse: byId.item?.use.tool,
+    };
+  };
+  /** What discover says when it says the call's reason everywhere. */
+  const saysEverywhere = (reason: unknown) => ({
+    app: reason,
+    reachable: false,
+    tools: [reason],
+    use: ["discover"],
+    tool: reason,
+    toolUse: "discover",
+  });
+
   it("asks a supervised connected agent before it writes to a data app: allowed it writes once, refused nothing", async () => {
     const world = await calendarsTurnedOn("read-write");
     const agent = keep(await connectAgent(host, { scope: "everything" }, "approval-required"));
@@ -586,6 +624,11 @@ integration.sequential("iPhone integrations Host contract", () => {
       "Apps access is off on Studio Mac. The person can turn it on in Opensteer.",
     );
     expect(JSON.stringify(off.raw)).not.toContain("computer_access_request");
+    // Discover says the same reason, word for word, on the app, its tools and a tool by id.
+    const refusal = (off.raw.structuredContent as { error: unknown }).error;
+    expect(await discoverReasons(agent, world.macPath("list_events"))).toEqual(
+      saysEverywhere(refusal),
+    );
     expect(world.macCalls).toHaveLength(0);
   });
 
@@ -661,6 +704,10 @@ integration.sequential("iPhone integrations Host contract", () => {
         }),
       ).toEqual(permissionReply);
       expect(await reply(agent, world.macPath())).toEqual(permissionReply);
+      // Discover says it in the same words, on the app, its tools and a tool by id.
+      expect(await discoverReasons(agent, world.macPath("list_events"))).toEqual(
+        saysEverywhere(permissionReply.error),
+      );
       expect(world.macCalls).toHaveLength(0);
     },
   );
@@ -710,6 +757,13 @@ integration.sequential("iPhone integrations Host contract", () => {
       calls: { path: invented("create_event"), input: dentist },
     });
     expect(same(write, world.macCalendar)).toBe(same(absentWrite, inventedId));
+    // Discover leaves that change out of the app's tools, and asked by id it reads as absent.
+    const { detail } = await discovered(readOnly, "Calendar on Studio Mac");
+    expect(JSON.stringify(detail)).toContain("list_events");
+    expect(JSON.stringify(detail)).not.toContain("create_event");
+    const writeById = await readOnly.call("discover", { id: world.macPath("create_event") });
+    const absentById = await readOnly.call("discover", { id: invented("create_event") });
+    expect(same(writeById, world.macCalendar)).toBe(same(absentById, inventedId));
     // The same in bracket form.
     const uncoveredBracket = await phoneOnly.call("plugin_call", {
       calls: { path: bracketPath(world.macCalendar, "list_calendars"), input: {} },
@@ -767,7 +821,7 @@ integration.sequential("iPhone integrations Host contract", () => {
       .execute();
     await host.store.database
       .updateTable("integrationServers")
-      .set({ status: "needs-attention", statusDetail: "Server needs attention on Studio Mac" })
+      .set({ status: "needs-attention", statusDetail: "Server needs attention" })
       .where("id", "=", integrationServerId!)
       .execute();
     const inventedId = `con_${randomUUID()}`;
@@ -786,9 +840,12 @@ integration.sequential("iPhone integrations Host contract", () => {
       expect(same(removed, world.macCalendar)).toBe(same(absent, inventedId));
       expect(JSON.stringify(removed)).not.toMatch(/Studio Mac|attention|macOS/u);
     }
-    // Discover does not list it either.
+    // Discover does not list it either. The server is the built-in one every device's Calendar
+    // shares, so the iPhone's Calendar, still lent, says that server's state as its call does.
     const listed = (await agent.call("discover", { query: "Calendar" })).structuredContent;
     expect(JSON.stringify(listed)).not.toContain("Studio Mac");
+    expect(JSON.stringify(listed)).not.toContain(world.macCalendar);
+    expect(JSON.stringify(listed)).toContain("Calendar on Test iPhone");
     expect(world.macCalls).toHaveLength(0);
   });
 
@@ -861,6 +918,9 @@ integration.sequential("iPhone integrations Host contract", () => {
     expect(helperDown.failure, JSON.stringify(helperDown.raw)).toBe(
       "Opensteer's integrations service is unavailable on Studio Mac.",
     );
+    expect(await discoverReasons(agent, world.macPath("list_events"))).toEqual(
+      saysEverywhere((helperDown.raw.structuredContent as { error: unknown }).error),
+    );
     await world.mac.close();
     // Discover lists it as there and not reachable now, as the call says it.
     await waitForCondition(async () => {
@@ -872,6 +932,9 @@ integration.sequential("iPhone integrations Host contract", () => {
     expect(offline.failure, JSON.stringify(offline.raw)).toBe("Studio Mac is offline.");
     expect(JSON.stringify(offline.raw)).toContain(
       '"next":"The person can bring it online; other work can continue."',
+    );
+    expect(await discoverReasons(agent, world.macPath("list_events"))).toEqual(
+      saysEverywhere((offline.raw.structuredContent as { error: unknown }).error),
     );
     expect(world.macCalls).toHaveLength(0);
   });

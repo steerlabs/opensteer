@@ -13,6 +13,7 @@ import {
 } from "@opensteer/agent-tools/tools";
 import {
   agentGrantToolFamilies,
+  BlockedSchema,
   BrowserProfileIdSchema,
   BrowserSourceIdSchema,
   DeviceIdSchema,
@@ -465,12 +466,15 @@ export function discoverHandler(
       return {
         items: [...result.plugins, ...result.local].map((plugin): DiscoverItem => {
           const pluginId = localToolPath(plugin.slug);
+          const { blocked } = plugin;
           return {
             id: pluginId,
             kind: "plugin",
             name: plugin.name,
             access: plugin.access === "all" ? "read-write" : "read-only",
             reachable: plugin.status === "active",
+            // What keeps it, as a call to it says it.
+            ...(blocked ? { blocked } : {}),
             untrusted: true,
             use: itemUse("discover", "id", pluginId),
           };
@@ -750,11 +754,15 @@ export function discoverHandler(
         plugin_describe.output,
       );
       const tool = found.items.find((entry) => entry.path === target.id);
-      if (!tool || tool.blocked) return unavailable();
+      // What the grant does not hold is already left out; what remains blocked is there and says
+      // why, as a call to it does: its own reason, else its app's.
+      if (!tool) return unavailable();
+      const blocked = tool.blocked ?? appBlocked(found.namespaces);
       detailPosition();
       return details([], null, {
         ...toolItem(tool.path, tool.description),
         ...(tool.signature ? { signature: tool.signature } : {}),
+        ...(blocked ? { blocked, use: itemUse("discover", "id", target.id) } : {}),
       });
     }
     if (target.kind === "document") {
@@ -802,11 +810,17 @@ export function discoverHandler(
       },
       plugin_search.output,
     );
-    const tools = result.items.map(({ path, description, input, blocked }): DiscoverItem => ({
-      ...toolItem(path, description),
-      ...(input ? { input } : {}),
-      ...(blocked ? { blocked, use: itemUse("discover", "id", target.id) } : {}),
-    }));
+    // A tool says what keeps it: its own reason, else its app's (said once on the namespace), as
+    // a call to it does; it is not offered to plugin_call while it cannot run.
+    const ofApp = appBlocked(result.namespaces ?? []);
+    const tools = result.items.map(({ path, description, input, blocked }): DiscoverItem => {
+      const reason = blocked ?? ofApp;
+      return {
+        ...toolItem(path, description),
+        ...(input ? { input } : {}),
+        ...(reason ? { blocked: reason, use: itemUse("discover", "id", target.id) } : {}),
+      };
+    });
     const documents =
       after || target.slug.startsWith("local-")
         ? []
@@ -821,4 +835,13 @@ export function discoverHandler(
       item,
     );
   }
+}
+
+/** What keeps an app's tools from running, said once on its namespace, as the call says it. */
+function appBlocked(namespaces: readonly Record<string, unknown>[]) {
+  for (const namespace of namespaces) {
+    const blocked = BlockedSchema.safeParse(namespace.blocked);
+    if (blocked.success) return blocked.data;
+  }
+  return undefined;
 }
