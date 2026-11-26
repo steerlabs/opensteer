@@ -8,7 +8,7 @@ import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-sessi
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { BrowserScriptService } from "../apps/host/src/browser-use/browser-script-service.js";
 import { TabService } from "../apps/host/src/tabs/tab-service.js";
-import { tabReadAuthority } from "../apps/host/src/tabs/tab-authority.js";
+import { authorizeTabTarget, tabReadAuthority } from "../apps/host/src/tabs/tab-authority.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
 import type { AgentGrant } from "../packages/core/src/index.js";
 import {
@@ -41,6 +41,8 @@ async function directWork(
     readonly realAuthority?: boolean;
     /** The connection's grant; selected on the profile unless given. */
     readonly grant?: AgentGrant;
+    /** Runs after a script's bind decided its tab and bound the page, before its attach. */
+    readonly afterBind?: () => Promise<void>;
   } = {},
 ) {
   let tabChange: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined;
@@ -65,11 +67,29 @@ async function directWork(
       const { rows } = await j.tabs.snapshot(ownerId);
       for (const tab of rows) if (tab.kind === "page" && (await readable(actor, tab))) yield tab;
     },
+    // As the tab service binds: the decision, and the grant revision that decision read.
     bindBrowserScript: async (actor: never, tabId: string) => {
       const tab = await row(tabId);
       if (!(await readable(actor, tab)))
         throw new OpensteerError({ code: "not_found", message: "Tab not found." });
-      return home().service.pageTabs.bindBrowserScript!(actor, tab);
+      const { grantRevision } = options.realAuthority
+        ? await authorizeTabTarget(actor, tab, j.database)
+        : {
+            grantRevision:
+              (
+                await j.store.admitExecution({
+                  ownerUserId: ownerId,
+                  subject: {
+                    kind: "binding",
+                    bindingId: (actor as { authority: { agentBindingId: string } }).authority
+                      .agentBindingId,
+                  },
+                })
+              ).agentConnection?.grantRevision ?? null,
+          };
+      const binding = await home().service.pageTabs.bindBrowserScript!(actor, tab);
+      await options.afterBind?.();
+      return { ...binding, grantRevision };
     },
     open,
     get: async (_owner: unknown, tabId: string) => {
@@ -1746,10 +1766,37 @@ it("closes the tab with its page when the agent's own script closes it and the b
   }
 });
 
-it("ends a cached handle to the person's tab once the person narrows the connection away from it, and nothing of it reaches the page", async () => {
-  const site = createServer((_request, response) => {
+/** The person narrows the connection to the profile: a selected grant reaches none of their tabs. */
+async function narrowToProfile(j: Journey, connectionId: string) {
+  const { grantRevision } = await j.database
+    .selectFrom("agentConnections")
+    .select("grantRevision")
+    .where("id", "=", connectionId)
+    .executeTakeFirstOrThrow();
+  await new AgentConnectionStore(j.store.database).update(j.task.userId, {
+    connectionId,
+    expectedRevision: grantRevision,
+    grant: {
+      scope: "selected",
+      tasks: false,
+      resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
+    },
+  });
+}
+
+/** Waits until the Home has the new document of a tab its page navigated to. */
+async function navigated(home: Home, sessionId: string, tabId: string, previous: unknown) {
+  await vi.waitFor(() =>
+    expect(
+      home.service.pageInventory(sessionId as never)?.records.get(tabId as never)?.documentId,
+    ).not.toBe(previous),
+  );
+}
+
+it("ends a cached handle to the person's tab once the person narrows the connection away from it: nothing of it reaches the page or the agent, and the agent's own handle goes on", async () => {
+  const site = createServer((request, response) => {
     response.writeHead(200, { "content-type": "text/html" });
-    response.end("<!doctype html><title>Mine</title><p>mine</p>");
+    response.end(`<!doctype html><title>Mine</title><p>${request.url}</p>`);
   });
   site.listen(0, "127.0.0.1");
   await once(site, "listening");
@@ -1764,49 +1811,93 @@ it("ends a cached handle to the person's tab once the person narrows the connect
     const [own] = await home.service.savedPages(j.task.userId, session.id);
     if (!own?.pageBinding) throw new Error("The saved profile has no durable tab.");
     expect(own.openedBy).toBe("person");
-    // (1) A connection with everything; (2) its script binds the person's tab and opens its own.
+    const person = await j.draft();
+    // (1) A connection with everything; (2) its script binds the person's tab and opens its own,
+    // and listens to both pages.
     const work = await directWork(j, () => home, {
       realAuthority: true,
       grant: { scope: "everything" },
     });
     const bound = await work.use(
-      `globalThis.theirs = await openPage(${JSON.stringify(own.id)}); globalThis.mine = await newPage(${JSON.stringify(`${origin}/mine`)}); return mine.tabId;`,
+      `globalThis.theirs = await openPage(${JSON.stringify(own.id)}); await theirs.cdp("Page.enable"); globalThis.mine = await newPage(${JSON.stringify(`${origin}/mine`)}); await mine.cdp("Page.enable"); return mine.tabId;`,
     );
     expect(bound.isError, text(bound)).not.toBe(true);
     const mineId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(bound))?.[0];
     if (!mineId) throw new Error(`The script returned no tab: ${text(bound)}`);
-    // (3) The person narrows it to the profile: a selected grant reaches none of the person's tabs.
-    const { grantRevision } = await j.database
-      .selectFrom("agentConnections")
-      .select("grantRevision")
-      .where("id", "=", work.agent.id)
-      .executeTakeFirstOrThrow();
-    await new AgentConnectionStore(j.store.database).update(j.task.userId, {
-      connectionId: work.agent.id,
-      expectedRevision: grantRevision,
-      grant: {
-        scope: "selected",
-        tasks: false,
-        resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
-      },
-    });
-    // (4) The cached handle: evaluate and close read as a tab that does not exist; its own page
-    // still works.
+    // (3) The person narrows it to the profile.
+    await narrowToProfile(j, work.agent.id);
+    // (a) Both pages move on after the narrowing, and the Home has each new document before the
+    // agent's next call: what the person's page did is never the agent's; its own page's is.
+    const theirsBefore = home.service.pageInventory(session.id)?.records.get(own.id)?.documentId;
+    await person.cdp.send("Page.navigate", { url: `${origin}/theirs-after-narrowing` });
+    await navigated(home, session.id, own.id, theirsBefore);
+    const minePage = (j.launched()?.context.pages() ?? []).find((page) =>
+      page.url().endsWith("/mine"),
+    );
+    if (!minePage) throw new Error("The agent's own page is not open.");
+    const mineBefore = home.service
+      .pageInventory(session.id)
+      ?.records.get(mineId as never)?.documentId;
+    await (await minePage.cdp()).send("Page.navigate", { url: `${origin}/mine-after-narrowing` });
+    await navigated(home, session.id, mineId, mineBefore);
+    // (4) The cached handle reads as a tab that does not exist, and so does binding it again (b);
+    // the agent's own handle goes on as it was (e).
     const after = await work.use(
-      `const out = []; for (const step of [() => theirs.evaluate(() => document.title), () => theirs.close()]) { try { await step(); out.push("ran"); } catch (error) { out.push(error.code + ": " + error.message); } } out.push(await mine.evaluate(() => document.title)); return out;`,
+      `const out = []; for (const step of [() => theirs.evaluate(() => document.title), () => theirs.close(), () => openPage(${JSON.stringify(own.id)})]) { try { await step(); out.push("ran"); } catch (error) { out.push(error.code + ": " + error.message); } } out.push("title:" + await mine.evaluate(() => document.title)); out.push("theirs:" + JSON.stringify(theirs.drainEvents())); out.push("mine:" + JSON.stringify(mine.drainEvents())); return out;`,
     );
     expect(after.isError, text(after)).not.toBe(true);
-    expect(text(after)).not.toContain("ran");
-    // The guest names the helper that failed (page.evaluate()); the Home's words are the same.
-    expect(text(after).match(/not_found: (?:page\.evaluate\(\): )?Tab not found\./gu)).toHaveLength(
-      2,
-    );
-    expect(text(after)).toContain("Mine");
+    const lines = JSON.parse(
+      (after.content as { type: string; text: string }[]).find(({ type }) => type === "text")!.text,
+    ) as string[];
+    expect(lines, text(after)).toHaveLength(6);
+    // The guest names the helper that failed; the Home's words are the same.
+    expect.soft(lines[0]).toMatch(/^not_found: (?:page\.evaluate\(\): )?Tab not found\.$/u);
+    // Nothing of the handle is left: it has ended, as the handle of any closed tab has.
+    expect.soft(lines[1]).toMatch(/This page handle has ended\./u);
+    expect.soft(lines[2]).toMatch(/^not_found: (?:openPage\(\): )?Tab not found\.$/u);
+    expect.soft(lines[3]).toBe("title:Mine");
+    expect.soft(lines[4]).not.toContain("theirs-after-narrowing");
+    expect.soft(lines[5]).toContain("mine-after-narrowing");
     // The person's page and row are untouched.
     expect((await j.tabs.get(j.task.userId, own.id, true))?.closedAt).toBeNull();
     expect(home.service.tabStateOf(session.id, own.id)).toBeDefined();
   } finally {
     await j.close();
     site.close();
+  }
+});
+
+it("decides the person's tab again when the connection is narrowed between its bind's decision and the bind's attach", async () => {
+  const j = await journey("direct-narrowed-bind", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [own] = await home.service.savedPages(j.task.userId, session.id);
+    if (!own?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    let narrow: (() => Promise<void>) | undefined;
+    const work = await directWork(j, () => home, {
+      realAuthority: true,
+      grant: { scope: "everything" },
+      // The bind decided under everything; the narrowing lands before anything is sent.
+      afterBind: async () => {
+        const once = narrow;
+        narrow = undefined;
+        await once?.();
+      },
+    });
+    narrow = () => narrowToProfile(j, work.agent.id);
+    const result = await work.use(
+      `try { const page = await openPage(${JSON.stringify(own.id)}); return "bound:" + await page.evaluate(() => document.title); } catch (error) { return error.code + ": " + error.message; }`,
+    );
+    expect(narrow).toBeUndefined();
+    expect(result.isError, text(result)).not.toBe(true);
+    expect(text(result)).not.toContain("bound:");
+    expect(text(result)).toMatch(/not_found: (?:openPage\(\): )?Tab not found\./u);
+    expect((await j.tabs.get(j.task.userId, own.id, true))?.closedAt).toBeNull();
+  } finally {
+    await j.close();
   }
 });

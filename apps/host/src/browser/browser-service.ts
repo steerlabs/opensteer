@@ -295,6 +295,17 @@ export class BrowserCdpConnectionEnded extends Error {
   override readonly name = "BrowserCdpConnectionEnded";
 }
 
+/**
+ * A browser script's command, refused before anything was sent, because its connection's grant
+ * revision is not the one its tab was bound under. Its attachment has ended with a reauthorize
+ * end; its handle binds the tab again, which decides it.
+ */
+export class BrowserScriptAuthorityChanged extends BrowserCdpConnectionEnded {
+  constructor() {
+    super("This browser page's authority changed.");
+  }
+}
+
 function browserCommandOutcomeUnknown(): OpensteerError {
   return new OpensteerError({
     code: "conflict",
@@ -4253,23 +4264,6 @@ export class BrowserService {
     return this.#occupants(ownerId, sessionId, tabId);
   }
 
-  /** Whether the tab authority the bind used still lets this script's task read its tab. */
-  async #scriptTabStillAllowed(
-    input: { readonly agentBindingId: string; readonly ownerId: UserId },
-    tabId: TabId,
-    threadId: ThreadId,
-  ): Promise<boolean> {
-    if (!this.#workspaceTabs || !(this.#repository instanceof OpensteerStore)) return true;
-    const row = await this.#workspaceTabs.get(input.ownerId, tabId);
-    if (!row) return false;
-    const actor = {
-      kind: "browser-binding",
-      authority: { agentBindingId: input.agentBindingId, ownerId: input.ownerId },
-      threadId,
-    } as const;
-    return (await tabReadAuthority(actor, this.#repository.database))(row);
-  }
-
   /** The saved session's record when the agent may reach it, live or not; otherwise null. */
   async agentReachableSavedSession(
     input: {
@@ -5236,9 +5230,9 @@ export class BrowserService {
           pageBinding: binding,
           ...(descriptor.favicon !== undefined ? { favicon: descriptor.favicon } : {}),
         };
-        await tabs.open(write, `person-page:${record.id}:${descriptor.id}`, async (tx) =>
-          authorizeTabTarget({ kind: "person", ownerId }, write, tx),
-        );
+        await tabs.open(write, `person-page:${record.id}:${descriptor.id}`, async (tx) => {
+          await authorizeTabTarget({ kind: "person", ownerId }, write, tx);
+        });
         if (opens) {
           opens.openers.delete(descriptor.id);
           if (!opens.inFlight && !opens.openers.size) this.#taskPageOpens.delete(record.id);
@@ -6641,12 +6635,14 @@ export class BrowserService {
       readonly sessionId?: BrowserSessionId;
       readonly scriptTabId?: TabId;
       readonly scriptThreadId?: ThreadId;
+      /** The connection's grant revision the script's tab was bound under (null: no connection). */
+      readonly scriptGrantRevision?: number | null;
       readonly browserSend?: PooledBrowserSend;
       readonly expectedPooledWitness?: string;
       readonly signal?: AbortSignal;
     },
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
-    onClosed?: () => void,
+    onClosed?: (ended?: { readonly reauthorize: true }) => void,
   ): Promise<{
     readonly session: HostedBrowserSession;
     readonly pooledWitness?: string;
@@ -6711,11 +6707,13 @@ export class BrowserService {
       readonly sessionId?: BrowserSessionId;
       readonly scriptTabId?: TabId;
       readonly scriptThreadId?: ThreadId;
+      /** The connection's grant revision the script's tab was bound under (null: no connection). */
+      readonly scriptGrantRevision?: number | null;
       readonly browserSend?: PooledBrowserSend;
       readonly expectedPooledWitness?: string;
     },
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
-    onClosed?: () => void,
+    onClosed?: (ended?: { readonly reauthorize: true }) => void,
     pooledRelay?: PooledBrowserRelay,
     lane?: {
       readonly heldProfileId?: BrowserProfileId | null;
@@ -6787,13 +6785,6 @@ export class BrowserService {
     let scriptOpening: Promise<BrowserCdpResponse> | undefined;
     /** The page target of this script's own tab, as its bind (resumeTab) answered. */
     let scriptTargetId: string | undefined;
-    /**
-     * The connection's grant revision this script's tab was bound under. A command under another
-     * revision decides the tab again through the tab authority the bind used (rule 1); refused,
-     * the handle has ended and reads as a tab that does not exist (rule 5).
-     */
-    let scriptGrantRevision: number | null | undefined;
-    let scriptTabRefused = false;
     const nativeAttachment =
       this.#resolveTarget(placementOf(record))?.localProfileStorage?.engine === "android-webview"
         ? {
@@ -6932,7 +6923,7 @@ export class BrowserService {
           onEvent(buffered);
       }
     };
-    const close = () => {
+    const close = (ended?: { readonly reauthorize: true }) => {
       if (attachmentClosed) return;
       attachmentClosed = true;
       this.#deviceAttachments.delete(deviceAttachmentId);
@@ -6965,7 +6956,7 @@ export class BrowserService {
           .catch(() => undefined);
       }
       if (pooledRelay) void pooledRelay.close().catch(this.#onError);
-      onClosed?.();
+      onClosed?.(ended);
     };
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId !== scriptAttachmentId) return;
@@ -7224,20 +7215,15 @@ export class BrowserService {
           canManageExtensions = facts.manageExtensions;
           grantRevision = facts.grantRevision;
         });
-        if (input.scriptTabId !== undefined && input.scriptThreadId !== undefined) {
-          const tabNotFound = () =>
-            new OpensteerError({ code: "not_found", message: "Tab not found." });
-          if (scriptTabRefused) throw tabNotFound();
-          if (scriptGrantRevision === undefined) scriptGrantRevision = grantRevision;
-          else if (grantRevision !== scriptGrantRevision) {
-            if (
-              !(await this.#scriptTabStillAllowed(input, input.scriptTabId, input.scriptThreadId))
-            ) {
-              scriptTabRefused = true;
-              throw tabNotFound();
-            }
-            scriptGrantRevision = grantRevision;
-          }
+        // A script's tab was decided under the grant revision its bind read (rule 1). Under
+        // another, nothing is sent: the attachment ends as a park ends it, and the handle binds
+        // the tab again, which decides it. The revision is the one this admission already read.
+        if (
+          input.scriptTabId !== undefined &&
+          grantRevision !== (input.scriptGrantRevision ?? null)
+        ) {
+          close({ reauthorize: true });
+          throw new BrowserScriptAuthorityChanged();
         }
         if (admitted.record.id !== record.id)
           throw new BrowserCdpConnectionEnded(
@@ -7555,8 +7541,9 @@ export class BrowserService {
                   authority: { agentBindingId: input.agentBindingId, ownerId: input.ownerId },
                   threadId: input.scriptThreadId,
                 } as const;
-                // Decided by the tab's own authority (rule 1), in the close's own transaction;
-                // recording it never fails the confirmed close.
+                // Decided by the tab's own authority (rule 1), in the close's own transaction, with
+                // the access the close command needed; lacking it, the row stays and the page's
+                // absence is the shadow inventory's to report. Recording it never fails the close.
                 try {
                   await tabs.close(
                     input.ownerId,
@@ -7564,7 +7551,7 @@ export class BrowserService {
                     `cdp-close:${record.id}:${tabId}:${globalThis.crypto.randomUUID()}`,
                     async (tx, rows) => {
                       const row = rows.find((candidate) => candidate.id === tabId);
-                      if (!row || !(await (await tabReadAuthority(actor, tx))(row)))
+                      if (!row || !(await (await tabReadAuthority(actor, tx))(row, "read-write")))
                         throw new OpensteerError({ code: "not_found", message: "Tab not found." });
                     },
                     (row) =>

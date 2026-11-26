@@ -15,6 +15,7 @@ function setup() {
     sessionId: createBrowserSessionId(),
     backend: "cdp" as const,
     reloaded: false,
+    grantRevision: null,
   };
   const row = { tabId, url: "https://example.com/", title: "Example", profile: "Work" };
   const tabs = {
@@ -83,6 +84,8 @@ describe("Browser Use port", () => {
         sessionId: binding.sessionId,
         scriptTabId: binding.tabId,
         scriptThreadId: threadId,
+        // The grant revision the bind decided under, which every command is admitted against.
+        scriptGrantRevision: binding.grantRevision,
       },
       expect.any(Function),
       expect.any(Function),

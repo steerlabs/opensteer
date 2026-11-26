@@ -1246,3 +1246,134 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     }
   },
 );
+
+/** A connected agent's session, off the pool: everything until the person narrows it. */
+async function connectedAgent(home: Awaited<ReturnType<typeof browserUseHome>>) {
+  const { database, first, profile } = home;
+  const connections = new AgentConnectionStore(database);
+  const direct = await connections.create({
+    userId: first.userId,
+    label: "Direct",
+    clientName: "Fixture",
+    accessMode: "full-access",
+    resource: "http://localhost/mcp",
+    expiresAt: new Date(Date.now() + 60_000),
+    grant: AgentGrantSchema.parse({ scope: "everything" }),
+  });
+  expect(await connections.activate(direct.id, randomUUID())).toBe(true);
+  const { session } = await beginAgentSession(database, {
+    userId: first.userId,
+    agentConnectionId: direct.id,
+  });
+  const authority = { agentBindingId: `session:${session.id}`, ownerId: first.userId };
+  /** To the profile: a selected grant reaches none of the person's tabs. */
+  const narrow = async () => {
+    const { grantRevision } = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", direct.id)
+      .executeTakeFirstOrThrow();
+    await connections.update(first.userId, {
+      connectionId: direct.id,
+      expectedRevision: grantRevision,
+      grant: AgentGrantSchema.parse({
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profile.id }],
+      }),
+    });
+  };
+  return { authority, narrow };
+}
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "binds a connected agent's handles again off the pool once its grant changed: the person's tab reads as non-existent, its own page goes on",
+  async () => {
+    const home = await browserUseHome();
+    const { scripts, tabs, origin, first, profile, text } = home;
+    const { authority, narrow } = await connectedAgent(home);
+    const { tab: person } = await tabs.open(
+      { kind: "person", ownerId: first.userId },
+      { kind: "page", profileId: profile.id, url: `${origin}/person` },
+      "person-tab",
+    );
+    const runB = (code: string) =>
+      scripts.runBrowserScript({ authority, contextKey: "narrowed", code });
+    const bound = await runB(
+      `globalThis.theirs = await openPage(${JSON.stringify(person.tabId)}); globalThis.mine = await newPage(${JSON.stringify(`${origin}/mine`)}, { profileId: ${JSON.stringify(profile.id)} }); return [await theirs.evaluate(() => document.title), await mine.evaluate(() => document.title)];`,
+    );
+    expect(JSON.parse(text(bound))).toEqual(["Home browser fixture", "Home browser fixture"]);
+    await narrow();
+    const after = await runB(
+      `const out = []; for (const step of [() => theirs.evaluate(() => document.title), () => openPage(${JSON.stringify(person.tabId)})]) { try { await step(); out.push("ran"); } catch (error) { out.push(error.code + ": " + error.message); } } out.push("title:" + await mine.evaluate(() => document.title)); return out;`,
+    );
+    const lines = JSON.parse(text(after)) as string[];
+    expect(lines[0]).toMatch(/^not_found: (?:page\.evaluate\(\): )?Tab not found\.$/u);
+    expect(lines[1]).toMatch(/^not_found: (?:openPage\(\): )?Tab not found\.$/u);
+    // Its own page, bound before the narrowing, binds again to the same page, unnoticed.
+    expect(lines[2]).toBe("title:Home browser fixture");
+  },
+);
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "decides the person's tab again off the pool when a connected agent is narrowed between its bind and the bind's attach",
+  async () => {
+    const home = await browserUseHome();
+    const { scripts, tabs, origin, first, profile, text } = home;
+    const { authority, narrow } = await connectedAgent(home);
+    const { tab: person } = await tabs.open(
+      { kind: "person", ownerId: first.userId },
+      { kind: "page", profileId: profile.id, url: `${origin}/person` },
+      "person-tab",
+    );
+    // The bind decided under everything; the narrowing lands before its attach sends anything.
+    const bindTab = tabs.bindBrowserScript.bind(tabs);
+    let narrowOnce: (() => Promise<void>) | undefined = narrow;
+    tabs.bindBrowserScript = async (...args) => {
+      const bound = await bindTab(...args);
+      const once = narrowOnce;
+      narrowOnce = undefined;
+      await once?.();
+      return bound;
+    };
+    const result = await scripts.runBrowserScript({
+      authority,
+      contextKey: "narrowed-bind",
+      code: `try { const page = await openPage(${JSON.stringify(person.tabId)}); return "bound:" + await page.evaluate(() => document.title); } catch (error) { return error.code + ": " + error.message; }`,
+    });
+    expect(narrowOnce).toBeUndefined();
+    expect(text(result)).not.toContain("bound:");
+    expect(text(result)).toMatch(/not_found: (?:openPage\(\): )?Tab not found\./u);
+  },
+);
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "leaves the row of a page a Run closed when its task was lowered to read-only before the close was confirmed",
+  async () => {
+    const { database, first, tabStore, origin, profile, run, text, faults } =
+      await browserUseHome();
+    let lowered = false;
+    faults.beforeClientCommand = async (command) => {
+      if (command.method !== "Target.closeTarget" || lowered) return;
+      lowered = true;
+      // The close was admitted and sent; the person lowers the task before the browser answers.
+      await database
+        .updateTable("runs")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", first.runId)
+        .execute();
+    };
+    try {
+      const closed = await run(
+        `const page = await newPage(${JSON.stringify(`${origin}/done`)}, { profileId: ${JSON.stringify(profile.id)} }); const id = page.tabId; await page.close(); return id;`,
+      );
+      const tabId = JSON.parse(text(closed)) as string;
+      expect(lowered).toBe(true);
+      // The row close needs the access the close itself needed: lacking it, the row stays, and
+      // the page's absence is the shadow inventory's to report.
+      expect((await tabStore.get(first.userId, tabId as never, true))?.closedAt).toBeNull();
+    } finally {
+      faults.beforeClientCommand = undefined;
+    }
+  },
+);

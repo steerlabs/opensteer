@@ -53,6 +53,7 @@ import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type {
   AppTabPort,
   BrowserBindingTabActor,
+  ScriptPageBinding,
   NativeTabTargetsPort,
   DeviceNativeTabTargetsPort,
   DeviceNativeTargetAcquired,
@@ -120,8 +121,15 @@ export interface TabServiceOptions {
     taskId: RunToolScope["threadId"],
     database: TabDatabase,
   ): Promise<boolean>;
-  /** Rechecks the Run/connection and current grants. Called again inside membership commits. */
-  authorize(actor: TabActor, target: TabTarget | TabWrite, database: TabDatabase): Promise<void>;
+  /**
+   * Rechecks the Run/connection and current grants. Called again inside membership commits.
+   * Answers the connection's grant revision it decided under, where it knows it.
+   */
+  authorize(
+    actor: TabActor,
+    target: TabTarget | TabWrite,
+    database: TabDatabase,
+  ): Promise<{ readonly grantRevision: number | null } | void>;
   authorizeMembership(actor: TabActor, database: TabDatabase): Promise<void>;
   /** The affected tabs work for a selected connection may not change; empty for everyone else. */
   deniedRows?(
@@ -1703,11 +1711,12 @@ export class TabService implements TabServicePort {
   async requireOpenPage(claims: RunToolScope, tabId: TabId): Promise<PageAgentBinding> {
     return this.#bindPage({ kind: "run", claims }, tabId);
   }
+  /** The page, and the grant revision the bind's own decision read (rule 1: never latched later). */
   async bindBrowserScript(
     actor: BrowserBindingTabActor,
     tabId: TabId,
     options?: { savedProfileOnly: boolean; expectedGeneration?: number },
-  ): Promise<PageAgentBinding> {
+  ): Promise<ScriptPageBinding> {
     return this.#bindPage(actor, tabId, options);
   }
   async #bindPage(
@@ -1729,7 +1738,7 @@ export class TabService implements TabServicePort {
         message:
           "This browser connection requires a granted saved profile. Guest tabs are unavailable.",
       });
-    await this.options.authorize(actor, row, this.options.store.database);
+    const decided = await this.options.authorize(actor, row, this.options.store.database);
     if (actor.kind === "browser-binding") actor.signal?.throwIfAborted();
     const binding =
       actor.kind === "run"
@@ -1737,7 +1746,7 @@ export class TabService implements TabServicePort {
         : await this.options.pages.bindBrowserScript!(actor, row);
     const current = await this.#row(actor, tabId);
     if (current.generation !== row.generation) conflict();
-    return binding;
+    return { ...binding, grantRevision: decided?.grantRevision ?? null };
   }
   async authorizeBind(claims: RunToolScope, tabId: TabId): Promise<void> {
     await this.#row({ kind: "run", claims }, tabId);

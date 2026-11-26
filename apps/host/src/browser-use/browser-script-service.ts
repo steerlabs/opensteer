@@ -166,11 +166,13 @@ export class BrowserScriptService {
             return target.port.command(target, method, params, sessionId, call);
           return target.port.command(target, method, params, sessionId, call);
         },
-        rebind: (target, call) => {
+        rebind: (target, call, reauthorize) => {
           byContext(call.contextKey);
           if ("share" in target || !target.port.rebind)
             throw refused("conflict", "This browser page is stale.");
-          return target.port.rebind(target, call);
+          return reauthorize
+            ? target.port.rebind(target, call, true)
+            : target.port.rebind(target, call);
         },
         release: (target) => {
           if ("share" in target) target.port.release?.(target);
@@ -207,10 +209,11 @@ export class BrowserScriptService {
     const { agentBindingId, ownerId } = authority;
     if (authority.expiresAt !== undefined && authority.expiresAt <= Date.now())
       throw refused("forbidden", "Browser authority expired.");
-    await this.#services.store.admitExecution({
+    const execution = await this.#services.store.admitExecution({
       ownerUserId: ownerId,
       subject: { kind: "binding", bindingId: agentBindingId },
     });
+    const grantRevision = execution.agentConnection?.grantRevision ?? null;
     const callSignal =
       authority.expiresAt === undefined
         ? signal
@@ -260,6 +263,13 @@ export class BrowserScriptService {
       }
       binding.contexts.add(key);
     }
+    // A page handle bound under another grant revision is detached before the call runs, and
+    // nothing it heard reaches the script until its next use binds the tab again (rule 1, with
+    // the revision this admission read).
+    this.#repl.reauthorize(
+      key,
+      (target) => !("share" in target) && target.grantRevision !== grantRevision,
+    );
     return this.#repl.execute(
       key,
       code,

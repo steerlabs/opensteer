@@ -1071,7 +1071,13 @@ describeStore("an external agent's direct work through sessions", (it) => {
             },
           };
         },
-        bindBrowserScript: async () => ({ tabId, sessionId, backend: "cdp", reloaded: false }),
+        bindBrowserScript: async () => ({
+          tabId,
+          sessionId,
+          backend: "cdp",
+          reloaded: false,
+          grantRevision: null,
+        }),
         issueTicket,
       },
     });
