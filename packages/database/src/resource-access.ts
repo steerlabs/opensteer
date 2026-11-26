@@ -899,6 +899,34 @@ export async function grantedDeviceApprovals(
 }
 
 /**
+ * Whether an admitted execution reaches a stored target now, as a call to it would: its grant's
+ * ceiling (`authorizeTarget`) and, for what the person approved on a device (an app, a phone
+ * screen, a data app), that approval still standing and covered by the grant
+ * (`grantedDeviceApprovals`). An approval removed and made again is a new row: the old one is
+ * not reached, whatever the grant still names.
+ */
+export async function reachesTarget(
+  database: Kysely<DatabaseSchema>,
+  execution: Pick<ExecutionAuthority, "actor" | "agentConnection" | "ownerUserId">,
+  target: AgentGrantTarget,
+): Promise<boolean> {
+  if (authorizeTarget(execution, target) === null) return false;
+  const approvalId =
+    target.kind === "computer-app"
+      ? target.approvalId
+      : target.kind === "plugin" && target.target.kind === "device-account"
+        ? target.target.integrationConnectionId
+        : null;
+  if (approvalId === null || !execution.agentConnection) return true;
+  const covered = await grantedDeviceApprovals(
+    database,
+    execution.ownerUserId,
+    execution.agentConnection.grant,
+  );
+  return covered.some(({ id }) => id.toLowerCase() === approvalId.toLowerCase());
+}
+
+/**
  * May this admitted execution know of a browser page at this address? Two rules, one answer:
  * - A page on an extension's address does not exist to a connection's work (its own sessions and
  *   the Runs of its tasks).

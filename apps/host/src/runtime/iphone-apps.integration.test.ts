@@ -477,6 +477,63 @@ integration.sequential("iPhone integrations Host contract", () => {
     expect(world.phone.invocations).toHaveLength(0);
   });
 
+  it.each(["everything", "selected"] as const)(
+    "reads a %s connection's replay of an operation on a removed data app as unavailable, after it is approved again",
+    async (scope) => {
+      const world = await calendarsTurnedOn();
+      const agent = keep(
+        await connectAgent(
+          host,
+          scope === "everything"
+            ? { scope: "everything" }
+            : {
+                scope: "selected",
+                tasks: false,
+                resources: [
+                  {
+                    kind: "plugin",
+                    target: {
+                      kind: "device-account",
+                      integrationConnectionId: world.macCalendar as never,
+                    },
+                    access: "read",
+                  },
+                ],
+              },
+        ),
+      );
+      const input = { calls: { path: world.macPath(), input: {} } };
+      const first = await agent.call("plugin_call", input);
+      const { operationId } = first.structuredContent as { operationId?: string };
+      expect(operationId, JSON.stringify(first)).toMatch(/^aop_/u);
+      // The person removes Calendar from the Mac and turns it on again: a new approval.
+      expect(
+        (
+          await command(host, {
+            type: "integration.disconnect",
+            idempotencyKey: randomUUID(),
+            connectionId: world.macCalendar,
+          })
+        ).ok,
+      ).toBe(true);
+      const again = await requestComputerAppSetup(
+        host,
+        world.mac.runnerId as never,
+        "read",
+        "mac-calendar-again",
+        "apple-calendar",
+      );
+      expect(await world.mac.answer(again.id, { kind: "allow", setupRequestId: again.id })).toEqual(
+        { kind: "allowed" },
+      );
+      const replay = await agent.call("plugin_call", { ...input, operationId });
+      expect(replay.structuredContent, JSON.stringify(replay)).toMatchObject({
+        error: { code: "not_found", message: "Operation is unavailable." },
+      });
+      expect(JSON.stringify(replay)).not.toContain("calendars");
+    },
+  );
+
   it("lends nothing of a data app the person removed, or on a device that is gone", async () => {
     const world = await calendarsTurnedOn();
     const agent = keep(await connectAgent(host, { scope: "everything" }));

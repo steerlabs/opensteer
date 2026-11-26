@@ -2,7 +2,9 @@ import { discoverHandler } from "../mcp/handlers/discover.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   AgentConnectionStore,
+  admitExecution,
   integrationConnectionGrantTarget,
+  reachesTarget,
   upsertSelfDeviceInTransaction,
 } from "@opensteer/database";
 import { computer_use as computerUseTool } from "@opensteer/agent-tools/tools";
@@ -6421,6 +6423,57 @@ integration.sequential("Computer use for a connected agent, through its session"
       await s.world.close();
     }
   });
+
+  it.each(["everything", "selected"] as const)(
+    "never reaches a %s connection's stored target on a Mac app the person removed and approved again",
+    async (scope) => {
+      const s = await connectedAgent("full-access", { target: "mac", personApproved: true, scope });
+      try {
+        const reached = async (target: typeof s.target) =>
+          reachesTarget(
+            database,
+            await admitExecution(database, {
+              ownerUserId: s.world.owner.userId,
+              subject: { kind: "connection", agentConnectionId: s.record.id },
+            }),
+            target,
+          );
+        expect(await reached(s.target)).toBe(true);
+        await s.world.platform.devices.computerAppApprovals.disconnectComputerConnection({
+          connectionId: IntegrationConnectionIdSchema.parse(s.approvalId),
+          ownerUserId: s.world.owner.userId,
+          requestId: "remove-notes",
+        });
+        await s.world.platform.devices.computerAppApprovals.requestComputerAppSetup({
+          access: "read-write",
+          actorUserId: s.world.owner.userId,
+          app: apps.notes,
+          definitionId: "macos-app",
+          kind: "app",
+          runnerId: s.world.macId,
+        });
+        const setup = (
+          await s.world.persistence.listComputerAppSetupRequests(s.world.owner.userId)
+        ).find((request) => request.definitionId === "macos-app");
+        if (!setup) throw new Error("Missing the new approval");
+        await s.world.approveOnMac(setup);
+        const row = await database
+          .selectFrom("integrationConnections")
+          .select(["id", "deviceId", "computerApp", "integrationDefinitionId"])
+          .where("integrationDefinitionId", "=", "macos-app")
+          .where("status", "=", "connected")
+          .executeTakeFirstOrThrow();
+        expect(row.id).not.toBe(s.approvalId);
+        // The old approval is reached by nobody, whatever the grant still names.
+        expect(await reached(s.target)).toBe(false);
+        expect(await reached(integrationConnectionGrantTarget(row) as typeof s.target)).toBe(
+          scope === "everything",
+        );
+      } finally {
+        await s.world.close();
+      }
+    },
+  );
 
   it("lends nothing a grant narrowed between the lending and the standing excludes", async () => {
     const s = await connectedAgent("full-access", {

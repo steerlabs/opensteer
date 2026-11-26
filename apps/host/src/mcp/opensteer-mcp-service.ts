@@ -49,10 +49,10 @@ import {
 } from "@opensteer/core";
 import {
   admitExecution,
-  authorizeTarget,
   connectionAfterChange,
   findAgentOperation,
   lineageAllowsPersonalContext,
+  reachesTarget,
   type OpensteerStore,
 } from "@opensteer/database";
 import {
@@ -1299,7 +1299,7 @@ export class OpensteerMcpService {
       ownerUserId: caller.userId,
       subject: { kind: "connection", agentConnectionId: caller.connectionId },
     }).catch(() => null);
-    return execution !== null && authorizeTarget(execution, row.target.grant) !== null;
+    return execution !== null && (await reachesTarget(database, execution, row.target.grant));
   }
   /** What happened to a session's access, read from its connection's standing. */
   async #changeOf(session: McpSession): Promise<AgentAccessChange> {
