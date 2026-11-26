@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, it, vi } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { standardCdpEndpoint } from "../apps/host/src/browser/standard-cdp-endpoint.test-support.js";
 import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
@@ -26,7 +27,13 @@ import { OpensteerError, type RequestId, type ThreadId } from "../packages/core/
 import { type TabRecord } from "../packages/database/src/index.js";
 import { listBrowserPoolDocumentLosses } from "./browser-pool-journey.test-support.js";
 import { TabSleeper } from "../packages/browser-runtime-core/src/browser/tab-sleeper.js";
-import { before, holdResume, journey, until } from "./browser-pool-journey.test-support.js";
+import {
+  before,
+  holdResume,
+  journey,
+  TestRuntimeConnection,
+  until,
+} from "./browser-pool-journey.test-support.js";
 
 type Journey = Awaited<ReturnType<typeof journey>>;
 type Home = Awaited<ReturnType<Journey["startHome"]>>;
@@ -1843,7 +1850,12 @@ it("tells the agent and the person that the person closed the tab a call was usi
     // The agent's script uses the page, waits, and uses it again: the person closes the tab
     // between the two, as the tester did.
     const running = work.use(
-      `await mine.goto(${JSON.stringify(`${origin}/started`)}); await mine.waitForTimeout(4000); return await mine.title();`,
+      `const marker = (await mine.title()) + "-private-timeout-marker";
+       print(marker);
+       await mine.goto(${JSON.stringify(`${origin}/started`)});
+       await mine.waitForTimeout(4000);
+       try { await mine.title(); } catch {}
+       throw new Error(marker);`,
     );
     await vi.waitFor(() => expect(hits).toContain("/started"), { timeout: 15_000 });
     const tabs = new TabService({
@@ -1868,12 +1880,18 @@ it("tells the agent and the person that the person closed the tab a call was usi
       next: "The person closed this tab while the command ran; whether it took effect is unknown. Open the page again if you still need it.",
     });
     expect(text(result)).not.toContain("lost track");
+    expect(JSON.stringify(result)).not.toContain("Held-private-timeout-marker");
     const operation = await j.database
       .selectFrom("agentOperations")
-      .select(["id", "state", "outcome", "ending"])
+      .select(["id", "state", "outcome", "ending", "resultSummary"])
       .orderBy("createdAt", "desc")
       .executeTakeFirstOrThrow();
-    expect(operation).toMatchObject({ state: "unknown", outcome: "unknown", ending: "tab-closed" });
+    expect(operation).toMatchObject({
+      state: "unknown",
+      outcome: "unknown",
+      ending: "tab-closed",
+      resultSummary: null,
+    });
     // The person's activity reads the same cause.
     const [listed] = (
       await listAgentOperations(j.database, {
@@ -2255,6 +2273,174 @@ it("clicks a target=_blank link in the person's pooled tab and reaches the popup
     await close();
   }
 });
+
+async function installClickTarget(
+  person: Awaited<ReturnType<typeof heldPersonTab>>["person"],
+  covered: boolean,
+) {
+  await person.cdp.send("Runtime.evaluate", {
+    expression: `window.clicks = 0;
+      document.body.innerHTML =
+        '<button id="click-target" style="position:fixed;left:40px;top:40px;width:120px;height:50px">Click</button>' +
+        (${covered} ? '<div id="cover" style="position:fixed;z-index:10;inset:0"></div>' : '');
+      document.querySelector("#click-target").onclick = () => window.clicks++;`,
+  });
+  return async () =>
+    (
+      await person.cdp.send<{ result: { value: number } }>("Runtime.evaluate", {
+        expression: "window.clicks",
+        returnByValue: true,
+      })
+    ).result.value;
+}
+
+it.each([false, true])(
+  "ends a covered pooled click with its timeout (caught: %s)",
+  async (caught) => {
+    const { work, close, own, person } = await heldPersonTab("covered-click");
+    try {
+      const clicks = await installClickTarget(person, true);
+      const click =
+        'await p.locator("#click-target").click(' + (caught ? "{timeout:800}" : "") + ");";
+      const code = caught ? `try { ${click} } catch(e) { print(e.message); }` : click;
+      const start = performance.now();
+      const result = await work.use(`
+      const p = await openPage(${JSON.stringify(own.id)});
+      print("before click");
+      ${code}
+    `);
+      const elapsed = Math.round(performance.now() - start);
+      expect(await clicks()).toBe(0);
+      expect(result.structuredContent, `${elapsed} ms: ${text(result)}`).toMatchObject(
+        caught
+          ? { status: "completed" }
+          : {
+              status: "failed",
+              error: {
+                message: expect.stringContaining(
+                  'Timeout 10000ms: <div id="cover"> intercepts pointer events',
+                ),
+              },
+            },
+      );
+      expect(text(result)).toContain("before click");
+      expect(text(result)).toContain("intercepts pointer events");
+      if (!caught) expect(elapsed).toBeLessThan(10_500);
+    } finally {
+      await close();
+    }
+  },
+);
+
+it.each(["cleanup", "input", "hit test"] as const)(
+  "settles a pooled script with the %s reply withheld",
+  async (kind) => {
+    const { work, close, own, person, j } = await heldPersonTab("click-reply");
+    const withheld = new Set<string>();
+    const dropped = Promise.withResolvers<void>();
+    let syncRequest: string | undefined;
+    let geometryCalls = 0;
+    const send = TestRuntimeConnection.prototype.send;
+    const emit = TestRuntimeConnection.prototype.emit;
+    const sendSpy = vi.spyOn(TestRuntimeConnection.prototype, "send").mockImplementation(function (
+      this: TestRuntimeConnection,
+      data,
+      options,
+      callback,
+    ) {
+      const frame = JSON.parse(data);
+      if (frame.type === "cdp.command") {
+        const { method, parameters } = frame.command;
+        if (kind === "cleanup" && method === "Runtime.evaluate" && parameters.expression === "1")
+          syncRequest = frame.requestId;
+        if (
+          (kind === "cleanup" &&
+            method === "Runtime.releaseObjectGroup" &&
+            parameters.objectGroup === "withheld") ||
+          (kind === "input" &&
+            method === "Input.dispatchMouseEvent" &&
+            parameters.type === "mouseReleased") ||
+          (kind === "hit test" &&
+            method === "Runtime.callFunctionOn" &&
+            parameters.arguments?.[0]?.value === "geometry" &&
+            ++geometryCalls === 2)
+        )
+          withheld.add(frame.requestId);
+      }
+      send.call(this, data, options, callback);
+    });
+    const emitSpy = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      if (event === "message" && args[1] === false) {
+        const message = JSON.parse(String(args[0]));
+        if (message.type === "cdp.result" && withheld.delete(message.requestId)) {
+          dropped.resolve();
+          return true;
+        }
+        // Host admission for the awaited read can finish before admission for cleanup.
+        // Let the script throw only once Chromium has actually answered cleanup and we dropped it.
+        if (message.type === "cdp.result" && message.requestId === syncRequest && syncRequest) {
+          void dropped.promise.then(() => emit.call(this, event, ...args));
+          return true;
+        }
+      }
+      return emit.call(this, event, ...args);
+    });
+    try {
+      const clicks = await installClickTarget(person, kind === "hit test");
+      const code =
+        kind === "cleanup"
+          ? `void p.cdp("Runtime.releaseObjectGroup", { objectGroup: "withheld" }).catch(() => {});
+           await p.js("1");
+           throw new Error("the script's own error");`
+          : 'await p.locator("#click-target").click({timeout:1500});';
+      const running = work.use(`
+        const p = await openPage(${JSON.stringify(own.id)});
+        print("before the reply");
+        ${code}
+      `);
+      await before(
+        withTimeout(dropped.promise, 10_000, {
+          timeoutError: () => new Error("Chromium did not send the CDP reply to withhold."),
+        }),
+        running,
+        "The withheld CDP reply",
+      );
+      const result = await running;
+      const status = kind === "cleanup" ? "failed" : "unknown";
+      const message = kind === "cleanup" ? "the script's own error" : "Timeout 1500ms";
+      expect(await clicks()).toBe(kind === "input" ? 1 : 0);
+      expect(result.structuredContent, text(result)).toMatchObject({
+        status,
+        error: {
+          code: kind === "cleanup" ? "failed" : "outcome-unknown",
+          message: expect.stringContaining(message),
+          ...(kind === "input" ? { method: "Input.dispatchMouseEvent" } : {}),
+        },
+      });
+      expect(text(result)).toContain("before the reply");
+      if (kind !== "cleanup") expect(text(result)).toContain("did not confirm its outcome");
+      expect(
+        await j.database
+          .selectFrom("agentOperations")
+          .select(["state", "resultSummary"])
+          .orderBy("createdAt", "desc")
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({
+        state: status,
+        resultSummary: { scriptError: { message: expect.stringContaining(message) } },
+      });
+    } finally {
+      dropped.resolve();
+      emitSpy.mockRestore();
+      sendSpy.mockRestore();
+      await close();
+    }
+  },
+);
 
 /** The script's returned lines. */
 const lines = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>

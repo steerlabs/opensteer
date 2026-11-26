@@ -548,6 +548,49 @@ describe("browser REPL", () => {
     });
   });
 
+  it.each(["Runtime.releaseObjectGroup", "Runtime.callFunctionOn"])(
+    "keeps the script's own error while %s is pending",
+    async (method) => {
+      const pending = Promise.withResolvers<string>();
+      const entered = Promise.withResolvers<void>();
+      const command = vi.fn<BrowserUsePort["command"]>(async (_target, name, params) => {
+        if (name === method) {
+          entered.resolve();
+          return pending.promise;
+        }
+        if (name === "Runtime.getProperties") await entered.promise;
+        return params?.expression === "document" ? '{"result":{"objectId":"doc"}}' : "{}";
+      });
+      const { run } = setup({ command });
+      const cleanup = method === "Runtime.releaseObjectGroup";
+      const action = cleanup
+        ? 'void page.cdp("Runtime.releaseObjectGroup", { objectGroup: "hold" }).catch(() => {});'
+        : 'void page.evaluate(() => { document.body.textContent = "changed"; }).catch(() => {});';
+      try {
+        const result = await run(`${bind}
+          print("before error");
+          ${action}
+          await page.cdp("Runtime.getProperties", { objectId: "sync" });
+          throw new Error("the script's own error");
+        `);
+        expect(command.mock.calls.map(([, name]) => name)).toContain(method);
+        expect(result.structuredContent).toMatchObject({
+          error: {
+            code: cleanup ? "failed" : "outcome-unknown",
+            message: expect.stringContaining("the script's own error"),
+            ...(cleanup ? {} : { method }),
+          },
+        });
+        expect(result.content).toContainEqual({ type: "text", text: "before error" });
+        if (!cleanup)
+          expect(JSON.stringify(result.content)).toContain("did not confirm its outcome");
+      } finally {
+        entered.resolve();
+        pending.resolve("{}");
+      }
+    },
+  );
+
   it("lets a port acknowledge cancellation without accumulating old reservations", async () => {
     const released = vi.fn();
     const { run } = setup({

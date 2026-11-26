@@ -6,6 +6,7 @@ import {
   DeviceIdSchema,
   OpensteerError,
   ToolBlockedError,
+  agentOperationEndingSentence,
   agentSessionIdleMs,
   createId,
   ThreadIdSchema,
@@ -47,6 +48,7 @@ import {
   type BrowserToolPorts,
 } from "../mcp/handlers/browser.js";
 import { TabToolHandlers } from "../mcp/handlers/tabs.js";
+import { CommandTools } from "../mcp/handlers/commands.js";
 import { createConnectionRpcHandlers } from "../mcp/connections/connection-routes.js";
 import {
   clients,
@@ -147,6 +149,7 @@ async function setUp(
     readonly browserConnect?: Pick<BrowserToolPorts, "issueTicket"> &
       Pick<BrowserToolPorts["tabs"], "open" | "bindBrowserScript">;
     readonly pooledBrowser?: BrowserToolPorts["pooledBrowser"];
+    readonly commands?: CommandTools;
     /** What `discover` reads, where a test holds it open. */
     readonly discoverSources?: Parameters<typeof serveMcp>[1] extends infer O
       ? O extends { readonly discoverSources?: infer D }
@@ -185,6 +188,7 @@ async function setUp(
   };
   const home = { runnerId: createId("runner"), name: "Mac" };
   const url = await serveMcp(storeFixture, {
+    ...(options.commands ? { commands: options.commands } : {}),
     ...(options.discoverSources ? { discoverSources: options.discoverSources } : {}),
     browserProfiles: [{ id: profile, name: "Work", home: null }],
     tabHandlers: new TabToolHandlers(tabs, sessions),
@@ -2314,6 +2318,135 @@ describeStore("an external agent's direct work through sessions", (it) => {
       await running.catch(() => undefined);
     }
   });
+
+  for (const ending of ["stopped", "disconnected", "contact-lost"] as const)
+    it(`keeps script-authored diagnostics only for technical loss (${ending})`, async ({
+      storeFixture,
+    }) => {
+      const { database } = storeFixture;
+      const reads = createConnectionRpcHandlers({
+        store: new AgentConnectionStore(database),
+      } as never);
+      const s = await setUp(storeFixture, `script-ending-${ending}`, {
+        commands: new CommandTools({
+          database,
+          registry: {} as never,
+          administration: {} as never,
+          requests: () => undefined,
+          secretDigestKey: Buffer.alloc(32),
+          reads: () => reads,
+        }),
+      });
+      const sent = Promise.withResolvers<void>();
+      const end = Promise.withResolvers<void>();
+      const marker = "private-page-marker";
+      const page = { tabId: "tab-1", targetId: "target-1", sessionId: "cdp-1" };
+      const repl = new BrowserReplService({
+        port: {
+          listPages: async () => [
+            { tabId: page.tabId, title: marker, url: "https://example.test", profile: "Work" },
+          ],
+          openPage: async () => page,
+          newPage: async () => page,
+          command: async () => {
+            sent.resolve();
+            await end.promise;
+            throw new OperationOutcomeUnknown(agentOperationEndingSentence(ending));
+          },
+          subscribe: () => () => {},
+        },
+      });
+      s.runBrowserScript.mockImplementation(({ code, signal, recheck }) =>
+        repl.execute("script-ending", code, signal, undefined, recheck),
+      );
+      const input = {
+        ...script,
+        code: `
+          const [tab] = await pages();
+          print(tab.title);
+          const page = await openPage(tab.tabId);
+          try { await page.cdp("Runtime.evaluate", { expression: "1" }); } catch {}
+          throw new Error(tab.title + "x".repeat(8120) + "end-of-private-error");
+        `,
+        operationKey: "script-ending",
+      };
+      const running = s.call("browser_use", input);
+      try {
+        await Promise.race([sent.promise, running]);
+        const row = await database
+          .selectFrom("agentOperations")
+          .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
+          .select(["agentOperations.id", "agentSessions.threadId", "agentOperations.sessionId"])
+          .where("agentOperations.operationKey", "=", input.operationKey)
+          .executeTakeFirstOrThrow();
+        // A command already sent can receive the reason before the executor's abort arrives.
+        if (ending === "stopped") {
+          const stop = new AgentSessionService({ store: storeFixture.store });
+          expect(
+            await stop.stopSession({
+              ownerUserId: s.f.userId,
+              threadId: row.threadId,
+              sessionId: row.sessionId,
+            }),
+          ).toEqual({ ended: true });
+        } else if (ending === "disconnected") {
+          await commands(storeFixture, s.f.userId).revoke(s.agent.id);
+        }
+        end.resolve();
+        const result = await running;
+        const receipt = {
+          status: "unknown",
+          operationId: row.id,
+          next: agentOperationEndingSentence(ending),
+        };
+        expect(result.structuredContent).toMatchObject(receipt);
+        const stored = await database
+          .selectFrom("agentOperations")
+          .select(["outcome", "ending", "resultSummary"])
+          .where("id", "=", row.id)
+          .executeTakeFirstOrThrow();
+        expect(stored).toMatchObject({ outcome: "unknown", ending });
+        const activity = await reads["connections.activity"]({ connectionId: s.agent.id }, {
+          session: { id: "session", user: { id: s.f.userId, disabledAt: null } },
+        } as never);
+        expect(activity).toMatchObject({
+          ok: true,
+          data: { operations: [expect.objectContaining({ id: row.id, ending })] },
+        });
+        expect(JSON.stringify(activity)).not.toContain(marker);
+        if (ending === "disconnected") {
+          await expect(s.call("opensteer_state", { area: "activity" })).rejects.toMatchObject({
+            code: 401,
+          });
+        } else {
+          const agentActivity = await s.ok("opensteer_state", { area: "activity" });
+          expect(agentActivity).toMatchObject({
+            view: { operations: [expect.objectContaining({ id: row.id, ending })] },
+          });
+          expect(JSON.stringify(agentActivity)).not.toContain(marker);
+          const replay = await s.call("browser_use", { ...input, operationId: row.id });
+          expect(replay.structuredContent).toMatchObject(receipt);
+          if (ending === "contact-lost") expect(JSON.stringify(replay)).toContain(marker);
+          else expect(JSON.stringify(replay)).not.toContain(marker);
+        }
+        if (ending === "contact-lost") {
+          expect(result.content).toContainEqual({ type: "text", text: marker });
+          const diagnostic = (result.structuredContent as { error: { message: string } }).error
+            .message;
+          expect(diagnostic).toContain(`Script error: ${marker}`);
+          expect(diagnostic).not.toContain("end-of-private-error");
+          expect(Buffer.byteLength(diagnostic)).toBeLessThanOrEqual(8192);
+          expect(stored.resultSummary).toMatchObject({ scriptError: { message: diagnostic } });
+        } else {
+          expect(JSON.stringify(result)).not.toContain(marker);
+          expect(stored.resultSummary).toBeNull();
+        }
+      } finally {
+        end.resolve();
+        await running.catch(() => undefined);
+        await repl.close();
+      }
+    });
 
   it("answers the call Disconnect cut through MCP with its result: unknown, because the person disconnected; then refuses what comes next", async ({
     storeFixture,
