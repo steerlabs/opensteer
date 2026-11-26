@@ -6490,18 +6490,27 @@ integration.sequential("Computer use for a connected agent, through its session"
       });
       expect(ready.status).toBe("completed");
       s.fake.gate = gate.promise;
-      const code = "try { await p.tap(1); } catch {}";
+      const code = 'print("before tap"); try { await p.tap(1); } catch {} print("continued");';
       const inFlight = s.call({ code, taskId: ready.taskId }, "lost-effect");
       const unknown = expect(inFlight).resolves.toMatchObject({
         status: "unknown",
         taskId: ready.taskId,
         operationId: expect.any(String),
         next: "The Home lost track of whether this took effect. Check the current state before doing anything else; never repeat it blindly.",
+        error: { code: "outcome-unknown", method: "act" },
+        content: [
+          { type: "text", text: "before tap" },
+          { type: "text", text: "continued" },
+          { type: "text", text: expect.stringMatching(/^act: outcome-unknown:/u) },
+        ],
       });
       await Promise.race([s.fake.reached("act"), inFlight]);
       s.fake.detach();
       await unknown;
-      expect(await s.operation("lost-effect")).toMatchObject({ outcome: "unknown" });
+      expect(await s.operation("lost-effect")).toMatchObject({
+        outcome: "unknown",
+        resultSummary: { scriptError: { code: "outcome-unknown", method: "act" } },
+      });
       expect(await s.call({ code, taskId: ready.taskId }, "lost-effect")).toMatchObject({
         status: "unknown",
       });
