@@ -1311,7 +1311,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     }
   },
 );
-||||||| parent of 35c3eba03 (Close a tab's page whoever opened it, as a regular browser does, and end its session with its last page at once)
+
 it("ends the page of a tab the person closes on the Home's own browser runtime, with its session's last page the session, and loads the address again on reopen", async () => {
   const fixture = await startSessionPersonFixture();
   try {
