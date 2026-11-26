@@ -160,12 +160,12 @@ describe("Host-projected Macs", () => {
   const ready = { state: "ready", reason: null };
   const on = { ...ready, supported: true, enabled: true, configurable: true };
   /**
-   * A Mac added to a Home, as the Home projects it. Only phones report
-   * `app: "opensteer"`, so the Home classes such a Mac by its form: a Mac in a
-   * VM ("Apple Virtual Machine") is a "server", a MacBook is "unknown". The
-   * Home says itself whether it can stream the Mac's windows.
+   * A Mac added to a Home, as the Home projects it. A Mac running the Opensteer app reports it
+   * and is a "computer"; one whose Runner was connected without the app is classed by its form:
+   * "server" when it reports that form (a managed Runner), else "unknown". The Home says itself
+   * whether it can stream the Mac's windows.
    */
-  function addedMac(kind: "server" | "unknown", form: "server" | "laptop") {
+  function addedMac(kind: "computer" | "server" | "unknown", form: "server" | "laptop" | null) {
     return DeviceMachineSummarySchema.parse({
       ...machine({}),
       kind,
@@ -188,8 +188,9 @@ describe("Host-projected Macs", () => {
   }
 
   it.each([
-    ["a Mac in a VM", "server", "server"],
-    ["a MacBook", "unknown", "laptop"],
+    ["a Mac running the Opensteer app", "computer", null],
+    ["a Mac connected without the app in a server form", "server", "server"],
+    ["a MacBook connected without the app", "unknown", "laptop"],
   ] as const)("gives %s added to the Home its live picture and its apps", (_, kind, form) => {
     const added = addedMac(kind, form);
     expect(canWatchComputer(added)).toBe(true);

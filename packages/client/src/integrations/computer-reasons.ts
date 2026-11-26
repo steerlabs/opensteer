@@ -4,8 +4,9 @@ import type { MachineSummary } from "@opensteer/protocol";
 
 /**
  * Whether the Host reports a live display for this computer's task sessions. A Mac is known by
- * its platform, never by the kind the Home classed it as: a Mac added to a Home is "unknown",
- * or "server" when it runs in a VM, and its picture is the Home's to report.
+ * its platform, never by the kind the Home classed it as: a Mac running the Opensteer app is a
+ * "computer", but one whose Runner was connected without the app is "unknown" (or "server" when
+ * its form says so), and its picture is the Home's to report.
  */
 export function canWatchComputer(machine: MachineSummary): boolean {
   if (machine.capabilities)
