@@ -119,7 +119,7 @@ enum PersonInput {
   let helper: HelperRuntime
   let connection: IPCConnection
   let client: Int32
-  private let decoder = Locked(FrameDecoder())
+  let decoder = Locked(FrameDecoder())
   private var sequence = 0
   private var pending: [Int: [String: Any]] = [:]
   init(helper: HelperRuntime) throws {
@@ -202,6 +202,12 @@ enum PersonInput {
       .unwrap("Safari window titled \(title) in \(windows.map { $0["title"] ?? "" })")
     let bound = try await wire.request("session.bind", ["sessionId": session, "app": target, "windowId": window["windowId"]!])
     ref = try ((bound["window"] as? [String: Any])?["ref"] as? String).unwrap("bound ref")
+    // The page at its top, where its field and link are in view.
+    try await observe()
+    if !tree.contains("Fixture field") {
+      _ = try await act([["type": "scroll", "target": ["index": 0], "direction": "up", "amount": 50]], snapshot: true)
+      try await observe()
+    }
   }
   @discardableResult func observe() async throws -> [String: Any] {
     let result = try await wire.request("session.observe", ["sessionId": session, "app": target, "window": ref, "includeScreenshot": false])
@@ -218,7 +224,7 @@ enum PersonInput {
       let rest = trimmed[trimmed.index(after: close)...].trimmingCharacters(in: .whitespaces)
       if rest.hasPrefix(role), rest.contains(text) { return number }
     }
-    throw JourneyFailure.failed("No \(role) with \(text) in the tree")
+    throw JourneyFailure.failed("No \(role) with \(text) in the tree: \(tree.prefix(1_500))")
   }
   /// One call; its receipt, or the error it ended with.
   func act(_ actions: [[String: Any]], snapshot needed: Bool = false) async throws -> [String: Any] {
@@ -227,6 +233,79 @@ enum PersonInput {
       "snapshot": needed ? (snapshot.map { $0 as Any } ?? NSNull()) : NSNull(), "actions": actions,
     ]))
     return (envelope["result"] as? [String: Any]) ?? ["error": envelope["error"] ?? "no result"]
+  }
+}
+
+/// The person watching Safari's window live, as the Opensteer app's Watch pane does: an owner
+/// view of the window and its video stream, every frame acknowledged as a viewer does.
+@MainActor final class Watch {
+  let control: AgentWire
+  let media: AgentWire
+  let view = "cvw_" + UUID().uuidString.lowercased()
+  var stream = ""
+  let frames = Locked(0)
+  let stopped = Locked(false)
+  var renewal: Task<Void, Never>?
+
+  init(helper: HelperRuntime) throws {
+    control = try AgentWire(helper: helper)
+    media = try AgentWire(helper: helper)
+  }
+  func start(identity: Any, title: String) async throws {
+    _ = try await control.request("hello", ["protocolVersion": 11, "ownerViewVersion": 3, "videoProfile": 1])
+    let listed = try await control.request("view.windows", ["app": identity])
+    let windows = (listed["windows"] as? [[String: Any]]) ?? []
+    let window = try windows.first { ($0["title"] as? String)?.contains(title) == true }.unwrap("watched window")
+    _ = try await control.request("view.open", ["viewId": view, "generation": 1, "leaseDurationMs": 120_000,
+      "target": ["kind": "app", "app": identity, "windowId": window["windowId"]!]])
+    let source: [String: Any] = ["kind": "owner-view", "viewId": view, "generation": 1]
+    let resolved = try await control.request("display.resolve", ["source": source])
+    let target = try (resolved["target"] as? [String: Any]).unwrap("video target")
+    stream = "dsp_" + UUID().uuidString.lowercased()
+    let started = try await control.request("display.start", ["streamId": stream, "target": target,
+      "sources": [source], "maxLongSide": 1280, "maxFps": 60, "maxBitrate": NSNull()])
+    _ = try await media.request("hello", ["protocolVersion": 11, "ownerViewVersion": 3])
+    _ = try await media.request("display.attach", ["token": started["attachmentToken"]!])
+    let client = media.client, decoder = media.decoder, frames = frames, stopped = stopped
+    Thread.detachNewThread {
+      var bytes = [UInt8](repeating: 0, count: 262_144)
+      while !stopped.current {
+        while let frame = try? decoder.withLock({ try $0.next() }) {
+          guard frame.count > 4 else { continue }
+          let length = frame.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+          guard length > 0, length < frame.count - 4,
+            let header = try? JSONSerialization.jsonObject(with: frame.subdata(in: 4..<(4 + length))) as? [String: Any],
+            let sequence = (header["sequence"] as? NSNumber)?.intValue,
+            let ack = try? Frame.encode(JSONSerialization.data(withJSONObject: ["type": "display.ack", "sequence": sequence]))
+          else { continue }
+          frames.withLock { $0 += 1 }
+          _ = ack.withUnsafeBytes { Darwin.write(client, $0.baseAddress, $0.count) }
+        }
+        var ready = pollfd(fd: client, events: Int16(POLLIN), revents: 0)
+        guard poll(&ready, 1, 200) > 0 else { continue }
+        let count = Darwin.read(client, &bytes, bytes.count)
+        if count <= 0 { return }
+        decoder.withLock { $0.append(Data(bytes.prefix(count))) }
+      }
+    }
+    let control = control, view = view
+    renewal = Task { @MainActor in
+      while !Task.isCancelled {
+        await sleepSeconds(30)
+        if Task.isCancelled { return }
+        _ = try? await control.request("view.renew", ["viewId": view, "generation": 1, "leaseDurationMs": 120_000])
+      }
+    }
+  }
+  func stop() async -> Int {
+    renewal?.cancel()
+    _ = try? await control.request("display.stop", ["streamId": stream])
+    _ = try? await control.request("view.close", ["viewId": view, "generation": 1, "leaseDurationMs": 120_000])
+    stopped.withLock { $0 = true }
+    await sleepSeconds(0.3)
+    control.drop()
+    media.drop()
+    return frames.current
   }
 }
 
@@ -299,8 +378,17 @@ final class FrontSampler {
       let caseOut = out.appendingPathComponent(name)
       try FileManager.default.createDirectory(at: caseOut, withIntermediateDirectories: true)
       var row: [String: Any]
+      let watched = name.hasSuffix("-watch")
+      let base = watched ? String(name.dropLast("-watch".count)) : name
+      var watch: Watch?
       do {
-        switch name {
+        if watched {
+          let started = try Watch(helper: helper)
+          watch = started
+          try await started.start(identity: safariIdentity, title: "Sol fixture")
+          await sleepSeconds(1)
+        }
+        switch base {
         case "front": row = try await frontCase(caseOut)
         case "stop": row = try await stopCase(caseOut)
         case "typing": row = try await typingCase(caseOut)
@@ -312,6 +400,12 @@ final class FrontSampler {
         }
       } catch {
         row = ["met": false, "error": String(describing: error)]
+      }
+      if let watch {
+        let frames = await watch.stop()
+        row["watchFrames"] = frames
+        // A watched case counts only with the live picture flowing.
+        if frames < 10 { row["met"] = false; row["watchError"] = "the live picture did not flow" }
       }
       try? JSONSerialization.data(withJSONObject: row, options: [.prettyPrinted, .sortedKeys])
         .write(to: caseOut.appendingPathComponent("case.json"))
@@ -463,7 +557,8 @@ final class FrontSampler {
     try await agent.observe()
     let scrollAt = try agent.index(role: "link", containing: "Open fixture page")
     calls.append(try await call(agent, "scroll", caseOut, sampler: sampler, snapshot: true,
-      [["type": "scroll", "target": ["index": scrollAt], "direction": "down", "amount": 3]]))
+      [["type": "scroll", "target": ["index": scrollAt], "direction": "down", "amount": 3],
+       ["type": "scroll", "target": ["index": scrollAt], "direction": "up", "amount": 3]]))
     // The menu action: View → Reload Page, which opens no window.
     calls.append(try await call(agent, "menu-reload", caseOut, sampler: sampler, [["type": "key", "keys": "cmd+r"]]))
     await sleepSeconds(0.5)
@@ -603,7 +698,7 @@ final class FrontSampler {
       try await agent.observe()
       calls.append(try await call(agent, "click-then-type-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "click", "target": ["index": field]], ["type": "type", "text": "m"]]))
       try await agent.observe()
-      calls.append(try await call(agent, "scroll-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "scroll", "target": ["index": link], "direction": "down", "amount": 2]]))
+      calls.append(try await call(agent, "scroll-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "scroll", "target": ["index": link], "direction": "down", "amount": 2], ["type": "scroll", "target": ["index": link], "direction": "up", "amount": 2]]))
       calls.append(try await call(agent, "menu-\(round)", caseOut, sampler: sampler, shots: round == 5, [["type": "key", "keys": "cmd+r"]]))
     }
     while person.isRunning { await sleepSeconds(0.05) }
@@ -744,18 +839,25 @@ final class FrontSampler {
     let busy = Agent(wire: busyWire, identity: safariIdentity)
     try await busy.open(title: "Sol fixture")
     try await busy.observe()
+    let baseline = lineCount(fixtureLog)
     _ = try busyWire.send("session.act", [
       "sessionId": busy.session, "app": busy.target, "window": busy.ref, "snapshot": NSNull(),
-      "actions": Array(repeating: ["type": "key", "keys": "z"] as [String: Any], count: 80),
+      "actions": Array(repeating: ["type": "key", "keys": "z"] as [String: Any], count: 32),
     ])
-    await sleepSeconds(0.3)
+    // Dropped once the act's first key has reached the page: work is under way.
+    var underWay = false
+    for _ in 0..<100 where !underWay {
+      underWay = lines(fixtureLog, after: baseline).contains { $0["kind"] as? String == "keydown" && $0["key"] as? String == "z" }
+      if !underWay { await sleepSeconds(0.05) }
+    }
     let inFlight = helper.registry.sessions.count
     busyWire.drop()
     let busySeen = await pillStatuses(seconds: 3)
     await screenshot(caseOut, "busy-drop")
     let lost = "Connection lost · last action unconfirmed"
     return [
-      "met": !idleSeen.contains(lost) && idleSeen.contains("Computer use ended") && busySeen.contains(lost),
+      "met": underWay && !idleSeen.contains(lost) && idleSeen.contains("Computer use ended") && busySeen.contains(lost),
+      "firstKeyReachedThePageBeforeTheDrop": underWay,
       "dropped": "the agent's IPC connection closed: HelperRuntime.connectionClosed, as the helper's server reports a dropped socket, then both socket ends closed",
       "idleStatuses": idleSeen, "inFlightStatuses": busySeen, "sessionsWhenDropped": inFlight,
     ]

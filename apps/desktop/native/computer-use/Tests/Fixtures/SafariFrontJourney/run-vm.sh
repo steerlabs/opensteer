@@ -94,9 +94,9 @@ run_journey() {
 deadline=$(( $(date +%s) * 1000 + (1620 - (SECONDS - began)) * 1000 ))
 result=0
 if [[ -x "$work/Red" ]]; then
-  run_journey red "$work/Red" "${OPENSTEER_SAFARI_FRONT_RED_CASES:-front}"
+  run_journey red "$work/Red" "${OPENSTEER_SAFARI_FRONT_RED_CASES:-front,front-watch,stop-watch}"
 fi
-run_journey green "$work/Green" "${OPENSTEER_SAFARI_FRONT_CASES:-front,stop,typing,choice,overlay,control,churn}"
+run_journey green "$work/Green" "${OPENSTEER_SAFARI_FRONT_CASES:-front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control,churn-watch}"
 [[ "$(cat "$out/green/exit-code.txt")" == 0 ]] || result=1
 ls "$HOME/Library/Logs/DiagnosticReports" > "$out/diagnostic-reports-after.txt" 2>/dev/null || true
 exit "$result"
