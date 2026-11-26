@@ -890,6 +890,10 @@ export class TabStore {
           updatedAt: new Date(),
           generation: row.generation + 1,
           closedPosition: sql`${JSON.stringify(position(layout, row.id))}::jsonb`,
+          // The closed tab lets go of its page in its own commit: no reopen, restore or bind ever
+          // finds that page again, before or after a restart, awake or parked. A page no open row
+          // binds is ended wherever the Home learns a session's pages.
+          pageBinding: null,
         })
         .where("id", "=", row.id)
         .execute(databaseOperationOptions());

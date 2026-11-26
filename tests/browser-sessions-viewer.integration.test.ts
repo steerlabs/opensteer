@@ -136,7 +136,10 @@ run("Browser Sessions through a whole deployment", () => {
       const rows = await stack.host.store.database
         .selectFrom("personalTabs")
         .select(["id", "closedAt"])
-        .where(sql<string>`page_binding ->> 'sessionId'`, "=", sessionId)
+        // The session's rows: its bound tabs, and its first tab, which a close lets go of.
+        .where(
+          sql<boolean>`(page_binding ->> 'sessionId' = ${sessionId} or id = ${initial.tabs[0]!.id})`,
+        )
         .orderBy("id")
         .execute();
       const binding = await stack.host.store.getBrowserTabOpen(owner.id, command.idempotencyKey);
@@ -182,7 +185,9 @@ run("Browser Sessions through a whole deployment", () => {
         await stack.host.store.database
           .selectFrom("personalTabs")
           .select(["id", "closedAt"])
-          .where(sql<string>`page_binding ->> 'sessionId'`, "=", sessionId)
+          .where(
+            sql<boolean>`(page_binding ->> 'sessionId' = ${sessionId} or id = ${initial.tabs[0]!.id})`,
+          )
           .orderBy("id")
           .execute(),
       ).toEqual(rows);

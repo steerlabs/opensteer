@@ -263,13 +263,14 @@ integration("the Host's shadow comparison of catalog and runtime", () => {
     );
     expect(shadow("browser.shadow.appeared"), "Logged once, however long it lasts").toHaveLength(1);
 
-    // Reopened: no longer closed, but the page the runtime holds was bound at an earlier
-    // generation of the tab, so it is the one that would be destroyed now.
+    // Reopened: no longer closed, but its close let go of the page the runtime holds (a reopen
+    // loads in a page of its own), so this session's catalog has no tab for that page: it is
+    // the one that would be destroyed now.
     await tabs.reopen(f.userId, descriptor.id, "reopen");
     await converges(() =>
       expect(shadow("browser.shadow.appeared").map((line) => line.reason)).toEqual([
         "closed",
-        "generation",
+        "never-admitted",
       ]),
     );
     expect(shadow("browser.shadow.resolved")).toEqual([
@@ -334,8 +335,9 @@ integration("the Host's shadow comparison of catalog and runtime", () => {
     const beforeCompleted = completedReads.length;
     await tabs.reopen(f.userId, descriptor.id, "reopen-fanout");
     await converges(() => expect(completedReads.length).toBeGreaterThan(beforeCompleted));
+    // As above: the reopened tab let go of the page this session holds.
     await converges(() =>
-      expect(shadow("browser.shadow.appeared").at(-1)).toMatchObject({ reason: "generation" }),
+      expect(shadow("browser.shadow.appeared").at(-1)).toMatchObject({ reason: "never-admitted" }),
     );
     await vi.advanceTimersByTimeAsync(1_000);
     expect(reads.slice(before), "Only the session that holds the tab").toEqual([sessionId]);

@@ -635,7 +635,11 @@ export async function readBrowserSessionCut(
             .where("ownerId", "=", ownerId)
             .where("kind", "=", "page")
             .where("closedAt", "is not", null)
-            .where(sql<string>`page_binding->>'sessionId'`, "=", sessionId)
+            // A close lets go of the page (its binding is cleared in the close's commit): a
+            // closed row among this session's surfaces is that tab's, whatever binding it kept.
+            .where(
+              sql<boolean>`(page_binding is null or page_binding->>'sessionId' = ${sessionId})`,
+            )
             .execute(databaseOperationOptions())
         : [],
       transaction

@@ -254,6 +254,8 @@ const maxBrowserTextBytes = 1 * 1_024 * 1_024;
 const phoneEngines = new Set(["wkwebview", "android-webview"]);
 const maxPendingAgentRequests = 32;
 const agentRequestTimeoutMs = 15_000;
+/** The immediate close of a closed tab's page tries this many times, then leaves it to rule B. */
+const pageCloseAttempts = 3;
 /** V3: a tab's wake (up to 18 s) and its page's load (up to 15 s), for an agent's bind. */
 const bindWakeMs = 40_000;
 /** An open's work budget; it also bounds waiting for this computer's browser to arrive. */
@@ -292,13 +294,16 @@ function mentionsChromeExtensionUrl(value: unknown, depth: number): boolean {
   return false;
 }
 
-/** A page that is ending: registered at its tab's close, fenced, then closed. */
+/** A page whose close is under way: fenced, then closed, its outcome known once (`done`). */
 interface PageEnding {
   fence?: Promise<void>;
   readonly initial: Promise<void>;
+  /** True once the runtime confirmed the page gone; false if this close gave up. */
+  readonly done: Promise<boolean>;
   started: boolean;
   readonly releaseFence: () => void;
   readonly settleInitial: () => void;
+  readonly settleDone: (closed: boolean) => void;
 }
 
 export class BrowserCdpConnectionEnded extends Error {
@@ -485,7 +490,8 @@ export interface BrowserSessionRepository {
     readonly ownerId: UserId;
     readonly tabGroupId?: BrowserSessionId;
     readonly tabGeneration?: number;
-    readonly previousPageBinding?: PageBinding;
+    /** The binding the restored row had; null when its close released it. */
+    readonly previousPageBinding?: PageBinding | null;
     readonly opener?: BrowserSessionOpenerRecord | null;
     readonly id: BrowserSessionId;
     readonly placementKey: string;
@@ -722,7 +728,8 @@ export type StartBrowserSessionInput = {
   readonly sessionId?: BrowserSessionId;
   readonly tabGroupId?: BrowserSessionId;
   readonly tabGeneration?: number;
-  readonly previousPageBinding?: PageBinding;
+  /** The binding the restored row had; null when its close released it. */
+  readonly previousPageBinding?: PageBinding | null;
   readonly initialSurfaceId?: BrowserSurfaceId;
   /** The initial tab's row exactly as binding it to this session wrote it. */
   readonly onPageBound?: (row: TabRecord) => void;
@@ -1926,23 +1933,25 @@ export class BrowserService {
         throw new Error("The retained browser session was stopped while it reattached.");
       }
       const live = this.pageInventory(sessionId)?.records;
+      const lineageId = broker.groupId;
       const losses: { surfaceId: string; documentId: string | null }[] = [];
       for (const document of documents.filter((document) => document.sessionId === sessionId)) {
         const tab = await this.#workspaceTabs?.get(ownerId, document.surfaceId, true);
+        // A tab the person closed, or one that let go of this page, loses nothing: its page ends
+        // below.
+        if (tab && this.#pageUnbound(tab, sessionId, lineageId)) continue;
         const page = live?.get(document.surfaceId);
-        if (!page) {
+        if (!page || page.documentId !== document.documentId)
           losses.push({ surfaceId: document.surfaceId, documentId: document.documentId });
-          continue;
-        }
-        // Only a tab the person closed, or one now bound elsewhere, has its page closed.
-        if (!tab || (!tab.closedAt && tab.pageBinding?.sessionId === sessionId)) {
-          if (page.documentId !== document.documentId)
-            losses.push({ surfaceId: document.surfaceId, documentId: document.documentId });
-          continue;
-        }
-        // The person closed this tab while parked: its page closes now, nothing is lost. When it
-        // was the session's last page, the session closes with that answer, an ordinary close.
-        if (this.#workspaceTabs) {
+      }
+      // Rule B over the live pages: a page no open row binds ends now, durably, whatever happened
+      // while this Home was not holding it (a close while parked, a restart mid-close, a reopen).
+      // When it was the session's last page, the session closes with that answer, an ordinary
+      // close. A close that fails here is left to the next time the Home learns these pages.
+      for (const surfaceId of Array.from(live?.keys() ?? [])) {
+        const tab = await this.#workspaceTabs?.get(ownerId, surfaceId as TabId, true);
+        if (!tab || !this.#pageUnbound(tab, sessionId, lineageId)) continue;
+        try {
           const closed = await broker.requestCdp(
             {
               type: "cdp.command",
@@ -1950,8 +1959,9 @@ export class BrowserService {
               command: {
                 method: browserHostMethods.closeTab,
                 parameters: {
-                  surfaceId: document.surfaceId,
+                  surfaceId,
                   inventoryRevision: broker.inventoryRevision,
+                  durable: true,
                 },
               },
             },
@@ -1973,6 +1983,8 @@ export class BrowserService {
             );
             return [];
           }
+        } catch (error) {
+          this.#onError(error);
         }
       }
       return losses.length
@@ -3611,15 +3623,18 @@ export class BrowserService {
     if (existing) return existing;
     const fence = Promise.withResolvers<void>();
     const initial = Promise.withResolvers<void>();
+    const done = Promise.withResolvers<boolean>();
     const entry: PageEnding = {
       fence: fence.promise,
       initial: initial.promise,
+      done: done.promise,
       started: false,
       releaseFence: () => {
         delete entry.fence;
         fence.resolve();
       },
       settleInitial: () => initial.resolve(),
+      settleDone: (closed) => done.resolve(closed),
     };
     pending.set(surfaceId, entry);
     return entry;
@@ -3634,20 +3649,24 @@ export class BrowserService {
     if (!pending.size) this.#pendingPageCloses.delete(sessionId);
     current.settleInitial();
     current.releaseFence();
+    current.settleDone(false);
   }
 
   /**
-   * Ends a page by its identity (session, surface), whatever it shows: the one close of a tab's
-   * page on both paths, fenced first, and retried with backoff until the runtime confirms the
-   * page gone or the session's channel is gone (a parked guest closes it at its wake, where a
-   * page whose tab closed or moved is closed). The first attempt's end settles the caller off
-   * the pool; on the pool the caller does not wait for the guest.
+   * Ends a page now, by its identity (session, surface), whatever it shows: a courtesy with a
+   * bound, the same on both paths. Fenced first, then closed, at most `pageCloseAttempts` times
+   * with backoff; a pooled attempt takes the gate only for itself and settles its relay row when
+   * the guest answers. Then it stops: a page it did not end is one no open row binds, and the
+   * Home ends it wherever it next learns the session's pages (the attach, the reattach after a
+   * restart, the adoption at a wake). The first attempt's end settles the caller off the pool;
+   * on the pool the caller does not wait for the guest.
    */
   #queuePhysicalPageClose(
     sessionId: BrowserSessionId,
     surfaceId: BrowserSurfaceId,
     onFailure?: () => void,
-    witness?: { ownerId: UserId; row: TabRecord },
+    witness?: { ownerId: UserId; row?: TabRecord },
+    attempts = pageCloseAttempts,
   ): Promise<void> {
     const broker = this.#brokers.get(sessionId);
     if (!broker?.live) {
@@ -3666,7 +3685,14 @@ export class BrowserService {
     };
     const close = async () => {
       let backoff = 250;
-      while (!this.#closed && this.#brokers.get(sessionId) === broker && broker.live) {
+      for (
+        let attempt = 1;
+        attempt <= attempts &&
+        !this.#closed &&
+        this.#brokers.get(sessionId) === broker &&
+        broker.live;
+        attempt++
+      ) {
         try {
           if (broker.pooled) {
             entry.settleInitial();
@@ -3690,13 +3716,15 @@ export class BrowserService {
             z.object({ outcome: z.enum(["tab-closed", "session-closed"]) }).parse(response.result);
           }
           entry.releaseFence();
+          entry.settleDone(true);
           return;
         } catch (error) {
           failed(error);
         } finally {
           entry.settleInitial();
         }
-        await delay(backoff, undefined, { signal: this.#closing.signal, ref: false });
+        if (attempt < attempts)
+          await delay(backoff, undefined, { signal: this.#closing.signal, ref: false });
         backoff = Math.min(backoff * 2, 5_000);
       }
     };
@@ -3708,39 +3736,27 @@ export class BrowserService {
     return entry.initial;
   }
 
-  /** One bounded close of a page no tab shows; true only when the browser confirmed it. */
+  /**
+   * The bounded close of a page no tab shows, as every page's close (one close per page: a close
+   * already under way is the one waited for); true only when the browser confirmed it.
+   */
   async #endOrphanedPage(
     sessionId: BrowserSessionId,
     surfaceId: BrowserSurfaceId,
     bound: TabRecord | undefined,
     ownerId: UserId,
   ): Promise<boolean> {
-    const broker = this.#brokers.get(sessionId);
-    if (!broker?.live) return true;
-    try {
-      if (broker.pooled)
-        await this.#closePooledPage(
-          broker,
-          sessionId,
-          surfaceId,
-          bound ? { ownerId, row: bound } : undefined,
-        );
-      else
-        z.object({ outcome: z.enum(["tab-closed", "session-closed"]) }).parse(
-          (
-            await this.#requestPhysicalTabClose(
-              broker,
-              surfaceId,
-              true,
-              AbortSignal.timeout(browserOpenWorkMs),
-            )
-          ).result,
-        );
-      return true;
-    } catch (error) {
-      this.#onError(error);
-      return false;
-    }
+    if (!this.#brokers.get(sessionId)?.live) return true;
+    // One attempt, never retried (rule 4): a close it cannot confirm is reported as unknown.
+    void this.#queuePhysicalPageClose(
+      sessionId,
+      surfaceId,
+      undefined,
+      { ownerId, ...(bound ? { row: bound } : {}) },
+      1,
+    );
+    const entry = this.#pendingPageCloses.get(sessionId)?.get(surfaceId);
+    return entry ? await entry.done : true;
   }
 
   /**
@@ -4864,14 +4880,6 @@ export class BrowserService {
         });
       return this.#bindWorkspacePage(actor.authority, row, actor.signal, actor.browserSend);
     },
-    ending: (row) => {
-      const binding = row.pageBinding;
-      if (!binding || !this.#brokers.get(binding.sessionId)?.live) return undefined;
-      const entry = this.#pageEnding(binding.sessionId, binding.surfaceId);
-      return () => {
-        if (!entry.started) this.#dropPageEnding(binding.sessionId, binding.surfaceId, entry);
-      };
-    },
     closeViewers: async (ownerId, row, closePage) => {
       const binding = row.pageBinding;
       if (!binding) return;
@@ -5067,28 +5075,16 @@ export class BrowserService {
       async () => {
         signal?.throwIfAborted();
         let row = await this.#requireWorkspaceGeneration(ownerId, initial);
+        // A closed tab let go of its page in its close's commit: reopened, it has no binding and
+        // loads its address again in a page of its own, in a lineage of its own. A bound tab
+        // whose page is live keeps that page.
         const binding = row.pageBinding;
-        if (!binding)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "This page has no restorable browser identity.",
-          });
-        // A closed tab's page is never reused: a page that is ending (its tab closed, maybe
-        // reopened since) stays ending, and the tab loads its address again in a page of its own.
-        const ending = this.#pendingPageCloses.get(binding.sessionId)?.has(binding.surfaceId);
-        const previous = await this.#repository.getBrowserSessionForOwner(
-          binding.sessionId,
-          ownerId,
-        );
+        const previous = binding
+          ? await this.#repository.getBrowserSessionForOwner(binding.sessionId, ownerId)
+          : null;
         if (agent && previous) await this.admitAgentBrowser(agent, "read-write", [previous]);
-        const broker = this.#brokers.get(binding.sessionId);
-        if (
-          !ending &&
-          previous &&
-          !this.#ended(previous) &&
-          broker?.live &&
-          broker.pageOf(row.id)
-        ) {
+        const broker = binding ? this.#brokers.get(binding.sessionId) : undefined;
+        if (previous && !this.#ended(previous) && broker?.live && broker.pageOf(row.id)) {
           this.#workspacePageGenerations.set(`${previous.id}:${row.id}`, row.generation);
           return previous;
         }
@@ -5108,14 +5104,17 @@ export class BrowserService {
         signal?.throwIfAborted();
         const sessionId = this.#newSessionId();
         this.#workspacePageGenerations.set(`${sessionId}:${row.id}`, row.generation);
-        const dormant = (await tabs.snapshot(ownerId)).rows
-          .filter(
-            (other) =>
-              other.kind === "page" &&
-              other.id !== row.id &&
-              other.pageBinding?.lineageId === binding.lineageId,
-          )
-          .map((other) => other.id);
+        const lineageId = binding?.lineageId ?? sessionId;
+        const dormant = binding
+          ? (await tabs.snapshot(ownerId)).rows
+              .filter(
+                (other) =>
+                  other.kind === "page" &&
+                  other.id !== row.id &&
+                  other.pageBinding?.lineageId === binding.lineageId,
+              )
+              .map((other) => other.id)
+          : [];
         this.#pagesAwaitingNavigation.add(row.id);
         const budget = this.#poolStartBudget(signal);
         let bound: TabRecord | undefined;
@@ -5124,13 +5123,13 @@ export class BrowserService {
             {
               ownerId,
               sessionId,
-              tabGroupId: binding.lineageId,
+              tabGroupId: lineageId,
               initialSurfaceId: row.id,
               onPageBound: (written) => {
                 bound = written;
               },
               tabGeneration: row.generation,
-              previousPageBinding: binding,
+              previousPageBinding: binding ?? null,
               dormantSurfaceIds: dormant,
               ...(this.#pools.has(rowRunnerId) && row.url === "about:blank"
                 ? {}
@@ -5341,6 +5340,20 @@ export class BrowserService {
       reservation?.release();
     }
   }
+  /**
+   * The one rule that ends pages: a live page that no open row binds. Its row is closed, or let
+   * go of it (a reopen gets a page of its own, in a lineage of its own), or is bound outside this
+   * session's lineage; never a page this session is being bound for now (a restore's own), never
+   * a dormant sibling its lineage brought along, and never a page whose row is not written yet.
+   */
+  #pageUnbound(row: TabRecord, sessionId: BrowserSessionId, lineageId: BrowserSessionId): boolean {
+    return (
+      row.kind === "page" &&
+      (row.closedAt !== null || !row.pageBinding || row.pageBinding.lineageId !== lineageId) &&
+      this.#workspacePageGenerations.get(`${sessionId}:${row.id}`) !== row.generation
+    );
+  }
+
   async #writeWorkspacePages(
     record: BrowserSessionRecord,
     ownerId: UserId,
@@ -5433,6 +5446,11 @@ export class BrowserService {
       }
       if (!row) {
         pending.add(descriptor.id);
+        continue;
+      }
+      // A page no open row binds ends, wherever the Home learns of it (rule B).
+      if (this.#pageUnbound(row, record.id, lineageId)) {
+        void this.#queuePhysicalPageClose(record.id, descriptor.id, undefined, { ownerId, row });
         continue;
       }
       if (!row.closedAt) {
@@ -6955,6 +6973,8 @@ export class BrowserService {
         : null;
     const deviceAttachmentId = randomUUID();
     let attachmentClosed = false;
+    /** Ends with the attachment: a wait of its own (a closing tab's fence) ends with it. */
+    const attachmentLife = new AbortController();
     const assertAttached = (bindingWasEnded: boolean) => {
       if (
         attachmentClosed ||
@@ -7087,6 +7107,7 @@ export class BrowserService {
     const close = () => {
       if (attachmentClosed) return;
       attachmentClosed = true;
+      attachmentLife.abort(new BrowserCdpConnectionEnded("This browser attachment has ended."));
       this.#deviceAttachments.delete(deviceAttachmentId);
       unsubscribe();
       visibleRootTargets.clear();
@@ -7309,432 +7330,480 @@ export class BrowserService {
         connectionWork && requested.method === "Target.setAutoAttach" && requested.sessionId
           ? { ...requested, parameters: connectionAutoAttachParameters(requested.parameters) }
           : requested;
-      return this.withRunnerAdmission(record.runnerId, async () => {
-        confirmed?.signal?.throwIfAborted();
-        if (confirmed && input.expiresAt !== undefined && input.expiresAt <= Date.now())
-          throw new OpensteerError({ code: "forbidden", message: "Browser authority expired." });
-        const bindingWasEnded = this.#endedBindings.has(input.agentBindingId);
-        if (confirmed && bindingWasEnded) assertAttached(false);
-        if (
-          pooledRelay &&
-          (command.method === "Target.setAutoAttach" ||
-            command.method === "Target.autoAttachRelated")
-        )
-          throw new BrowserCdpConnectionEnded("Use an explicit page attachment on this browser.");
-        if (confirmed && !broker.supportsCdpReplyBudget)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Update the browser computer to run browser scripts.",
+      // A tab of this session is ending: nothing is sent until the runtime's own fence holds its
+      // page (then no binding, lookup or attach reaches it), as a CDP connection's frames. The wait
+      // is outside the Runner's lane and ends with the attachment (a Stop, a Disconnect).
+      const closingFences = () =>
+        [...(this.#pendingPageCloses.get(record.id)?.values() ?? [])].flatMap(({ fence }) =>
+          fence ? [fence] : [],
+        );
+      for (;;) {
+        for (let fences = closingFences(); fences.length; fences = closingFences())
+          await withTimeout(Promise.all(fences), agentRequestTimeoutMs, {
+            signal: confirmed?.signal
+              ? AbortSignal.any([attachmentLife.signal, confirmed.signal])
+              : attachmentLife.signal,
+            timeoutError: () => new BrowserCdpConnectionEnded("A browser tab is still closing."),
           });
-        const lease =
-          command.method === "Opensteer.fillLogin" || command.method === "Opensteer.fillCard"
-            ? z.object({ loginRef: z.string() }).safeParse(
-                command.method === "Opensteer.fillCard"
-                  ? {
-                      loginRef: z.object({ cardRef: z.string() }).safeParse(command.parameters).data
-                        ?.cardRef,
-                    }
-                  : command.parameters,
-              )
-            : null;
-        if (lease && broker.live && this.#resolveTarget(placementOf(record))?.main !== true)
-          return {
-            result: Promise.resolve({ status: "unavailable", reason: "main-browser-required" }),
-          };
-        const fillAllowed = async () =>
-          lease?.success &&
-          (command.method === "Opensteer.fillCard" ? broker.cardFill : broker.signIn) &&
-          broker.live &&
-          this.#brokers.has(record.id) &&
-          (await this.#validateLoginLease?.({
-            loginRef: lease.data.loginRef,
-            sessionId: record.id,
-            deploymentId: this.#deploymentId,
-            ...(input.agentBindingId.startsWith("session:")
-              ? {
-                  bindingId: input.agentBindingId,
-                  profileId: record.profileId,
-                  ...(input.scriptTabId ? { tabId: input.scriptTabId } : {}),
-                }
-              : {}),
-          }));
-        if (lease && !(await fillAllowed())) return expired;
-        assertAttached(bindingWasEnded);
-        // Resolve attribution before admission so the first command has its actor
-        // token and session authority is still checked after the metadata read.
-        // A late command may answer after its Run ended, but cannot recreate
-        // its actor. A Run ending during admission still fences that command.
-        const actorToken =
-          nativeAttachment?.actorToken ??
-          (!bindingWasEnded ? await this.#actorToken(input, record.id) : undefined);
-        if (lease && !(await fillAllowed())) return expired;
-        assertAttached(bindingWasEnded);
-        let writeAccessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
-        let canManageExtensions = false;
-        const admitted = await this.#admitAgentBackend(input, "cdp", false, undefined, (facts) => {
-          canManageExtensions = facts.manageExtensions;
-        });
-        if (admitted.record.id !== record.id)
-          throw new BrowserCdpConnectionEnded(
-            "This Run selected another browser. Bind the exact tab with Browser Harness openPage(tabId).",
-          );
-        if (
-          !connectionWork &&
-          isExtensionMutationCommand(command.method, command.parameters) &&
-          !canManageExtensions
-        )
-          throw new OpensteerError({ code: "forbidden", message: extensionManagementRefusal });
-        if (input.scriptTabId) {
-          if (
-            this.tabOccupants(input.ownerId, record.id, input.scriptTabId).some(
-              ({ threadId, holding }) => holding && threadId !== input.scriptThreadId,
+        const sent = await this.withRunnerAdmission(
+          record.runnerId,
+          async (): Promise<{ readonly result: Promise<unknown> } | undefined> => {
+            // A tab began closing while this waited for the lane: wait again, outside it.
+            if (closingFences().length) return undefined;
+            confirmed?.signal?.throwIfAborted();
+            if (confirmed && input.expiresAt !== undefined && input.expiresAt <= Date.now())
+              throw new OpensteerError({
+                code: "forbidden",
+                message: "Browser authority expired.",
+              });
+            const bindingWasEnded = this.#endedBindings.has(input.agentBindingId);
+            if (confirmed && bindingWasEnded) assertAttached(false);
+            if (
+              pooledRelay &&
+              (command.method === "Target.setAutoAttach" ||
+                command.method === "Target.autoAttachRelated")
             )
-          )
-            throw new OpensteerError({
-              code: "conflict",
-              message: "This tab is in use by another task.",
-            });
-          if (
-            command.method === browserHostMethods.resumeTab &&
-            (scriptOpening ||
-              command.parameters?.surfaceId !== input.scriptTabId ||
-              !confirmed?.eventBudget)
-          )
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "Bind tabs with openPage(tabId).",
-            });
-        }
-        if (command.method === "Opensteer.stageFile" && !broker.fileStaging) {
-          throw new OpensteerError({
-            code: "conflict",
-            message:
-              "The computer running this tab has an older Opensteer version that cannot receive files. Update Opensteer on that computer.",
-          });
-        }
-        if (
-          (command.method === browserHostMethods.listTabs ||
-            command.method === browserHostMethods.resumeTab) &&
-          broker.surfaceState !== 1
-        )
-          throw browserActionFailure(
-            "unsupported-operation",
-            "Update the browser computer to list and resume sleeping tabs.",
-          );
-        if (command.method === browserHostMethods.listTabs) {
-          if (!BrowserListTabsParametersSchema.safeParse(command.parameters ?? {}).success)
-            throw new OpensteerError({ code: "bad_request", message: "Invalid tab-list cursor." });
-        } else if (command.method === browserHostMethods.resumeTab) {
-          const parsed = BrowserResumeTabParametersSchema.safeParse(command.parameters);
-          if (!parsed.success)
-            throw new OpensteerError({
-              code: "bad_request",
-              message: "A tab surfaceId is required.",
-            });
-          // The runtime answers for the tab, not this Home's copy of its state: one this session
-          // does not hold reads as not found there, the same as one that never existed.
-        } else if (Object.values(browserHostMethods).some((method) => method === command.method))
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "This operation is reserved for the Host.",
-          });
-        // Session admission awaits storage; authority can end during that read.
-        if (lease && !(await fillAllowed())) return expired;
-        assertAttached(bindingWasEnded);
-        this.#noteAgentCommand(record.id, input.agentBindingId);
-        // A tab of this session is ending: nothing is sent until the runtime's own fence holds
-        // its page (then no binding, lookup or attach reaches it), as a CDP connection's frames.
-        const closing = this.#pendingPageCloses.get(record.id);
-        if (closing?.size) {
-          const fences = [...closing.values()].flatMap(({ fence }) => (fence ? [fence] : []));
-          if (fences.length)
-            await withTimeout(Promise.all(fences), agentRequestTimeoutMs, {
-              timeoutError: () => new BrowserCdpConnectionEnded("A browser tab is still closing."),
-            });
-        }
-        assertAttached(bindingWasEnded);
-        const replyBudget = confirmed && {
-          maxBytes: Math.min(confirmed.maxBytes, maxBrowserTextBytes - 4096),
-          maxDepth: confirmed.maxDepth,
-          maxEntries: confirmed.maxEntries,
-          ...(confirmed.maxImageBytes === undefined
-            ? {}
-            : { maxImageBytes: confirmed.maxImageBytes }),
-        };
-        const browserSend = confirmed?.browserSend;
-        if (pool && !browserSend)
-          throw new BrowserCdpConnectionEnded("This pooled browser command has no admission.");
-        if (
-          browserSend &&
-          (browserSend.target.runnerId !== record.runnerId ||
-            browserSend.target.runtimeId !== record.runtimeId)
-        )
-          throw new BrowserCdpConnectionEnded("This page changed browser.");
-        const beforeWrite = () => {
-          if (!bindingWasEnded && this.#endedBindings.has(input.agentBindingId))
-            throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
-          if (
-            connectionWork &&
-            agentConnectionId !== undefined &&
-            this.#endedConnections.has(agentConnectionId)
-          )
-            throw new BrowserCdpConnectionEnded("This browser attachment has ended.");
-          if ((this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== writeAccessGeneration)
-            throw new BrowserCdpConnectionEnded("This device's browser access was turned off.");
-          assertAttached(bindingWasEnded);
-        };
-        const tracksPendingAttach =
-          filterTargetEvents &&
-          (command.method === "Target.attachToTarget" ||
-            command.method === "Target.createTarget" ||
-            command.method === browserHostMethods.resumeTab);
-        const pendingTargetId =
-          tracksPendingAttach &&
-          command.method === "Target.attachToTarget" &&
-          typeof command.parameters?.targetId === "string"
-            ? command.parameters.targetId
-            : undefined;
-        const namedAttach = tracksPendingAttach && command.method === "Target.attachToTarget";
-        if (namedAttach) {
-          pendingNamedAttaches += 1;
-          if (pendingTargetId !== undefined)
-            pendingTargetIds.set(pendingTargetId, (pendingTargetIds.get(pendingTargetId) ?? 0) + 1);
-        } else if (tracksPendingAttach) pendingUnknownTargets += 1;
-        let answered: Promise<BrowserCdpResponse>;
-        try {
-          answered = broker.requestCdp(
-            {
-              ...(replyBudget ? { replyBudget } : {}),
-              ...(scriptAttachmentId ? { scriptAttachmentId } : {}),
-              ...(confirmed?.eventBudget ? { scriptEventBudget: confirmed.eventBudget } : {}),
-              // TS11: an agent's wake is answered once the page it woke has loaded.
-              command:
-                command.method === browserHostMethods.resumeTab
-                  ? { ...command, parameters: { ...command.parameters, loaded: true } }
-                  : command,
-              ...(actorToken ? { actorToken } : {}),
-              ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
-              ...(runtimeHoldsConnection ? { connection: true as const } : {}),
-              ...(canManageExtensions &&
-              isExtensionMutationCommand(command.method, command.parameters)
-                ? { manageExtensions: true as const }
-                : {}),
-              requestId: globalThis.crypto.randomUUID(),
-              type: "cdp.command",
-            },
-            confirmed?.signal,
-            browserSend
-              ? {
-                  recheck: async () => {
-                    writeAccessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
-                    await this.#requireAgentAccess(record.runnerId);
-                    if (lease && !(await fillAllowed())) throw new BrowserCdpConnectionEnded();
-                    await browserSend.recheck();
-                    if (
-                      !input.scriptTabId ||
-                      (await readWitnesses(input.scriptTabId))?.tab !== expectedTab
-                    )
-                      throw new BrowserCdpConnectionEnded("This browser page is stale.");
-                    assertAttached(false);
-                  },
-                  beforeWrite,
-                  submitted: browserSend.submitted,
-                  acknowledged: browserSend.acknowledged,
-                }
-              : pooledRelay
-                ? {
-                    recheck: async () => {
-                      writeAccessGeneration =
-                        this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
-                      await this.#requireAgentAccess(record.runnerId);
-                      await this.admitAgentBrowser(input, "read-write", [record]);
-                      assertAttached(false);
-                    },
-                    beforeWrite,
-                    submitted: () => pooledRelay.submitted(),
-                    acknowledged: () => pooledRelay.acknowledged(),
-                  }
-                : {
-                    beforeWrite,
-                    submitted: () => {},
-                  },
-          );
-        } catch (error) {
-          if (tracksPendingAttach) releasePendingAttach(namedAttach, pendingTargetId);
-          throw error;
-        }
-        pooledRelay?.track(command.method, command.parameters, answered);
-        if (scriptAttachmentId && command.method === browserHostMethods.resumeTab)
-          scriptOpening = answered;
-        return {
-          result: answered.then(
-            async (response) => {
-              if (tracksPendingAttach) {
-                const resultRecord =
-                  response.result && typeof response.result === "object"
-                    ? (response.result as Record<string, unknown>)
-                    : undefined;
-                const attachedSessionId =
-                  command.method === "Target.attachToTarget" &&
-                  typeof resultRecord?.sessionId === "string"
-                    ? resultRecord.sessionId
-                    : undefined;
-                const attachedTargetId =
-                  typeof resultRecord?.targetId === "string"
-                    ? resultRecord.targetId
-                    : command.method === "Target.attachToTarget" &&
-                        typeof command.parameters?.targetId === "string"
-                      ? command.parameters.targetId
-                      : undefined;
-                if (attachedSessionId) rememberBounded(attachedSessions, attachedSessionId);
-                if (attachedTargetId) rememberBounded(attachedTargets, attachedTargetId);
-                flushPendingTerminalEvents(attachedSessionId, attachedTargetId);
-                releasePendingAttach(namedAttach, pendingTargetId);
-              }
+              throw new BrowserCdpConnectionEnded(
+                "Use an explicit page attachment on this browser.",
+              );
+            if (confirmed && !broker.supportsCdpReplyBudget)
+              throw new OpensteerError({
+                code: "conflict",
+                message: "Update the browser computer to run browser scripts.",
+              });
+            const lease =
+              command.method === "Opensteer.fillLogin" || command.method === "Opensteer.fillCard"
+                ? z.object({ loginRef: z.string() }).safeParse(
+                    command.method === "Opensteer.fillCard"
+                      ? {
+                          loginRef: z.object({ cardRef: z.string() }).safeParse(command.parameters)
+                            .data?.cardRef,
+                        }
+                      : command.parameters,
+                  )
+                : null;
+            if (lease && broker.live && this.#resolveTarget(placementOf(record))?.main !== true)
+              return {
+                result: Promise.resolve({ status: "unavailable", reason: "main-browser-required" }),
+              };
+            const fillAllowed = async () =>
+              lease?.success &&
+              (command.method === "Opensteer.fillCard" ? broker.cardFill : broker.signIn) &&
+              broker.live &&
+              this.#brokers.has(record.id) &&
+              (await this.#validateLoginLease?.({
+                loginRef: lease.data.loginRef,
+                sessionId: record.id,
+                deploymentId: this.#deploymentId,
+                ...(input.agentBindingId.startsWith("session:")
+                  ? {
+                      bindingId: input.agentBindingId,
+                      profileId: record.profileId,
+                      ...(input.scriptTabId ? { tabId: input.scriptTabId } : {}),
+                    }
+                  : {}),
+              }));
+            if (lease && !(await fillAllowed())) return expired;
+            assertAttached(bindingWasEnded);
+            // Resolve attribution before admission so the first command has its actor
+            // token and session authority is still checked after the metadata read.
+            // A late command may answer after its Run ended, but cannot recreate
+            // its actor. A Run ending during admission still fences that command.
+            const actorToken =
+              nativeAttachment?.actorToken ??
+              (!bindingWasEnded ? await this.#actorToken(input, record.id) : undefined);
+            if (lease && !(await fillAllowed())) return expired;
+            assertAttached(bindingWasEnded);
+            let writeAccessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
+            let canManageExtensions = false;
+            const admitted = await this.#admitAgentBackend(
+              input,
+              "cdp",
+              false,
+              undefined,
+              (facts) => {
+                canManageExtensions = facts.manageExtensions;
+              },
+            );
+            if (admitted.record.id !== record.id)
+              throw new BrowserCdpConnectionEnded(
+                "This Run selected another browser. Bind the exact tab with Browser Harness openPage(tabId).",
+              );
+            if (
+              !connectionWork &&
+              isExtensionMutationCommand(command.method, command.parameters) &&
+              !canManageExtensions
+            )
+              throw new OpensteerError({ code: "forbidden", message: extensionManagementRefusal });
+            if (input.scriptTabId) {
               if (
-                command.method === "Target.createTarget" &&
-                this.#workspaceTabs &&
-                record.origin !== "trigger" &&
-                record.opener?.kind !== "automation"
-              ) {
-                const created = z
-                  .object({ surfaceId: BrowserSurfaceIdSchema })
-                  .safeParse(response.result);
-                const actor = actorToken ? this.#actors.get(actorToken) : undefined;
-                if (created.success && actor) {
-                  const id = created.data.surfaceId;
-                  const descriptor = broker.clientRows(this.#presence(record.id)).records.get(id);
-                  const profile = record.profileId
-                    ? (await this.#repository.listBrowserProfiles(input.ownerId)).find(
-                        (profile) => profile.id === record.profileId,
-                      )
-                    : null;
-                  const write: TabWrite = {
-                    id,
-                    ownerId: input.ownerId,
-                    computerId: await this.#selfDeviceId(record.runnerId),
-                    kind: "page",
-                    title: descriptor?.title ?? "New tab",
-                    url: descriptor?.url ?? "about:blank",
-                    profileId: record.profileId,
-                    profileName: profile?.name ?? null,
-                    openedBy: actor.audience.get(input.ownerId)
-                      ? { taskId: actor.audience.get(input.ownerId)!.threadId }
-                      : "person",
-                    pageBinding: { lineageId: broker.groupId, sessionId: record.id, surfaceId: id },
-                  };
-                  await this.#workspaceTabs.open(
-                    write,
-                    `cdp-open:${record.id}:${id}`,
-                    async (tx) => {
-                      await this.admitAgentBrowser(
-                        input,
-                        "read-write",
-                        [record],
-                        new OpensteerStore(tx),
-                      );
-                    },
-                  );
-                  await this.pageTabs.admitted!(write);
-                  this.#onTabsChanged(input.ownerId, [id]);
-                }
-              }
-              if (command.method === "Target.attachToTarget") {
-                const target = z
-                  .object({ surfaceId: BrowserSurfaceIdSchema })
-                  .safeParse(response.result);
-                // Which page a Run used is durable and true even when its Run ended
-                // while the command was answering; the live attachment is not
-                // touched here, so that end cannot be undone. The agent has its page
-                // either way: recording it never delays the answer or fails it.
-                const actor = actorToken ? this.#actors.get(actorToken) : undefined;
-                // An actor's own lane skips a page it already recorded: switching back is not a new use.
-                if (
-                  target.success &&
-                  actor?.sessionId === record.id &&
-                  broker.pageKeyOf(target.data.surfaceId) !== undefined
-                ) {
-                  void this.#recordActorUse(actor, target.data.surfaceId);
-                } else if (target.success) {
-                  void this.#repository
-                    .recordAgentBrowserUse({
-                      agentBindingId: input.agentBindingId,
-                      ownerId: input.ownerId,
-                      page: broker.pageOf(target.data.surfaceId),
-                      sessionId: record.id,
-                      tabId: target.data.surfaceId,
-                    })
-                    .then(async (credits) => {
-                      this.#noteLastHeldSession(record.id, input.agentBindingId);
-                      this.announceUsage(credits);
-                      await this.#restoreHoldings(record.id);
-                    })
-                    .catch(this.#onError);
-                }
-              }
+                this.tabOccupants(input.ownerId, record.id, input.scriptTabId).some(
+                  ({ threadId, holding }) => holding && threadId !== input.scriptThreadId,
+                )
+              )
+                throw new OpensteerError({
+                  code: "conflict",
+                  message: "This tab is in use by another task.",
+                });
               if (
                 command.method === browserHostMethods.resumeTab &&
-                input.scriptTabId !== undefined
-              ) {
-                const bound = z
-                  .object({ surfaceId: z.literal(input.scriptTabId), targetId: z.string() })
-                  .safeParse(response.result);
-                if (bound.success) scriptTargetId = bound.data.targetId;
-              }
-              // The Home's own command closed this script's own page and the browser confirmed
-              // it: the tab the person sees closes in the same command, never left with no page
-              // behind it. (A page that goes away by itself is not this Home's evidence.)
+                (scriptOpening ||
+                  command.parameters?.surfaceId !== input.scriptTabId ||
+                  !confirmed?.eventBudget)
+              )
+                throw new OpensteerError({
+                  code: "forbidden",
+                  message: "Bind tabs with openPage(tabId).",
+                });
+            }
+            if (command.method === "Opensteer.stageFile" && !broker.fileStaging) {
+              throw new OpensteerError({
+                code: "conflict",
+                message:
+                  "The computer running this tab has an older Opensteer version that cannot receive files. Update Opensteer on that computer.",
+              });
+            }
+            if (
+              (command.method === browserHostMethods.listTabs ||
+                command.method === browserHostMethods.resumeTab) &&
+              broker.surfaceState !== 1
+            )
+              throw browserActionFailure(
+                "unsupported-operation",
+                "Update the browser computer to list and resume sleeping tabs.",
+              );
+            if (command.method === browserHostMethods.listTabs) {
+              if (!BrowserListTabsParametersSchema.safeParse(command.parameters ?? {}).success)
+                throw new OpensteerError({
+                  code: "bad_request",
+                  message: "Invalid tab-list cursor.",
+                });
+            } else if (command.method === browserHostMethods.resumeTab) {
+              const parsed = BrowserResumeTabParametersSchema.safeParse(command.parameters);
+              if (!parsed.success)
+                throw new OpensteerError({
+                  code: "bad_request",
+                  message: "A tab surfaceId is required.",
+                });
+              // The runtime answers for the tab, not this Home's copy of its state: one this session
+              // does not hold reads as not found there, the same as one that never existed.
+            } else if (
+              Object.values(browserHostMethods).some((method) => method === command.method)
+            )
+              throw new OpensteerError({
+                code: "forbidden",
+                message: "This operation is reserved for the Host.",
+              });
+            // Session admission awaits storage; authority can end during that read.
+            if (lease && !(await fillAllowed())) return expired;
+            assertAttached(bindingWasEnded);
+            this.#noteAgentCommand(record.id, input.agentBindingId);
+            assertAttached(bindingWasEnded);
+            const replyBudget = confirmed && {
+              maxBytes: Math.min(confirmed.maxBytes, maxBrowserTextBytes - 4096),
+              maxDepth: confirmed.maxDepth,
+              maxEntries: confirmed.maxEntries,
+              ...(confirmed.maxImageBytes === undefined
+                ? {}
+                : { maxImageBytes: confirmed.maxImageBytes }),
+            };
+            const browserSend = confirmed?.browserSend;
+            if (pool && !browserSend)
+              throw new BrowserCdpConnectionEnded("This pooled browser command has no admission.");
+            if (
+              browserSend &&
+              (browserSend.target.runnerId !== record.runnerId ||
+                browserSend.target.runtimeId !== record.runtimeId)
+            )
+              throw new BrowserCdpConnectionEnded("This page changed browser.");
+            const beforeWrite = () => {
+              if (!bindingWasEnded && this.#endedBindings.has(input.agentBindingId))
+                throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
               if (
-                command.method === "Target.closeTarget" &&
-                input.scriptTabId !== undefined &&
-                input.scriptThreadId !== undefined &&
-                scriptTargetId !== undefined &&
-                command.parameters?.targetId === scriptTargetId &&
-                (response.result as { success?: unknown } | null)?.success !== false &&
-                this.#workspaceTabs
-              ) {
-                const tabId = input.scriptTabId;
-                const tabs = this.#workspaceTabs;
-                const actor = {
-                  kind: "browser-binding",
-                  authority: { agentBindingId: input.agentBindingId, ownerId: input.ownerId },
-                  threadId: input.scriptThreadId,
-                } as const;
-                // Decided by the tab's own authority (rule 1), in the close's own transaction, with
-                // the access the close command needed; lacking it, the row stays and the page's
-                // absence is the shadow inventory's to report. Recording it never fails the close.
-                try {
-                  await tabs.close(
-                    input.ownerId,
-                    [tabId],
-                    `cdp-close:${record.id}:${tabId}:${globalThis.crypto.randomUUID()}`,
-                    async (tx, rows) => {
-                      const row = rows.find((candidate) => candidate.id === tabId);
-                      if (!row || !(await (await tabReadAuthority(actor, tx))(row, "read-write")))
-                        throw new OpensteerError({ code: "not_found", message: "Tab not found." });
-                    },
-                    (row) =>
-                      row.pageBinding?.sessionId === record.id &&
-                      row.pageBinding.surfaceId === tabId,
-                  );
-                  this.#onTabsChanged(input.ownerId, [tabId]);
-                } catch (error) {
-                  this.#onError(error);
-                }
-              }
-              if (pool && input.scriptTabId && !attachmentClosed) {
-                const latest = await readWitnesses(input.scriptTabId);
-                if (latest && latest.tab === expectedTab) currentPageWitness = latest.page;
-              }
-              return response.result;
-            },
-            (error) => {
+                connectionWork &&
+                agentConnectionId !== undefined &&
+                this.#endedConnections.has(agentConnectionId)
+              )
+                throw new BrowserCdpConnectionEnded("This browser attachment has ended.");
+              if (
+                (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== writeAccessGeneration
+              )
+                throw new BrowserCdpConnectionEnded("This device's browser access was turned off.");
+              assertAttached(bindingWasEnded);
+            };
+            const tracksPendingAttach =
+              filterTargetEvents &&
+              (command.method === "Target.attachToTarget" ||
+                command.method === "Target.createTarget" ||
+                command.method === browserHostMethods.resumeTab);
+            const pendingTargetId =
+              tracksPendingAttach &&
+              command.method === "Target.attachToTarget" &&
+              typeof command.parameters?.targetId === "string"
+                ? command.parameters.targetId
+                : undefined;
+            const namedAttach = tracksPendingAttach && command.method === "Target.attachToTarget";
+            if (namedAttach) {
+              pendingNamedAttaches += 1;
+              if (pendingTargetId !== undefined)
+                pendingTargetIds.set(
+                  pendingTargetId,
+                  (pendingTargetIds.get(pendingTargetId) ?? 0) + 1,
+                );
+            } else if (tracksPendingAttach) pendingUnknownTargets += 1;
+            let answered: Promise<BrowserCdpResponse>;
+            try {
+              answered = broker.requestCdp(
+                {
+                  ...(replyBudget ? { replyBudget } : {}),
+                  ...(scriptAttachmentId ? { scriptAttachmentId } : {}),
+                  ...(confirmed?.eventBudget ? { scriptEventBudget: confirmed.eventBudget } : {}),
+                  // TS11: an agent's wake is answered once the page it woke has loaded.
+                  command:
+                    command.method === browserHostMethods.resumeTab
+                      ? { ...command, parameters: { ...command.parameters, loaded: true } }
+                      : command,
+                  ...(actorToken ? { actorToken } : {}),
+                  ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
+                  ...(runtimeHoldsConnection ? { connection: true as const } : {}),
+                  ...(canManageExtensions &&
+                  isExtensionMutationCommand(command.method, command.parameters)
+                    ? { manageExtensions: true as const }
+                    : {}),
+                  requestId: globalThis.crypto.randomUUID(),
+                  type: "cdp.command",
+                },
+                confirmed?.signal,
+                browserSend
+                  ? {
+                      recheck: async () => {
+                        writeAccessGeneration =
+                          this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
+                        await this.#requireAgentAccess(record.runnerId);
+                        if (lease && !(await fillAllowed())) throw new BrowserCdpConnectionEnded();
+                        await browserSend.recheck();
+                        if (
+                          !input.scriptTabId ||
+                          (await readWitnesses(input.scriptTabId))?.tab !== expectedTab
+                        )
+                          throw new BrowserCdpConnectionEnded("This browser page is stale.");
+                        assertAttached(false);
+                      },
+                      beforeWrite,
+                      submitted: browserSend.submitted,
+                      acknowledged: browserSend.acknowledged,
+                    }
+                  : pooledRelay
+                    ? {
+                        recheck: async () => {
+                          writeAccessGeneration =
+                            this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
+                          await this.#requireAgentAccess(record.runnerId);
+                          await this.admitAgentBrowser(input, "read-write", [record]);
+                          assertAttached(false);
+                        },
+                        beforeWrite,
+                        submitted: () => pooledRelay.submitted(),
+                        acknowledged: () => pooledRelay.acknowledged(),
+                      }
+                    : {
+                        beforeWrite,
+                        submitted: () => {},
+                      },
+              );
+            } catch (error) {
               if (tracksPendingAttach) releasePendingAttach(namedAttach, pendingTargetId);
               throw error;
-            },
-          ),
-        };
-      });
+            }
+            pooledRelay?.track(command.method, command.parameters, answered);
+            if (scriptAttachmentId && command.method === browserHostMethods.resumeTab)
+              scriptOpening = answered;
+            return {
+              result: answered.then(
+                async (response) => {
+                  if (tracksPendingAttach) {
+                    const resultRecord =
+                      response.result && typeof response.result === "object"
+                        ? (response.result as Record<string, unknown>)
+                        : undefined;
+                    const attachedSessionId =
+                      command.method === "Target.attachToTarget" &&
+                      typeof resultRecord?.sessionId === "string"
+                        ? resultRecord.sessionId
+                        : undefined;
+                    const attachedTargetId =
+                      typeof resultRecord?.targetId === "string"
+                        ? resultRecord.targetId
+                        : command.method === "Target.attachToTarget" &&
+                            typeof command.parameters?.targetId === "string"
+                          ? command.parameters.targetId
+                          : undefined;
+                    if (attachedSessionId) rememberBounded(attachedSessions, attachedSessionId);
+                    if (attachedTargetId) rememberBounded(attachedTargets, attachedTargetId);
+                    flushPendingTerminalEvents(attachedSessionId, attachedTargetId);
+                    releasePendingAttach(namedAttach, pendingTargetId);
+                  }
+                  if (
+                    command.method === "Target.createTarget" &&
+                    this.#workspaceTabs &&
+                    record.origin !== "trigger" &&
+                    record.opener?.kind !== "automation"
+                  ) {
+                    const created = z
+                      .object({ surfaceId: BrowserSurfaceIdSchema })
+                      .safeParse(response.result);
+                    const actor = actorToken ? this.#actors.get(actorToken) : undefined;
+                    if (created.success && actor) {
+                      const id = created.data.surfaceId;
+                      const descriptor = broker
+                        .clientRows(this.#presence(record.id))
+                        .records.get(id);
+                      const profile = record.profileId
+                        ? (await this.#repository.listBrowserProfiles(input.ownerId)).find(
+                            (profile) => profile.id === record.profileId,
+                          )
+                        : null;
+                      const write: TabWrite = {
+                        id,
+                        ownerId: input.ownerId,
+                        computerId: await this.#selfDeviceId(record.runnerId),
+                        kind: "page",
+                        title: descriptor?.title ?? "New tab",
+                        url: descriptor?.url ?? "about:blank",
+                        profileId: record.profileId,
+                        profileName: profile?.name ?? null,
+                        openedBy: actor.audience.get(input.ownerId)
+                          ? { taskId: actor.audience.get(input.ownerId)!.threadId }
+                          : "person",
+                        pageBinding: {
+                          lineageId: broker.groupId,
+                          sessionId: record.id,
+                          surfaceId: id,
+                        },
+                      };
+                      await this.#workspaceTabs.open(
+                        write,
+                        `cdp-open:${record.id}:${id}`,
+                        async (tx) => {
+                          await this.admitAgentBrowser(
+                            input,
+                            "read-write",
+                            [record],
+                            new OpensteerStore(tx),
+                          );
+                        },
+                      );
+                      await this.pageTabs.admitted!(write);
+                      this.#onTabsChanged(input.ownerId, [id]);
+                    }
+                  }
+                  if (command.method === "Target.attachToTarget") {
+                    const target = z
+                      .object({ surfaceId: BrowserSurfaceIdSchema })
+                      .safeParse(response.result);
+                    // Which page a Run used is durable and true even when its Run ended
+                    // while the command was answering; the live attachment is not
+                    // touched here, so that end cannot be undone. The agent has its page
+                    // either way: recording it never delays the answer or fails it.
+                    const actor = actorToken ? this.#actors.get(actorToken) : undefined;
+                    // An actor's own lane skips a page it already recorded: switching back is not a new use.
+                    if (
+                      target.success &&
+                      actor?.sessionId === record.id &&
+                      broker.pageKeyOf(target.data.surfaceId) !== undefined
+                    ) {
+                      void this.#recordActorUse(actor, target.data.surfaceId);
+                    } else if (target.success) {
+                      void this.#repository
+                        .recordAgentBrowserUse({
+                          agentBindingId: input.agentBindingId,
+                          ownerId: input.ownerId,
+                          page: broker.pageOf(target.data.surfaceId),
+                          sessionId: record.id,
+                          tabId: target.data.surfaceId,
+                        })
+                        .then(async (credits) => {
+                          this.#noteLastHeldSession(record.id, input.agentBindingId);
+                          this.announceUsage(credits);
+                          await this.#restoreHoldings(record.id);
+                        })
+                        .catch(this.#onError);
+                    }
+                  }
+                  if (
+                    command.method === browserHostMethods.resumeTab &&
+                    input.scriptTabId !== undefined
+                  ) {
+                    const bound = z
+                      .object({ surfaceId: z.literal(input.scriptTabId), targetId: z.string() })
+                      .safeParse(response.result);
+                    if (bound.success) scriptTargetId = bound.data.targetId;
+                  }
+                  // The Home's own command closed this script's own page and the browser confirmed
+                  // it: the tab the person sees closes in the same command, never left with no page
+                  // behind it. (A page that goes away by itself is not this Home's evidence.)
+                  if (
+                    command.method === "Target.closeTarget" &&
+                    input.scriptTabId !== undefined &&
+                    input.scriptThreadId !== undefined &&
+                    scriptTargetId !== undefined &&
+                    command.parameters?.targetId === scriptTargetId &&
+                    (response.result as { success?: unknown } | null)?.success !== false &&
+                    this.#workspaceTabs
+                  ) {
+                    const tabId = input.scriptTabId;
+                    const tabs = this.#workspaceTabs;
+                    const actor = {
+                      kind: "browser-binding",
+                      authority: { agentBindingId: input.agentBindingId, ownerId: input.ownerId },
+                      threadId: input.scriptThreadId,
+                    } as const;
+                    // Decided by the tab's own authority (rule 1), in the close's own transaction, with
+                    // the access the close command needed; lacking it, the row stays and the page's
+                    // absence is the shadow inventory's to report. Recording it never fails the close.
+                    try {
+                      await tabs.close(
+                        input.ownerId,
+                        [tabId],
+                        `cdp-close:${record.id}:${tabId}:${globalThis.crypto.randomUUID()}`,
+                        async (tx, rows) => {
+                          const row = rows.find((candidate) => candidate.id === tabId);
+                          if (
+                            !row ||
+                            !(await (
+                              await tabReadAuthority(actor, tx)
+                            )(row, "read-write"))
+                          )
+                            throw new OpensteerError({
+                              code: "not_found",
+                              message: "Tab not found.",
+                            });
+                        },
+                        (row) =>
+                          row.pageBinding?.sessionId === record.id &&
+                          row.pageBinding.surfaceId === tabId,
+                      );
+                      this.#onTabsChanged(input.ownerId, [tabId]);
+                    } catch (error) {
+                      this.#onError(error);
+                    }
+                  }
+                  if (pool && input.scriptTabId && !attachmentClosed) {
+                    const latest = await readWitnesses(input.scriptTabId);
+                    if (latest && latest.tab === expectedTab) currentPageWitness = latest.page;
+                  }
+                  return response.result;
+                },
+                (error) => {
+                  if (tracksPendingAttach) releasePendingAttach(namedAttach, pendingTargetId);
+                  throw error;
+                },
+              ),
+            };
+          },
+        );
+        if (sent) return sent;
+      }
     };
     const base = {
       close,
@@ -8869,12 +8938,21 @@ export class BrowserService {
       });
       if (input.initialSurfaceId && this.#workspaceTabs) {
         const row = await this.#workspaceTabs.get(input.ownerId, input.initialSurfaceId);
-        if (row?.pageBinding && input.tabGroupId === row.pageBinding.lineageId) {
+        // A released row (reopened after its close) is bound afresh, as the first page of its
+        // own lineage; a bound row moves within its lineage.
+        const released = input.previousPageBinding === null;
+        if (
+          row &&
+          input.tabGroupId &&
+          (released
+            ? !row.pageBinding
+            : row.pageBinding && input.tabGroupId === row.pageBinding.lineageId)
+        ) {
           const bound = await this.#workspaceTabs.bindPage(
             input.ownerId,
             row.id,
             input.tabGeneration ?? row.generation,
-            input.previousPageBinding ?? row.pageBinding,
+            released ? null : (input.previousPageBinding ?? row.pageBinding),
             { lineageId: input.tabGroupId, sessionId, surfaceId: row.id },
           );
           if (!bound)

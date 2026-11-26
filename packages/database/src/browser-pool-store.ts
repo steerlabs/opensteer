@@ -514,7 +514,8 @@ async function recordBrowserPoolLosses(
 /**
  * What a pooled session's row may be closed on, and nothing else (V1):
  * - `runtime-ended`: the running guest runtime under the current fence answered that it ended
- *   the session (its answer to the end request, its `closed` status, or its adoption's outcome);
+ *   the session (its answer to the end request, its `closed` status, its adoption's outcome, or
+ *   its `session-closed` answer to the Home's own close of the session's last page);
  * - `guest-gone`: the host signed that this guest no longer exists (stopped, replaced, the slot
  *   deleted, the term fenced);
  * - `guest-paused`: the guest is paused under the current fence; its next wake ends the session

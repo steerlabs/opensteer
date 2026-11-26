@@ -1333,18 +1333,29 @@ it("ends the page of a tab the person closes on the Home's own browser runtime, 
       },
       { timeout: 15_000 },
     );
-    expect((await host.runtime.tabs.close(actor, [tabId], "person-close")).closed).toEqual([tabId]);
-    // On a Home's own runtime the close's first attempt is awaited before tabs.close returns
-    // (browser-service's #queuePhysicalPageClose resolves after it): the page is gone by then.
-    await vi.waitFor(() => expect(page.isClosed()).toBe(true), { timeout: 2_000 });
-    // It was the session's last page: as in a regular browser, nothing of it is left running.
+    // The session the page runs in: the close lets go of it in its own commit.
     const { pageBinding } = await host.store.database
       .selectFrom("personalTabs")
       .select("pageBinding")
       .where("id", "=", tabId)
       .executeTakeFirstOrThrow();
     const sessionId = (pageBinding as { sessionId: string } | null)?.sessionId;
-    if (!sessionId) throw new Error("The closed tab names no session.");
+    if (!sessionId) throw new Error("The open tab names no session.");
+    expect((await host.runtime.tabs.close(actor, [tabId], "person-close")).closed).toEqual([tabId]);
+    // On a Home's own runtime the close's first attempt is awaited before tabs.close returns
+    // (browser-service's #queuePhysicalPageClose resolves after it): the page is gone by then.
+    await vi.waitFor(() => expect(page.isClosed()).toBe(true), { timeout: 2_000 });
+    // The closed tab let go of its page.
+    expect(
+      (
+        await host.store.database
+          .selectFrom("personalTabs")
+          .select("pageBinding")
+          .where("id", "=", tabId)
+          .executeTakeFirstOrThrow()
+      ).pageBinding,
+    ).toBeNull();
+    // It was the session's last page: as in a regular browser, nothing of it is left running.
     await vi.waitFor(
       async () =>
         expect(
@@ -1396,6 +1407,19 @@ it("never reuses a closed tab's page on the Home's own runtime: a reopen while t
         return found;
       },
       { timeout: 15_000 },
+    );
+    // The tab keeps the page's address: the reopen loads it again.
+    await vi.waitFor(
+      async () => {
+        await host.runtime.browser.flushPendingTabDescriptors();
+        const { url } = await host.store.database
+          .selectFrom("personalTabs")
+          .select("url")
+          .where("id", "=", tabId)
+          .executeTakeFirstOrThrow();
+        expect(url).toContain("reopen-gap");
+      },
+      { timeout: 10_000 },
     );
     // The close has committed; its page step waits while the person reopens the tab.
     const reached = Promise.withResolvers<void>();
