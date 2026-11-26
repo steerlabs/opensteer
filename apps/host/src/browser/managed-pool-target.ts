@@ -12,7 +12,10 @@
  *   browser's calls have gone unanswered for long (`suspect`): paced, from 5 s doubling to five
  *   minutes; nothing while a ready target answers.
  * - A ready target's call that went unanswered or could not connect asks once, at once (`check`):
- *   at most once per 10 s, and the target in hand stays unless the account names another.
+ *   one read at a time, its start at least 10 s after the last one's. It changes nothing, in
+ *   memory or on disk, unless the account names a different ready target that is not older.
+ * - For the same slot an older term is never saved or delivered, on any read: the account's answer
+ *   that lags behind a replacement never retires the target that replaced it.
  */
 import { sign, type KeyObject } from "node:crypto";
 import {
@@ -182,8 +185,12 @@ export class ManagedBrowserPoolTargetService {
   #settled = false;
   /** The target that is over: the account is asked, paced, until it places a different one. */
   #over: string | undefined;
-  /** When an unanswered call last asked the account. */
-  #checkedAt: number | undefined;
+  /** The newest ready target known (saved, or delivered): a lower term of its slot is stale. */
+  #newest: ManagedBrowserPoolTarget | undefined;
+  /** A turn is reading the account now: an unanswered call's check asks nothing more. */
+  #reading = false;
+  /** When the account was last asked. */
+  #readStartedAt: number | undefined;
 
   constructor(options: ManagedBrowserPoolTargetServiceOptions) {
     this.#options = options;
@@ -209,16 +216,47 @@ export class ManagedBrowserPoolTargetService {
 
   /**
    * A call to the ready target in hand went unanswered or could not connect: its pool host may
-   * have been replaced. The account is asked once, now, at most once per 10 s; a different target
-   * is taken as any read's is, and the same one, or no answer, leaves the target in hand. While
-   * the target is not settled the loop is reading already, and this asks nothing more.
+   * have been replaced. The account is asked once, now: one read at a time, and none that starts
+   * within 10 s of the last read's start. Only a different ready target that is not older is
+   * taken (saved, then delivered as any read's is); anything else (preparing, no answer, an
+   * error, the same target) changes nothing, in memory or on disk. While the target is not
+   * settled the loop is reading already, and this asks nothing more.
    */
   check(): void {
-    if (this.#closed || !this.#settled) return;
-    const at = (this.#options.now?.() ?? new Date()).getTime();
-    if (this.#checkedAt !== undefined && at - this.#checkedAt < checkEveryMs) return;
-    this.#checkedAt = at;
+    if (this.#closed || !this.#settled || this.#reading) return;
+    if (this.#readStartedAt !== undefined && this.#now() - this.#readStartedAt < checkEveryMs)
+      return;
+    // Single flight from here: the loop's turn holds it until its read has ended.
+    this.#reading = true;
     this.#kick();
+  }
+
+  #now(): number {
+    return (this.#options.now?.() ?? new Date()).getTime();
+  }
+
+  /** The account is asked now: what paces the next early read. */
+  #asking(): void {
+    this.#readStartedAt = this.#now();
+  }
+
+  /** A ready target known to the Home: the newest of its slot is kept. */
+  #know(target: ManagedBrowserPoolTarget | undefined): void {
+    if (!target) return;
+    if (!this.#older(target)) this.#newest = target;
+  }
+
+  /** For the slot of the newest target known, a lower term: an answer that lags, never taken. */
+  #older(target: ManagedBrowserPoolTarget): boolean {
+    const newest = this.#newest;
+    return newest !== undefined && newest.slotId === target.slotId && target.term < newest.term;
+  }
+
+  /** The answer names an older term of the newest target's slot. */
+  #stale(response: ManagedBrowserPoolTargetResponse): boolean {
+    return (
+      response.status === "ready" && response.target !== undefined && this.#older(response.target)
+    );
   }
 
   async close(): Promise<void> {
@@ -240,14 +278,19 @@ export class ManagedBrowserPoolTargetService {
       // Settled and woken: an unanswered call's check. It counts toward no backoff, and leaves
       // the target in hand settled whatever it reads.
       const checking = this.#settled;
+      this.#reading = true;
       try {
-        const response = await this.#turn();
+        const response = await this.#turn(checking);
         // Compared canonically: the database gives back an object with its keys reordered.
         const key =
-          response.status === "ready" && response.target
+          response?.status === "ready" && response.target
             ? canonicalJson(response.target)
             : undefined;
-        if (response.target && key !== undefined && key === this.#over) {
+        if (!response) {
+          // Nothing taken and nothing written: an early read that learned nothing new, or an
+          // answer that lags behind the target in hand (asked again later, paced).
+          if (!checking) failures++;
+        } else if (response.target && key !== undefined && key === this.#over) {
           // The account still names the target that is over: asked again later, paced.
           failures++;
         } else if (response.status === "ready" && response.target && key !== undefined) {
@@ -257,6 +300,7 @@ export class ManagedBrowserPoolTargetService {
             // Delivered once it has been taken: one that failed is delivered again.
             await this.#options.onTarget(response.target);
             this.#delivered = key;
+            this.#know(response.target);
           }
           this.#settled = true;
         } else {
@@ -266,6 +310,8 @@ export class ManagedBrowserPoolTargetService {
       } catch (error) {
         this.#options.onError?.(error);
         if (!checking) failures++;
+      } finally {
+        this.#reading = false;
       }
       if (this.#closed) return;
       if (this.#settled) {
@@ -282,29 +328,66 @@ export class ManagedBrowserPoolTargetService {
     }
   }
 
-  async #turn(): Promise<ManagedBrowserPoolTargetResponse> {
+  /**
+   * One read of the account. Undefined: nothing to take, and no target written (an early read
+   * that learned nothing new, or an answer naming an older term of the target's slot).
+   */
+  async #turn(checking: boolean): Promise<ManagedBrowserPoolTargetResponse | undefined> {
     const { record, account, keys } = this.#options;
     const mine = managedBrowserPoolRegistration(keys) as unknown as Record<string, unknown>;
+    const first = await record.read();
+    this.#knowSaved(first);
+    if (checking) {
+      // An early read changes nothing unless it names a different ready target that is not
+      // older: the target saved stays exactly as it was for anything else.
+      if (first?.attemptKeys || !sameKeys(first?.registeredKeys, mine)) return undefined;
+      this.#asking();
+      const read = await account.target();
+      if (
+        read.status !== "ready" ||
+        !read.target ||
+        this.#stale(read) ||
+        canonicalJson(read.target) === this.#delivered
+      )
+        return undefined;
+      await record.answer({ response: read });
+      return read;
+    }
     // A registration whose answer did not come: what the account holds is read first, and only
     // then is it registered again (keys the account already has are a no-op there).
-    if ((await record.read())?.attemptKeys) {
+    if (first?.attemptKeys) {
+      this.#asking();
       const read = await account.target();
-      await record.answer({ response: read, attemptUnreceived: read.status === "unregistered" });
+      await record.answer({
+        response: this.#stale(read) ? keptAnswer(first) : read,
+        attemptUnreceived: read.status === "unregistered",
+      });
     }
     const row = await record.read();
-    if (!sameKeys(row?.registeredKeys, mine)) return this.#register(mine);
+    this.#knowSaved(row);
+    if (!sameKeys(row?.registeredKeys, mine)) return this.#register(mine, row);
+    this.#asking();
     const read = await account.target();
+    if (this.#stale(read)) return undefined;
     await record.answer({ response: read });
     return read;
   }
 
+  /** The target saved, when it is a ready one: known like a delivered one. */
+  #knowSaved(row: Awaited<ReturnType<ManagedBrowserPoolTargetRecord["read"]>>): void {
+    if (row?.status === "ready" && row.target)
+      this.#know(row.target as unknown as ManagedBrowserPoolTarget);
+  }
+
   async #register(
     mine: Readonly<Record<string, unknown>>,
-  ): Promise<ManagedBrowserPoolTargetResponse> {
+    row: Awaited<ReturnType<ManagedBrowserPoolTargetRecord["read"]>>,
+  ): Promise<ManagedBrowserPoolTargetResponse | undefined> {
     const { record, account } = this.#options;
     const issuedAt = this.#options.now?.() ?? new Date();
     // The attempt is durable before anything leaves the Home.
     await record.attempt(mine, issuedAt);
+    this.#asking();
     const response = await account.register(
       signedManagedBrowserPoolRegistration({
         cloudComputerId: this.#options.cloudComputerId,
@@ -313,9 +396,21 @@ export class ManagedBrowserPoolTargetService {
         issuedAt,
       }),
     );
-    await record.answer({ response, registered: mine });
-    return response;
+    // The keys are registered either way; a lagging target is not saved with them.
+    const stale = this.#stale(response);
+    await record.answer({ response: stale ? keptAnswer(row) : response, registered: mine });
+    return stale ? undefined : response;
   }
+}
+
+/** What the Home had saved, written back unchanged beside a lagging answer's bookkeeping. */
+function keptAnswer(
+  row: Awaited<ReturnType<ManagedBrowserPoolTargetRecord["read"]>>,
+): ManagedBrowserPoolTargetResponse {
+  return {
+    status: row?.status ?? "unregistered",
+    ...(row?.target ? { target: row.target as unknown as ManagedBrowserPoolTarget } : {}),
+  } as ManagedBrowserPoolTargetResponse;
 }
 
 function sameKeys(
