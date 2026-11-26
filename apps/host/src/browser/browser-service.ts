@@ -10776,6 +10776,8 @@ export class HostedBrowserBroker {
   #stateImportTail = Promise.resolve();
   #streamReconcileTail = Promise.resolve();
   #runtimeReady = false;
+  /** Its one channel closed; set at the close itself, before the broker finishes. */
+  #channelClosed = false;
   #reconnecting = false;
   #runtimeConnectionGeneration = 0;
   #protocolFailed = false;
@@ -11093,9 +11095,13 @@ export class HostedBrowserBroker {
     return this.#readyPromise;
   }
 
-  /** The Runtime has sent its snapshot and the session has not ended. */
+  /**
+   * The Runtime has sent its snapshot, the session has not ended, and its channel is open. A
+   * closed channel is not live from its close, though the broker finishes later: the pool keeps a
+   * session lost, waiting for it, only while its broker is not live.
+   */
   get live(): boolean {
-    return this.#runtimeReady && !this.#settled;
+    return this.#runtimeReady && !this.#settled && !this.#channelClosed;
   }
 
   get pooled(): boolean {
@@ -11850,6 +11856,7 @@ export class HostedBrowserBroker {
           .catch(fail);
       });
       this.#socket.on("close", (code, reason) => {
+        this.#channelClosed = true;
         this.#failure ??= `Browser Runtime closed the connection (${code} ${reason.toString()}).`;
         abortReady(
           new Error(`Browser Runtime closed during attach (${code} ${reason.toString()}).`),

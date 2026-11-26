@@ -12340,6 +12340,102 @@ describe("work under a connection's authority never uses the clipboard or change
   });
 });
 
+describe("a pooled broker whose channel closes", () => {
+  it("is not live from the moment its channel closes, before it finishes", async () => {
+    // The pool's loss scan keeps a session lost only while its broker is not live: a dead
+    // broker still read live until it finished, so a scan in between opened the gate on a
+    // session with no channel, and a tab call there found no page (two-tests-that-race).
+    const socket = Object.assign(new EventEmitter(), {
+      readyState: 1,
+      send: (_data: string, _options: unknown, callback: (error?: Error) => void) => callback(),
+      close: () => socket.emit("close", 1000, Buffer.from("closed")),
+    });
+    const sessionId = createBrowserSessionId();
+    const liveAtLoss: boolean[] = [];
+    let broker!: HostedBrowserBroker;
+    broker = new HostedBrowserBroker({
+      socket,
+      sessionId,
+      groupId: sessionId,
+      adoptedFromPool: true,
+      poolAdmission: {
+        runnerId: RunnerIdSchema.parse(`rnr_${randomUUID()}`),
+        now: () => ({ release: () => undefined }),
+        wait: async () => ({ release: () => undefined }),
+        retiring: () => false,
+        refusesWrite: () => false,
+      },
+      onChannelLost: () => liveAtLoss.push(broker.live),
+      readSessionState: async () => ({ runs: 0, pinned: [] }),
+      personUse: { tabs: new Set(), persist: async () => undefined },
+      savedTabIds: [],
+      profileId: null,
+      surfaceState: 1,
+      sharedControl: true,
+      connectTimeoutMs: 1000,
+      passkeys: false,
+      onState: async (state: string) => ({ state }),
+      onTerminal: () => undefined,
+      onTabsChanged: () => undefined,
+      onRecordsChanged: () => undefined,
+      onPageChanged: () => undefined,
+    } as unknown as ConstructorParameters<typeof HostedBrowserBroker>[0]);
+    socket.emit(
+      "message",
+      Buffer.from(
+        JSON.stringify({
+          type: "browser.snapshot",
+          sessionId,
+          access: "read-write",
+          state: "ready",
+          dialog: null,
+          surfaceState: 1,
+          targetedStreamingVersion: 1,
+        }),
+      ),
+      false,
+    );
+    const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
+    const rows = new Map([
+      [
+        tabId,
+        BrowserTabRecordSchema.parse({
+          id: tabId,
+          order: 0,
+          title: "Tab",
+          url: "about:blank",
+          state: "live",
+          icon: null,
+          openerId: null,
+          documentId: "doc",
+          geometryRevision: 1,
+          loading: false,
+          navigationFailed: false,
+          canGoBack: false,
+          canGoForward: false,
+          sizedByAgent: false,
+        }),
+      ],
+    ]);
+    const publisher = new KeyedStreamPublisher({
+      ids: () => rows.keys(),
+      read: (id) => rows.get(BrowserSurfaceIdSchema.parse(id)),
+      meta: () => ({ activeId: tabId, inventoryRevision: 1 }),
+      targetBytes: 64 * 1024,
+      envelopeBytes: 256,
+    });
+    for (let stream = publisher.next(); stream; stream = publisher.next()) {
+      socket.emit("message", Buffer.from(JSON.stringify({ type: "browser.tabs", stream })), false);
+      publisher.settled(stream, true);
+    }
+    await broker.ready();
+    expect(broker.live).toBe(true);
+    socket.emit("close", 1011, Buffer.from("runner restarting"));
+    expect(broker.live).toBe(false);
+    await vi.waitFor(() => expect(liveAtLoss).toEqual([false]));
+  });
+});
+
 describe("pooled identity open authority precheck and outage refusal words (pool-wake review)", () => {
   const makePooledSetup = async (options?: {
     readonly gateOpen?: boolean;
