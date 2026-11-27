@@ -834,6 +834,21 @@ describe("iPhone screen driver", () => {
     expect(f.bridge.sessions.has(context.sessionId)).toBe(false);
   });
 
+  it.each(["failed", "outcome-unknown", "no-session"] as const)(
+    "reports an iPhone close that returned %s",
+    async (code) => {
+      const f = fixture();
+      const context = f.context();
+      await f.observe(context, observeParams);
+      f.bridge.replies.set("iphone.session.close", async () => {
+        throw new ComputerUseBridgeError(code, "Native close did not answer successfully");
+      });
+      const close = f.connection.close(context, {});
+      if (code === "no-session") await expect(close).resolves.toEqual({});
+      else await expect(close).rejects.toMatchObject({ code });
+    },
+  );
+
   it("orders replacement assignments and withdraws them on detach", async () => {
     const f = fixture();
     const context = f.context();
