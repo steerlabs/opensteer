@@ -9,6 +9,7 @@ import Darwin
 //            into a field, a click by index, a scroll and the menu action
 //   stop     the person clicks the front app's Stop while the agent types
 //   typing   the person types into the front app's field while the agent types
+//   type-into  the person types in Electron while the agent types into a Safari field by index
 //   control  TextEdit in front, 30 calls of six kinds, the person typing 960 letters
 //   choice   the person clicks into Safari during the agent's typing, and keeps it
 //   churn    about 2,000 single-key acts in bursts of 64 through the focus guard
@@ -26,6 +27,16 @@ extension Optional {
 }
 func wallMs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 func sleepSeconds(_ seconds: Double) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9)) }
+
+enum SafariFrontCase: String {
+  case front, stop, typing, control, choice, churn, overlay
+  case typeInto = "type-into"
+
+  static func parse(_ name: String) throws -> SafariFrontCase {
+    let base = name.hasSuffix("-watch") ? String(name.dropLast("-watch".count)) : name
+    return try Self(rawValue: base).unwrap("case \(name)")
+  }
+}
 
 @main struct Journey {
   @MainActor static func main() {
@@ -53,8 +64,9 @@ func sleepSeconds(_ seconds: Double) async { try? await Task.sleep(nanoseconds: 
       do {
         let journey = try await SafariFront(out: out)
         defer { journey.close() }
-        result["cases"] = try await journey.run()
-        result["passed"] = true
+        let cases = try await journey.run()
+        result["cases"] = cases
+        result["passed"] = !cases.isEmpty && cases.values.allSatisfy { $0 }
       } catch {
         result["passed"] = false
         result["error"] = String(describing: error)
@@ -339,15 +351,15 @@ enum PersonInput {
   }
 }
 
-/// The front app, sampled every 50 ms with wall-clock and monotonic times.
+/// The front app, sampled with wall-clock timestamps.
 final class FrontSampler {
   private let rows = Locked<[[String: Any]]>([])
   private let queue = DispatchQueue(label: "front-sampler", qos: .userInteractive)
   private var timer: DispatchSourceTimer?
-  func start() {
+  func start(interval: DispatchTimeInterval = .milliseconds(50)) {
     let rows = rows
     let timer = DispatchSource.makeTimerSource(queue: queue)
-    timer.schedule(deadline: .now(), repeating: .milliseconds(50))
+    timer.schedule(deadline: .now(), repeating: interval)
     timer.setEventHandler {
       rows.withLock { $0.append(["at": wallMs(), "front": Int(PrivateAPI.focusPID(front: true) ?? 0)]) }
     }
@@ -404,32 +416,32 @@ final class FrontSampler {
   }
   func close() { helper.stop() }
 
-  func run() async throws -> [String: Any] {
+  func run() async throws -> [String: Bool] {
     let cases = (ProcessInfo.processInfo.environment["OPENSTEER_SAFARI_FRONT_CASES"] ?? "front").split(separator: ",").map(String.init)
-    var results: [String: Any] = [:]
+    var results: [String: Bool] = [:]
     for name in cases {
       let caseOut = out.appendingPathComponent(name)
       try FileManager.default.createDirectory(at: caseOut, withIntermediateDirectories: true)
       var row: [String: Any]
       let watched = name.hasSuffix("-watch")
-      let base = watched ? String(name.dropLast("-watch".count)) : name
       var watch: Watch?
       do {
+        let kind = try SafariFrontCase.parse(name)
         if watched {
           let started = try Watch(helper: helper)
           watch = started
           try await started.start(identity: safariIdentity, title: "Sol fixture")
           await sleepSeconds(1)
         }
-        switch base {
-        case "front": row = try await frontCase(caseOut)
-        case "stop": row = try await stopCase(caseOut)
-        case "typing": row = try await typingCase(caseOut)
-        case "control": row = try await controlCase(caseOut)
-        case "choice": row = try await choiceCase(caseOut)
-        case "churn": row = try await churnCase(caseOut)
-        case "overlay": row = try await overlayCase(caseOut)
-        default: throw JourneyFailure.failed("Unknown case \(name)")
+        switch kind {
+        case .front: row = try await frontCase(caseOut)
+        case .stop: row = try await stopCase(caseOut)
+        case .typing: row = try await typingCase(caseOut)
+        case .typeInto: row = try await typeIntoCase(caseOut)
+        case .control: row = try await controlCase(caseOut)
+        case .choice: row = try await choiceCase(caseOut)
+        case .churn: row = try await churnCase(caseOut)
+        case .overlay: row = try await overlayCase(caseOut)
         }
       } catch {
         row = ["met": false, "error": String(describing: error)]
@@ -442,7 +454,7 @@ final class FrontSampler {
       }
       try? JSONSerialization.data(withJSONObject: row, options: [.prettyPrinted, .sortedKeys])
         .write(to: caseOut.appendingPathComponent("case.json"))
-      results[name] = row["met"] ?? false
+      results[name] = row["met"] as? Bool ?? false
     }
     return results
   }
@@ -696,6 +708,59 @@ final class FrontSampler {
       "met": typedHere.hasSuffix(letters) && personInSafari.isEmpty,
       "sent": letters.count, "arrivedInFrontApp": typedHere, "personLettersInSafari": personInSafari,
       "agentQsInSafari": safariInputs.filter { $0["data"] as? String == "q" }.count,
+    ]
+  }
+
+  func typeIntoCase(_ caseOut: URL) async throws -> [String: Any] {
+    let wire = try AgentWire(helper: helper)
+    defer { wire.drop() }
+    let agent = Agent(wire: wire, identity: safariIdentity)
+    try await agent.open(title: "Sol fixture")
+    try await makeFront(front, at: point("field"))
+    try await agent.observe()
+    let field = try agent.index(role: "textfield", containing: "Fixture field")
+    let frontBaseline = lineCount(frontLog), fixtureBaseline = lineCount(fixtureLog)
+    let letters = "abcdefghijlmnoprstuvwxyz"
+    let agentText = "7482916530"
+    let keysLog = caseOut.appendingPathComponent("person-keys.jsonl")
+    let sampler = FrontSampler()
+    sampler.start(interval: .milliseconds(10))
+    defer { _ = sampler.stop() }
+    let person = try personKeys(letters, intervalMs: 40, log: keysLog)
+    defer { if person.isRunning { person.terminate() } }
+    for _ in 0..<100 where lineCount(frontLog) == frontBaseline && person.isRunning {
+      await sleepSeconds(0.01)
+    }
+    let act = try await call(agent, "type-into-during-person-typing", caseOut, sampler: sampler,
+      shots: false, snapshot: true, [["type": "type", "text": agentText, "target": ["index": field]]])
+    while person.isRunning { await sleepSeconds(0.05) }
+    await sleepSeconds(0.3)
+    let samples = sampler.stop()
+    let episodes = safariEpisodes(samples)
+    let frontPID = front.processIdentifier
+    let frontSamples = samples.compactMap { ($0["front"] as? NSNumber)?.int32Value }
+    let personLetters = lines(frontLog, after: frontBaseline).filter { $0["kind"] as? String == "input" }
+      .compactMap { $0["data"] as? String }.joined()
+    let safariInputs = lines(fixtureLog, after: fixtureBaseline).filter { $0["kind"] as? String == "input" }
+    let safariValue = safariInputs.last?["value"] as? String ?? ""
+    let overlappingKeys = lines(keysLog).filter {
+      guard let at = ($0["at"] as? NSNumber)?.int64Value else { return false }
+      return at >= act.start && at <= act.end
+    }.count
+    let completed = (act.receipt["performed"] as? [String])?.count == 1 && act.receipt["error"] is NSNull
+    let stayedInFront = !frontSamples.isEmpty && frontSamples.allSatisfy { $0 == frontPID }
+      && act.frontAtEnd == frontPID && act.frontAfter == frontPID && !act.safariAbove
+    try JSONSerialization.data(withJSONObject: samples).write(to: caseOut.appendingPathComponent("front-samples.json"))
+    await screenshot(caseOut, "after")
+    return [
+      "met": completed && stayedInFront && person.terminationStatus == 0 && overlappingKeys > 0
+        && personLetters == letters && safariValue.contains(agentText),
+      "frontSamples": frontSamples.count, "safariInFrontEpisodes": episodes,
+      "safariInFrontSamples": frontSamples.filter { $0 == safari.processIdentifier }.count,
+      "personLettersSent": lines(keysLog).count, "personLettersReceived": personLetters.count,
+      "personLettersInOrder": personLetters == letters, "personKeysDuringAct": overlappingKeys,
+      "agentTextInSafari": safariValue.contains(agentText), "safariFieldValue": safariValue,
+      "call": json(act), "receipt": act.receipt,
     ]
   }
 

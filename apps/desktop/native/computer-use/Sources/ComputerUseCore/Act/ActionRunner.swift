@@ -338,12 +338,25 @@ public enum ActionRunner {
         try context.cancellation.check(); try context.budget.check()
       }, isHidden: context.isHidden)
 
-    // The app is in the guard's care before anything reaches it, whatever the
-    // route: a menu that an AXPress opens takes the keyboard too.
-    guard context.app.focus.enforcer(for: processIdentifier) != nil else {
+    return try await inAct(context, processIdentifier: processIdentifier) {
+      try await perform(action, context, savedBatch: savedBatch, index: index, binding: binding)
+    }
+  }
+
+  /// Keep the person's front app across all guarded inputs of one action.
+  static func inAct<Result>(
+    _ context: Context, processIdentifier: pid_t, _ body: () async throws -> Result
+  ) async throws -> Result {
+    guard let enforcer = context.app.focus.enforcer(for: processIdentifier) else {
       throw FocusEnforcer.unguarded
     }
+    return try await enforcer.act(body)
+  }
 
+  private static func perform(
+    _ action: ActionRequest, _ context: Context, savedBatch: PreparedLoginBatch?, index: Int,
+    binding: Binding
+  ) async throws -> String {
     switch action {
     case .click(let target, let button, let count):
       return try await click(
@@ -676,14 +689,14 @@ public enum ActionRunner {
   /// Move, then down and up for each click of the count. A mouse-up always
   /// goes to the process that received its mouse-down, even after Stop. The
   /// process stamp still prevents releasing into a reused pid.
-  static func postClick(
+  private static func postClick(
     _ destination: EventTarget,
     button: MouseButton,
     count: Int,
     binding: Binding,
     _ context: Context,
     restarted: String,
-    proceed: @escaping @Sendable () throws -> Void = {}
+    proceed: @escaping @Sendable () throws -> Void
   ) async throws {
     let gate = context.deliveryGate(binding, restarted: restarted, event: true)
     try context.checkStep(binding, restarted: restarted)
@@ -726,6 +739,7 @@ public enum ActionRunner {
   static func guarded<Result>(
     _ destination: EventTarget, prepare: Bool, keys: Bool = false,
     binding: Binding, _ context: Context, restarted: String,
+    afterInputWatch: TimeInterval = FocusEnforcer.afterInputWatch,
     precondition: @escaping @Sendable () throws -> Void = {},
     deliver: (EventTarget, _ proceed: @escaping @Sendable () throws -> Void) async throws -> Result
   ) async throws -> Result {
@@ -740,7 +754,7 @@ public enum ActionRunner {
     if let owner { context.monitor.notePrimedWindow(processIdentifier: pid, windowID: owner.id) }
     let finalGate = context.deliveryGate(binding, restarted: restarted, markDelivery: false)
     return try await enforcer.guarded(
-      window: owner?.element, prepare: prepare, keys: keys,
+      window: owner?.element, prepare: prepare, keys: keys, afterInputWatch: afterInputWatch,
       finalCheck: {
         try finalGate(); try precondition()
       },
@@ -765,8 +779,14 @@ public enum ActionRunner {
   ) async throws -> Result {
     try await guarded(
       EventTarget(processIdentifier: binding.processIdentifier, windowID: binding.keyWindow.windowID),
-      prepare: false, binding: binding, context, restarted: restarted
-    ) { _, _ in try change() }
+      prepare: false, binding: binding, context, restarted: restarted,
+      // Safari can activate after the ordinary event watch has ended.
+      afterInputWatch: 0.35
+    ) { _, proceed in
+      try proceed()
+      try context.deliveryGate(binding, restarted: restarted)()
+      return try change()
+    }
   }
 
   /// Codex's rule for which background clicks need the app to believe it is
@@ -869,7 +889,6 @@ public enum ActionRunner {
       try await context.checkStep(binding, restarted: restarted, showing: .pulse)
       try requirePersonWindow(binding)
       try context.validateElement(element, binding, restarted: restarted)
-      try context.deliveryGate(binding, restarted: restarted)()
     }
     if let screenPoint { await travel(to: screenPoint, binding: binding, context) }
     await context.overlay?.typingStarted(in: app)
@@ -944,10 +963,7 @@ public enum ActionRunner {
     let applicationElement = AXUIElementCreateApplication(binding.processIdentifier)
     AXUIElementSetMessagingTimeout(applicationElement, axMessagingTimeout)
 
-    // Focus first, when the batch names where the text goes. An element is
-    // focused through Accessibility, which moves the app's keyboard focus
-    // without activating it. Observed controls at a point use the same AX
-    // route; a target that cannot take focus that way is clicked.
+    // Focus a named target through Accessibility where possible, with a guarded click otherwise.
     let restarted = "This app restarted while text was being typed."
     // A saved value, or text for a secure field, goes only into the element the
     // act names, by Accessibility, or nothing is typed. Focusing a secure field
@@ -992,7 +1008,6 @@ public enum ActionRunner {
         context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
         try requirePersonWindow(binding)
         try context.validateElement(element, binding, restarted: restarted)
-        try context.deliveryGate(binding, restarted: restarted)()
         let status = try await accessibilityChange(binding: binding, context, restarted: restarted) {
           calls.setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
         }
@@ -1084,7 +1099,6 @@ public enum ActionRunner {
           unverifiedReceiver = true
         }
         try context.validateElement(receiver, binding, restarted: restarted)
-        try context.deliveryGate(binding, restarted: restarted)()
         context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
         let typed = try await accessibilityChange(binding: binding, context, restarted: restarted) {
           calls.setAttribute(receiver, kAXSelectedTextAttribute, text as CFTypeRef)
@@ -1403,8 +1417,6 @@ public enum ActionRunner {
     let current = context.accessibility.attributes(node.element)
     try context.validateElement(
       node.element, binding, restarted: "This app restarted while a value was being set.")
-    try context.deliveryGate(
-      binding, restarted: "This app restarted while a value was being set.")()
     context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
     let set = try await accessibilityChange(
       binding: binding, context, restarted: "This app restarted while a value was being set."
@@ -1433,15 +1445,22 @@ public enum ActionRunner {
     let destination = try eventTarget(for: resolved.screenPoint, binding: binding)
     await travel(to: resolved.screenPoint, binding: binding, context)
     let restarted = "This app restarted while it was being scrolled."
-    for tick in 0..<amount {
-      try await context.checkStep(binding, restarted: restarted, showing: .scroll(direction))
-      try revalidate(destination, binding: binding, context: context)
-      context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
-      try await context.input.scroll(
-        direction, 1, destination,
-        context.deliveryGate(binding, restarted: restarted, event: true))
-      if tick + 1 < amount {
-        try? await Task.sleep(nanoseconds: betweenTicksDelay)
+    try await guarded(
+      destination, prepare: false, binding: binding, context, restarted: restarted
+    ) { _, proceed in
+      for tick in 0..<amount {
+        try await context.checkStep(binding, restarted: restarted, showing: .scroll(direction))
+        try revalidate(destination, binding: binding, context: context)
+        context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
+        let gate = context.deliveryGate(binding, restarted: restarted, event: true)
+        try await context.input.scroll(
+          direction, 1, destination,
+          {
+            try proceed(); try gate()
+          })
+        if tick + 1 < amount {
+          try? await Task.sleep(nanoseconds: betweenTicksDelay)
+        }
       }
     }
     return ActionDescription.scroll(direction: direction, in: resolved.scrolled)

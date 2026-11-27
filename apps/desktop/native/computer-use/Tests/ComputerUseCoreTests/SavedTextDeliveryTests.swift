@@ -54,18 +54,22 @@ final class SavedTextDeliveryTests: XCTestCase {
     focusMoves: Bool = false, keyboard: Bool = false,
     moveBeforeChunk: Bool = false, moveAfterChunk: Bool = false,
     posts: Locked<[UnicodePost]> = Locked([]),
-    trace: Locked<[String]> = Locked([])
+    trace: Locked<[String]> = Locked([]),
+    keeper: @escaping @Sendable (pid_t) -> ActKeeper? = { _ in nil },
+    onWrite: @escaping @Sendable (String) -> Void = { _ in }
   ) async -> (result: Result<String, Error>, writes: [Write]) {
     let field = AXUIElementCreateApplication(getpid())
     let username = AXUIElementCreateApplication(1)
     let moved = Locked(false)
     let focus = FocusSlot(make: { pid in
-      FakeFocusGuard(
+      let fake = FakeFocusGuard(
         pid: pid,
         onGuard: {
           trace.withLock { $0.append("guard") }
           if moveBeforeChunk { moved.withLock { $0 = true } }
         })
+      fake.keeper = keeper
+      return fake
     })
     let app = hostApp(
       identity: AppIdentity(bundleId: "fixture", displayName: "Fixture", teamId: nil),
@@ -105,6 +109,7 @@ final class SavedTextDeliveryTests: XCTestCase {
       trace.withLock { $0.append(attribute) }
       writes.withLock { $0.append(Write(other: !CFEqual(element, field), attribute: attribute)) }
       if stopOnFocus, attribute == kAXFocusedAttribute { cancellation.cancel(.stoppedByUser) }
+      onWrite(attribute)
       return .success
     }
     var context = hostContext(
@@ -130,8 +135,11 @@ final class SavedTextDeliveryTests: XCTestCase {
       processIdentifier: getpid(), stamp: hostStamp(getpid()), windowID: 1,
       windowFrame: frame, onScreen: false)
     do {
-      let receipt = try await ActionRunner.type(
-        text: text, target: target, binding: binding, context, savedField: saved, savedCheck: {})
+      // As `perform` makes every act: one hold on the person's front app around it.
+      let receipt = try await ActionRunner.inAct(context, processIdentifier: getpid()) {
+        try await ActionRunner.type(
+          text: text, target: target, binding: binding, context, savedField: saved, savedCheck: {})
+      }
       return (.success(receipt), writes.current)
     } catch {
       return (.failure(error), writes.current)
@@ -156,6 +164,44 @@ final class SavedTextDeliveryTests: XCTestCase {
       XCTAssertEqual(writes.map(\.attribute), attributes, name)
       let steps = trace.current.filter { $0 == "guard" || attributes.contains($0) }
       XCTAssertEqual(steps, ["guard", attributes[0], "guard", attributes[1]], name)
+    }
+  }
+
+  // Simulate an activation that outlives the individual input guards.
+  func testAnAppThatTypingBringsForwardIsPutBackOrTheActIsNotCompleted() async {
+    let attributes = [kAXFocusedAttribute as String, kAXSelectedTextAttribute as String]
+    for canPutBack in [true, false] {
+      let person: pid_t = 4_242
+      let target = getpid()
+      let front = Locked<pid_t?>(person)
+      let putBacks = Locked<[pid_t]>([])
+      let (result, writes) = await deliver(
+        observed: Self.plain, settable: Set(attributes), saved: nil, text: "abc",
+        focusIsTarget: true,
+        keeper: { pid in
+          ActKeeper(
+            target: pid, front: { front.current }, chosen: { false },
+            putBack: { original in
+              putBacks.withLock { $0.append(original) }
+              if canPutBack { front.withLock { $0 = original } }
+              return front.current != pid
+            })
+        },
+        onWrite: { attribute in
+          if attribute == kAXFocusedAttribute { front.withLock { $0 = target } }
+        })
+      let name = canPutBack ? "put back" : "left in front"
+      XCTAssertEqual(writes.map(\.attribute), attributes, name)
+      // The person's app as the act began, though the app was in front for the text write.
+      XCTAssertEqual(putBacks.current, [person], name)
+      if canPutBack {
+        guard case .success = result else { return XCTFail("\(name): \(result)") }
+        XCTAssertEqual(front.current, person)
+      } else {
+        guard case .failure(let error) = result else { return XCTFail("\(name): completed") }
+        XCTAssertEqual((error as? HelperError)?.code, .outcomeUnknown, name)
+        XCTAssertEqual((error as? HelperError)?.message, FocusEnforcer.leftInFront.message, name)
+      }
     }
   }
 

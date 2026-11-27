@@ -28,8 +28,14 @@ final class FakeFocusGuard: FocusGuard, @unchecked Sendable {
     stops.withLock { $0 += 1 }
     onStop()
   }
+  /// The act as the live enforcer keeps it (`ActKeeper`), over a pretended front app.
+  var keeper: @Sendable (pid_t) -> ActKeeper? = { _ in nil }
+  @WorkActor func act<Result>(_ body: () async throws -> Result) async throws -> Result {
+    guard let keeper = keeper(pid) else { return try await body() }
+    return try await keeper.run { _ in try await body() }
+  }
   @WorkActor func guarded<Result>(
-    window: AXUIElement?, prepare: Bool, keys: Bool,
+    window: AXUIElement?, prepare: Bool, keys: Bool, afterInputWatch: TimeInterval,
     finalCheck: @escaping @Sendable () throws -> Void,
     deliveryCheck: @escaping @Sendable () throws -> Void,
     check: () throws -> Void, prepared: (Bool) -> Void,
