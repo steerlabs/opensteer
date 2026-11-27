@@ -317,6 +317,20 @@ export class BrowserScriptService {
     );
   }
 
+  /**
+   * After a narrowing: the binding's script contexts are disposed now, as its next call would
+   * dispose them on the grant revision change, closing every page attachment they hold. The
+   * binding is not ended: its next call runs in a fresh context, deciding every tab again.
+   */
+  resetBrowserScriptsForBinding(agentBindingId: string): void {
+    const binding = this.#bindings.get(agentBindingId);
+    if (!binding) return;
+    for (const key of binding.contexts) {
+      this.#repl.disposeContext(key);
+      this.#revisions.delete(key);
+    }
+  }
+
   async closeBrowserScriptsForBinding(agentBindingId: string): Promise<void> {
     const binding = this.#bindings.get(agentBindingId);
     if (binding) {

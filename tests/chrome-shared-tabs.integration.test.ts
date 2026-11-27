@@ -34,6 +34,7 @@ import {
 } from "../packages/database/src/index.js";
 import { BrowserSourceService } from "../apps/host/src/browser/browser-source-service.js";
 import { ChromeSharedTabs } from "../apps/host/src/browser/chrome-shared-tabs.js";
+import { AgentWorkingInRegistry } from "../apps/host/src/agent-sessions/agent-working-in.js";
 import { HarnessAuthenticationCoordinator } from "../apps/host/src/identity/harness-authentication-coordinator.js";
 import { signHostDiscovery } from "../apps/host/src/identity/host-keys.js";
 import { createHostServer } from "../apps/host/src/server.js";
@@ -47,6 +48,7 @@ import {
   RequestIdSchema,
   TabIdSchema,
   createId,
+  type AgentWorkingIn,
   type ThreadAccessMode,
 } from "../packages/core/src/index.js";
 import { connectionAttempts } from "../packages/database/src/connection-disconnect.js";
@@ -238,6 +240,121 @@ it
       expect((await attempts()).find(({ id }) => id === attempt.id)).toEqual(ended);
       expect(await drive()).toEqual({ failures: [], settled: [connection.id] });
       expect(await state()).toBe("stopped");
+    } finally {
+      homeTabs.close();
+    }
+  },
+);
+
+it.skipIf(databaseMissing)(
+  "clears where a connected agent works when a narrowing ends the sharing of its Chrome tab, its session left running",
+  async () => {
+    // The narrow look at the narrowing, finding 3: a shared Chrome tab used, then a narrowing
+    // whose cleanup stops that sharing while the session itself runs on.
+    const fixture = await createStoreFixture();
+    const { userId: ownerId, runnerId } = await fixture.createRunFixture("chrome-narrowed-record");
+    const deviceId = await fixture.store.requireSelfDeviceId(runnerId);
+    const sourceId = createId("browserSource");
+    const otherSourceId = createId("browserSource");
+    const shareId = crypto.randomUUID();
+    const connections = new AgentConnectionStore(fixture.database);
+    const connection = await connections.create({
+      userId: ownerId,
+      label: "Narrowed",
+      clientName: "Fixture",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: AgentGrantSchema.parse({
+        scope: "selected",
+        tasks: false,
+        resources: [
+          { kind: "chrome-tabs", sourceId },
+          { kind: "chrome-tabs", sourceId: otherSourceId },
+        ],
+      }),
+    });
+    expect(await connections.activate(connection.id, crypto.randomUUID())).toBe(true);
+    const { session } = await beginAgentSession(fixture.database, {
+      userId: ownerId,
+      agentConnectionId: connection.id,
+    });
+    const told: AgentWorkingIn[] = [];
+    const working = new AgentWorkingInRegistry((_owner, notice) => told.push(notice));
+    const homeTabs = new ChromeSharedTabs(fixture.store, {
+      attempts: sharedChromeAttempts(fixture.database),
+      device: async () => "Hosting computer",
+      removed: (owner, tabId) => working.forgetTab(owner, tabId),
+    });
+    try {
+      const chrome = homeTabs.connectSource({
+        ownerId,
+        sourceId,
+        deviceId,
+        name: "Chrome",
+        detachReceipts: true,
+        detachReplay: true,
+        write: () => true,
+        fail: () => {},
+      });
+      await chrome.receive({
+        type: "tab.shared",
+        shareId,
+        targetId: "fixture-target",
+        title: "Fixture",
+        url: "https://fixture.test/",
+      });
+      const authority = { ownerId, agentBindingId: `session:${session.id}` };
+      await homeTabs
+        .browserUsePort(async () => authority, shareId)
+        .openPage(shareId, {
+          contextKey: "fixture",
+          signal: new AbortController().signal,
+          deadline: Date.now() + 5_000,
+          maxBytes: 4096,
+          maxDepth: 16,
+          maxEntries: 256,
+        });
+      working.begin(session.id, session.threadId, ownerId);
+      working.note(authority.agentBindingId, shareId as never);
+      expect(working.current(ownerId)).toHaveLength(1);
+      // The narrowing withdraws this Chrome and keeps another: the session is not ended by it.
+      const current = (await connections.list(ownerId)).find(({ id }) => id === connection.id)!;
+      await connections.update(ownerId, {
+        connectionId: connection.id,
+        expectedRevision: current.grantRevision,
+        grant: AgentGrantSchema.parse({
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "chrome-tabs", sourceId: otherSourceId }],
+        }),
+      } as never);
+      // The cleanup's set holds the sharing attempt the narrowing withdrew; the worker stops it
+      // through the shared tabs' own stop, as here.
+      const attempt = (await connectionAttempts(fixture.database, connection.id)).find(
+        ({ kind }) => kind === "shared-chrome",
+      );
+      if (!attempt) throw new Error("Expected the shared Chrome attempt");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const stopped = homeTabs.stopAttempt(attempt.id);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await stopped;
+      } finally {
+        vi.useRealTimers();
+      }
+      // The session runs on: the narrowing left it a Chrome.
+      expect(
+        (
+          await fixture.database
+            .selectFrom("agentSessions")
+            .select("status")
+            .where("id", "=", session.id)
+            .executeTakeFirstOrThrow()
+        ).status,
+      ).toBe("active");
+      expect(told.at(-1)).toMatchObject({ sessionId: session.id, tabId: null });
+      expect(working.current(ownerId)).toEqual([]);
     } finally {
       homeTabs.close();
     }

@@ -68,7 +68,6 @@ import {
   AgentSessionService,
   connectionCleanupEnding,
 } from "../agent-sessions/agent-session-service.js";
-import { releaseUngrantedTabs } from "../agent-sessions/release-ungranted-tabs.js";
 import { createTranscriptFileServices } from "../threads/transcript-files.js";
 import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
 import {
@@ -1348,6 +1347,10 @@ export async function createHostRuntime(
         }),
       deploymentId: deployment.id,
       onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
+      // A browser session's end let go of its tabs: no connected agent works in them now.
+      onHoldsDropped: (ownerId, tabIds) => {
+        for (const tabId of tabIds) agentSessionsLate?.workingIn.forgetTab(ownerId, tabId);
+      },
       hostOrigin: config.canonicalOrigin,
       personal: true,
       profileRequestRunner: async (runId) =>
@@ -3556,15 +3559,12 @@ export async function createHostRuntime(
         });
       },
       onError: (error) => reportAgentSessionError(error),
-      // After a narrowing, each tab a session holds is decided again by the one rule (rule 1):
-      // a tab its connection can no longer read is let go of. Holds are few, narrowings rare.
-      releaseUngrantedTabs: (bindingId) =>
-        releaseUngrantedTabs(
-          bindingId,
-          browser,
-          (ownerId, tabId) => tabStore.get(ownerId, tabId),
-          database,
-        ),
+      // After a narrowing, a session it leaves running starts afresh: its script contexts (and
+      // every page attachment they hold) and its holds go; its next command binds again.
+      resetBinding: (bindingId) => {
+        browserScripts.resetBrowserScriptsForBinding(bindingId);
+        browser.releaseHolds(bindingId);
+      },
       // Where a session works now goes to the person who owns the Home, and to no one else.
       onWorkingIn: (ownerUserId, notice) =>
         realtime.sendToUsers([ownerUserId], { type: "host.agent-working-in", ...notice }),

@@ -349,6 +349,7 @@ export class AgentSessionService {
       readonly controller: AbortController;
       readonly result: Promise<DirectOperationResult<unknown>>;
       readonly taskId: ThreadId;
+      readonly sessionId: AgentSessionId;
       readonly mode: ThreadAccessMode;
       readonly pooled?: { readonly sessionId: AgentSessionId; readonly connectionId: string };
     }
@@ -356,7 +357,7 @@ export class AgentSessionService {
   readonly #decisions = new EventEmitter();
   /** Where each session is working now, for its owner's Watch; in memory only. */
   readonly workingIn: AgentWorkingInRegistry;
-  readonly #releaseUngrantedTabs: ((bindingId: string) => Promise<readonly string[]>) | undefined;
+  readonly #resetBinding: (bindingId: string) => void | Promise<void>;
   readonly #holdMs: number;
   readonly #executionMs: number;
   readonly #sweeper: DeadlineDrain;
@@ -374,14 +375,15 @@ export class AgentSessionService {
     /** Tells the person who owns the Home where a session is working now, when that changes. */
     readonly onWorkingIn?: (ownerUserId: UserId, notice: AgentWorkingIn) => void;
     /**
-     * After a narrowing: lets go of each tab this binding holds that the rule no longer grants
-     * its connection, deciding tab by tab, and answers the tabs it let go of.
+     * After a narrowing, for a session it leaves running: does at once what its next call does
+     * on the grant revision change (its script contexts disposed, every page attachment closed)
+     * and lets go of every tab it holds. The binding is not ended.
      */
-    readonly releaseUngrantedTabs?: (bindingId: string) => Promise<readonly string[]>;
+    readonly resetBinding?: (bindingId: string) => void | Promise<void>;
   }) {
     this.#store = options.store;
     this.workingIn = new AgentWorkingInRegistry(options.onWorkingIn ?? (() => {}));
-    this.#releaseUngrantedTabs = options.releaseUngrantedTabs;
+    this.#resetBinding = options.resetBinding ?? (() => {});
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
     this.#executionMs = options.executionMs ?? defaultExecutionMs;
     this.#closeBinding = options.closeBinding ?? (() => {});
@@ -605,14 +607,20 @@ export class AgentSessionService {
             .execute()
         ).map(({ id }) => id);
     await Promise.all(ended.map((id) => this.#abort(id, ending)));
-    if (all || !this.#releaseUngrantedTabs) return;
-    // A session the narrowing left running keeps only the tabs the rule still grants it.
-    const release = this.#releaseUngrantedTabs;
+    if (all) return;
+    // A session the narrowing leaves running starts afresh at once, as its next call would on
+    // the grant revision change: its work in flight ends as narrowed (the cleanup stops it too)
+    // and is waited for, then its script contexts and holds go, and so does its Watch record.
+    // Its next command is admitted again by the rule and takes its hold again.
     await Promise.all(
       live
         .filter(([id]) => !ended.includes(id))
         .map(async ([id]) => {
-          for (const tabId of await release(`session:${id}`)) this.workingIn.releaseTab(id, tabId);
+          const running = [...this.#running].filter(([, attempt]) => attempt.sessionId === id);
+          for (const [operationId] of running) await this.stopDirectOperation(operationId, ending);
+          await Promise.allSettled(running.map(([, attempt]) => attempt.result));
+          await this.#resetBinding(`session:${id}`);
+          this.workingIn.clearSession(id);
         }),
     );
   }
@@ -842,6 +850,7 @@ export class AgentSessionService {
         controller,
         result,
         taskId,
+        sessionId: row.sessionId,
         mode: row.mode,
         pooled: { sessionId: row.sessionId, connectionId: row.connectionId },
       });
@@ -866,7 +875,13 @@ export class AgentSessionService {
     const running = withAgentOperationReceipt(this.#store.database, handed, taskId, () =>
       this.#execute(operation, handed, taskId, bindingId, controller.signal),
     );
-    this.#running.set(handed.id, { controller, result: running, taskId, mode: handed.mode });
+    this.#running.set(handed.id, {
+      controller,
+      result: running,
+      taskId,
+      sessionId: handed.sessionId,
+      mode: handed.mode,
+    });
     const forget = () => this.#running.delete(handed.id);
     void running.then(forget, forget);
     return this.#awaitExecution(operation, handed, taskId, running);

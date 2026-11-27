@@ -51,10 +51,10 @@ describe("where a connected agent's session works now", () => {
     expect(working.current(owner)).toEqual([
       { threadId: otherTask, sessionId: other, tabId: tab("b") },
     ]);
-    // Released for one session only.
-    working.releaseTab(session, tab("b"));
+    // Cleared for one session only.
+    working.clearSession(session);
     expect(working.current(owner)).toHaveLength(1);
-    working.releaseTab(other, tab("b"));
+    working.clearSession(other);
     expect(working.current(owner)).toEqual([]);
   });
 

@@ -13,7 +13,6 @@ import { operationRow } from "../packages/client/src/host/agent-work.js";
 import { threadAgentPage, watchPage } from "../packages/client/src/host/agent-place-links.js";
 import { createConnectionRpcHandlers } from "../apps/host/src/mcp/connections/connection-routes.js";
 import { CommandTools } from "../apps/host/src/mcp/handlers/commands.js";
-import { releaseUngrantedTabs } from "../apps/host/src/agent-sessions/release-ungranted-tabs.js";
 import { stateAreas } from "../packages/agent-tools/src/tools/commands.js";
 import { listAgentOperations } from "../packages/database/src/agent-session-store.js";
 import { tabReadAuthority } from "../apps/host/src/tabs/tab-authority.js";
@@ -134,14 +133,11 @@ async function directWork(
     store: j.store,
     holdMs: 0,
     onWorkingIn: (ownerUserId, notice) => workingIn.push({ ownerUserId, notice }),
-    // As the Home's runtime wires it: after a narrowing, each held tab decided by the rule.
-    releaseUngrantedTabs: (bindingId) =>
-      releaseUngrantedTabs(
-        bindingId,
-        home().service,
-        (ownerId, tabId) => j.tabs.get(ownerId, tabId),
-        j.database,
-      ),
+    // As the Home's runtime wires it: a session a narrowing leaves running starts afresh.
+    resetBinding: (bindingId) => {
+      scripts.resetBrowserScriptsForBinding(bindingId);
+      home().service.releaseHolds(bindingId);
+    },
     ...(options.executionMs ? { executionMs: options.executionMs } : {}),
     ...(options.endsBrowserWork
       ? { closeBinding: (bindingId: string, reason: string) => endBrowserWork(bindingId, reason) }
@@ -3595,10 +3591,12 @@ it("clears where an agent works when the person closes that tab, and tells the o
   }
 });
 
-it("lets go of a held person's tab that a narrowing withdrew, while a covered profile keeps its session", async () => {
-  // The narrow look, finding 6: Everything narrowed to the same browser profile after a
-  // profile-scoped script used a person's tab. The session stays (its profile is still lent);
-  // the person's tab is no longer the connection's to hold.
+it("starts a session a narrowing leaves running afresh: no hold, no record, no live script attachment; its next command holds again what the rule grants", async () => {
+  // The narrow looks, findings 6 and 1: Everything narrowed to the same browser profile after a
+  // profile-scoped script used a person's tab and a page of its own. The session stays (its
+  // profile is still lent); what its next call would throw away on the grant revision change is
+  // thrown away at once.
+  const { site, origin } = await pagesSite();
   const j = await journey("direct-holder-narrowed", { profile: true });
   try {
     const home = await j.startHome();
@@ -3610,20 +3608,39 @@ it("lets go of a held person's tab that a narrowing withdrew, while a covered pr
     if (!own?.pageBinding) throw new Error("The saved profile has no durable tab.");
     expect(own.openedBy).toBe("person");
     await j.draft();
-    const work = await directWork(j, () => home, { grant: { scope: "everything" } });
-    const read = await work.use(
-      `const page = await openPage(${JSON.stringify(own.id)}); return await page.title();`,
+    // Each script page attachment the session opens, and whether it was closed since.
+    const attachments: { closed: boolean }[] = [];
+    const attach = home.service.attachCdpForAgent.bind(home.service);
+    vi.spyOn(home.service, "attachCdpForAgent").mockImplementation(async (...args) => {
+      const relay = await attach(...args);
+      const attachment = { closed: false };
+      attachments.push(attachment);
+      const close = relay.close;
+      return Object.assign(relay, {
+        close: () => {
+          attachment.closed = true;
+          close();
+        },
+      });
+    });
+    const work = await directWork(j, () => home, {
+      grant: { scope: "everything" },
+      realAuthority: true,
+    });
+    const mine = tabOf(
+      await work.use(
+        `globalThis.person = await openPage(${JSON.stringify(own.id)}); globalThis.mine = await newPage("${origin}/mine"); await person.title(); return mine.tabId;`,
+      ),
     );
-    expect(read.isError, text(read)).not.toBe(true);
     const { threadId, id: sessionId } = await sessionOf(j);
-    const holds = async () =>
-      (await home.service.pageTabs.state!(j.task.userId, await row(j, own.id))).usedBy.some(
+    const holds = async (tabId: string) =>
+      (await home.service.pageTabs.state!(j.task.userId, await row(j, tabId))).usedBy.some(
         ({ taskId }) => taskId === threadId,
       );
-    expect(await holds()).toBe(true);
-    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
-      { threadId, sessionId, tabId: own.id },
-    ]);
+    expect([await holds(own.id), await holds(mine)]).toEqual([true, true]);
+    expect(work.sessions.workingIn.current(j.task.userId)).toHaveLength(1);
+    expect(attachments.length).toBeGreaterThan(0);
+    expect(attachments.every(({ closed }) => !closed)).toBe(true);
     const connection = commands(j.fixture, j.task.userId, {
       afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
     });
@@ -3645,11 +3662,124 @@ it("lets go of a held person's tab that a narrowing withdrew, while a covered pr
           .executeTakeFirstOrThrow()
       ).status,
     ).toBe("active");
-    await vi.waitFor(async () => expect(await holds()).toBe(false), { timeout: 3_000 });
+    // No hold, no record, and no script attachment it opened under the old grant still sends.
+    expect([await holds(own.id), await holds(mine)]).toEqual([false, false]);
+    expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
+    expect(attachments.map(({ closed }) => closed)).toEqual(attachments.map(() => true));
+    // Its next command: the person's tab is no longer its own; its own page is, held again.
+    const refused = await work.use(`await openPage(${JSON.stringify(own.id)}); return 1;`);
+    expect(text(refused)).toMatch(/not_found|not found/iu);
+    const again = await work.use(
+      `const page = await openPage(${JSON.stringify(mine)}); return await page.title();`,
+    );
+    expect(again.isError, text(again)).not.toBe(true);
+    expect([await holds(own.id), await holds(mine)]).toEqual([false, true]);
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
+      { threadId, sessionId, tabId: mine },
+    ]);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("records no hold for a bind that a narrowing ended while it ran", async () => {
+  // The narrow look, finding 2: a narrowing while openPage's bind waited at the browser use
+  // record; the bind went on and noted its hold after the release.
+  const j = await journey("direct-holder-narrowed-bind", { profile: true });
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [own] = await home.service.savedPages(j.task.userId, session.id);
+    if (!own?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    await j.draft();
+    const work = await directWork(j, () => home, { grant: { scope: "everything" } });
+    const record = j.store.recordAgentBrowserUse.bind(j.store);
+    vi.spyOn(j.store, "recordAgentBrowserUse").mockImplementation(async (...args) => {
+      reached.resolve();
+      await release.promise;
+      return record(...args);
+    });
+    const stopped = Promise.withResolvers<void>();
+    const stop = work.sessions.stopDirectOperation.bind(work.sessions);
+    vi.spyOn(work.sessions, "stopDirectOperation").mockImplementation(async (...args) => {
+      await stop(...args);
+      stopped.resolve();
+    });
+    // The agent's first bind of the person's tab, paused inside the bind.
+    const binding = work.use(
+      `const page = await openPage(${JSON.stringify(own.id)}); await page.title(); return 1;`,
+    );
+    await reached.promise;
+    const { threadId } = await sessionOf(j);
+    const connection = commands(j.fixture, j.task.userId, {
+      afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
+    });
+    await connection.update(work.agent.id, {
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
+      },
+    });
+    const cleaning = j.store.driveConnectionCleanups();
+    // The narrowing ends the call in flight; the bind resumes only after that.
+    await stopped.promise;
+    release.resolve();
+    await cleaning;
+    await binding.catch(() => undefined);
+    expect(
+      (await home.service.pageTabs.state!(j.task.userId, await row(j, own.id))).usedBy.some(
+        ({ taskId }) => taskId === threadId,
+      ),
+    ).toBe(false);
+  } finally {
+    release.resolve();
+    await j.close();
+  }
+});
+
+it("clears where an agent works and its holds when its browser session ends, as a profile's deletion ends it", async () => {
+  // The narrow look, finding 4: a deleted profile ends its browser sessions, and their holds
+  // go with them, at the one place a session's holds are let go of.
+  const { site, origin } = await pagesSite();
+  const told: { ownerId: string; tabIds: readonly string[] }[] = [];
+  let forget: ((ownerId: string, tabIds: readonly string[]) => void) | undefined;
+  const j = await journey("direct-holder-profile-deleted", {
+    profile: true,
+    onHoldsDropped: (ownerId, tabIds) => {
+      told.push({ ownerId, tabIds });
+      forget?.(ownerId, tabIds);
+    },
+  });
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home);
+    forget = (ownerId, tabIds) => {
+      for (const tabId of tabIds) work.sessions.workingIn.forgetTab(ownerId as never, tabId);
+    };
+    const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+    const { threadId, id: sessionId } = await sessionOf(j);
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
+      { threadId, sessionId, tabId: tab },
+    ]);
+    // A deleted profile stops each of its browser sessions (deleteProfile -> stop); in this pooled
+    // fixture the deletion then waits on the computer, so the same stop is driven here.
+    await home.service.stop(j.task.userId, (await row(j, tab)).pageBinding!.sessionId);
+    await vi.waitFor(() => expect(told.some(({ tabIds }) => tabIds.includes(tab))).toBe(true), {
+      timeout: 5_000,
+    });
     expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
     expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
   } finally {
     await j.close();
+    site.close();
   }
 });
 

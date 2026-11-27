@@ -49,10 +49,10 @@ export class AgentWorkingInRegistry {
         this.#release(id as AgentSessionId, work);
   }
 
-  /** The session's hold on the tab was released (its grant no longer reaches it). */
-  releaseTab(sessionId: AgentSessionId, tabId: string): void {
+  /** The session starts afresh (a narrowing left it running): it names no tab until it works. */
+  clearSession(sessionId: AgentSessionId): void {
     const work = this.#sessions.get(sessionId);
-    if (work?.tabId === tabId) this.#release(sessionId, work);
+    if (work && work.tabId !== null) this.#release(sessionId, work);
   }
 
   #release(sessionId: AgentSessionId, work: SessionWork): void {
