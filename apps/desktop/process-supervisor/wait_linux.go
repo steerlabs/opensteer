@@ -24,12 +24,35 @@ func waitWithoutReaping(processID int) error {
 }
 
 // Whether the process has already ended, without reaping it or waiting for it: a stop sent to a
-// target that is already a zombie did not end it.
+// target that is already a zombie did not end it. Nor did one sent to a target a SIGKILL already
+// reached: waitid reports a process of several threads only once the last of them is gone, and
+// until then its leader reads as a zombie while the others are still dying, with that SIGKILL
+// pending for the whole thread group (ShdPnd in its status), where it stays until the group is gone.
 func endedWithoutReaping(processID int) bool {
 	var information unix.Siginfo
 	err := unix.Waitid(unix.P_PID, processID, &information, unix.WEXITED|unix.WNOWAIT|unix.WNOHANG, nil)
 	// With WNOHANG and nothing to report, waitid succeeds and leaves the zeroed siginfo as it was.
-	return err == nil && information.Signo != 0
+	if err == nil && information.Signo != 0 {
+		return true
+	}
+	raw, readErr := os.ReadFile("/proc/" + strconv.Itoa(processID) + "/status")
+	if readErr != nil {
+		return false
+	}
+	pending, ok := parseLinuxSharedPending(string(raw))
+	return ok && pending&(1<<(uint(unix.SIGKILL)-1)) != 0
+}
+
+// The signals pending for a whole thread group, from its /proc status (ShdPnd, a hexadecimal mask
+// whose bit N-1 is signal N).
+func parseLinuxSharedPending(status string) (uint64, bool) {
+	for _, line := range strings.Split(status, "\n") {
+		if value, found := strings.CutPrefix(line, "ShdPnd:"); found {
+			pending, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+			return pending, err == nil
+		}
+	}
+	return 0, false
 }
 
 func enableChildSubreaper() error {
