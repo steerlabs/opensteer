@@ -5,13 +5,15 @@
  *     [name ...]
  *
  * Each journey runs with its own temporary directory under the evidence directory (default
- * `opensteer-web-journeys` in the system's), so its screenshots and results stay there.
+ * `opensteer-web-journeys` in the system's), so its screenshots and results stay there. It
+ * reaches that directory by a short link: Chromium opens a socket under its temporary directory,
+ * and a socket's path may be about a hundred bytes at most.
  * A failing journey does not stop the others; `journeys.json` there says how each one ended.
  * `--inventory` writes which journeys this shard ran, in the form CI's Check reads for every
  * sharded lane (ci-inventories.mjs), so a journey no shard ran fails Check.
  */
 import { spawn } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -42,6 +44,12 @@ for (const journey of chosen) {
   const directory = path.join(evidence, journey.name);
   await rm(directory, { force: true, recursive: true });
   await mkdir(directory, { recursive: true });
+  // The journey's directory by a short name. Chromium's own socket goes under TMPDIR
+  // (TMPDIR/org.chromium.Chromium.XXXXXX/SingletonSocket), and with CI's evidence directory and
+  // a journey's name in front of it that path passed the limit: Chromium ended at launch.
+  const short = await mkdtemp(path.join(tmpdir(), "osj-"));
+  const link = path.join(short, "t");
+  await symlink(directory, link, "junction");
   console.log(`\n=== ${journey.name}`);
   const began = performance.now();
   const exit = await new Promise<number | string>((resolve) => {
@@ -53,13 +61,15 @@ for (const journey of chosen) {
       {
         cwd: webRoot,
         // Every journey keeps its evidence under the system's temporary directory.
-        env: { ...process.env, TMPDIR: directory },
+        env: { ...process.env, TMPDIR: link },
         stdio: "inherit",
       },
     );
     child.on("error", (error) => resolve(error.message));
     child.on("exit", (code, signal) => resolve(code ?? signal ?? "unknown"));
   });
+  // The link goes; what the journey wrote stays in its directory under the evidence directory.
+  await rm(short, { force: true, recursive: true });
   const seconds = Math.round((performance.now() - began) / 100) / 10;
   results.push({ name: journey.name, passed: exit === 0, seconds, exit });
   console.log(`=== ${journey.name}: ${exit === 0 ? "passed" : `failed (${exit})`} in ${seconds} s`);
