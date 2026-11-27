@@ -122,7 +122,8 @@ export class DeviceToolHandlers {
    */
   async #sessionComputerUse(caller: ConnectionCaller, call: ToolCall<"computer_use">) {
     const { code, computerId, app, taskId, reason, readOnly = false } = call.input;
-    const { apps, phones } = connectionComputerKinds(caller.grant);
+    // A named app the grant does not hold reads as any other thing outside it (rule 5), below.
+    const { phones } = connectionComputerKinds(caller.grant);
     if (!computerId)
       throw refused(
         "bad_request",
@@ -132,11 +133,6 @@ export class DeviceToolHandlers {
       throw refused(
         "bad_request",
         "Name the Mac app shared with you in app (name or bundleId from discover).",
-      );
-    if (!apps && app !== undefined)
-      throw refused(
-        "bad_request",
-        "Omit app for a phone screen; pass only computerId from discover.",
       );
     if (code.length > requestOperationCallsMaxLength)
       throw refused(

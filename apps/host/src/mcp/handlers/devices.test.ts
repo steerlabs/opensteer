@@ -42,7 +42,7 @@ it("carries a lineage Run's connection to computer use, and nothing for the pers
   ]);
 });
 
-it("refuses missing or unexpected app on computer_use before looking up the target", async () => {
+it("refuses a missing app on computer_use before looking up the target", async () => {
   const sessionComputerTarget = vi.fn(async () => {
     throw new Error("should not look up target");
   });
@@ -75,35 +75,11 @@ it("refuses missing or unexpected app on computer_use before looking up the targ
       ],
     },
   } as unknown as AgentCaller;
-  const phoneOnly = {
-    ...baseCaller,
-    grant: {
-      scope: "selected" as const,
-      tasks: false,
-      resources: [
-        {
-          kind: "computer-app" as const,
-          deviceId,
-          approvalId: "con_phone",
-          app: { kind: "phone-screen" as const, definitionId: "iphone-screen" },
-        },
-      ],
-    },
-  } as unknown as AgentCaller;
-
   await expect(
     handlers.computer_use({
       caller: macOnly,
       input: { code: "help()", computerId: deviceId },
       operationKey: "k1",
-    } as never),
-  ).rejects.toMatchObject({ code: "bad_request" });
-
-  await expect(
-    handlers.computer_use({
-      caller: phoneOnly,
-      input: { code: "help()", computerId: deviceId, app: "Notes" },
-      operationKey: "k2",
     } as never),
   ).rejects.toMatchObject({ code: "bad_request" });
 
