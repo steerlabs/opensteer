@@ -350,6 +350,8 @@ export class AgentSessionService {
       readonly result: Promise<DirectOperationResult<unknown>>;
       readonly taskId: ThreadId;
       readonly sessionId: AgentSessionId;
+      /** The grant revision it was admitted under: a narrowing stops it only when it is older. */
+      readonly grantRevision: number;
       readonly mode: ThreadAccessMode;
       readonly pooled?: { readonly sessionId: AgentSessionId; readonly connectionId: string };
     }
@@ -608,19 +610,38 @@ export class AgentSessionService {
         ).map(({ id }) => id);
     await Promise.all(ended.map((id) => this.#abort(id, ending)));
     if (all) return;
-    // A session the narrowing leaves running starts afresh at once, as its next call would on
-    // the grant revision change: its work in flight ends as narrowed (the cleanup stops it too)
-    // and is waited for, then its script contexts and holds go, and so does its Watch record.
-    // Its next command is admitted again by the rule and takes its hold again.
+    // A session the narrowing leaves running starts afresh, as its next call would on the grant
+    // revision change: its work admitted under an older revision ends as narrowed (the cleanup
+    // stops exactly that set); work admitted since runs on. Once the stopped work has
+    // ended, its idle script contexts and its holds go, and so does its Watch record. Its next
+    // command is admitted again by the rule and takes its hold again.
+    const current = await this.#store.database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", connectionId as never)
+      .executeTakeFirst();
     await Promise.all(
       live
         .filter(([id]) => !ended.includes(id))
         .map(async ([id]) => {
-          const running = [...this.#running].filter(([, attempt]) => attempt.sessionId === id);
-          for (const [operationId] of running) await this.stopDirectOperation(operationId, ending);
-          await Promise.allSettled(running.map(([, attempt]) => attempt.result));
-          await this.#resetBinding(`session:${id}`);
-          this.workingIn.clearSession(id);
+          const running = [...this.#running].filter(
+            ([, attempt]) =>
+              attempt.sessionId === id &&
+              (current === undefined || attempt.grantRevision < current.grantRevision),
+          );
+          const reset = async () => {
+            await this.#resetBinding(`session:${id}`);
+            this.workingIn.clearSession(id);
+          };
+          // With nothing older running it starts afresh now. Older work is stopped by the cleanup
+          // itself (pooled in the pass above, the rest right after this step) and is not waited
+          // for here: an executor that does not return at once keeps the cleanup Stopping until
+          // it does. The reset follows its end; a bind it finishes meanwhile records no hold.
+          if (!running.length) await reset();
+          else
+            void Promise.allSettled(running.map(([, attempt]) => attempt.result))
+              .then(reset)
+              .catch(this.#onError);
         }),
     );
   }
@@ -851,6 +872,7 @@ export class AgentSessionService {
         result,
         taskId,
         sessionId: row.sessionId,
+        grantRevision: row.grantRevision,
         mode: row.mode,
         pooled: { sessionId: row.sessionId, connectionId: row.connectionId },
       });
@@ -880,6 +902,7 @@ export class AgentSessionService {
       result: running,
       taskId,
       sessionId: handed.sessionId,
+      grantRevision: handed.grantRevision,
       mode: handed.mode,
     });
     const forget = () => this.#running.delete(handed.id);
