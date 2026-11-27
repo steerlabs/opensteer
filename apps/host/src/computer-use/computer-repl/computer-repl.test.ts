@@ -50,6 +50,52 @@ function setup(invoke?: ConstructorParameters<typeof ComputerReplService>[0]["in
   };
 }
 describe("computer REPL worker boundary", () => {
+  it.each([
+    [undefined, "It changed nothing. It is safe to try again."],
+    [false, "It changed nothing. It is safe to try again."],
+    [true, "1 action completed. The last was release."],
+  ])("reports the connected computer deadline after release %s", async (released, detail) => {
+    const entered = Promise.withResolvers<void>();
+    const schedule = vi.fn((_callback: () => void) => () => undefined);
+    const waiting = new ComputerReplService({
+      invoke: async ({ operation }) => ({
+        value: operation === "phones" ? [{ id: "phone", name: "Phone" }] : { released: !!released },
+      }),
+      clock: { now: Date.now, schedule },
+      wait: async (_ms, signal) => {
+        entered.resolve();
+        return new Promise<void>((_, reject) =>
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        );
+      },
+    });
+    try {
+      const running = waiting.execute(
+        {
+          runId: "deadline",
+          generation: 1,
+          reportUnknownEffects: true,
+          connectedAgent: true,
+          tracksScriptSends: true,
+        },
+        released === undefined
+          ? "await sleep(100000)"
+          : 'await (await phone("phone")).release(); await sleep(100000)',
+      );
+      await entered.promise;
+      schedule.mock.calls[0]![0]();
+      expect(await running).toMatchObject({
+        structuredContent: {
+          error: {
+            code: "deadline",
+            message: `Computer code reached its 100 second deadline. ${detail}`,
+          },
+        },
+      });
+    } finally {
+      await waiting.close();
+    }
+  });
   it("keeps a connected agent's prints on both sides of a caught lost device reply", async () => {
     const window = {
       ref: "w",

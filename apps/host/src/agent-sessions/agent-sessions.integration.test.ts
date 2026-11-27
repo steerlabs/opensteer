@@ -696,6 +696,83 @@ describeStore("an external agent's direct work through sessions", (it) => {
       }
     });
 
+  it.for([
+    { method: "Accessibility.queryAXTree", sent: true, status: "failed", code: "deadline" },
+    { method: "Input.insertText", sent: false, status: "failed", code: "deadline" },
+    { method: "Input.insertText", sent: true, status: "unknown", code: "outcome-unknown" },
+  ] as const)(
+    "records a script deadline with $method (sent: $sent) as $status",
+    async ({ method, sent, status, code }, { storeFixture }) => {
+      const f = await storeFixture.startRunFixture("pool-script-deadline");
+      const identity = {
+        runnerId: f.runnerId,
+        runtimeId: "pooled-browser",
+        slotId: "slot",
+        instanceId: randomUUID(),
+        term: 1,
+        epoch: 1,
+      };
+      await installBrowserPoolSlot(storeFixture.database, identity);
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null, hold: null });
+      const s = await setUp(storeFixture, "pool-script-deadline", {
+        run: f,
+        pooledBrowser: () => ({
+          identity: () => identity,
+          pageDocument: () => undefined,
+          reserve: (signal) => gate.reserve(signal),
+        }),
+      });
+      const entered = Promise.withResolvers<void>();
+      const reply = Promise.withResolvers<string>();
+      const schedule = vi.fn((_callback: () => void) => () => undefined);
+      const target = { tabId: "tab", sessionId: "cdp-session", targetId: "target" };
+      const repl = new BrowserReplService({
+        clock: { now: Date.now, schedule },
+        port: {
+          listPages: async () => [],
+          openPage: async () => target,
+          newPage: async () => target,
+          command: async (_target, _method, _params, _session, call) => {
+            if (sent) call.browserSend!.submitted();
+            entered.resolve();
+            return reply.promise;
+          },
+          subscribe: () => () => {},
+        },
+      });
+      try {
+        s.runBrowserScript.mockImplementation(({ code, signal, recheck, browserSend }) =>
+          repl.execute("deadline", code, signal, undefined, recheck, browserSend),
+        );
+        const running = s.call("browser_use", {
+          ...script,
+          code: `const page = await openPage("tab"); await page.cdp(${JSON.stringify(method)});`,
+        });
+        await entered.promise;
+        schedule.mock.calls.at(-1)![0]();
+        expect(await running).toMatchObject({
+          isError: true,
+          structuredContent: {
+            status,
+            error: { code },
+            ...(status === "failed" ? { next: "It is safe to try again." } : {}),
+          },
+        });
+        expect(
+          await storeFixture.database
+            .selectFrom("agentOperations")
+            .select(["state", "outcome"])
+            .where("tool", "=", "browser_use")
+            .executeTakeFirstOrThrow(),
+        ).toMatchObject({ state: status, outcome: status });
+      } finally {
+        reply.resolve("{}");
+        await repl.close();
+      }
+    },
+  );
+
   for (const sent of [true, false])
     it(`gives a pooled script that ignores a restart its recorded outcome, ${sent ? "unknown after a send" : "refused with nothing sent"}`, async ({
       storeFixture,
