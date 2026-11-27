@@ -138,6 +138,27 @@ final class SavedTextDeliveryTests: XCTestCase {
     }
   }
 
+  /// Real Mac (Safari journey, guests of 26 Nov 2026): typing into Safari's field by index
+  /// brought Safari in front of the person's app 220 to 280 ms into the call, and nothing put it
+  /// back. Its Accessibility focus and text writes were made outside the guard that sends an app
+  /// back when the input brings it forward. Each write is made inside it now, on both paths.
+  func testEveryAccessibilityWriteOfTypingIsMadeInsideTheGuard() async {
+    let attributes = [kAXFocusedAttribute as String, kAXSelectedTextAttribute as String]
+    for (name, observed, saved) in [
+      ("plain text into a field", Self.plain, nil as LoginField?),
+      ("a saved value into a secure field", Self.secure, LoginField.password),
+    ] {
+      let trace = Locked<[String]>([])
+      let (result, writes) = await deliver(
+        observed: observed, settable: Set(attributes), saved: saved, text: "abc",
+        focusIsTarget: true, trace: trace)
+      guard case .success = result else { return XCTFail("\(name): \(result)") }
+      XCTAssertEqual(writes.map(\.attribute), attributes, name)
+      let steps = trace.current.filter { $0 == "guard" || attributes.contains($0) }
+      XCTAssertEqual(steps, ["guard", attributes[0], "guard", attributes[1]], name)
+    }
+  }
+
   func refused(_ result: Result<String, Error>, _ case: String) {
     guard case .failure(let error) = result else { return XCTFail("Delivered: " + `case`) }
     XCTAssertEqual((error as? HelperError)?.code, .unsupported, `case`)
@@ -176,7 +197,8 @@ final class SavedTextDeliveryTests: XCTestCase {
     XCTAssertEqual(
       trace.current,
       [
-        "validation", kAXFocusedAttribute, "validation", "focus verification",
+        // The focus write is made inside the guard, as every Accessibility write is.
+        "validation", "guard", kAXFocusedAttribute, "validation", "focus verification",
         "guard", "focus verification", "focus verification", "validation", "per-chunk check",
         "post synthetic-secret",
       ])
