@@ -28,7 +28,8 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "kysely";
-import { TestRunner, expect, vi, onTestFinished } from "vitest";
+import { expect, vi, onTestFinished } from "vitest";
+import { eventWait } from "./event-wait.test-support.js";
 import { createId, OpensteerError } from "../packages/core/src/index.js";
 import { chromium } from "playwright-core";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
@@ -225,35 +226,7 @@ export async function journey(
   const real = options.chromium !== false;
   // Each time a Home republishes the person's tab rows (its descriptor flush wrote them): a wait
   // on those rows checks again then, not on a clock.
-  let tabsChange = Promise.withResolvers<void>();
-  const tabsChanged = () => {
-    const previous = tabsChange;
-    tabsChange = Promise.withResolvers<void>();
-    previous.resolve();
-  };
-  /**
-   * The value of `check` once it passes, checked again each time a Home republishes the tab rows.
-   * The test's own end (its timeout) ends the wait with the check's last failure.
-   */
-  const untilTabs = async <T>(check: () => T | Promise<T>): Promise<T> => {
-    const signal = TestRunner.getCurrentTest()?.context.signal;
-    for (;;) {
-      const next = tabsChange.promise;
-      try {
-        return await check();
-      } catch (error) {
-        if (!signal || signal.aborted) throw error;
-        const ended = Promise.withResolvers<never>();
-        const abort = () => ended.reject(error);
-        signal.addEventListener("abort", abort, { once: true });
-        try {
-          await Promise.race([next, ended.promise]);
-        } finally {
-          signal.removeEventListener("abort", abort);
-        }
-      }
-    }
-  };
+  const { changed: tabsChanged, until: untilTabs } = eventWait();
   const fixture = await createStoreFixture();
   const root = await mkdtemp(join(tmpdir(), "opensteer-pool-route-"));
   const task = await fixture.startRunFixture(key);

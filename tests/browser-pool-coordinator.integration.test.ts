@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
-import { TestRunner, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { eventWait } from "./event-wait.test-support.js";
 import {
   BrowserPoolCoordinator,
   type BrowserPoolAdopter,
@@ -104,12 +105,7 @@ async function poolFixture(
   // What a wait re-checks on: each call a coordinator makes settling (to the controller, the
   // runtime and the adopter), each change it publishes, and each change of the runtime's pool
   // state. The product's own events, not a clock.
-  let change = Promise.withResolvers<void>();
-  const changed = () => {
-    const previous = change;
-    change = Promise.withResolvers<void>();
-    previous.resolve();
-  };
+  const { changed, until } = eventWait();
   const settles = <T>(work: Promise<T>): Promise<T> => {
     void work.then(changed, changed);
     return work;
@@ -121,30 +117,6 @@ async function poolFixture(
       runtimeWrite.call(this, next);
       for (const listener of runtimeChanges) listener();
     });
-  /**
-   * Waits until `check` passes, checking it again after each of those events. The test's own
-   * end (its timeout) ends the wait with the check's last failure.
-   */
-  const until = async (check: () => unknown): Promise<void> => {
-    const signal = TestRunner.getCurrentTest()?.context.signal;
-    for (;;) {
-      const next = change.promise;
-      try {
-        await check();
-        return;
-      } catch (error) {
-        if (!signal || signal.aborted) throw error;
-        const ended = Promise.withResolvers<never>();
-        const abort = () => ended.reject(error);
-        signal.addEventListener("abort", abort, { once: true });
-        try {
-          await Promise.race([next, ended.promise]);
-        } finally {
-          signal.removeEventListener("abort", abort);
-        }
-      }
-    }
-  };
   // The agent cannot see a loopback runtime that outlives a start: against it every start is a
   // new guest with an empty runtime, as on a real host.
   if (poolControllerKind() === "agent") options = { ...options, freshGuests: true };
