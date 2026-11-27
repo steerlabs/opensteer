@@ -66,22 +66,26 @@ const runtimeChanges = new Set<() => void>();
 
 class Crash {
   #armed: { kind: string; when: "before" | "after" } | undefined;
+  /** Told when the Home dies: its calls never settle after it, so nothing else says so. */
+  readonly #deaths = new Set<() => void>();
   dead = false;
   arm(kind: string, when: "before" | "after") {
     this.#armed = { kind, when };
   }
+  onDeath(listener: () => void) {
+    this.#deaths.add(listener);
+  }
   async pass<T>(kind: string, call: () => Promise<T>): Promise<T> {
     if (this.dead) return new Promise<T>(() => {});
-    if (this.#armed?.kind === kind && this.#armed.when === "before") {
-      this.dead = true;
-      return new Promise<T>(() => {});
-    }
+    if (this.#armed?.kind === kind && this.#armed.when === "before") return this.#die<T>();
     const result = await call();
-    if (this.#armed?.kind === kind) {
-      this.dead = true;
-      return new Promise<T>(() => {});
-    }
+    if (this.#armed?.kind === kind) return this.#die<T>();
     return result;
+  }
+  #die<T>(): Promise<T> {
+    this.dead = true;
+    for (const listener of this.#deaths) listener();
+    return new Promise<T>(() => {});
   }
 }
 
@@ -241,6 +245,7 @@ async function poolFixture(
     physical: BrowserPoolPhysicalController = controller,
     extra: Partial<ConstructorParameters<typeof BrowserPoolCoordinator>[0]> = {},
   ) => {
+    crash?.onDeath(changed);
     const channel: BrowserPoolRuntimeChannel = {
       poolState: () => settles(poolState()),
       controlPool: (control, signature) =>
@@ -1665,7 +1670,7 @@ for (const [point, when, ends] of crashes)
           parked === "parked" ? dying.gate.reserve(AbortSignal.timeout(10_000)) : undefined,
         )
         .catch(() => undefined);
-      await vi.waitFor(() => expect(crash.dead).toBe(true));
+      await f.until(() => expect(crash.dead).toBe(true));
       dying.close();
       // The old process's sockets close with it.
       await f.crashSockets();
@@ -2293,7 +2298,7 @@ it("keeps a partial tab loss through a Home restart between the runtime's comple
     await dying.recover();
     crash.arm("runtime:complete", "after");
     void dying.gate.reserve(AbortSignal.timeout(10_000)).catch(() => undefined);
-    await vi.waitFor(() => expect(crash.dead).toBe(true));
+    await f.until(() => expect(crash.dead).toBe(true));
     dying.close();
     f.reportTabLoss(undefined);
     const next = f.home();
