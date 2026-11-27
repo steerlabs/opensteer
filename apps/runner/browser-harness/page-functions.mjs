@@ -140,7 +140,24 @@ export function pageFunction(command, data = {}, ...nodes) {
           ...(scope.shadowRoot ? [scope.shadowRoot] : []),
           ...candidates.flatMap((element) => (element.shadowRoot ? [element.shadowRoot] : [])),
         ];
-        for (const root of roots) found.push(...root.querySelectorAll(data.selector));
+        try {
+          for (const root of roots) found.push(...root.querySelectorAll(data.selector));
+        } catch (error) {
+          if (error?.name === "SyntaxError") {
+            const selector = data.selector;
+            if (/^\s*text\s*=/u.test(selector))
+              throw new Error("Use getByText(text) instead of text=.");
+            const css = selector.replace(
+              /\\.|"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|\/\*[\s\S]*?\*\//gu,
+              " ",
+            );
+            if (/:visible(?![\w-])/u.test(css))
+              throw new Error("Use locator(css).filter({ visible: true }) instead of :visible.");
+            if (/:has-text\(/u.test(css))
+              throw new Error("Use locator(css).filter({ hasText: text }) instead of :has-text().");
+          }
+          throw error;
+        }
       } else if (data.kind === "text") {
         const matching = candidates.filter(
           (element) =>
