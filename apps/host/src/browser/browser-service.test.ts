@@ -6299,7 +6299,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return renamed;
   }
 
-  /** The archived row stays, as the database keeps it, so its sessions still name an owner. */
+  /** The archived row stays, as the database keeps it; active-session queries exclude archived profiles. */
   async deleteBrowserProfile(input: {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
@@ -6309,10 +6309,12 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     }
     this.#deletedProfiles.add(input.profileId);
 
+    const sessions = [...this.#sessions.values()].filter(
+      (session) => session.profileId === input.profileId && !terminal(session.state),
+    );
     return {
-      sessionIds: [...this.#sessions.values()]
-        .filter((session) => session.profileId === input.profileId && !terminal(session.state))
-        .map((session) => session.id),
+      sessionIds: sessions.map((session) => session.id),
+      sessions,
     };
   }
 
@@ -6329,10 +6331,13 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return this.#ownsSession(session, ownerId) ? session : null;
   }
 
-  /** Fresh sessions belong to the personal owner. */
+  /** Fresh sessions belong to the personal owner; archived profiles' sessions are excluded as in Postgres. */
   #ownsSession(session: BrowserSessionRecord, ownerId: UserId): boolean {
     if (session.profileId === null) return ownerId === this.#ownerId;
-    return this.#profiles.get(session.profileId)?.ownerId === ownerId;
+    return (
+      this.#profiles.get(session.profileId)?.ownerId === ownerId &&
+      !this.#deletedProfiles.has(session.profileId)
+    );
   }
 
   async listBrowserProfiles(ownerId: UserId): Promise<readonly BrowserProfileRecord[]> {

@@ -576,6 +576,8 @@ export interface BrowserSessionRepository {
     readonly profileId: BrowserProfileId;
   }): Promise<{
     readonly sessionIds: readonly BrowserSessionId[];
+    readonly sessions?: readonly BrowserSessionRecord[];
+    readonly retiredTabIds?: readonly BrowserSurfaceId[];
     readonly deletion?: PendingBrowserProfileDeletion;
   }>;
   listActiveBrowserSessionsForAgent(input: {
@@ -2220,7 +2222,7 @@ export class BrowserService {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
   }): Promise<PendingBrowserProfileDeletion | undefined> {
-    const { sessionIds, deletion } = await this.#serializeKey(
+    const { sessionIds, sessions, retiredTabIds, deletion } = await this.#serializeKey(
       `profile-admission:${input.profileId}`,
       () => this.#repository.deleteBrowserProfile(input),
     );
@@ -2228,10 +2230,18 @@ export class BrowserService {
     for (const [id, group] of this.#personUseGroups)
       if (group.profileId === input.profileId) this.#endPersonUse(id);
     this.invalidatePlaceAuthority();
+    // Stop the sessions that were live when the archive committed directly from their records:
+    // `stop()` looks up `getBrowserSessionForOwner`, which filters out archived profiles.
     const stops = await Promise.allSettled(
-      sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
+      sessions
+        ? sessions.map((session) => this.#stopDeletedProfileSession(session))
+        : sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
     );
     for (const stop of stops) if (stop.status === "rejected") this.#onError(stop.reason);
+    if (retiredTabIds?.length) {
+      this.#onHoldsDropped(input.ownerId, retiredTabIds);
+      this.#onTabsChanged(input.ownerId, retiredTabIds, true);
+    }
     if (deletion) await this.#eraseLocalProfiles?.(deletion.computerId).catch(() => undefined);
     await this.#ownerProfilesChanged(input.ownerId);
     // Retried agent operations replay admission; subsequent reads show erasure progress.
@@ -2239,6 +2249,18 @@ export class BrowserService {
     return (await this.#localProfiles?.pendingDeletions(input.ownerId))?.find(
       (item) => item.profileId === input.profileId,
     );
+  }
+
+  #stopDeletedProfileSession(session: BrowserSessionRecord): Promise<void> {
+    return this.#serialize(async () => {
+      for (const waiter of this.#poolWaiters.get(session.id) ?? [])
+        waiter.abort(
+          new OpensteerError({ code: "conflict", message: "The person stopped this browser." }),
+        );
+      this.#endPersonUse(this.#brokers.get(session.id)?.groupId ?? session.id);
+      this.#dropSessionHolds(session.id);
+      await this.#stopRecord(session);
+    });
   }
 
   async fenceLocalProfile(profileId: BrowserProfileId): Promise<void> {
