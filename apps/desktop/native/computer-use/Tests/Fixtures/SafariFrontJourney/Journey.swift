@@ -38,6 +38,15 @@ func sleepSeconds(_ seconds: Double) async { try? await Task.sleep(nanoseconds: 
     { PersonInput.keys(arguments[2], intervalMs: interval, log: arguments[4]) }
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
+    if arguments.count == 4, arguments[1] == "--reminders" {
+      Task { @MainActor in
+        let out = URL(fileURLWithPath: arguments[2])
+        try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let report = await RemindersProof.run(out: out, helperApp: URL(fileURLWithPath: arguments[3]))
+        exit(report["error"] == nil ? 0 : 1)
+      }
+      app.run()
+    }
     Task { @MainActor in
       let out = URL(fileURLWithPath: arguments[1])
       var result: [String: Any] = ["build": ProcessInfo.processInfo.environment["OPENSTEER_SAFARI_FRONT_BUILD"] ?? "", "pid": getpid()]

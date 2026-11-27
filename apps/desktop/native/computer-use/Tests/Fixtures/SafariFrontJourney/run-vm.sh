@@ -40,7 +40,7 @@ compile() {
     if [[ -n "$replacement" && "$file" == */Focus/FocusEnforcer.swift ]]; then sources+=("$replacement"); else sources+=("$file"); fi
   done < <(find native/computer-use/Sources/ComputerUseCore -name '*.swift' | sort)
   xcrun swiftc -parse-as-library -module-name ComputerUseCore -swift-version 5 -I "$build" -L "$build" \
-    -lOpensteerAppleData -lMacOSSigning -o "$output" "${sources[@]}" "$fixtures/Journey.swift"
+    -lOpensteerAppleData -lMacOSSigning -o "$output" "${sources[@]}" "$fixtures/Journey.swift" "$fixtures/Reminders.swift"
 }
 red_source="/Volumes/My Shared Files/inputs/FocusEnforcer.swift"
 compile "$work/Green" &
@@ -104,7 +104,25 @@ result=0
 if [[ -x "$work/Red" ]]; then
   run_journey red "$work/Red" "${OPENSTEER_SAFARI_FRONT_RED_CASES:-front,front-watch,stop-watch}"
 fi
-run_journey green "$work/Green" "${OPENSTEER_SAFARI_FRONT_CASES:-front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control,churn-watch}"
+run_journey green "$work/Green" "${OPENSTEER_SAFARI_FRONT_CASES:-front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control}"
 [[ "$(cat "$out/green/exit-code.txt")" == 0 ]] || result=1
+
+# Item i: Calendar and Reminders set up through the real helper app built from this checkout.
+if [[ "${OPENSTEER_SAFARI_FRONT_REMINDERS:-1}" == 1 ]]; then
+  mkdir -p "$out/reminders"
+  pnpm build:computer-use-helper > "$out/reminders/helper-build.log" 2>&1
+  helper_app="$PWD/native/computer-use/dist/Opensteer Computer Use.app"
+  codesign -dv "$helper_app" > "$out/reminders/helper-signature.txt" 2>&1 || true
+  log stream --info --predicate 'process == "tccd" OR subsystem == "com.apple.TCC"' > "$out/reminders/tcc.log" 2>&1 &
+  log_pid=$!
+  "$work/Green" --reminders "$out/reminders" "$helper_app" && status=0 || status=$?
+  kill "$log_pid" 2>/dev/null || true
+  wait "$log_pid" 2>/dev/null || true
+  echo "$status" > "$out/reminders/exit-code.txt"
+  echo "reminders finished with $status at $((SECONDS - began)) s (log stream $log_pid stopped)"
+fi
+
+# Last, up to the suite's deadline: about 2,000 single-key acts in bursts of 64.
+run_journey churn "$work/Green" "${OPENSTEER_SAFARI_FRONT_CHURN_CASES:-churn-watch}"
 ls "$HOME/Library/Logs/DiagnosticReports" > "$out/diagnostic-reports-after.txt" 2>/dev/null || true
 exit "$result"
