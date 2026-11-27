@@ -903,7 +903,12 @@ interface BrowserServiceOptions {
  * as bounded consumers; future agent controllers can use the same broker boundary.
  */
 /** The task a binding was bound to a tab for, as its owner reads it; null where the bind names none. */
-type BoundHolder = { readonly ownerId: UserId; readonly threadId: ThreadId } | null;
+type BoundHolder = {
+  readonly ownerId: UserId;
+  readonly threadId: ThreadId;
+  /** When this binding last bound the tab for its task: where its work is now. */
+  readonly at?: number;
+} | null;
 
 interface BrowserActor {
   readonly token: string;
@@ -5023,15 +5028,16 @@ export class BrowserService {
               broker?.live && broker.pageOf(row.id) && broker.surfaceStateOf(row.id) !== "suspended"
                 ? ("open" as const)
                 : ("asleep" as const),
+            // Each holder with when its work last took the tab up (the tab service keeps each
+            // task's latest).
             usedBy: binding
               ? [
-                  ...new Set([
-                    ...this.#occupants(ownerId, binding.sessionId, row.id).map(
-                      (holder) => holder.threadId,
-                    ),
-                    ...this.#boundHolders(ownerId, binding.sessionId, row.id),
-                  ]),
-                ].map((taskId) => ({ taskId }))
+                  ...this.#occupants(ownerId, binding.sessionId, row.id).map((holder) => ({
+                    taskId: holder.threadId,
+                    since: holder.lastActiveAt,
+                  })),
+                  ...this.#boundHolders(ownerId, binding.sessionId, row.id),
+                ]
               : [],
           },
         ];
@@ -8228,20 +8234,50 @@ export class BrowserService {
     const bindings = tabs.get(surfaceId) ?? new Map<string, BoundHolder>();
     tabs.set(surfaceId, bindings);
     const known = bindings.get(binding);
-    if (bindings.has(binding) && (holder === null || known?.threadId === holder.threadId)) return;
+    if (bindings.has(binding) && holder === null) return;
     const added = !bindings.has(binding);
-    bindings.set(binding, holder ?? known ?? null);
+    // Each bind is the task's work taking the tab up now: its time moves with it.
+    bindings.set(binding, holder ? { ...holder, at: this.#activityClock.now() } : (known ?? null));
     if (added) this.#brokers.get(sessionId)?.refreshSessionState();
-    // Who holds the tab changed: the person's tab rows say it.
-    if (holder) this.#invalidatePageSessions([sessionId]);
+    // Who holds the tab, or since when, changed: the person's row for it says it.
+    if (holder) this.#onTabsChanged(undefined, [surfaceId]);
   }
+  /**
+   * A binding's script took up again a tab it already holds a handle for: its holder record for
+   * that tab, if it has one, says so now, and the person's row for it is published again. It
+   * grants and checks nothing.
+   */
+  tabTakenUp(
+    authority: { readonly agentBindingId: string; readonly ownerId: UserId },
+    tabId: string,
+  ) {
+    for (const tabs of this.#boundTabs.values()) {
+      const holder = tabs.get(tabId as BrowserSurfaceId)?.get(authority.agentBindingId);
+      if (!holder || holder.ownerId !== authority.ownerId) continue;
+      tabs.get(tabId as BrowserSurfaceId)!.set(authority.agentBindingId, {
+        ...holder,
+        at: this.#activityClock.now(),
+      });
+      this.#onTabsChanged(undefined, [tabId as BrowserSurfaceId]);
+    }
+  }
+
   /** The tasks live bindings were bound for in this tab, as the person `ownerId` reads them. */
-  #boundHolders(ownerId: UserId, sessionId: BrowserSessionId, surfaceId: string): ThreadId[] {
+  #boundHolders(
+    ownerId: UserId,
+    sessionId: BrowserSessionId,
+    surfaceId: string,
+  ): { readonly taskId: ThreadId; readonly since?: string }[] {
     const bindings = this.#boundTabs.get(sessionId)?.get(surfaceId as BrowserSurfaceId);
     if (!bindings) return [];
     return [...bindings].flatMap(([binding, holder]) =>
       holder && holder.ownerId === ownerId && !this.#endedBindings.has(binding)
-        ? [holder.threadId]
+        ? [
+            {
+              taskId: holder.threadId,
+              ...(holder.at === undefined ? {} : { since: new Date(holder.at).toISOString() }),
+            },
+          ]
         : [],
     );
   }

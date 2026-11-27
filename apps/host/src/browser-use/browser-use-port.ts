@@ -144,7 +144,7 @@ export function createBrowserUsePort({
   authority: CdpAuthority;
   tabs: BrowserUseTabAccess;
   browser: Pick<BrowserService, "attachCdpForAgent"> &
-    Partial<Pick<BrowserService, "pooledScriptPageWitness" | "closedByPerson">>;
+    Partial<Pick<BrowserService, "pooledScriptPageWitness" | "closedByPerson" | "tabTakenUp">>;
 }): BrowserUsePort<Target> {
   /**
    * Whether the person closed this page lately, at or after this operation first sent a command
@@ -297,6 +297,9 @@ export function createBrowserUsePort({
         pages.push(page);
       }
       return pages;
+    },
+    tookUp(tabId) {
+      browser.tabTakenUp?.(authority, tabId);
     },
     async openPage(tabId, call) {
       if (!TabIdSchema.safeParse(tabId).success) throw refused("not_found", "Tab not found.");

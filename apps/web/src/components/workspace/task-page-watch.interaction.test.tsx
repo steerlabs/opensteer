@@ -3,7 +3,14 @@ import { act } from "react";
 import { expect, it, vi } from "vitest";
 import { mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { threadAgentPage } from "@opensteer/client/host";
-import { client, history, mount } from "./workspace.interaction.test-support.js";
+import {
+  click,
+  client,
+  element,
+  history,
+  mount,
+  settle,
+} from "./workspace.interaction.test-support.js";
 
 /*
  * Watch on a task whose agent is working in a browser tab: the person's click lands on that tab's
@@ -15,7 +22,7 @@ const button = (label: string, parent: ParentNode = document) =>
   );
 
 async function watch(
-  scene: "one" | "three" | "cloud-tab",
+  scene: "one" | "three" | "cloud-tab" | "two-tabs" | "late-tab",
   name?: string,
   prepare?: (source: typeof client) => void,
 ) {
@@ -94,3 +101,35 @@ for (const acting of [false, true])
       expect(document.querySelector(".place--watch")).toBeNull();
     }
   });
+
+/** The tab the address shows now, if any. */
+const shownTab = () => new URLSearchParams(history.at(-1)?.search).get("tab");
+
+it("lands Watch on the tab the task's work took up last, of the two it holds", async () => {
+  // Tester run 15, trials 2, 4, 6 and 7: an earlier tab, and the one its call works in now.
+  await watch("two-tabs");
+  expect(history.at(-1)?.path).toBe(`/tasks/${mockAgentWorkThreads.shopping}`);
+  expect(shownTab()).toBe("mock-tab-1-0");
+});
+
+it("lands Watch on the task's tab when the row naming it reaches this client after the click", async () => {
+  // Run 15, trial 5: the click came before the row; Watch read once and stayed on the launcher.
+  await watch("late-tab");
+  expect(history.at(-1)?.path).toBe(`/tasks/${mockAgentWorkThreads.shopping}`);
+  expect(shownTab()).toBeNull();
+  await vi.waitFor(() => expect(shownTab()).toBe("mock-tab-1-0"), { timeout: 4_000 });
+});
+
+it("follows the task's work to its next tab while the person chooses nothing else, and never after they do", async () => {
+  await watch("two-tabs");
+  expect(shownTab()).toBe("mock-tab-1-0");
+  await act(async () => client.mockAgentTakesTab("mock-tab-2-0", mockAgentWorkThreads.shopping));
+  await vi.waitFor(() => expect(shownTab()).toBe("mock-tab-2-0"));
+  // The person chooses a tab themselves: from now on the agent's work moves nothing.
+  await click(element('.side-tab[data-place-key="mock-tab-0-1"] .side-tab__main'));
+  const chosen = shownTab();
+  expect(chosen).not.toBe("mock-tab-2-0");
+  await act(async () => client.mockAgentTakesTab("mock-tab-1-0", mockAgentWorkThreads.shopping));
+  await settle();
+  expect(shownTab()).toBe(chosen);
+});

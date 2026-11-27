@@ -30,6 +30,7 @@ import { type Request, type RequestResponse } from "@opensteer/core";
 import type { NeedsYouEntry } from "@opensteer/protocol";
 import { useCallback, useState } from "react";
 import { useNavigate } from "react-router";
+import { followWatch } from "./workspace/watch-follow.js";
 import { ActionLine } from "./action-line.js";
 import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon, type IconName } from "./icon.js";
@@ -113,7 +114,18 @@ export function useOpenSessionTask() {
         ...(waiting ? { focusRequest: waiting.request.id } : {}),
         ...(app ? { watch: true } : {}),
       });
-    } else {
+    }
+    // Watch's click lasts: it lands on the task's page when that reaches this client, and moves
+    // with the task's work from page to page while the person chooses nothing else. A Mac app
+    // the task holds is watched as before.
+    if (workspace && shell && !waiting && !app)
+      followWatch({
+        client: shell.hostClient,
+        nav: workspace.nav,
+        threadId: id,
+        shown: page?.tabId ?? null,
+      });
+    if (!workspace) {
       void navigate(`/tasks/${encodeURIComponent(id)}`);
     }
   };

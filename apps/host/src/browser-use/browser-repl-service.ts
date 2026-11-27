@@ -80,6 +80,11 @@ class BrowserBridgeError extends Error {
 export interface BrowserUsePort<Target extends BrowserUseTarget = BrowserUseTarget> {
   listPages(call: BrowserUseCall): Promise<readonly BrowserUsePage[]>;
   openPage(tabId: string, call: BrowserUseCall): Promise<Target>;
+  /**
+   * The script took up a page it already holds a handle for (`openPage` of it again): where its
+   * work is now. Grants and checks nothing; the next command rechecks access as always.
+   */
+  tookUp?(tabId: string, contextKey: string): void;
   newPage(input: { url: string; profileId?: string }, call: BrowserUseCall): Promise<Target>;
   command(
     target: Target,
@@ -458,7 +463,10 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     if (request.operation === "browser.new") return this.#bind(request, call, state);
     const { tabId } = request.args;
     const existing = state.byTab.get(tabId);
-    if (existing) return Promise.resolve({ value: existing.value });
+    if (existing) {
+      this.#port.tookUp?.(tabId, call.contextKey);
+      return Promise.resolve({ value: existing.value });
+    }
     const pending = state.opens.get(tabId);
     if (pending) return pending;
     const context = state;

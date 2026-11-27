@@ -182,7 +182,14 @@ export const TabSchema = z
     unavailableCode: TabUnavailableCodeSchema.optional(),
     unavailableReason: z.string().min(1).max(1000).optional(),
     openedBy: TabOpenedBySchema,
-    usedBy: z.array(z.strictObject({ taskId: ThreadIdSchema })).max(128),
+    /**
+     * The tasks that hold the tab, each with when its work last took the tab up (`since`): a
+     * script's bind of it, a Run's last action in it. Where several hold it, or a task holds
+     * several tabs, the latest is where that work is now.
+     */
+    usedBy: z
+      .array(z.strictObject({ taskId: ThreadIdSchema, since: IsoDateTimeSchema.optional() }))
+      .max(128),
     createdAt: IsoDateTimeSchema,
     updatedAt: IsoDateTimeSchema,
     url: z.string().max(16384).optional(),
@@ -229,7 +236,9 @@ export const TabViewSchema = z
       .object({ profileId: BrowserProfileIdSchema, name: z.string().max(200) })
       .nullable()
       .optional(),
-    usedBy: z.array(z.object({ taskId: ThreadIdSchema })).max(128),
+    usedBy: z
+      .array(z.object({ taskId: ThreadIdSchema, since: IsoDateTimeSchema.optional() }))
+      .max(128),
     openedBy: z.union([z.literal("person"), z.object({ taskId: ThreadIdSchema })]),
   })
   .superRefine((tab, ctx) => {

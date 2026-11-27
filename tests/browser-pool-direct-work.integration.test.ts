@@ -462,6 +462,68 @@ it("names a second connection's task as the holder of its tab, after the person 
   }
 });
 
+it("says which of a task's tabs its work took up last, and tells the person when that changes", async () => {
+  // Tester run 15, trial 4: the task holds two tabs; its call works in the first again. Watch
+  // takes the tab whose holder says the latest `since`.
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Example Domain</title><p>example</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const published: (readonly string[] | "all")[] = [];
+  const j = await journey("direct-script-since", {
+    profile: true,
+    onTabsChanged: (_owner, ids) => published.push(ids ?? "all"),
+  });
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home);
+    const open = async (path: string) => {
+      const reply = await work.use(
+        `const page = await newPage(${JSON.stringify(`${origin}/${path}`)}); return page.tabId;`,
+      );
+      const id = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(reply))?.[0];
+      if (!id) throw new Error(`The script returned no tab: ${text(reply)}`);
+      return id;
+    };
+    const first = await open("one");
+    const second = await open("two");
+    const since = async (tabId: string) =>
+      (await home.service.pageTabs.state!(j.task.userId, await row(j, tabId))).usedBy[0]?.since;
+    expect(await since(second)).toBeDefined();
+    expect((await since(second))! > (await since(first))!).toBe(true);
+    const before = published.length;
+    let done = false;
+    const working = work
+      .useTab(
+        `const page = await openPage(${JSON.stringify(first)}); await page.js("document.title"); await page.waitForTimeout(3000); return 1;`,
+        first,
+      )
+      .finally(() => {
+        done = true;
+      });
+    await vi.waitFor(
+      async () => {
+        expect(done).toBe(false);
+        // Its work took the first tab up again: that is now the latest, and the person's row for
+        // it was published again since.
+        expect((await since(first))! > (await since(second))!).toBe(true);
+        expect(published.slice(before).some((ids) => ids === "all" || ids.includes(first))).toBe(
+          true,
+        );
+      },
+      { timeout: 3_000 },
+    );
+    const result = await working;
+    expect(result.isError, text(result)).not.toBe(true);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
 it("names a connected agent's task as the holder of the tab its script binds, so the person's Watch lands on it", async () => {
   // Tester run 12: a connected agent's script working in a tab of the pooled browser; the
   // person's Watch found no page of its task (threadAgentPage) and stayed on the launcher.
