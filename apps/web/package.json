@@ -33,7 +33,9 @@
     "test:browser-downloads": "tsx scripts/browser-downloads-journey.ts",
     "test:computer-windows": "tsx scripts/computer-windows-journey.ts",
     "test:browser-sleep": "tsx scripts/browser-sleep-journey.ts",
-    "test:connection-consent-scroll": "tsx scripts/connection-consent-scroll-journey.ts"
+    "test:connection-consent-scroll": "tsx scripts/connection-consent-scroll-journey.ts",
+    "test:connected-agents-now": "tsx scripts/connected-agents-now-journey.ts",
+    "test:journeys": "tsx scripts/run-journeys.ts"
   },
   "dependencies": {
     "@floating-ui/dom": "1.8.0",

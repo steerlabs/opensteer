@@ -1,10 +1,11 @@
 import { mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Page } from "playwright-core";
 import { openMockWeb } from "./mock-web-journey.js";
 
-const output = process.argv[2];
-if (!output) throw new Error("Pass the directory for the connected agent screenshots.");
+// The screenshots go to the directory given, as every other journey's evidence goes to its own.
+const output = process.argv[2] ?? path.join(tmpdir(), "opensteer-connected-agents-now-evidence");
 await mkdir(output, { recursive: true });
 const web = await openMockWeb("opensteer-connected-agents-now");
 
