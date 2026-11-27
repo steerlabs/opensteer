@@ -54,7 +54,11 @@ export class SessionPersonTools {
     credential: "login" | "card",
   ) {
     const { caller, input, operationKey } = call;
-    if (!input.tabId) throw tabRefusal();
+    if (!input.tabId)
+      throw refused(
+        "bad_request",
+        "Pass tabId for the browser tab showing the site's sign-in form.",
+      );
     const tabId = input.tabId;
     const session = await this.#options.store.database
       .selectFrom("agentSessions")

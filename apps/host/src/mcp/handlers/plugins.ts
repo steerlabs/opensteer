@@ -1,4 +1,5 @@
 import { grantHolds, pluginCaller, pluginGrantTarget } from "../../plugins/plugin-authority.js";
+import { canonical } from "@opensteer/plugin-engine-mcp";
 import { pluginTargetBlocked } from "../../plugins/target-blocked.js";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
@@ -331,13 +332,35 @@ export class PluginToolHandlers {
           row: Awaited<ReturnType<PluginExecutions["sessionExecution"]>>;
         }
       | undefined;
+    const assertCallsLength = (text: string) => {
+      if (text.length > requestOperationCallsMaxLength)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected plugin operation.`,
+        });
+    };
+    const assertSinglePluginPaths = (paths: readonly string[]) => {
+      const namespaces = new Set<string>();
+      for (const path of paths) {
+        const normalized = canonical(path);
+        const dot = normalized.indexOf(".");
+        if (dot > 0) namespaces.add(normalized.slice(0, dot));
+      }
+      if (namespaces.size > 1)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Call one plugin per operation.",
+        });
+    };
     if ("calls" in call.input) {
       tool = "plugin_call";
       input = { calls: call.input.calls };
       calls = canonicalJson(input);
+      assertCallsLength(calls);
       const paths = (Array.isArray(input.calls) ? input.calls : [input.calls]).map(
         ({ path }) => path,
       );
+      assertSinglePluginPaths(paths);
       // The engine alone reads which tool each path names, with its own parser and escaping; a
       // tool that is there but blocked comes with its reason.
       const resolved = await o.service.resolveTools({ paths }, context, signal);
@@ -382,6 +405,7 @@ export class PluginToolHandlers {
           code: "bad_request",
           message: "Supply the one plugin namespace from discover.",
         });
+      assertCallsLength(calls);
       const matches = (await providers()).filter((item) => localToolPath(item.slug) === namespace);
       const provider = matches[0];
       if (matches.length !== 1 || !provider?.version) throw unavailable();
@@ -400,6 +424,7 @@ export class PluginToolHandlers {
         });
       input = { executionId: call.input.executionId };
       calls = canonicalJson(input);
+      assertCallsLength(calls);
       const row = await o.executions.sessionExecution(caller, input.executionId, taskId);
       const origin = AgentOperationIdSchema.safeParse(
         row.caller.slice(row.caller.lastIndexOf(":") + 1),
@@ -428,11 +453,6 @@ export class PluginToolHandlers {
         readOnly: true,
       };
     }
-    if (calls.length > requestOperationCallsMaxLength)
-      throw new OpensteerError({
-        code: "bad_request",
-        message: `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected plugin operation.`,
-      });
     const grant = { kind: "plugin", target: pluginGrantTarget(target.plugin) } as const;
     if (!(await holds(target.plugin, !target.readOnly || continuationWrites))) throw unavailable();
     if (continuation) {
