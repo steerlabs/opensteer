@@ -61,6 +61,7 @@ import { familyAutomations } from "./task-family.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import type { NodeDetailSubscription, NodeDetailSnapshot } from "./node-detail.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
+import type { AgentWorkingIn } from "@opensteer/core";
 import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
@@ -3073,6 +3074,38 @@ export class HttpHostClient {
     }
   }
 
+  /** Where a task's connected agent works now; a session's end removes only its own record. */
+  #applyWorkingIn(notice: AgentWorkingIn): void {
+    const current = this.#snapshot.agentWorkingIn ?? {};
+    const held = current[notice.threadId];
+    if (notice.tabId === null) {
+      if (held?.sessionId !== notice.sessionId) return;
+      const { [notice.threadId]: _ended, ...rest } = current;
+      this.#update({ ...this.#snapshot, agentWorkingIn: rest });
+      return;
+    }
+    if (
+      held?.sessionId === notice.sessionId &&
+      held.operationId === notice.operationId &&
+      held.tabId === notice.tabId
+    )
+      return;
+    this.#update({
+      ...this.#snapshot,
+      agentWorkingIn: { ...current, [notice.threadId]: notice },
+    });
+  }
+
+  /**
+   * What a task's activity read says its agent is working in, for a task this client has heard
+   * nothing about since it connected: a notice already held is never replaced by a read.
+   */
+  noteTaskActivity(threadId: string, workingIn: AgentWorkingIn | undefined): void {
+    if (!workingIn || workingIn.threadId !== threadId) return;
+    if (this.#snapshot.agentWorkingIn?.[threadId]) return;
+    this.#applyWorkingIn(workingIn);
+  }
+
   /** Which apps an agent is acting in on the reader's Macs; patched in place. */
   #applyComputerPresence(
     sessions: readonly {
@@ -4972,6 +5005,11 @@ export class HttpHostClient {
       case "host.computer-presence":
         this.#applyComputerPresence(message.sessions);
         break;
+      case "host.agent-working-in": {
+        const { type: _type, ...notice } = message;
+        this.#applyWorkingIn(notice);
+        break;
+      }
       case "host.computer-view.changed":
         this.#update({
           ...this.#snapshot,

@@ -17,6 +17,7 @@ import {
   type AgentOperationTarget,
   type AgentSessionEndReason,
   type AgentSessionId,
+  type AgentWorkingIn,
   type RequestId,
   type RequestResponse,
   type RequestPresentation,
@@ -53,6 +54,7 @@ import {
 } from "@opensteer/database";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { DeadlineDrain } from "../runtime/deadline-drain.js";
+import { AgentWorkingInRegistry } from "./agent-working-in.js";
 import { ReplFailureSchema, type ReplFailure } from "../computer-use/computer-repl/messages.js";
 import type { BrowserPoolReservation } from "../browser/browser-pool-gate.js";
 
@@ -346,6 +348,8 @@ export class AgentSessionService {
     }
   >();
   readonly #decisions = new EventEmitter();
+  /** Where each session is working now, for its owner's Watch; in memory only. */
+  readonly workingIn: AgentWorkingInRegistry;
   readonly #holdMs: number;
   readonly #executionMs: number;
   readonly #sweeper: DeadlineDrain;
@@ -360,8 +364,11 @@ export class AgentSessionService {
     readonly holdMs?: number;
     /** An operation's own bound when it names none (two minutes; tests shorten it). */
     readonly executionMs?: number;
+    /** Tells the person who owns the Home where a session is working now, when that changes. */
+    readonly onWorkingIn?: (ownerUserId: UserId, notice: AgentWorkingIn) => void;
   }) {
     this.#store = options.store;
+    this.workingIn = new AgentWorkingInRegistry(options.onWorkingIn ?? (() => {}));
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
     this.#executionMs = options.executionMs ?? defaultExecutionMs;
     this.#closeBinding = options.closeBinding ?? (() => {});
@@ -409,6 +416,7 @@ export class AgentSessionService {
       );
       this.#sessions.delete(id);
     }
+    this.workingIn.clear();
   }
 
   /** The one entry point every direct tool calls. */
@@ -610,6 +618,7 @@ export class AgentSessionService {
       if (attempt.pooled?.sessionId === sessionId) attempt.controller.abort(error);
     const entry = this.#sessions.get(sessionId);
     entry?.controller.abort(error);
+    this.workingIn.close(sessionId);
     await this.#closeBinding(`session:${sessionId}`, error.message);
     if (this.#sessions.get(sessionId) === entry) this.#sessions.delete(sessionId);
   }
@@ -1081,57 +1090,60 @@ export class AgentSessionService {
       let scriptError: ReplFailure | undefined;
       try {
         if (pooled || closing) signal.throwIfAborted();
-        result = await operation.execute({
-          sessionId: row.sessionId,
-          taskId,
-          operationId: row.id,
-          requestId: row.requestId,
-          grantRevision: row.grantRevision,
-          mode: row.mode,
-          bindingId,
-          ownerUserId: operation.ownerUserId,
-          signal,
-          deadline,
-          recheck,
-          ...(operation.tool === "computer_use"
-            ? {
-                computerSubmitted: () => {
-                  submitted++;
-                },
-                computerStopped: () =>
-                  endAuthority(agentOperationEndingWords.stopped.message, "stopped"),
-              }
-            : {}),
-          ...(pooled
-            ? {
-                browserSend: {
-                  target: pooled.identity,
-                  recheck: async () => {
-                    await recheck();
-                    await pooled.pool.recheckTarget(submitted > 0);
-                    // Replaced before anything was sent, the runtime is a closed admission.
-                    if (canonicalJson(pooled.pool.identity()) !== canonicalJson(pooled.identity))
-                      throw submitted === 0
-                        ? new BrowserPoolAdmissionClosed(
-                            "The browser runtime changed before anything was sent.",
-                          )
-                        : new OperationOutcomeUnknown(
-                            "The browser runtime changed during this work.",
-                          );
-                    signal.throwIfAborted();
-                  },
-                  submitted: () => {
-                    outstanding++;
+        this.workingIn.begin(row.sessionId, row.id, taskId, operation.ownerUserId);
+        result = await operation
+          .execute({
+            sessionId: row.sessionId,
+            taskId,
+            operationId: row.id,
+            requestId: row.requestId,
+            grantRevision: row.grantRevision,
+            mode: row.mode,
+            bindingId,
+            ownerUserId: operation.ownerUserId,
+            signal,
+            deadline,
+            recheck,
+            ...(operation.tool === "computer_use"
+              ? {
+                  computerSubmitted: () => {
                     submitted++;
                   },
-                  acknowledged: () => {
-                    outstanding--;
+                  computerStopped: () =>
+                    endAuthority(agentOperationEndingWords.stopped.message, "stopped"),
+                }
+              : {}),
+            ...(pooled
+              ? {
+                  browserSend: {
+                    target: pooled.identity,
+                    recheck: async () => {
+                      await recheck();
+                      await pooled.pool.recheckTarget(submitted > 0);
+                      // Replaced before anything was sent, the runtime is a closed admission.
+                      if (canonicalJson(pooled.pool.identity()) !== canonicalJson(pooled.identity))
+                        throw submitted === 0
+                          ? new BrowserPoolAdmissionClosed(
+                              "The browser runtime changed before anything was sent.",
+                            )
+                          : new OperationOutcomeUnknown(
+                              "The browser runtime changed during this work.",
+                            );
+                      signal.throwIfAborted();
+                    },
+                    submitted: () => {
+                      outstanding++;
+                      submitted++;
+                    },
+                    acknowledged: () => {
+                      outstanding--;
+                    },
+                    hasSubmitted: () => submitted > 0,
                   },
-                  hasSubmitted: () => submitted > 0,
-                },
-              }
-            : {}),
-        });
+                }
+              : {}),
+          })
+          .finally(() => this.workingIn.end(row.sessionId, row.id));
         // The REPL can return normally even when a script caught a failed authority check.
         // A cut never releases buffered output, and an unsent refusal never becomes unknown.
         if (authorityEnded) throw authorityEnded;

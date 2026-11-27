@@ -1,4 +1,10 @@
-import { agentGrantAllows, BrowserProfileIdSchema, refused, TabIdSchema } from "@opensteer/core";
+import {
+  agentGrantAllows,
+  BrowserProfileIdSchema,
+  refused,
+  TabIdSchema,
+  type TabId,
+} from "@opensteer/core";
 import { executionAccess, selectedGrantOf, type OpensteerStore } from "@opensteer/database";
 import type { ChromeSharedTabs } from "../browser/chrome-shared-tabs.js";
 import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.js";
@@ -24,6 +30,11 @@ type Services = {
   store: Pick<OpensteerStore, "admitExecution">;
   tabs: Pick<TabService, "browserScriptPages" | "bindBrowserScript" | "open">;
   workerEntry?: URL;
+  /**
+   * A script of `agentBindingId` works in `tabId` now: a command passed its recheck there, or a
+   * page was opened or taken up again. In memory; it grants and checks nothing.
+   */
+  workingIn?: (agentBindingId: string, tabId: TabId) => void;
 };
 type ManagedTarget = Awaited<ReturnType<ReturnType<typeof createBrowserUsePort>["openPage"]>>;
 type SharedTarget = Awaited<ReturnType<ReturnType<ChromeSharedTabs["browserUsePort"]>["openPage"]>>;
@@ -132,6 +143,8 @@ export class BrowserScriptService {
     BrowserUsePort<ManagedTarget> | { shared: true; value: BrowserUsePort<SharedTarget> }
   >();
   readonly #repl: BrowserReplService<Target>;
+  /** The binding each context's port acts for. */
+  readonly #bindingOf = new Map<string, string>();
   /** The connection's grant revision each context last ran under (null: no connection). */
   readonly #revisions = new Map<string, number | null>();
   #closed = false;
@@ -143,6 +156,10 @@ export class BrowserScriptService {
       if (!port) throw refused("forbidden", "This browser task has ended.");
       return port;
     };
+    const working = (contextKey: string, tabId: string) => {
+      const binding = this.#bindingOf.get(contextKey);
+      if (binding !== undefined) services.workingIn?.(binding, tabId as TabId);
+    };
     this.#repl = new BrowserReplService({
       ...(services.workerEntry ? { workerEntry: services.workerEntry } : {}),
       port: {
@@ -152,23 +169,32 @@ export class BrowserScriptService {
         },
         openPage: async (tabId, call) => {
           const port = byContext(call.contextKey);
-          if ("shared" in port)
-            return { ...(await port.value.openPage(tabId, call)), port: port.value };
-          return port.openPage(tabId, call);
+          const target =
+            "shared" in port
+              ? { ...(await port.value.openPage(tabId, call)), port: port.value }
+              : await port.openPage(tabId, call);
+          working(call.contextKey, target.tabId);
+          return target;
         },
         // A page its script holds a handle for, taken up again: its own port says so.
         tookUp: (tabId, contextKey) => {
           const port = this.#ports.get(contextKey);
-          if (port && !("shared" in port)) port.tookUp?.(tabId, contextKey);
+          if (!port) return;
+          working(contextKey, tabId);
+          if (!("shared" in port)) port.tookUp?.(tabId, contextKey);
         },
         newPage: async (input, call) => {
           const port = byContext(call.contextKey);
           if ("shared" in port)
             throw refused("forbidden", "A shared Chrome tab cannot create a new tab.");
-          return port.newPage(input, call);
+          const target = await port.newPage(input, call);
+          working(call.contextKey, target.tabId);
+          return target;
         },
+        // The REPL rechecked access before this command: where it goes is where the work is.
         command: (target, method, params, sessionId, call) => {
           byContext(call.contextKey);
+          working(call.contextKey, target.tabId);
           if ("share" in target)
             return target.port.command(target, method, params, sessionId, call);
           return target.port.command(target, method, params, sessionId, call);
@@ -267,6 +293,8 @@ export class BrowserScriptService {
         this.#ports.set(key, { shared: true, value: port });
       }
       binding.contexts.add(key);
+      // Only a connected agent's session says where it works; a Run's binding is never kept.
+      if (agentBindingId.startsWith("session:")) this.#bindingOf.set(key, agentBindingId);
     }
     // No handle survives a grant change, and nothing is kept to decide later: a context that
     // last ran under another revision of its connection's grant is disposed before this call, as
@@ -297,6 +325,7 @@ export class BrowserScriptService {
       for (const key of binding.contexts) {
         this.#repl.disposeContext(key);
         this.#ports.delete(key);
+        this.#bindingOf.delete(key);
         this.#revisions.delete(key);
       }
     }
@@ -308,6 +337,7 @@ export class BrowserScriptService {
     for (const binding of this.#bindings.values()) binding.lifetime.abort();
     this.#bindings.clear();
     this.#ports.clear();
+    this.#bindingOf.clear();
     this.#revisions.clear();
     await this.#repl.close();
   }

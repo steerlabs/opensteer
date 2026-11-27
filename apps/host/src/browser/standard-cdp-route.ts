@@ -9,7 +9,8 @@ import type { FastifyInstance } from "fastify";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 import { unversionedRoute } from "../server/unversioned-route.js";
-import { OpensteerError } from "@opensteer/core";
+import { OpensteerError, type TabId } from "@opensteer/core";
+import type { AgentWorkingInRegistry } from "../agent-sessions/agent-working-in.js";
 import {
   cdpCommandRefusal,
   connectionAutoAttachParameters,
@@ -46,6 +47,7 @@ export function registerStandardCdpRoute(
   app: FastifyInstance,
   browser: StandardCdpBrowser,
   chromeTabs?: ChromeSharedTabs,
+  workingIn?: Pick<AgentWorkingInRegistry, "note">,
 ): void {
   const upgrades = new WeakMap<object, { upgrade: StandardCdpUpgrade; transferred?: () => void }>();
   const liveByBinding = new Map<string, number>();
@@ -117,6 +119,7 @@ export function registerStandardCdpRoute(
         claims,
         claims.sharedChromeTab && chromeTabs ? chromeTabs : browser,
         pool,
+        workingIn,
       );
     },
   );
@@ -127,8 +130,11 @@ function relayStandardCdp(
   claims: StandardCdpTicketClaims,
   browser: StandardCdpBrowser,
   pool?: StandardCdpPoolReservation,
+  workingIn?: Pick<AgentWorkingInRegistry, "note">,
 ): void {
   const stopping = new AbortController();
+  // The one tab this ticket was issued for: the shared Chrome tab, or the page it attached to.
+  const tabId = claims.sharedChromeTab?.tabId ?? claims.facts.seed?.surfaceId;
   // Settled when the ticket was issued, from the one authority rule's resolution of its binding.
   const connectionWork = claims.facts.agentConnectionId !== null;
   const pending = new Map<string, number>();
@@ -342,6 +348,8 @@ function relayStandardCdp(
           return;
         }
         await authorize(attached.reauthorize);
+        // Rechecked: the connection's work is in its tab now (in memory; a Run's is ignored).
+        if (tabId !== undefined) workingIn?.note(claims.authority.agentBindingId, tabId as TabId);
         const sent =
           connectionWork &&
           request.method === "Target.setAutoAttach" &&

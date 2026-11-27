@@ -1,5 +1,6 @@
 import type { Tab, TabId, TabKind } from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
+import { threadInDirectory } from "./host-snapshot-selectors.js";
 
 /*
  * Where a link the person clicks goes: from a task to the place its agent is
@@ -53,11 +54,31 @@ export function threadAgentPlace(
 }
 
 /**
- * The page tab where a task's agent is working, for the person's Watch: of the pages the task
- * holds that can be shown now, the one its work took up last (the holder's `since`: a script's
- * bind of it, a Run's last action in it), which is the page of its operation in flight, else of
- * its latest. A holder with no time comes after any with one; then the row that changed last.
- * Holding is the Host's word.
+ * Where the person's Watch on a task lands. A connected agent's session that the Home says is
+ * working in a tab (`workingIn`: the tab of its operation in flight, else of its last command)
+ * names that tab; null until its row reaches this client, which Watch waits for. A task the Home
+ * names no tab for (a Run, computer use, an older Home) has the page it holds: `threadAgentPage`.
+ */
+export function watchPage(
+  source: Pick<HostSnapshot, "tabs" | "agentWorkingIn" | "threads" | "tasks" | "activeTasks">,
+  threadId: string,
+): BrowserTabDestination | null {
+  const working = source.agentWorkingIn?.[threadId];
+  const work = threadInDirectory(threadId, source)?.externalWork;
+  // A record of a session that has since ended, or of an earlier one, names nothing.
+  const current =
+    working?.tabId != null &&
+    (!work || (work.status === "active" && work.sessionId === working.sessionId));
+  if (!working || !current) return threadAgentPage(source, threadId);
+  const tab = source.tabs.get(working.tabId!);
+  return tab?.kind === "page" && tab.state !== "unavailable" ? { tabId: tab.tabId } : null;
+}
+
+/**
+ * The page tab a task holds, for Watch when the Home names no tab it is working in, and for its
+ * badge: of the pages the task holds that can be shown now, the one its work took up last (the
+ * holder's `since`: a script's bind of it, a Run's last action in it). A holder with no time
+ * comes after any with one; then the row that changed last. Holding is the Host's word.
  */
 export function threadAgentPage(
   source: Pick<HostSnapshot, "tabs">,

@@ -3531,6 +3531,7 @@ export async function createHostRuntime(
       tabs: browserScriptConfinement.tabs(tabs),
       sharedChromeTabs: chromeTabs,
       ...(options.replWorkerEntry ? { workerEntry: options.replWorkerEntry } : {}),
+      workingIn: (bindingId, tabId) => agentSessions.workingIn.note(bindingId, tabId),
     });
     const agentSessions = new AgentSessionService({
       store,
@@ -3548,6 +3549,9 @@ export async function createHostRuntime(
         });
       },
       onError: (error) => reportAgentSessionError(error),
+      // Where a session works now goes to the person who owns the Home, and to no one else.
+      onWorkingIn: (ownerUserId, notice) =>
+        realtime.sendToUsers([ownerUserId], { type: "host.agent-working-in", ...notice }),
     });
     onSessionRequestClosed = (requestId) => agentSessions.requestClosed(requestId);
     const triggerTools = new TriggerToolHandlers(triggers, store, {

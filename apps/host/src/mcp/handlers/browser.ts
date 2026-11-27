@@ -473,6 +473,8 @@ export class BrowserToolHandlers {
       if (error instanceof BrowserCdpConnectionEnded) throw refused("conflict", error.message);
       throw error;
     }
+    // Its tab is where this work is now, before the agent's own client sends its first frame.
+    this.#ports.sessions?.workingIn.note(context.bindingId, tabId);
     const origin = new URL(this.#ports.origin);
     origin.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
     return {

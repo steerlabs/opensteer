@@ -83,6 +83,7 @@ function fixture(overrides: Partial<BrowserToolPorts> = {}) {
         const result = await operation.execute(context());
         return { status: "completed", taskId: task, operationId: "op", result };
       },
+      workingIn: { note: vi.fn() },
     } as unknown as AgentSessionService,
     tabs: {
       list: vi.fn(async () => ({

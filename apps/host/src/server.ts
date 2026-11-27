@@ -423,6 +423,11 @@ export interface HostServerDependencies {
       readonly threadId: import("@opensteer/core").ThreadId;
       readonly sessionId: import("@opensteer/core").AgentSessionId;
     }): Promise<{ readonly ended: boolean }>;
+    /** Where each connected agent's session is working now, in memory (`threads.activity`). */
+    readonly workingIn?: Pick<
+      import("./agent-sessions/agent-working-in.js").AgentWorkingInRegistry,
+      "note" | "operationTab" | "ofTask"
+    >;
   };
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
@@ -749,7 +754,12 @@ export async function createHostServer(
     personalRemoteAccess: dependencies.personalRemoteAccess?.service,
   });
   registerAgentCdpBridge(app, dependencies.browser, dependencies.runToolTokens);
-  registerStandardCdpRoute(app, dependencies.browser, dependencies.browserSources.liveTabs);
+  registerStandardCdpRoute(
+    app,
+    dependencies.browser,
+    dependencies.browserSources.liveTabs,
+    dependencies.agentOperations?.workingIn,
+  );
   registerAgentToolRoute(app, {
     callers: dependencies.agentTools.options.callers,
     service: dependencies.agentTools,
@@ -2715,6 +2725,7 @@ export async function createHostServer(
             ? (input) =>
                 commandActivity(dependencies.store.database, dependencies.commandRequests!, input)
             : undefined,
+          dependencies.agentOperations?.workingIn,
         )
       : {
           "connections.list": async () => {

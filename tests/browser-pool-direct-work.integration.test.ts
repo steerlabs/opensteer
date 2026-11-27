@@ -10,7 +10,8 @@ import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-tick
 import { BrowserScriptService } from "../apps/host/src/browser-use/browser-script-service.js";
 import { TabService } from "../apps/host/src/tabs/tab-service.js";
 import { operationRow } from "../packages/client/src/host/agent-work.js";
-import { threadAgentPage } from "../packages/client/src/host/agent-place-links.js";
+import { threadAgentPage, watchPage } from "../packages/client/src/host/agent-place-links.js";
+import { createConnectionRpcHandlers } from "../apps/host/src/mcp/connections/connection-routes.js";
 import { listAgentOperations } from "../packages/database/src/agent-session-store.js";
 import { tabReadAuthority } from "../apps/host/src/tabs/tab-authority.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
@@ -27,6 +28,7 @@ import {
 import {
   OpensteerError,
   TabSchema,
+  type AgentWorkingIn,
   type RequestId,
   type ThreadId,
 } from "../packages/core/src/index.js";
@@ -62,6 +64,13 @@ async function directWork(
     readonly endsBrowserWork?: boolean;
     /** Each call's own bound (two minutes). */
     readonly executionMs?: number;
+    /**
+     * The Home's holder record for each tab a script binds is filed under the binding this
+     * names (another session's), and a kept handle taken up again refreshes none: the task holds
+     * no record of the tabs it works in.
+     */
+    readonly misfileHolders?: () =>
+      { readonly bindingId: string; readonly threadId: string } | undefined;
   } = {},
 ) {
   let tabChange: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined;
@@ -90,7 +99,18 @@ async function directWork(
       const tab = await row(tabId);
       if (!(await readable(actor, tab)))
         throw new OpensteerError({ code: "not_found", message: "Tab not found." });
-      const binding = await home().service.pageTabs.bindBrowserScript!(actor, tab);
+      const elsewhere = options.misfileHolders?.();
+      const filed = elsewhere
+        ? ({
+            ...(actor as object),
+            threadId: elsewhere.threadId,
+            authority: {
+              ...(actor as { authority: object }).authority,
+              agentBindingId: elsewhere.bindingId,
+            },
+          } as never)
+        : actor;
+      const binding = await home().service.pageTabs.bindBrowserScript!(filed, tab);
       await options.afterBind?.();
       return binding;
     },
@@ -101,9 +121,12 @@ async function directWork(
     },
   };
   let endBrowserWork: (bindingId: string, reason: string) => void = () => {};
+  /** What the person who owns the Home was told of where each session works, in order. */
+  const workingIn: { readonly ownerUserId: string; readonly notice: AgentWorkingIn }[] = [];
   const sessions = new AgentSessionService({
     store: j.store,
     holdMs: 0,
+    onWorkingIn: (ownerUserId, notice) => workingIn.push({ ownerUserId, notice }),
     ...(options.executionMs ? { executionMs: options.executionMs } : {}),
     ...(options.endsBrowserWork
       ? { closeBinding: (bindingId: string, reason: string) => endBrowserWork(bindingId, reason) }
@@ -111,9 +134,20 @@ async function directWork(
   });
   const confinement = new BrowserScriptConfinement();
   const scripts = new BrowserScriptService({
-    browser: home().service,
+    browser: options.misfileHolders
+      ? new Proxy(home().service, {
+          get: (target, key) =>
+            key === "tabTakenUp"
+              ? undefined
+              : (Reflect.get(target, key) as unknown) instanceof Function
+                ? (Reflect.get(target, key) as (...args: unknown[]) => unknown).bind(target)
+                : Reflect.get(target, key),
+        })
+      : home().service,
     store: j.store,
     tabs: confinement.tabs(scriptTabs as never),
+    // As the Home's runtime wires it.
+    workingIn: (bindingId: string, tabId: never) => sessions.workingIn.note(bindingId, tabId),
   } as never);
   // As the Home's runtime: the session's end closes its raw CDP and its scripts' browser work.
   endBrowserWork = (bindingId, reason) => {
@@ -216,6 +250,7 @@ async function directWork(
   return {
     sessions,
     scripts,
+    workingIn,
     agent,
     use,
     resume,
@@ -3164,5 +3199,336 @@ it("today: settles unknown, and never replays, a command already sent when its t
     expect(after.filter(({ state }) => state === "handed-off")).toHaveLength(0);
   } finally {
     await j.close();
+  }
+});
+
+/*
+ * Where a connected agent's script works now (`workingIn`): set in the Home's memory at each
+ * command that passed its recheck and at each page opened or taken up again, told to the person
+ * who owns the Home when it changes, and read by Watch. It never reads the Home's holder records.
+ */
+
+/** A small site whose pages say their path. */
+async function pagesSite() {
+  const site = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(`<!doctype html><title>${request.url}</title><p>${request.url}</p>`);
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  return { site, origin: `http://127.0.0.1:${(site.address() as AddressInfo).port}` };
+}
+
+/** What the person's client holds after these notices, as it applies them. */
+function heldWorkingIn(notices: readonly { readonly notice: AgentWorkingIn }[]) {
+  const held: Record<string, AgentWorkingIn> = {};
+  for (const { notice } of notices)
+    if (notice.tabId !== null) held[notice.threadId] = notice;
+    else if (held[notice.threadId]?.sessionId === notice.sessionId) delete held[notice.threadId];
+  return held;
+}
+
+/** Where the person's Watch on `threadId` lands, from the Home's own tab rows and the notices. */
+async function watchLands(
+  j: Journey,
+  home: Home,
+  threadId: string,
+  notices: readonly { readonly notice: AgentWorkingIn }[],
+) {
+  const rows = new Map<string, unknown>();
+  for (const tab of (await j.tabs.snapshot(j.task.userId)).rows) {
+    if (tab.kind !== "page") continue;
+    const state = await home.service.pageTabs.state!(j.task.userId, tab);
+    rows.set(
+      tab.id,
+      TabSchema.parse({
+        tabId: tab.id,
+        kind: "page",
+        title: tab.title || "Page",
+        computer: { computerId: j.task.runnerId, name: "Main computer" },
+        groupId: null,
+        state: "open",
+        usedBy: state.usedBy,
+        openedBy: "person",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        url: tab.url ?? "https://example.test/",
+        profile: { profileId: j.profile!.id, name: "Work" },
+      }),
+    );
+  }
+  const source = {
+    tabs: { rows, get: (id: string) => rows.get(id) },
+    agentWorkingIn: heldWorkingIn(notices),
+    threads: [],
+    activeTasks: [],
+  };
+  return watchPage(source as never, threadId)?.tabId ?? null;
+}
+
+const sessionOf = (j: Journey, connectionId?: string) =>
+  vi.waitFor(
+    () => {
+      let query = j.database
+        .selectFrom("agentSessions")
+        .select(["id", "threadId", "status"])
+        .where("userId", "=", j.task.userId)
+        .where("status", "=", "active");
+      if (connectionId) query = query.where("connectionId", "=", connectionId as never);
+      return query.orderBy("startedAt", "desc").executeTakeFirstOrThrow();
+    },
+    { timeout: 10_000 },
+  );
+
+const tabOf = (reply: unknown) => {
+  const content = JSON.stringify((reply as { readonly content?: unknown }).content);
+  const id = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(content)?.[0];
+  if (!id) throw new Error(`The script returned no tab: ${content}`);
+  return id;
+};
+
+it("tells the person where a kept page handle works, with no holder record of the tab: two tabs, a later call on the earlier one", async () => {
+  // Tester run 16: a script context kept its page handle across calls, and the Home named no
+  // holder for the tab it worked in; Watch stayed on the launcher.
+  const { site, origin } = await pagesSite();
+  const j = await journey("direct-working-in-kept", { profile: true });
+  try {
+    const home = await j.startHome();
+    let misfiled: { bindingId: string; threadId: string } | undefined;
+    const work = await directWork(j, () => home, { misfileHolders: () => misfiled });
+    // Another agent's session: the Home files this task's holder records under it.
+    const other = await work.anotherAgent();
+    tabOf(await other(`return (await newPage("${origin}/theirs")).tabId;`));
+    const theirs = await sessionOf(j, other.id);
+    misfiled = { bindingId: `session:${theirs.id}`, threadId: theirs.threadId };
+    const first = tabOf(
+      await work.use(`globalThis.a = await newPage("${origin}/one"); return a.tabId;`),
+    );
+    const second = tabOf(
+      await work.use(`globalThis.b = await newPage("${origin}/two"); return b.tabId;`),
+    );
+    const { threadId } = await sessionOf(j, work.agent.id);
+    expect(second).not.toBe(first);
+    // The later call on the earlier tab, through the handle its context kept.
+    let done = false;
+    const later = work
+      .use(
+        `const page = await openPage(${JSON.stringify(first)}); if (page !== a) throw new Error("not kept"); await page.waitForTimeout(1500); await page.title(); await page.waitForTimeout(3000); return 1;`,
+      )
+      .finally(() => {
+        done = true;
+      });
+    await vi.waitFor(
+      async () => {
+        expect(done).toBe(false);
+        // The Home holds no record of the task in either tab.
+        for (const tab of [first, second]) {
+          const state = await home.service.pageTabs.state!(j.task.userId, await row(j, tab));
+          expect(state.usedBy.some(({ taskId }) => taskId === threadId)).toBe(false);
+        }
+        const last = work.workingIn.at(-1)!;
+        expect(last.notice).toMatchObject({ threadId, tabId: first });
+        expect(last.notice.operationId).not.toBeNull();
+        expect(await watchLands(j, home, threadId, work.workingIn)).toBe(first);
+      },
+      { timeout: 4_000 },
+    );
+    const result = await later;
+    expect(result.isError, text(result)).not.toBe(true);
+    // Only the person who owns the Home heard it; nothing of it reached the agent.
+    expect(new Set(work.workingIn.map(({ ownerUserId }) => ownerUserId))).toEqual(
+      new Set([j.task.userId]),
+    );
+    expect(text(result)).not.toContain("workingIn");
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("tells the person where a script works once it opens a page, before any command on it", async () => {
+  const { site, origin } = await pagesSite();
+  const j = await journey("direct-working-in-open", { profile: true });
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home);
+    const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+    const other = tabOf(await work.use(`return (await newPage("${origin}/two")).tabId;`));
+    const { threadId } = await sessionOf(j);
+    expect(work.workingIn.at(-1)?.notice.tabId).toBe(other);
+    let done = false;
+    // A fresh context opens the first tab again and sends nothing on it.
+    const opening = work
+      .useTab(
+        `await openPage(${JSON.stringify(tab)}); await new Promise((resolve) => setTimeout(resolve, 3000)); return 1;`,
+        tab,
+      )
+      .finally(() => {
+        done = true;
+      });
+    await vi.waitFor(
+      async () => {
+        expect(done).toBe(false);
+        expect(work.workingIn.at(-1)?.notice).toMatchObject({ threadId, tabId: tab });
+        expect(await watchLands(j, home, threadId, work.workingIn)).toBe(tab);
+      },
+      { timeout: 3_000 },
+    );
+    const result = await opening;
+    expect(result.isError, text(result)).not.toBe(true);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("publishes workingIn within one notice of an operation's first command and none on it after it ends, in what the person's activity read returns", async () => {
+  const { site, origin } = await pagesSite();
+  const j = await journey("direct-working-in-publish", { profile: true });
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home);
+    const reads = createConnectionRpcHandlers(
+      { store: new AgentConnectionStore(j.store.database) } as never,
+      undefined,
+      undefined,
+      work.sessions.workingIn,
+    );
+    const owner = {
+      session: { id: "session", user: { id: j.task.userId, disabledAt: null } },
+    } as never;
+    const activity = async (threadId: string) => {
+      const page = await reads["threads.activity"]({ threadId: threadId as ThreadId }, owner);
+      if (!page.ok) throw new Error("The owner's activity read failed.");
+      return page.data;
+    };
+    let done = false;
+    const working = work
+      .use(
+        `const page = await newPage("${origin}/one"); await page.title(); await page.waitForTimeout(3000); await page.title(); return page.tabId;`,
+      )
+      .finally(() => {
+        done = true;
+      });
+    const { threadId } = await sessionOf(j);
+    const during = await vi.waitFor(
+      async () => {
+        expect(done).toBe(false);
+        expect(work.workingIn.length).toBeGreaterThan(0);
+        const page = await activity(threadId);
+        const running = page.operations.find(({ outcome }) => outcome === null);
+        expect(running?.workingIn).toBeDefined();
+        return { page, running: running! };
+      },
+      { timeout: 3_000 },
+    );
+    // One notice for the page it opened and every command on it: the tab did not change.
+    expect(work.workingIn).toEqual([
+      {
+        ownerUserId: j.task.userId,
+        notice: {
+          threadId,
+          sessionId: expect.any(String),
+          operationId: during.running.id,
+          tabId: during.running.workingIn,
+        },
+      },
+    ]);
+    expect(during.page.workingIn).toEqual(work.workingIn[0]!.notice);
+    const result = await working;
+    expect(result.isError, text(result)).not.toBe(true);
+    expect(tabOf(result)).toBe(during.running.workingIn);
+    // Ended: its operation carries no tab; the session keeps its last one, in flight nowhere.
+    const after = await activity(threadId);
+    expect(after.operations.find(({ id }) => id === during.running.id)).not.toHaveProperty(
+      "workingIn",
+    );
+    expect(after.operations.some((operation) => "workingIn" in operation)).toBe(false);
+    expect(after.workingIn).toEqual({ ...during.page.workingIn, operationId: null });
+    expect(work.workingIn.at(-1)!.notice).toEqual(after.workingIn);
+    expect(work.workingIn).toHaveLength(2);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("keeps each connection's workingIn to its own task, and starts over after the person's Stop and a new task", async () => {
+  const { site, origin } = await pagesSite();
+  const j = await journey("direct-working-in-two", { profile: true });
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home, { endsBrowserWork: true });
+    const mine = tabOf(await work.use(`return (await newPage("${origin}/mine")).tabId;`));
+    const first = await sessionOf(j, work.agent.id);
+    const other = await work.anotherAgent();
+    const theirs = tabOf(await other(`return (await newPage("${origin}/theirs")).tabId;`));
+    const second = await sessionOf(j, other.id);
+    expect(second.threadId).not.toBe(first.threadId);
+    expect(heldWorkingIn(work.workingIn)).toMatchObject({
+      [first.threadId]: { tabId: mine },
+      [second.threadId]: { tabId: theirs },
+    });
+    expect(await watchLands(j, home, first.threadId, work.workingIn)).toBe(mine);
+    expect(await watchLands(j, home, second.threadId, work.workingIn)).toBe(theirs);
+    // The person stops the first agent's task: its record goes; the other's stays.
+    await work.sessions.stopSession({
+      ownerUserId: j.task.userId,
+      threadId: first.threadId as ThreadId,
+      sessionId: first.id,
+    });
+    await vi.waitFor(() =>
+      expect(work.workingIn.at(-1)?.notice).toMatchObject({
+        threadId: first.threadId,
+        sessionId: first.id,
+        tabId: null,
+      }),
+    );
+    expect(heldWorkingIn(work.workingIn)).not.toHaveProperty(first.threadId);
+    expect(heldWorkingIn(work.workingIn)).toHaveProperty(second.threadId);
+    // Its next call hears of the Stop; the one after is a new task, in its own tab, and nothing
+    // carries over.
+    expect(text(await work.use(`return 1;`))).toContain("stopped_by_person");
+    const next = tabOf(await work.use(`return (await newPage("${origin}/next")).tabId;`));
+    const third = await sessionOf(j, work.agent.id);
+    expect(third.threadId).not.toBe(first.threadId);
+    expect(heldWorkingIn(work.workingIn)[third.threadId]).toMatchObject({
+      sessionId: third.id,
+      tabId: next,
+    });
+    expect(await watchLands(j, home, third.threadId, work.workingIn)).toBe(next);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("tells the person where a browser_connect client works: its tab at the attach, and again at its next frame after a script worked elsewhere", async () => {
+  const { site, origin } = await pagesSite();
+  const j = await journey("direct-working-in-connect", { profile: true });
+  let endpoint: Awaited<ReturnType<typeof standardCdpEndpoint>> | undefined;
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home);
+    endpoint = await standardCdpEndpoint(() => home.service, work.sessions.workingIn);
+    const first = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+    const { threadId } = await sessionOf(j);
+    const issued = await work.connectTab(first);
+    expect(issued.isError, text(issued)).not.toBe(true);
+    expect(work.workingIn.at(-1)?.notice).toMatchObject({ threadId, tabId: first });
+    const second = tabOf(await work.use(`return (await newPage("${origin}/two")).tabId;`));
+    expect(work.workingIn.at(-1)?.notice).toMatchObject({ threadId, tabId: second });
+    const cdp = await endpoint.open((issued.structuredContent as { endpoint: string }).endpoint);
+    await cdp.send("Target.getTargets");
+    expect(work.workingIn.at(-1)?.notice).toMatchObject({
+      threadId,
+      operationId: null,
+      tabId: first,
+    });
+    expect(await watchLands(j, home, threadId, work.workingIn)).toBe(first);
+  } finally {
+    await endpoint?.close();
+    await j.close();
+    site.close();
   }
 });

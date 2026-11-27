@@ -92,16 +92,21 @@ export function taskActivityKey(
 
 /** A connected agent's task's operations, newest first, as `threads.activity` lists them. */
 export async function readTaskActivity(
-  client: { readonly rpc: Pick<HostClient["rpc"], "threads.activity"> },
+  client: { readonly rpc: Pick<HostClient["rpc"], "threads.activity"> } & Partial<
+    Pick<HostClient, "noteTaskActivity">
+  >,
   threadId: string,
   signal?: AbortSignal,
 ): Promise<readonly AgentOperationView[]> {
-  return unwrapRpcResult(
+  const page = unwrapRpcResult(
     await client.rpc["threads.activity"](
       { threadId: ThreadIdSchema.parse(threadId) },
       signal ? { signal } : undefined,
     ),
-  ).operations;
+  );
+  // Where its agent works now reaches the snapshot too, for a client that connected mid-work.
+  client.noteTaskActivity?.(threadId, page.workingIn);
+  return page.operations;
 }
 
 /** A direct operation's Request in its parts, as the Home sends them on the Request. */
