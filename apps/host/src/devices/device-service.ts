@@ -262,14 +262,15 @@ export function agentSessionComputerKey(sessionId: AgentSessionId): RunId {
 export async function endSessionComputerWork(
   bindingId: string,
   ports: {
-    readonly computerUse: { closeForAgentSession(runId: RunId): Promise<void> } | undefined;
+    readonly computerUse:
+      { closeForAgentSession(runId: RunId, sessionId: AgentSessionId): Promise<void> } | undefined;
     readonly devices: Pick<DeviceService, "endComputerSession">;
   },
 ): Promise<void> {
   const session = AgentSessionIdSchema.safeParse(bindingId.replace(/^session:/u, ""));
   if (!bindingId.startsWith("session:") || !session.success) return;
   await Promise.all([
-    ports.computerUse?.closeForAgentSession(agentSessionComputerKey(session.data)),
+    ports.computerUse?.closeForAgentSession(agentSessionComputerKey(session.data), session.data),
     ports.devices.endComputerSession(session.data),
   ]);
 }
@@ -1835,6 +1836,7 @@ export class DeviceService {
       runId: agentSessionComputerKey(session.sessionId),
       bindingGeneration: 0,
       threadId: session.taskId,
+      sessionId: session.sessionId,
       ...(session.driver ? { driver: session.driver } : {}),
       assertDispatch: () => this.#assertSessionComputer(session),
       ...(session.submitted ? { submitted: session.submitted } : {}),

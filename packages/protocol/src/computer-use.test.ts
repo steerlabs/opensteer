@@ -416,6 +416,17 @@ describe("computer use on the integrations stream", () => {
     type: "host.integrations.computer-use",
   } as const;
 
+  it("preserves an unconfirmed stop from the desktop bridge to the Home", () => {
+    const event = {
+      event: "session.stopped",
+      params: { reason: "app-quit", sessionId, unconfirmed: true },
+    } as const;
+    const bridge = { kind: "event", ...event };
+    const runner = { ...fence, type: "runner.integrations.computer-use-event", event };
+    expect(ComputerUseBridgeFrameSchema.parse(bridge)).toEqual(bridge);
+    expect(IntegrationsModuleEventSchema.parse(runner)).toEqual(runner);
+  });
+
   it("round-trips the frame pair beside invoke and result", () => {
     expect(HostToIntegrationsModuleMessageSchema.parse(computerUse)).toEqual(computerUse);
     // Required so every sender states it; null is an untitled Thread.

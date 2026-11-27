@@ -925,6 +925,19 @@ export function migrationProvider(options?: {
                       'tab-closed', 'contact-lost'))`.execute(database);
                 },
               },
+              "0124_agent_session_device_holds": {
+                async up(database: Kysely<unknown>) {
+                  await sql`create table agent_session_device_holds (
+                    id text primary key,
+                    session_id text not null references agent_sessions(id) on delete cascade,
+                    device_name text not null,
+                    home_process_id uuid not null,
+                    unconfirmed_at timestamptz
+                  );
+                  create index agent_session_device_holds_session
+                    on agent_session_device_holds(session_id)`.execute(database);
+                },
+              },
             }
           : {}),
       };

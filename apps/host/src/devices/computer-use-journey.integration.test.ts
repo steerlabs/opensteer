@@ -10,6 +10,7 @@ import {
 import { computer_use as computerUseTool } from "@opensteer/agent-tools/tools";
 import {
   AgentGrantSchema,
+  OpensteerError,
   ToolFailureSchema,
   type RequestId,
   type ThreadAccessMode,
@@ -5213,6 +5214,7 @@ async function createWorld(
   });
   computerUse = new ComputerUseService({
     deploymentId: owner.deploymentId,
+    agentSessionDatabase: database,
     hub,
     ...(options.passwords
       ? {
@@ -6054,6 +6056,114 @@ integration.sequential("Computer use for a connected agent, through its session"
 
   const tapScript =
     'const p=await phone("Pixel 8"); await p.observe(); await p.tap(1); return "tapped"';
+
+  async function disconnect(s: Awaited<ReturnType<typeof connectedAgent>>) {
+    await s.agents.revoke(s.world.owner.userId, s.record.id);
+    await s.world.store.driveConnectionCleanups({
+      stopper: {
+        stop: async () => {},
+        stopAgentSession: (attempt, change, settle) =>
+          s.sessions.stopAgentSession(attempt.id, connectionCleanupEnding(change.reason), settle),
+      },
+    });
+    return (await s.agents.list(s.world.owner.userId, { includeRevoked: true })).find(
+      ({ id }) => id === s.record.id,
+    );
+  }
+
+  it.each(["lease release", "authority refusal"])(
+    "settles an unsent reserved Mac hold after the last call ends by %s",
+    async (ending) => {
+      const s = await connectedAgent("full-access", { target: "mac" });
+      const { computerUse, fakeMac, hub, owner } = s.world;
+      let resolveRefusal: (() => void) | undefined;
+      try {
+        const started = await s.call({ code: "return 1" }, "unsent-hold");
+        expect(started.status).toBe("completed");
+        const { sessionId } = await s.operation("unsent-hold");
+        const machine = { ownerUserId: owner.userId, deviceId: s.computerId, deviceName: mac };
+        const authority = {
+          kind: "agent-session" as const,
+          runId: agentSessionComputerKey(sessionId),
+          bindingGeneration: 0 as const,
+          threadId: started.taskId,
+          sessionId,
+          assertActive: async () => {},
+        };
+        const target = { kind: "app" as const, app: apps.notes, access: "read" as const };
+        const first = await computerUse.prepare(machine, authority);
+        const checking = Promise.withResolvers<void>();
+        const refuse = Promise.withResolvers<void>();
+        const last =
+          ending === "lease release" ? await computerUse.prepare(machine, authority) : null;
+        if (!last) resolveRefusal = refuse.resolve;
+        const refused = last
+          ? undefined
+          : expect(
+              computerUse.prepare(machine, {
+                ...authority,
+                assertActive: async () => {
+                  checking.resolve();
+                  await refuse.promise;
+                  throw new OpensteerError({ code: "forbidden", message: "Authority ended." });
+                },
+              }),
+            ).rejects.toThrow("authority has ended");
+        if (refused) await checking.promise;
+        vi.spyOn(hub, "sendComputerUse").mockRejectedValueOnce(new Error("Before submission"));
+        await expect(computerUse.sendObserve(first, target, false)).rejects.toThrow(
+          "Before submission",
+        );
+        expect(await database.selectFrom("agentSessionDeviceHolds").select("id").execute()).toEqual(
+          [{ id: first.sessionId }],
+        );
+        if (last) computerUse.release(last);
+        else refuse.resolve();
+        await refused;
+        expect(fakeMac.openSessions()).toEqual([]);
+        expect(fakeMac.closeReceivedCount).toBe(0);
+        expect(await disconnect(s)).toMatchObject({ state: "stopped", lastActionUncertain: false });
+        await expect(s.agents.remove(owner.userId, s.record.id)).resolves.toBeUndefined();
+      } finally {
+        resolveRefusal?.();
+        await s.world.close();
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "settles a Mac hold from a stopped event with unconfirmed=%s",
+    async (unconfirmed) => {
+      const s = await connectedAgent("full-access", { target: "mac" });
+      const fakeMac = s.world.fakeMac;
+      try {
+        const opened = await s.call({
+          code: 'await (await (await app("Notes")).window()).observe();',
+        });
+        expect(opened.status).toBe("completed");
+        const [hold] = s.world.computerUse.sessionsForRunner(s.computerId);
+        expect(hold).toBeDefined();
+        if (!unconfirmed) fakeMac.stopFromPill();
+        else {
+          const params = {
+            sessionId: hold!.sessionId,
+            reason: "app-quit" as const,
+            unconfirmed: true as const,
+          };
+          s.world.computerUse.handleHelperEvent(s.computerId, { event: "session.stopped", params });
+          expect(fakeMac.openSessions()).toEqual([hold!.sessionId]);
+        }
+        expect(await disconnect(s)).toMatchObject({
+          state: "stopped",
+          lastActionUncertain: unconfirmed,
+          ...(unconfirmed ? { lastActionUncertainDetail: { device: mac } } : {}),
+        });
+        expect(fakeMac.closeReceivedCount).toBe(0);
+      } finally {
+        await s.world.close();
+      }
+    },
+  );
 
   it("runs the granted phone screen in full-access, names it on its Device, and shows its task on the phone", async () => {
     const s = await connectedAgent("full-access");
@@ -7606,6 +7716,90 @@ integration.sequential("Computer use for a connected agent, through its session"
       }
     });
   }
+
+  it.each(["failed", "outcome-unknown", "lost"] as const)(
+    "accounts for a preceding task Stop when the Mac close is %s",
+    async (failure) => {
+      const s = await connectedAgent("full-access", { target: "mac" });
+      const fakeMac = s.world.fakeMac;
+      const closeAck = Promise.withResolvers<void>();
+      try {
+        const opened = await s.call(
+          { code: 'await (await (await app("Notes")).window()).observe();' },
+          "retained-mac-hold",
+        );
+        expect(opened.status).toBe("completed");
+        const holds = fakeMac.openSessions();
+        expect(holds).toHaveLength(1);
+        const { sessionId } = await s.operation("retained-mac-hold");
+        if (failure === "lost") fakeMac.closeGate = closeAck.promise;
+        else fakeMac.closeFailureCode = failure;
+        expect(
+          await s.sessions.stopSession({
+            ownerUserId: s.world.owner.userId,
+            threadId: opened.taskId,
+            sessionId,
+          }),
+        ).toEqual({ ended: true });
+        if (failure === "lost") {
+          await fakeMac.reached("close");
+          fakeMac.detach();
+        } else await vi.waitFor(() => expect(fakeMac.closeCompletedCount).toBe(1));
+        expect(fakeMac.openSessions()).toEqual(holds);
+        expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
+
+        const driveCleanup = () =>
+          s.world.store.driveConnectionCleanups({
+            stopper: {
+              stop: async () => {},
+              stopAgentSession: (attempt, change, settle) =>
+                s.sessions.stopAgentSession(
+                  attempt.id,
+                  connectionCleanupEnding(change.reason),
+                  settle,
+                ),
+            },
+            onCleanup: (change) =>
+              s.sessions.closeConnection(
+                change.connectionId,
+                false,
+                connectionCleanupEnding(change.reason),
+              ),
+          });
+        const receipt = async () =>
+          (await s.agents.list(s.world.owner.userId, { includeRevoked: true })).find(
+            ({ id }) => id === s.record.id,
+          );
+        await s.agents.revoke(s.world.owner.userId, s.record.id);
+        await driveCleanup();
+        expect(fakeMac.openSessions()).toEqual(holds);
+        if (failure !== "failed") {
+          expect(await receipt()).toMatchObject({
+            state: "stopped",
+            lastActionUncertain: true,
+            lastActionUncertainDetail: {
+              device: mac,
+              reason: "The device has not confirmed that its computer use ended.",
+            },
+          });
+          s.world.computerUse.sweep();
+          await driveCleanup();
+          expect(fakeMac.closeReceivedCount).toBe(1);
+          expect(fakeMac.openSessions()).toEqual(holds);
+          return;
+        }
+        expect(await receipt()).toMatchObject({ state: "stopping", lastActionUncertain: false });
+
+        fakeMac.closeFailureCode = null;
+        await driveCleanup();
+        expect(fakeMac.openSessions()).toEqual([]);
+        expect(await receipt()).toMatchObject({ state: "stopped", lastActionUncertain: false });
+      } finally {
+        closeAck.resolve();
+        await s.world.close();
+      }
+    },
+  );
 
   for (const ending of ["Stop on the task", "Disconnect"] as const) {
     it(`ends the script in flight on ${ending}, closes the phone's session, and refuses the next call`, async () => {

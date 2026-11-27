@@ -849,7 +849,7 @@ export class ComputerUseBridgeServer {
         send(socket, {
           event: "session.stopped",
           kind: "event",
-          params: { reason: "app-quit", sessionId },
+          params: { reason: "app-quit", sessionId, unconfirmed: true },
         });
       }
     });
@@ -951,14 +951,14 @@ export class ComputerUseBridgeServer {
         else if (outcome.kind === "late") {
           request.abort();
           const session = iphoneRunnerParams["iphone.session.close"].strip().safeParse(params);
-          if (session.success)
+          if (session.success && method !== "iphone.session.close" && method !== "iphone.cancel")
             void owner.iphone
               .request("iphone.cancel", session.data, {
                 deadline: this.#now() + sessionCloseTimeoutMs,
               })
               .catch(() => undefined);
           refuse(
-            method === "iphone.perform" ? "outcome-unknown" : "failed",
+            computerUseRequestMayHaveEffect(method, params) ? "outcome-unknown" : "failed",
             "The iPhone did not answer in time.",
           );
         } else {
@@ -1396,13 +1396,13 @@ export class ComputerUseBridgeServer {
       }
     }
     this.#refuseWith(refuse, method, params, outcome);
-    // After the answer, so the Runner reads the refusal first: the session it
-    // named is gone, and its Host must start another rather than reuse it.
+    // Fence the binding after the Runner reads the refusal. The helper has
+    // not confirmed that the session is gone.
     if (endedLate && sessionId && owner.alive) {
       send(socket, {
         event: "session.stopped",
         kind: "event",
-        params: { reason: "app-quit", sessionId },
+        params: { reason: "app-quit", sessionId, unconfirmed: true },
       });
     }
   }

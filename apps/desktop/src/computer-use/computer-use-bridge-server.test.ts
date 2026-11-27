@@ -698,7 +698,7 @@ describe("ComputerUseBridgeServer", () => {
         {
           event: "session.stopped",
           kind: "event",
-          params: { reason: "app-quit", sessionId: sessionA },
+          params: { reason: "app-quit", sessionId: sessionA, unconfirmed: true },
         },
       ]),
     );
@@ -793,13 +793,13 @@ describe("ComputerUseBridgeServer", () => {
       expect(second.events).toContainEqual({
         event: "session.stopped",
         kind: "event",
-        params: { reason: "app-quit", sessionId: sessionB },
+        params: { reason: "app-quit", sessionId: sessionB, unconfirmed: true },
       }),
     );
     expect(first.events).toContainEqual({
       event: "session.stopped",
       kind: "event",
-      params: { reason: "app-quit", sessionId: sessionA },
+      params: { reason: "app-quit", sessionId: sessionA, unconfirmed: true },
     });
   });
 
@@ -1379,6 +1379,34 @@ it.each(["deadline", "disconnect"])("aborts an iPhone observation on %s", async 
     socket.close();
   }
   await vi.waitFor(() => expect(signal.aborted).toBe(true));
+});
+
+it("reports a late iPhone close as unknown without sending another close", async () => {
+  const methods: string[] = [];
+  const harness = await bridgeHarness({
+    graceMs: 20,
+    iphone: {
+      connect: () => ({
+        async request(method, _params, { signal }) {
+          methods.push(method);
+          return new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        },
+        close() {},
+      }),
+    },
+  });
+  const socket = await harness.connect(harness.token, undefined, undefined, true);
+  await expect(
+    socket.call(
+      1,
+      "iphone.session.close",
+      { deviceId: createId("device"), driverGeneration: 1, sessionId: "session", runId: "run" },
+      100,
+    ),
+  ).resolves.toMatchObject({ error: { code: "outcome-unknown" } });
+  expect(methods).toEqual(["iphone.session.close"]);
 });
 
 it.skipIf(process.platform === "win32")(

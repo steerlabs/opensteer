@@ -1223,6 +1223,8 @@ const computerUseEventVariants = [
     event: z.literal("session.stopped"),
     params: z.strictObject({
       reason: ComputerUseStopReasonSchema,
+      /** A local fence announced without a receipt from the helper. */
+      unconfirmed: z.literal(true).optional(),
       /**
        * The Run the stopped session belonged to. A phone names it, because
        * its owner's Stop can reach the Host only on a later stream, after the
@@ -1303,7 +1305,10 @@ export function computerUseRequestMayHaveEffect(method: string, params: unknown)
     method === "display.input" ||
     method === "display.input-reset" ||
     method === "session.act" ||
+    method === "session.close" ||
     method === "iphone.perform" ||
+    method === "iphone.session.close" ||
+    method === "iphone.cancel" ||
     method === "imessage.send" ||
     method === "view.open" ||
     method === "view.activate"

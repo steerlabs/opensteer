@@ -780,8 +780,8 @@ export class ComputerUseHandler {
   }
 
   /**
-   * Ends one session on the Mac and tells the Host it ended, which is what
-   * makes the Run's next call start a session of its own.
+   * Withdraws one session and asks the Mac to close it. The Host can already
+   * drop its binding, but the notification carries no close receipt.
    */
   #endSession(sessionId: ComputerUseSessionId): void {
     void this.#request(
@@ -792,7 +792,7 @@ export class ComputerUseHandler {
     this.#announce({
       event: "session.stopped",
       kind: "event",
-      params: { reason: "app-quit", sessionId },
+      params: { reason: "app-quit", sessionId, unconfirmed: true },
     });
   }
 
@@ -903,13 +903,13 @@ export class ComputerUseHandler {
     for (const listener of this.#grantListeners) listener();
     const sessions = [...this.#sessions.keys()];
     this.#forgetEverySession();
-    // The desktop ends native ownership when this socket goes away. Tell the
-    // Host even when no call is pending, so its live session cannot outlast it.
+    // The desktop starts cleanup when this socket goes away. The Host must
+    // withdraw its binding even with no pending call or close receipt.
     for (const sessionId of sessions) {
       this.#announce({
         event: "session.stopped",
         kind: "event",
-        params: { reason: "app-quit", sessionId },
+        params: { reason: "app-quit", sessionId, unconfirmed: true },
       });
     }
   }
