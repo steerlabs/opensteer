@@ -854,6 +854,12 @@ describe("iPhone screen driver", () => {
       } else if (code === "outcome-unknown") {
         await expect(close()).rejects.toMatchObject({ code });
         expect(reply).toHaveBeenCalledOnce();
+        const reopen = vi.fn(async () => ({ nativeEpoch: 1 }));
+        f.bridge.replies.set("iphone.session.open", reopen);
+        await expect(f.observe(context, observeParams)).rejects.toMatchObject({
+          code: "no-session",
+        });
+        expect(reopen).not.toHaveBeenCalled();
       }
     },
   );

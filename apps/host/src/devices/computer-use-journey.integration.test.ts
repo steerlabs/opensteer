@@ -6148,7 +6148,7 @@ integration.sequential("Computer use for a connected agent, through its session"
           const params = {
             sessionId: hold!.sessionId,
             reason: "app-quit" as const,
-            unconfirmed: true,
+            unconfirmed: true as const,
           };
           s.world.computerUse.handleHelperEvent(s.computerId, { event: "session.stopped", params });
           expect(fakeMac.openSessions()).toEqual([hold!.sessionId]);

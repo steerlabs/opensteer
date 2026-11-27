@@ -452,6 +452,8 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     )
       failure("busy", "Another session holds this iPhone screen.");
     if (phone.session) return phone.session;
+    if (phone.closing.has(closeKey(context)))
+      failure("no-session", "That iPhone session has ended.");
     const session = ref(context);
     phone.session = session;
     try {
