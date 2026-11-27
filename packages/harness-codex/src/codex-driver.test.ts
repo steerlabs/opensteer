@@ -1220,6 +1220,7 @@ describe("Codex app-server harness", () => {
     temporaryDirectories.push(directory);
     const lifetime = new AbortController();
     const capturePath = join(directory, "capture.jsonl");
+    const initializeSent = whenSent("initialize");
     const preparation = new CodexHarnessDriver({
       launch: fakeLaunch("handshake-timeout"),
     }).prepare({
@@ -1232,9 +1233,8 @@ describe("Codex app-server harness", () => {
     });
     const rejected = expect(preparation).rejects.toThrow("closed");
     try {
-      await vi.waitFor(async () => {
-        expect(await readFile(capturePath, "utf8")).toContain('"method":"initialize"');
-      });
+      // Sent, and never answered in this scenario: no wait on how fast Codex starts.
+      await initializeSent;
     } finally {
       lifetime.abort();
     }
