@@ -50,7 +50,10 @@ export function useAccessSwitch(
         }
         return true;
       } catch (reason) {
-        setNotice({ conflict: false, text: failureWords(reason) ?? "" });
+        setNotice({
+          conflict: false,
+          text: failureWords(reason) ?? "That didn’t work. Try again.",
+        });
         return false;
       } finally {
         busy.current = false;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   menuBarWords,
   type MenuBarSwitchInput,
@@ -71,6 +71,7 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
   const [stopFailure, setStopFailure] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [pendingSwitch, setPendingSwitch] = useState<MenuBarSwitchInput | null>(null);
+  const switchBusy = useRef(false);
   const [busy, act] = usePending(setFailure);
   const [stopping, stopAct] = usePending(setStopFailure);
   useEffect(() => {
@@ -214,7 +215,8 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
               thisMac={status.thisMac}
               onSet={(capability, on, revision) => {
                 const thisMac = status.thisMac;
-                if (!thisMac || pendingSwitch) return;
+                if (!thisMac || switchBusy.current) return;
+                switchBusy.current = true;
                 const input = {
                   deploymentId: thisMac.deploymentId,
                   machineId: thisMac.machineId,
@@ -226,7 +228,10 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
                 void act(`switch:${capability}`, async () => {
                   await bridge.setSwitch(input);
                   showStatus(await bridge.status());
-                }).finally(() => setPendingSwitch(null));
+                }).finally(() => {
+                  switchBusy.current = false;
+                  setPendingSwitch(null);
+                });
               }}
             />
           ) : null}

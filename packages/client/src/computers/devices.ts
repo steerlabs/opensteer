@@ -168,6 +168,16 @@ export type DeviceCapability = "browser" | "apps" | "files";
 
 const deviceCapabilities: readonly DeviceCapability[] = ["browser", "apps", "files"];
 
+/** Whether supported access is on in the latest policy this viewer holds. */
+export function deviceSwitchOn(
+  machine: MachineSummary,
+  capability: DeviceCapability,
+): boolean | null {
+  const supported = machine.capabilities?.[capability].supported;
+  if (supported === false) return false;
+  return supported && machine.access ? deviceAccess(machine.access.policy)[capability] : null;
+}
+
 export type DeviceAccessRow =
   | {
       readonly capability: DeviceCapability;
@@ -188,14 +198,13 @@ export function deviceAccessRows(
 ): readonly DeviceAccessRow[] {
   const capabilities = machine.capabilities;
   if (!capabilities) return [];
-  const policy = machine.access ? deviceAccess(machine.access.policy) : null;
   return deviceCapabilities.flatMap((capability): DeviceAccessRow[] => {
     const fact = capabilities[capability];
     if (!fact.supported) return [];
     if (!fact.configurable) return [{ capability, kind: "fixed", reason: "home" }];
     if (!devicesAvailable && capability !== "files")
       return [{ capability, kind: "fixed", reason: "older-host" }];
-    return [{ capability, kind: "switch", on: policy?.[capability] ?? null }];
+    return [{ capability, kind: "switch", on: deviceSwitchOn(machine, capability) }];
   });
 }
 

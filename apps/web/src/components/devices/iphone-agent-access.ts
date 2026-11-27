@@ -1,4 +1,4 @@
-import { withDeviceSwitch } from "@opensteer/client/computers";
+import { deviceSwitchOn, withDeviceSwitch } from "@opensteer/client/computers";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import { setPhoneUseAccess } from "@opensteer/client/integrations";
 import type { IntegrationAccess } from "@opensteer/integration-core";
@@ -28,7 +28,7 @@ export async function setIphoneAgentAccess(
     await client.refresh();
     return;
   }
-  if (machine.capabilities?.apps.enabled === false && machine.access) {
+  if (deviceSwitchOn(machine, "apps") === false && machine.access) {
     const result = await client.updateMachineAccess({
       deviceId: machine.id,
       expectedRevision: machine.access.revision,

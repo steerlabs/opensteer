@@ -226,6 +226,31 @@ describe("This Mac", () => {
     }
   });
 
+  it("admits only one switch change before the pending state renders", async () => {
+    const value = bridge(menuBarStates.localHome);
+    const view = await render(value);
+    const saved = Promise.withResolvers<void>();
+    try {
+      const input = (capability: string) =>
+        view.node
+          .querySelector(`#menu-bar-switch-${capability}`)!
+          .closest("li")!
+          .querySelector("input")!;
+      const apps = input("apps");
+      const browser = input("browser");
+      expect(browser.disabled).toBe(false);
+      vi.mocked(value.setSwitch).mockImplementationOnce(() => {
+        browser.click();
+        return saved.promise;
+      });
+      await act(async () => apps.click());
+      expect(value.setSwitch).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => saved.resolve());
+      await view.close();
+    }
+  });
+
   it("shows the saved switch even if the previous status arrives late", async () => {
     const base = menuBarStates.localHome;
     const statusWithApps = (on: boolean, revision: number): MenuBarStatus => ({

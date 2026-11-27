@@ -223,7 +223,13 @@ describe("what agents can use on a computer", () => {
     expect(computerRole(machine(), [{ kind: "commands" }], true)).toBe("uses");
     expect(computerRole(machine(), [], true)).toBe("idle");
     // Its browser is lent with no app on: it has shared something.
-    expect(computerRole(machine({ modules: { browser: ready } }), [], true)).toBe("uses");
+    const browser = machine({ modules: { browser: ready }, access: reachable() });
+    expect(computerRole(browser, [], true)).toBe("uses");
+    const closed = {
+      ...browser,
+      access: { ...browser.access!, policy: { ...browser.access!.policy, browser: false } },
+    };
+    expect(computerRole(closed, [], true)).toBe("idle");
     // Its apps have not loaded: saying "nothing shared" would be a guess.
     expect(computerRole(machine(), [], false)).toBeNull();
     // A teammate's sharing is theirs, and nobody else is told it.

@@ -16,7 +16,7 @@ import {
   setPhoneUseAccess,
 } from "@opensteer/client/integrations";
 import { TabTargetSchema } from "@opensteer/core";
-import { computerStatus, deviceStoppedLabel } from "@opensteer/client/computers";
+import { computerStatus, deviceStoppedLabel, deviceSwitchOn } from "@opensteer/client/computers";
 import {
   canRespondToRequests,
   mutationIdempotencyKey,
@@ -360,7 +360,7 @@ function DevicePage(props: {
       apps.data === null
         ? null
         : phoneUseView({ ...apps.data, hostConnected: canRespond, machine });
-    const appsOn = machine.capabilities?.apps.enabled !== false;
+    const appsOn = deviceSwitchOn(machine, "apps") !== false;
     const setup = phoneScreenSetupLine(machine);
     const tab = TabTargetSchema.safeParse({ kind: "phone", computerId: machine.id });
     const disconnect = screenMac.attached
