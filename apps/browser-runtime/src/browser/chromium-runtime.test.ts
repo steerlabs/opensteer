@@ -3196,6 +3196,117 @@ it.each([1, 2, 3, 4, 5])(
   90_000,
 );
 
+it("follows document.title changes and single-page app navigations without a load", async () => {
+  const server = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    if (request.url === "/untitled") {
+      response.end("<!doctype html><body>no title yet</body>");
+      return;
+    }
+    response.end("<!doctype html><title>Load title</title><body><div id='app'>start</div></body>");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing HTTP port.");
+  const origin = `http://127.0.0.1:${address.port}`;
+
+  const launcher = new PlaywrightChromiumLauncher({ executablePath });
+  const claims = validClaims({
+    initialNavigation: { operationKey: "title-follow-init", url: `${origin}/start` },
+  });
+  const runtime = new BrowserRuntime({
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: new FakeTicketVerifier(claims),
+  });
+  cleanup.push(() => runtime.shutdown());
+
+  const sink = new FakeSink();
+  const attachment = await runtime.attach("ticket", sink);
+  cleanup.push(() => attachment.close());
+  const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+  const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+    sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+
+  const tabRow = () => [...sink.tabs.rows.values()][0];
+  await vi.waitFor(() => expect(tabRow()).toMatchObject({ title: "Load title" }), {
+    timeout: 10_000,
+  });
+
+  const listed = z
+    .object({
+      tabs: z.array(z.object({ surfaceId: z.string(), targetId: z.string().nullable() })),
+    })
+    .parse(await agent("Opensteer.listTabs", {})).tabs;
+  const targetId = listed[0]!.targetId!;
+  const cdpSessionId = String(
+    asRecord(await agent("Target.attachToTarget", { flatten: true, targetId })).sessionId,
+  );
+
+  // 1) Direct document.title assignment after load.
+  await agent(
+    "Runtime.evaluate",
+    { expression: `document.title = "Script title"`, returnByValue: true },
+    cdpSessionId,
+  );
+  await vi.waitFor(() => expect(tabRow()).toMatchObject({ title: "Script title" }), {
+    timeout: 4_000,
+  });
+
+  // 2) Text node mutation inside <title>.
+  await agent(
+    "Runtime.evaluate",
+    {
+      expression: `document.querySelector("title").firstChild.data = "Text node title"`,
+      returnByValue: true,
+    },
+    cdpSessionId,
+  );
+  await vi.waitFor(() => expect(tabRow()).toMatchObject({ title: "Text node title" }), {
+    timeout: 4_000,
+  });
+
+  // 3) Single-page app navigation without a load where title updates asynchronously after pushState.
+  await agent(
+    "Runtime.evaluate",
+    {
+      expression: `history.pushState({}, "", "/spa-route"); setTimeout(() => { document.title = "SPA route title"; }, 50); true`,
+      returnByValue: true,
+    },
+    cdpSessionId,
+  );
+  await vi.waitFor(
+    () =>
+      expect(tabRow()).toMatchObject({
+        url: `${origin}/spa-route`,
+        title: "SPA route title",
+      }),
+    { timeout: 4_000 },
+  );
+
+  // 4) Document starting with no <title> element gets one created later and then removed.
+  await agent("Page.navigate", { url: `${origin}/untitled` }, cdpSessionId);
+  await vi.waitFor(() => expect(tabRow()).toMatchObject({ url: `${origin}/untitled`, title: "" }), {
+    timeout: 10_000,
+  });
+  await agent(
+    "Runtime.evaluate",
+    { expression: `document.title = "Added later"`, returnByValue: true },
+    cdpSessionId,
+  );
+  await vi.waitFor(() => expect(tabRow()).toMatchObject({ title: "Added later" }), {
+    timeout: 4_000,
+  });
+  await agent(
+    "Runtime.evaluate",
+    { expression: `document.querySelector("title").remove()`, returnByValue: true },
+    cdpSessionId,
+  );
+  await vi.waitFor(() => expect(tabRow()).toMatchObject({ title: "" }), { timeout: 4_000 });
+}, 60_000);
+
 /**
  * CZ5: the context of the field a page surface has focused, as it last published it: what a
  * paste into that field names (waited for, as the page reports a focus a moment after it).
