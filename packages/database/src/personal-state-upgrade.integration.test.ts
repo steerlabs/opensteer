@@ -1329,3 +1329,71 @@ test("0125 advances durable client_sync_state sequence and tab/tab-layout revisi
     await clone.drop();
   }
 });
+
+test("0125 preserves a future client_sync_state.last_commit_at when retiring archived profile tabs", async () => {
+  const clone = await cloneTestDatabase("host");
+  const database = createDatabase({ connectionString: clone.url });
+  try {
+    await sql`drop schema public cascade; create schema public`.execute(database);
+    const all = await migrationProvider().getMigrations();
+    const through0124 = Object.fromEntries(
+      Object.entries(all).filter(([name]) => name < "0125_retire_archived_profile_tabs"),
+    );
+    await migrateToLatest(database, {
+      async getMigrations() {
+        return through0124;
+      },
+    });
+    const owner = await seedPersonalFixture(database, "/fixture/retire-archived-tabs-future-clock");
+    const deletedProfile = createId("browserProfile");
+    await database
+      .insertInto("browserProfiles")
+      .values({
+        id: deletedProfile,
+        ownerId: owner.userId,
+        homeRunnerId: owner.runnerId,
+        name: "Deleted Future Clock",
+        archivedAt: new Date("2026-01-01T00:00:00Z"),
+      })
+      .execute();
+    await database
+      .insertInto("browserProfileDeletions")
+      .values({
+        deletionId: crypto.randomUUID(),
+        profileId: deletedProfile,
+        bindingVersion: 1,
+        deploymentId: owner.deploymentId,
+        runnerId: owner.runnerId,
+        storageInstanceId: crypto.randomUUID(),
+        bindingId: crypto.randomUUID(),
+        engine: "chromium",
+        state: "pending-computer",
+        deletedAt: null,
+      })
+      .execute();
+    const deletedTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    await sql`
+      insert into personal_tabs(id, owner_id, kind, computer_id, title, url, profile_id, profile_name, opened_by, closed_at)
+      values (${deletedTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Deleted Tab', 'https://deleted.test/', ${deletedProfile}, 'Deleted Future Clock', '"person"'::jsonb, null)
+    `.execute(database);
+
+    const futureCommitAt = new Date("2099-01-01T00:00:00.000Z");
+    await database
+      .updateTable("clientSyncState")
+      .set({ lastCommitAt: futureCommitAt })
+      .where("deploymentId", "=", owner.deploymentId)
+      .execute();
+
+    await migrateToLatest(database);
+
+    const syncAfter = await database
+      .selectFrom("clientSyncState")
+      .select(["sequence", "lastCommitAt", "resourceRevisions"])
+      .where("deploymentId", "=", owner.deploymentId)
+      .executeTakeFirstOrThrow();
+    expect(syncAfter.lastCommitAt.toISOString()).toBe(futureCommitAt.toISOString());
+  } finally {
+    await database.destroy();
+    await clone.drop();
+  }
+});

@@ -1032,7 +1032,7 @@ export function migrationProvider(options?: {
                     update client_sync_state s
                     set
                       sequence = s.sequence + 1,
-                      last_commit_at = clock_timestamp(),
+                      last_commit_at = greatest(s.last_commit_at, clock_timestamp()),
                       resource_revisions =
                         s.resource_revisions
                         || jsonb_build_object(
