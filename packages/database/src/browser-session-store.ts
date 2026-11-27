@@ -2223,6 +2223,22 @@ async function writeBrowserSessionState(
       .where("state", "not in", ["closed", "failed"])
       .where("state", "!=", input.state);
     if (input.from) update = update.where("state", "in", [...input.from]);
+    if (input.state === "failed")
+      // A pooled session a Stop left `closing` ends only with evidence about its own target
+      // (W1, W14): no generic failure transition may take it out of teardown.
+      update = update.where(
+        sql<boolean>`not (
+          browser_sessions.state = 'closing'
+          and (
+            exists (
+              select 1 from browser_pool_sessions own where own.session_id = browser_sessions.id
+            )
+            or exists (
+              select 1 from browser_pool_slots slot where slot.runner_id = browser_sessions.runner_id
+            )
+          )
+        )`,
+      );
     if (unpooledOnly)
       update = update.where(
         sql<boolean>`not exists (

@@ -9461,6 +9461,16 @@ export class BrowserService {
           from: ["starting"],
           sessionId,
           state: "failed",
+        }).catch((transitionError: unknown) => {
+          if (
+            pooled &&
+            transitionError instanceof OpensteerError &&
+            transitionError.code === "conflict"
+          ) {
+            pooled.stopped();
+            return;
+          }
+          throw transitionError;
         });
         throw browserStartUnavailable(correlationId, stage, error);
       }
@@ -9581,11 +9591,31 @@ export class BrowserService {
                         target: poolTarget,
                       })
                     : this.#transitionBrowserSession({ sessionId, state, evidence: "not-pooled" });
-                return this.#transitionBrowserSession({
-                  ...(state === "ready" ? { from: ["starting", "ready"] as const } : {}),
-                  sessionId,
-                  state,
-                });
+                const isPooled = pooled !== undefined || poolTarget !== undefined;
+                const from =
+                  state === "ready" || (state === "failed" && isPooled)
+                    ? (["starting", "ready"] as const)
+                    : undefined;
+                try {
+                  return await this.#transitionBrowserSession({
+                    ...(from ? { from } : {}),
+                    sessionId,
+                    state,
+                  });
+                } catch (error) {
+                  // A pooled Stop committed `closing` before this failure landed: keep the row
+                  // `closing` so the pool coordinator finishes teardown with runtime evidence.
+                  if (
+                    state === "failed" &&
+                    isPooled &&
+                    error instanceof OpensteerError &&
+                    error.code === "conflict"
+                  ) {
+                    pooled?.stopped();
+                    return record;
+                  }
+                  throw error;
+                }
               };
               return budget
                 ? withDatabaseOperationSignal(budget.signal, budget.expiresAt, transition)
@@ -9660,7 +9690,9 @@ export class BrowserService {
             from: pooled ? ["starting"] : ["starting", "ready", "closing"],
             sessionId,
             state: "failed",
-          }).catch(() => undefined);
+          }).catch(() => {
+            pooled?.stopped();
+          });
           throw browserStartUnavailable(correlationId, stage, error);
         }
       };
