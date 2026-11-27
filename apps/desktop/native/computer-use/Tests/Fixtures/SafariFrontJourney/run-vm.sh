@@ -7,7 +7,7 @@
 set -euo pipefail
 fixtures=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$fixtures/../../../../.."
-default_cases=type-into-watch,front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control
+default_cases=type-into,front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control
 
 compile() {
   local output=$1 replacements=${2:-}
@@ -33,8 +33,8 @@ compile() {
 
 if [[ "${1:-}" == --check ]]; then
   case ",$default_cases," in
-    *,type-into-watch,*) ;;
-    *) echo "Default Safari front cases must include type-into-watch"; exit 1 ;;
+    *,type-into,*) ;;
+    *) echo "Default Safari front cases must include type-into"; exit 1 ;;
   esac
   node --check "$fixtures/server.cjs"
   node --check "$fixtures/front.cjs"
