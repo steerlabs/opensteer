@@ -1,5 +1,5 @@
 import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
-import { RequestSchema, createId } from "@opensteer/core";
+import { RequestSchema, TabIdSchema, createId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { expect, test, vi } from "vitest";
 import { createDatabase } from "./connection.js";
@@ -43,6 +43,8 @@ import { cloneTestDatabase } from "./test-database.test-support.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { completePersonalToolCall } from "./personal-tool-calls.js";
 import { resolvePersonalToolImages } from "./personal-tool-images.js";
+import { seedPersonalFixture } from "./personal-fixture.test-support.js";
+import { TabStore } from "./tab-store.js";
 import { liveRequest } from "./store.integration.test-support.js";
 import { requestInsert } from "./request-persistence.js";
 import { transcriptIdentity } from "./transcript-store.js";
@@ -134,6 +136,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0121_one_device_switch_record_contract",
         "0122_command_attempt_outcomes",
         "0123_agent_operation_endings",
+        "0124_retire_archived_profile_tabs",
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`
@@ -856,5 +859,180 @@ test("resumes offline settlement of a Run with a large live node set", async () 
     expect(subagent).toEqual({ kind: "unavailable" });
   } finally {
     await fixture.close();
+  }
+});
+
+test("0124 retires open and closed tabs of already-archived profiles, drops newly emptied groups, preserves mixed and unrelated groups, and advances layout revision", async () => {
+  const clone = await cloneTestDatabase("host");
+  const database = createDatabase<DatabaseSchema>({ connectionString: clone.url });
+  try {
+    await sql`drop schema public cascade; create schema public`.execute(database);
+    const all = await migrationProvider().getMigrations();
+    const through0123 = Object.fromEntries(
+      Object.entries(all).filter(([name]) => name <= "0123_agent_operation_endings"),
+    );
+    await migrateToLatest(database, {
+      async getMigrations() {
+        return through0123;
+      },
+    });
+    const owner = await seedPersonalFixture(database, "/fixture/retire-archived-tabs");
+    const archivedProfile = createId("browserProfile");
+    const activeProfile = createId("browserProfile");
+    await database
+      .insertInto("browserProfiles")
+      .values([
+        {
+          id: archivedProfile,
+          ownerId: owner.userId,
+          homeRunnerId: owner.runnerId,
+          name: "Old Archived",
+          archivedAt: new Date("2026-01-01T00:00:00Z"),
+        },
+        {
+          id: activeProfile,
+          ownerId: owner.userId,
+          homeRunnerId: owner.runnerId,
+          name: "Active",
+          archivedAt: null,
+        },
+      ])
+      .execute();
+
+    const archivedOpenTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const archivedClosedTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const activeClosedTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const singleGroupTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const mixedArchivedTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const mixedActiveTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const guestTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const singleGroupId = `tgp_${crypto.randomUUID()}`;
+    const mixedGroupId = `tgp_${crypto.randomUUID()}`;
+    const unrelatedGroupId = `tgp_${crypto.randomUUID()}`;
+    const alreadyEmptyGroupId = `tgp_${crypto.randomUUID()}`;
+
+    await sql`
+      insert into personal_tabs(id, owner_id, kind, computer_id, title, url, profile_id, profile_name, opened_by, closed_at)
+      values
+        (${archivedOpenTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Archived Open', 'https://archived.test/open', ${archivedProfile}, 'Old Archived', '"person"'::jsonb, null),
+        (${archivedClosedTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Archived Closed', 'https://archived.test/closed', ${archivedProfile}, 'Old Archived', '"person"'::jsonb, '2026-02-02T00:00:00Z'::timestamptz),
+        (${activeClosedTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Active Closed', 'https://active.test/closed', ${activeProfile}, 'Active', '"person"'::jsonb, '2026-02-01T00:00:00Z'::timestamptz),
+        (${singleGroupTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Single Group', 'https://archived.test/group', ${archivedProfile}, 'Old Archived', '"person"'::jsonb, null),
+        (${mixedArchivedTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Mixed Archived', 'https://archived.test/mixed', ${archivedProfile}, 'Old Archived', '"person"'::jsonb, null),
+        (${mixedActiveTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Mixed Active', 'https://active.test/mixed', ${activeProfile}, 'Active', '"person"'::jsonb, null),
+        (${guestTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Guest', 'https://guest.test/', null, null, '"person"'::jsonb, null)
+    `.execute(database);
+
+    const beforeItems = [
+      { kind: "tab", tabId: archivedOpenTab },
+      {
+        kind: "group",
+        group: {
+          groupId: singleGroupId,
+          name: "Single Archived",
+          color: "red",
+          collapsed: false,
+          tabIds: [singleGroupTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: mixedGroupId,
+          name: "Mixed",
+          color: "blue",
+          collapsed: false,
+          tabIds: [mixedArchivedTab, mixedActiveTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: unrelatedGroupId,
+          name: "Guest Group",
+          color: "grey",
+          collapsed: false,
+          tabIds: [guestTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: alreadyEmptyGroupId,
+          name: "Empty Unrelated",
+          color: "green",
+          collapsed: false,
+          tabIds: [],
+        },
+      },
+    ];
+    await database
+      .insertInto("tabLayouts")
+      .values({
+        ownerId: owner.userId,
+        revision: 5,
+        items: sql`${JSON.stringify(beforeItems)}::jsonb`,
+      })
+      .execute();
+
+    // Run migrations up to latest (including 0124).
+    await migrateToLatest(database);
+
+    const remainingIds = (
+      await database
+        .selectFrom("personalTabs")
+        .select("id")
+        .where("ownerId", "=", owner.userId)
+        .execute()
+    )
+      .map((row) => row.id)
+      .toSorted();
+    expect(remainingIds).toEqual([activeClosedTab, guestTab, mixedActiveTab].toSorted());
+
+    const layout = await database
+      .selectFrom("tabLayouts")
+      .select(["revision", "items"])
+      .where("ownerId", "=", owner.userId)
+      .executeTakeFirstOrThrow();
+    expect(Number(layout.revision)).toBe(6);
+    expect(layout.items).toEqual([
+      {
+        kind: "group",
+        group: {
+          groupId: mixedGroupId,
+          name: "Mixed",
+          color: "blue",
+          collapsed: false,
+          tabIds: [mixedActiveTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: unrelatedGroupId,
+          name: "Guest Group",
+          color: "grey",
+          collapsed: false,
+          tabIds: [guestTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: alreadyEmptyGroupId,
+          name: "Empty Unrelated",
+          color: "green",
+          collapsed: false,
+          tabIds: [],
+        },
+      },
+    ]);
+
+    // Archived closed tab no longer hijacks latestClosed reopen.
+    const reopened = await new TabStore(database).reopen(owner.userId, undefined, "reopen-latest");
+    expect(reopened.tabIds).toEqual([activeClosedTab]);
+  } finally {
+    await database.destroy();
+    await clone.drop();
   }
 });
