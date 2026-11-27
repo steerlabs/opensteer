@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"syscall"
 	"testing"
-	"time"
 )
 
 func TestParseLinuxSharedPendingReadsTheThreadGroupsMask(t *testing.T) {
@@ -28,9 +27,12 @@ func TestEndedWithoutReapingTellsALiveChildFromAKilledOne(t *testing.T) {
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
+	reaped := false
 	defer func() {
-		_ = child.Process.Kill()
-		_ = child.Wait()
+		if !reaped {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+		}
 	}()
 	if endedWithoutReaping(child.Process.Pid) {
 		t.Fatal("a running child read as ended")
@@ -38,16 +40,16 @@ func TestEndedWithoutReapingTellsALiveChildFromAKilledOne(t *testing.T) {
 	if err := child.Process.Signal(syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for !endedWithoutReaping(child.Process.Pid) {
-		if time.Now().After(deadline) {
-			t.Fatal("a SIGKILLed child never read as ended")
-		}
-		time.Sleep(time.Millisecond)
+	// At once: the SIGKILL is pending for the thread group from the moment kill returns, before
+	// the child is a zombie waitid would report.
+	if !endedWithoutReaping(child.Process.Pid) {
+		t.Fatal("a SIGKILLed child did not read as ended")
 	}
 	// Not reaped: its exit is still there for the supervisor to take.
 	var status syscall.WaitStatus
-	if pid, err := syscall.Wait4(child.Process.Pid, &status, syscall.WNOHANG, nil); err != nil || pid != child.Process.Pid || status.Signal() != syscall.SIGKILL {
+	pid, err := syscall.Wait4(child.Process.Pid, &status, 0, nil)
+	reaped = err == nil
+	if err != nil || pid != child.Process.Pid || status.Signal() != syscall.SIGKILL {
 		t.Fatalf("Wait4 = %d, %v, %v; want the SIGKILLed child", pid, err, status)
 	}
 }
