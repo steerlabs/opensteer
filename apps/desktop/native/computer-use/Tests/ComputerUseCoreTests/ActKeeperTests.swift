@@ -2,31 +2,30 @@ import XCTest
 
 @testable import ComputerUseCore
 
-/// What one agent act owes the person's front app (`ActKeeper`), decided without a Mac's
-/// window server: the app the person had in front as the act began is the one put back.
+/// The focus policy exercised with a fake foreground app.
 @WorkActor
 final class ActKeeperTests: XCTestCase {
   let person: pid_t = 4_242
   let target: pid_t = 777
 
-  func keeper(
-    front: Locked<pid_t?>, chosen: Bool = false, canPutBack: Bool = true,
-    putBacks: Locked<[pid_t]>
-  ) -> ActKeeper {
-    let target = target
-    return ActKeeper(
-      target: target, front: { front.current }, chosen: { chosen },
-      putBack: { original in
-        putBacks.withLock { $0.append(original) }
-        if canPutBack { front.withLock { $0 = original } }
-        return front.current != target
-      })
+  func run<Result>(
+    front: Locked<pid_t?>, putBacks: Locked<[pid_t]>, canPutBack: Bool = true,
+    _ body: (ActKeeper) async throws -> Result
+  ) async throws -> Result {
+    let act = ActKeeper(target: target, front: { front.current },
+      cancellation: SessionCancellation(), deliveryProgress: Locked(true))
+    return try await act.run(putBack: { act in
+      guard let original = act.originalToRestore() else { return true }
+      putBacks.withLock { $0.append(original) }
+      if canPutBack { front.withLock { $0 = original } }
+      return canPutBack
+    }) { try await body(act) }
   }
 
   func testAnActThatLeavesTheTargetInFrontPutsThePersonsAppBack() async throws {
     let front = Locked<pid_t?>(person), putBacks = Locked<[pid_t]>([])
-    let result = try await keeper(front: front, putBacks: putBacks).run { original in
-      XCTAssertEqual(original, person)
+    let result = try await run(front: front, putBacks: putBacks) { act in
+      XCTAssertTrue(act.permitsRestoring(person))
       front.withLock { $0 = target }
       return "typed"
     }
@@ -38,7 +37,7 @@ final class ActKeeperTests: XCTestCase {
   func testAnActWhoseTargetStaysInFrontIsNotCompleted() async {
     let front = Locked<pid_t?>(person), putBacks = Locked<[pid_t]>([])
     do {
-      _ = try await keeper(front: front, canPutBack: false, putBacks: putBacks).run { _ in
+      _ = try await run(front: front, putBacks: putBacks, canPutBack: false) { _ in
         front.withLock { $0 = target }
         return "typed"
       }
@@ -53,7 +52,8 @@ final class ActKeeperTests: XCTestCase {
 
   func testThePersonsOwnChoiceOfTheTargetStands() async throws {
     let front = Locked<pid_t?>(person), putBacks = Locked<[pid_t]>([])
-    _ = try await keeper(front: front, chosen: true, putBacks: putBacks).run { _ in
+    _ = try await run(front: front, putBacks: putBacks) { act in
+      act.noteClick(windowOwner: target, addressedTo: target)
       front.withLock { $0 = target }
     }
     XCTAssertEqual(putBacks.current, [])
@@ -62,8 +62,8 @@ final class ActKeeperTests: XCTestCase {
 
   func testAnActThatBeganWithTheTargetInFrontKeepsNothing() async throws {
     let front = Locked<pid_t?>(target), putBacks = Locked<[pid_t]>([])
-    _ = try await keeper(front: front, putBacks: putBacks).run { original in
-      XCTAssertNil(original)
+    _ = try await run(front: front, putBacks: putBacks) { act in
+      XCTAssertNil(act.originalToRestore())
     }
     XCTAssertEqual(putBacks.current, [])
   }
@@ -72,7 +72,7 @@ final class ActKeeperTests: XCTestCase {
     let front = Locked<pid_t?>(person), putBacks = Locked<[pid_t]>([])
     let own = HelperError(.failed, "This element did not accept the text.")
     do {
-      _ = try await keeper(front: front, canPutBack: false, putBacks: putBacks).run {
+      _ = try await run(front: front, putBacks: putBacks, canPutBack: false) {
         _ -> String in
         front.withLock { $0 = target }
         throw own
@@ -88,9 +88,28 @@ final class ActKeeperTests: XCTestCase {
 
   func testAnActTheTargetLeftForAnotherAppOfThePersonsNeedsNothing() async throws {
     let front = Locked<pid_t?>(person), putBacks = Locked<[pid_t]>([])
-    _ = try await keeper(front: front, putBacks: putBacks).run { _ in
+    _ = try await run(front: front, putBacks: putBacks) { _ in
       front.withLock { $0 = 9_999 }
     }
     XCTAssertEqual(putBacks.current, [])
+  }
+
+  func testRecoveryRequiresTheTargetToStayBehindTheLatestOwner() async throws {
+    let front = Locked<pid_t?>(person)
+    let act = ActKeeper(target: target, front: { front.current },
+      cancellation: SessionCancellation(), deliveryProgress: Locked(false))
+    front.withLock { $0 = target }
+    do {
+      try await act.recover { act in
+        front.withLock { $0 = 9_999 }
+        act.observeFront()
+        front.withLock { $0 = target }
+        return true
+      }
+      XCTFail("The target came forward again before recovery returned.")
+    } catch let error as HelperError {
+      XCTAssertEqual(error, FocusEnforcer.notRestored)
+      XCTAssertTrue(act.permitsRestoring(9_999))
+    }
   }
 }

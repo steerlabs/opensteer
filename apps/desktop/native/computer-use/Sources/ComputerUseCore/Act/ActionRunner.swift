@@ -350,7 +350,8 @@ public enum ActionRunner {
     guard let enforcer = context.app.focus.enforcer(for: processIdentifier) else {
       throw FocusEnforcer.unguarded
     }
-    return try await enforcer.act(body)
+    return try await enforcer.act(
+      cancellation: context.cancellation, deliveryProgress: context.deliveryProgress, body)
   }
 
   private static func perform(

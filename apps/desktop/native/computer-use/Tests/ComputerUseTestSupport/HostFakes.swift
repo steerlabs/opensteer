@@ -28,11 +28,20 @@ final class FakeFocusGuard: FocusGuard, @unchecked Sendable {
     stops.withLock { $0 += 1 }
     onStop()
   }
-  /// The act as the live enforcer keeps it (`ActKeeper`), over a pretended front app.
-  var keeper: @Sendable (pid_t) -> ActKeeper? = { _ in nil }
-  @WorkActor func act<Result>(_ body: () async throws -> Result) async throws -> Result {
-    guard let keeper = keeper(pid) else { return try await body() }
-    return try await keeper.run { _ in try await body() }
+  var front: FakeFrontApp?
+  var beforeGuard: @Sendable (ActKeeper) -> Void = { _ in }
+  var afterDelivery: @Sendable (ActKeeper) throws -> Void = { _ in }
+  @WorkActor private var currentAct: ActKeeper?
+
+  @WorkActor func act<Result>(
+    cancellation: SessionCancellation, deliveryProgress: Locked<Bool>,
+    _ body: () async throws -> Result
+  ) async throws -> Result {
+    guard let front else { return try await body() }
+    let act = front.keeper(target: pid, cancellation: cancellation, deliveryProgress: deliveryProgress)
+    currentAct = act
+    defer { currentAct = nil }
+    return try await act.run(putBack: { front.restore($0) }, body)
   }
   @WorkActor func guarded<Result>(
     window: AXUIElement?, prepare: Bool, keys: Bool, afterInputWatch: TimeInterval,
@@ -42,11 +51,47 @@ final class FakeFocusGuard: FocusGuard, @unchecked Sendable {
     deliver: (@escaping @Sendable () throws -> Void) async throws -> Result
   ) async throws -> Result {
     preparations.withLock { $0.append((prepare, keys)) }
+    if let currentAct, let front {
+      beforeGuard(currentAct)
+      try await currentAct.recover { front.restore($0) }
+    }
     try finalCheck()
     try check()
     try onGuard()
     prepared(false)
-    return try await deliver { try deliveryCheck() }
+    let result = try await deliver { try deliveryCheck() }
+    if let currentAct { try afterDelivery(currentAct) }
+    return result
+  }
+}
+
+final class FakeFrontApp: Sendable {
+  let current: Locked<pid_t?>
+  let restores = Locked<[pid_t]>([])
+  let canRestore: Bool
+
+  init(_ original: pid_t, canRestore: Bool = true) {
+    current = Locked(original)
+    self.canRestore = canRestore
+  }
+
+  func keeper(
+    target: pid_t, cancellation: SessionCancellation, deliveryProgress: Locked<Bool>
+  ) -> ActKeeper {
+    ActKeeper(target: target, front: { self.current.current }, cancellation: cancellation,
+      deliveryProgress: deliveryProgress)
+  }
+
+  func restore(_ act: ActKeeper) -> Bool {
+    guard let original = act.originalToRestore() else { return true }
+    restores.withLock { $0.append(original) }
+    if canRestore { current.withLock { $0 = original } }
+    return canRestore
+  }
+
+  func chooseTarget(_ act: ActKeeper, addressedTo: pid_t?, pretending: Bool = false) {
+    guard ActKeeper.watchesClicks(acting: true, pretending: pretending) else { return }
+    act.noteClick(windowOwner: act.target, addressedTo: addressedTo)
   }
 }
 

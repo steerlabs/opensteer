@@ -748,14 +748,19 @@ final class FrontSampler {
       return at >= act.start && at <= act.end
     }.count
     let completed = (act.receipt["performed"] as? [String])?.count == 1 && act.receipt["error"] is NSNull
-    let stayedInFront = !frontSamples.isEmpty && frontSamples.allSatisfy { $0 == frontPID }
+    // Accessibility writes run with the screen live. As in the front case, permit a Safari
+    // activation lasting at most 300 ms, provided all of the person's keys still reach them.
+    let lateEpisodes = episodes.filter { ($0["ms"] as? Int ?? 0) > 300 || $0["open"] as? Bool == true }
+    let frontRestored = !frontSamples.isEmpty && lateEpisodes.isEmpty
+      && frontSamples.allSatisfy { $0 == frontPID || $0 == safari.processIdentifier }
       && act.frontAtEnd == frontPID && act.frontAfter == frontPID && !act.safariAbove
     try JSONSerialization.data(withJSONObject: samples).write(to: caseOut.appendingPathComponent("front-samples.json"))
     await screenshot(caseOut, "after")
     return [
-      "met": completed && stayedInFront && person.terminationStatus == 0 && overlappingKeys > 0
+      "met": completed && frontRestored && person.terminationStatus == 0 && overlappingKeys > 0
         && personLetters == letters && safariValue.contains(agentText),
       "frontSamples": frontSamples.count, "safariInFrontEpisodes": episodes,
+      "safariEpisodesOver300msOrOpen": lateEpisodes.count, "frontAppRestored": frontRestored,
       "safariInFrontSamples": frontSamples.filter { $0 == safari.processIdentifier }.count,
       "personLettersSent": lines(keysLog).count, "personLettersReceived": personLetters.count,
       "personLettersInOrder": personLetters == letters, "personKeysDuringAct": overlappingKeys,
