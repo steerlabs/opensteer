@@ -165,11 +165,8 @@ export function RemoteEditingProxy({
   // said by the shared presenter, never as the exception's text.
   const failure = useCallback(
     (reason: unknown) => {
-      if (reason instanceof DisplayEditingRefusal) {
-        refusalShown.current = reason.message;
-        refuse(reason.message);
-      } else if (reason instanceof DisplayEditingStopped) {
-        refusalShown.current = null;
+      if (reason instanceof DisplayEditingRefusal || reason instanceof DisplayEditingStopped) {
+        refusalShown.current = reason instanceof DisplayEditingRefusal ? reason.message : null;
         refuse(reason.message);
       } else refuse(presentFailure(reason, "edit remotely"));
     },
