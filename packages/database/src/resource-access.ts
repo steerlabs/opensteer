@@ -192,6 +192,27 @@ interface ConnectionTargetCheck {
   readonly writeTargetName?: string | undefined;
 }
 
+/** Whether a browser profile still exists, belongs to this owner, and is not archived. */
+function activeOwnedBrowserProfileExists(ownerUserId: UserId, profileId: string) {
+  return sql<boolean>`exists (
+    select 1 from browser_profiles
+    where id = ${profileId}
+      and owner_id = ${ownerUserId}
+      and archived_at is null
+  )`;
+}
+
+async function activeOwnedBrowserProfile(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  profileId: string,
+): Promise<boolean> {
+  const row = await database
+    .selectNoFrom(activeOwnedBrowserProfileExists(ownerUserId, profileId).as("active"))
+    .executeTakeFirst();
+  return row?.active === true;
+}
+
 /**
  * The one statement for where a connection stands: its row and its state (`connectionState`).
  * Every reader of a connection's standing is a view of this (`readConnectionRowStanding`,
@@ -204,6 +225,8 @@ async function readConnectionStanding(
   lock: boolean,
   /** Also why its work ended (its cleanup's reason): read only by a refusal that names it. */
   withCause = false,
+  /** Concrete browser profile being admitted: active and owned, read in the same statement. */
+  browserProfileId?: string,
 ) {
   const query = database
     .selectFrom("agentConnections")
@@ -221,12 +244,17 @@ async function readConnectionStanding(
       connectionState().as("connectionState"),
     ])
     .$if(withCause, (query) => query.select("cleanupReason"))
+    .$if(browserProfileId !== undefined, (query) =>
+      query.select(
+        activeOwnedBrowserProfileExists(ownerUserId, browserProfileId!).as("browserProfileActive"),
+      ),
+    )
     .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId);
   const row = await (lock ? query.forShare("agentConnections") : query).executeTakeFirst();
   if (!row) return undefined;
-  const { connectionState: state, ...connection } = row;
-  return { connection, state };
+  const { connectionState: state, browserProfileActive, ...connection } = row;
+  return { connection, state, browserProfileActive };
 }
 
 /**
@@ -285,7 +313,16 @@ export async function readConnectionRowStanding(
   lock = false,
   { grantTarget, writeTargetName }: ConnectionTargetCheck = {},
 ) {
-  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, lock);
+  const browserProfileId =
+    grantTarget?.kind === "browser-profile" ? grantTarget.profileId : undefined;
+  const read = await readConnectionStanding(
+    database,
+    ownerUserId,
+    agentConnectionId,
+    lock,
+    false,
+    browserProfileId,
+  );
   if (!read || read.state !== "live")
     return {
       row: undefined,
@@ -301,7 +338,7 @@ export async function readConnectionRowStanding(
   );
   const row = { ...read.connection, grant };
   const access = grantTarget && agentGrantAccess(grant, grantTarget);
-  if (access === null)
+  if (access === null || (browserProfileId !== undefined && read.browserProfileActive !== true))
     throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
   if (access === "read" && writeTargetName !== undefined)
     throw forbidden(`${writeTargetName} is shared for reading only.`);
@@ -740,6 +777,11 @@ async function admitExecutionWith(
   const { subject, ownerUserId } = input;
   const base = { ownerUserId, subject, runId: null, runMode: null } as const;
   if (subject.kind === "person") {
+    if (
+      input.grantTarget?.kind === "browser-profile" &&
+      !(await activeOwnedBrowserProfile(database, ownerUserId, input.grantTarget.profileId))
+    )
+      throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
     const task = input.threadId ? await ownedThread(database, input.threadId, ownerUserId) : null;
     return {
       ...base,
@@ -790,13 +832,19 @@ async function admitExecutionWith(
     taskMode: facts.taskMode,
     runMode: facts.runMode,
   };
-  if (!facts.agentConnectionId)
+  if (!facts.agentConnectionId) {
+    if (
+      input.grantTarget?.kind === "browser-profile" &&
+      !(await activeOwnedBrowserProfile(database, ownerUserId, input.grantTarget.profileId))
+    )
+      throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
     return {
       ...execution,
       actor: "native",
       agentConnection: null,
       mode: facts.runMode ?? facts.taskMode,
     };
+  }
   // A session acts directly and needs no Tasks switch; delegated work needs it.
   const session = subject.bindingId.startsWith("session:");
   const connection = session
@@ -953,6 +1001,8 @@ export async function reachesTarget(
   target: AgentGrantTarget,
 ): Promise<boolean> {
   if (authorizeTarget(execution, target) === null) return false;
+  if (target.kind === "browser-profile")
+    return activeOwnedBrowserProfile(database, execution.ownerUserId, target.profileId);
   const approvalId =
     target.kind === "computer-app"
       ? target.approvalId
@@ -1644,15 +1694,9 @@ async function commandReach(
   });
   const granted = (target: AgentGrantTarget | null) =>
     !selected || (target !== null && authorizeTarget(execution, target) !== null);
-  const profile = async (profileId: string): Promise<boolean> => {
-    const row = await database
-      .selectFrom("browserProfiles")
-      .select("ownerId")
-      .where("id", "=", profileId as never)
-      .where("archivedAt", "is", null)
-      .executeTakeFirst();
-    return row?.ownerId === owner && granted({ kind: "browser-profile", profileId });
-  };
+  const profile = async (profileId: string): Promise<boolean> =>
+    granted({ kind: "browser-profile", profileId }) &&
+    (await activeOwnedBrowserProfile(database, owner, profileId));
   /** Tabs by id: every one the owner's, and under a selected grant in an active profile it holds. */
   const tabsReach = async (ids: readonly string[]): Promise<CommandReach> => {
     const tabs = await database

@@ -453,11 +453,16 @@ export class AgentSessionService {
       identity: { key: operation.operationKey },
     });
     if (existing) {
-      assertOperationArguments(existing, argumentDigest, operation.taskId);
       if (
         existing.state === "completed" &&
         (!operation.replay || existing.sessionStatus === "ended")
-      )
+      ) {
+        await admitExecution(this.#store.database, {
+          ownerUserId: operation.ownerUserId,
+          subject: { kind: "connection", agentConnectionId: operation.agentConnectionId },
+          grantTarget: operation.target?.grant,
+        });
+        assertOperationArguments(existing, argumentDigest, operation.taskId);
         return {
           status: "completed",
           taskId: existing.taskId,
@@ -465,6 +470,8 @@ export class AgentSessionService {
           summary: existing.resultSummary,
           ...(operation.reportReplay ? { replayed: true } : {}),
         };
+      }
+      assertOperationArguments(existing, argumentDigest, operation.taskId);
       return withAgentOperationReceipt(
         this.#store.database,
         existing,

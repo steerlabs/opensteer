@@ -159,6 +159,28 @@ async function setUp(
   } = {},
 ) {
   const f = options.run ?? (await storeFixture.startRunFixture(key));
+  await storeFixture.database
+    .insertInto("browserProfiles")
+    .values([
+      {
+        archivedAt: null,
+        id: profile,
+        name: "Work",
+        ownerId: f.userId,
+        homeRunnerId: f.runnerId,
+        purpose: "person",
+      },
+      {
+        archivedAt: null,
+        id: other,
+        name: "Other",
+        ownerId: f.userId,
+        homeRunnerId: f.runnerId,
+        purpose: "person",
+      },
+    ])
+    .onConflict((oc) => oc.column("id").doNothing())
+    .execute();
   const recorded = recordingExecutor();
   const sessions = new AgentSessionService({
     store: storeFixture.store,
@@ -2789,6 +2811,59 @@ describeStore("an external agent's direct work through sessions", (it) => {
       await s.call("browser_use", { ...script, operationKey: "another-fresh" }),
     );
   });
+
+  for (const scope of ["selected", "everything"] as const) {
+    it(`hides a completed browser_use receipt once its profile is archived (${scope})`, async ({
+      storeFixture,
+    }) => {
+      const s = await setUp(storeFixture, `archived-receipt-${scope}`, {
+        grant:
+          scope === "everything"
+            ? { scope: "everything" }
+            : {
+                scope: "selected",
+                tasks: false,
+                resources: [
+                  { kind: "browser-profile", profileId: profile },
+                  { kind: "browser-profile", profileId: other },
+                ],
+              },
+      });
+      const first = await s.call("browser_use", { ...script, operationKey: "completed-before-archive" });
+      expect(first.isError).not.toBe(true);
+      const operationId = (first.structuredContent as { operationId: string }).operationId;
+      // While the profile is active, replaying the operationId returns the completed receipt.
+      const before = await s.call("browser_use", { ...script, operationId });
+      expect(before.isError).not.toBe(true);
+      expect(before.structuredContent).toMatchObject({ operationId, status: "completed" });
+      // Archive the profile with the connection's grant intact.
+      await storeFixture.database
+        .updateTable("browserProfiles")
+        .set({ archivedAt: new Date() })
+        .where("id", "=", profile)
+        .execute();
+      const replayed = await s.call("browser_use", { ...script, operationId });
+      const unknownOperation = await s.call("browser_use", {
+        ...script,
+        operationId: createId("agentOperation"),
+      });
+      // Exactly as an unknown operationId: same code, same words, nothing of the receipt.
+      expect(replayed).toEqual(unknownOperation);
+      expect(replayed).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "not_found" } },
+      });
+      // A fresh call and a repeat by operationKey alone are also refused as unavailable.
+      const fresh = await s.call("browser_use", { ...script, operationKey: "after-archive" });
+      expect(fresh).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "not_found" } },
+      });
+      expect(
+        await s.call("browser_use", { ...script, operationKey: "completed-before-archive" }),
+      ).toEqual(fresh);
+    });
+  }
 
   it("records the cause a recheck read when the Disconnect reached the database before its stop", async ({
     storeFixture,

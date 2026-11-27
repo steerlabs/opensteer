@@ -6,6 +6,7 @@ import {
   authorizeTarget,
   bindingAgentConnectionId,
   grantedDeviceApprovals,
+  reachesTarget,
 } from "./resource-access.js";
 import { seedDevice, seedDeviceApproval } from "./device-approvals.test-support.js";
 import { describeStore } from "./store.integration.test-support.js";
@@ -135,5 +136,79 @@ describeStore("an execution resolves to a known owner, an agent connection, or n
       .where("id", "=", deviceId as never)
       .execute();
     expect(await lent()).not.toContain(approvalId);
+  });
+
+  it("refuses concrete admission and receipt reachability for an archived browser profile under both selected and everything grants", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("archived-profile-reach");
+    const { database } = storeFixture;
+    const profile = await database
+      .insertInto("browserProfiles")
+      .values({
+        archivedAt: null,
+        id: createId("browserProfile"),
+        name: "Work",
+        ownerId: f.userId,
+        homeRunnerId: f.runnerId,
+        purpose: "person",
+      })
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    const target = { kind: "browser-profile", profileId: profile.id } as const;
+    const connections = new AgentConnectionStore(database);
+    const connect = async (grant: Parameters<AgentConnectionStore["create"]>[0]["grant"]) => {
+      const created = await connections.create({
+        userId: f.userId,
+        label: grant.scope,
+        clientName: grant.scope,
+        accessMode: "full-access",
+        resource: "http://localhost/mcp",
+        expiresAt: new Date(Date.now() + 60_000),
+        grant,
+      });
+      await connections.activate(created.id, `hash-${created.id}`);
+      return created.id;
+    };
+    const selectedId = await connect({
+      scope: "selected",
+      tasks: false,
+      resources: [target],
+    });
+    const everythingId = await connect({ scope: "everything" });
+
+    for (const agentConnectionId of [selectedId, everythingId]) {
+      const admitted = await admitExecution(database, {
+        ownerUserId: f.userId,
+        subject: { kind: "connection", agentConnectionId },
+        grantTarget: target,
+      });
+      expect(authorizeTarget(admitted, target)).toBe("read-write");
+      expect(await reachesTarget(database, admitted, target)).toBe(true);
+    }
+
+    await database
+      .updateTable("browserProfiles")
+      .set({ archivedAt: new Date() })
+      .where("id", "=", profile.id)
+      .execute();
+
+    for (const agentConnectionId of [selectedId, everythingId]) {
+      const execution = await admitExecution(database, {
+        ownerUserId: f.userId,
+        subject: { kind: "connection", agentConnectionId },
+      });
+      // `authorizeTarget` stays the pure grant-ceiling calculation.
+      expect(authorizeTarget(execution, target)).toBe("read-write");
+      // Concrete-target admission and receipt reachability both refuse the archived profile.
+      await expect(
+        admitExecution(database, {
+          ownerUserId: f.userId,
+          subject: { kind: "connection", agentConnectionId },
+          grantTarget: target,
+        }),
+      ).rejects.toMatchObject({ code: "not_found", message: "That item is unavailable." });
+      expect(await reachesTarget(database, execution, target)).toBe(false);
+    }
   });
 });
