@@ -26,7 +26,10 @@ const server = http.createServer((request, response) => {
     request.on("data", (chunk) => (body += chunk));
     request.on("end", () => {
       try {
-        fs.appendFileSync(logPath, JSON.stringify({ ...JSON.parse(body), received: Date.now() }) + "\n");
+        fs.appendFileSync(
+          logPath,
+          JSON.stringify({ ...JSON.parse(body), received: Date.now() }) + "\n",
+        );
       } catch {}
       response.end();
     });
