@@ -336,6 +336,12 @@ export class AgentSessionService {
     { readonly controller: AbortController; readonly connectionId: string; work: number }
   >();
   readonly #closingSessions = new Map<AgentSessionId, AbortSignal>();
+  /**
+   * Each session this process ran work for, with its connection, until its end is handled: what
+   * it left open elsewhere (a tab it holds, a script context, a raw CDP client) outlives its
+   * calls, so a connection's change closes it even when no call is running.
+   */
+  readonly #worked = new Map<AgentSessionId, string>();
   /** Operations executing or waiting on pooled admission, joined by concurrent resumes. */
   readonly #running = new Map<
     AgentOperationId,
@@ -416,6 +422,7 @@ export class AgentSessionService {
       );
       this.#sessions.delete(id);
     }
+    this.#worked.clear();
     this.workingIn.clear();
   }
 
@@ -574,7 +581,7 @@ export class AgentSessionService {
   ): Promise<void> {
     for (const [id, attempt] of this.#running)
       if (attempt.pooled?.connectionId === connectionId) await this.stopDirectOperation(id, ending);
-    const live = [...this.#sessions].filter(([, entry]) => entry.connectionId === connectionId);
+    const live = [...this.#worked].filter(([, connection]) => connection === connectionId);
     if (!live.length) return;
     const ended = all
       ? live.map(([id]) => id)
@@ -618,6 +625,7 @@ export class AgentSessionService {
       if (attempt.pooled?.sessionId === sessionId) attempt.controller.abort(error);
     const entry = this.#sessions.get(sessionId);
     entry?.controller.abort(error);
+    this.#worked.delete(sessionId);
     this.workingIn.close(sessionId);
     await this.#closeBinding(`session:${sessionId}`, error.message);
     if (this.#sessions.get(sessionId) === entry) this.#sessions.delete(sessionId);
@@ -1019,6 +1027,7 @@ export class AgentSessionService {
       work: 0,
     };
     this.#sessions.set(row.sessionId, entry);
+    this.#worked.set(row.sessionId, row.connectionId);
     entry.work++;
     const deadline = pooled?.deadline ?? Date.now() + (operation.timeoutMs ?? this.#executionMs);
     const closing = this.#closingSessions.get(row.sessionId);

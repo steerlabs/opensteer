@@ -3532,3 +3532,48 @@ it("tells the person where a browser_connect client works: its tab at the attach
     site.close();
   }
 });
+
+it.each([
+  ["Disconnect", "revoke"],
+  ["narrowed grant", "narrow"],
+] as const)(
+  "ends a connected agent's holds on its tabs with its session's end by a %s, after its calls finished",
+  async (_, end) => {
+    // Measured on a Cloud Computer: a disconnected connection's task stayed its tabs' holder
+    // until the person closed them; a Stop removed it.
+    const { site, origin } = await pagesSite();
+    const j = await journey(`direct-holder-ends-${end}`, { profile: true });
+    try {
+      const home = await j.startHome();
+      const work = await directWork(j, () => home, { endsBrowserWork: true });
+      const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+      const { threadId, id: sessionId } = await sessionOf(j);
+      const holds = async () =>
+        (await home.service.pageTabs.state!(j.task.userId, await row(j, tab))).usedBy.some(
+          ({ taskId }) => taskId === threadId,
+        );
+      expect(await holds()).toBe(true);
+      expect(work.sessions.workingIn.ofTask(j.task.userId, threadId as ThreadId)).toBeDefined();
+      const connection = commands(j.fixture, j.task.userId, {
+        afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
+      });
+      if (end === "revoke") await connection.revoke(work.agent.id);
+      else
+        await connection.update(work.agent.id, {
+          grant: { scope: "selected", tasks: false, resources: [] },
+        });
+      await j.store.driveConnectionCleanups();
+      await vi.waitFor(async () => expect(await holds()).toBe(false), { timeout: 3_000 });
+      expect(work.sessions.workingIn.ofTask(j.task.userId, threadId as ThreadId)).toBeUndefined();
+      expect(work.workingIn.at(-1)?.notice).toEqual({
+        threadId,
+        sessionId,
+        operationId: null,
+        tabId: null,
+      });
+    } finally {
+      await j.close();
+      site.close();
+    }
+  },
+);
