@@ -37,6 +37,7 @@ export class IntegrationPlatformStore {
   readonly requireSelfDeviceId: IntegrationConnectionAuthStore["requireSelfDeviceId"];
   readonly requireDeviceSelfRunnerId: IntegrationConnectionAuthStore["requireDeviceSelfRunnerId"];
   readonly getDeviceComputerUsePolicy: ComputerConnectionStore["getDeviceComputerUsePolicy"];
+  readonly deviceComputerUseFacts: ComputerConnectionStore["deviceComputerUseFacts"];
   readonly setDeviceComputerUsePolicy: ComputerConnectionStore["setDeviceComputerUsePolicy"];
   readonly listDeviceComputerAppSetupRequests: ComputerConnectionStore["listDeviceComputerAppSetupRequests"];
   readonly getDeviceComputerAppSetupRequest: ComputerConnectionStore["getDeviceComputerAppSetupRequest"];
@@ -145,6 +146,9 @@ export class IntegrationPlatformStore {
       this.connections,
     );
     this.getDeviceComputerUsePolicy = this.computerConnections.getDeviceComputerUsePolicy.bind(
+      this.computerConnections,
+    );
+    this.deviceComputerUseFacts = this.computerConnections.deviceComputerUseFacts.bind(
       this.computerConnections,
     );
     this.setDeviceComputerUsePolicy = this.computerConnections.setDeviceComputerUsePolicy.bind(

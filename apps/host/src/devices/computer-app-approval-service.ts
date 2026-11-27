@@ -790,7 +790,7 @@ export class ComputerAppApprovalService {
           async (machine) =>
             [
               machine.deviceId,
-              await this.#store.getDeviceComputerUsePolicy({
+              await this.#store.deviceComputerUseFacts({
                 deviceId: machine.deviceId,
                 ownerUserId,
               }),

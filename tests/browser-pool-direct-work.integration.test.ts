@@ -347,10 +347,10 @@ it.each([
         async () => {
           expect(done).toBe(false);
           const state = await home!.service.pageTabs.state!(j.task.userId, await row(j, tabId));
-          expect(state.usedBy).toEqual([{ taskId: threadId }]);
+          expect(state.usedBy).toEqual([{ taskId: threadId, since: expect.any(String) }]);
           // And the person's row says so: the last time it was published, it named the task.
           const last = (await Promise.all(published)).filter((rows) => rows.has(tabId)).at(-1);
-          expect(last?.get(tabId)).toEqual([{ taskId: threadId }]);
+          expect(last?.get(tabId)).toEqual([{ taskId: threadId, since: expect.any(String) }]);
         },
         { timeout: 4_000 },
       );
@@ -448,9 +448,9 @@ it("names a second connection's task as the holder of its tab, after the person 
       async () => {
         expect(done).toBe(false);
         const state = await home!.service.pageTabs.state!(j.task.userId, await row(j, second));
-        expect(state.usedBy).toEqual([{ taskId: threadId }]);
+        expect(state.usedBy).toEqual([{ taskId: threadId, since: expect.any(String) }]);
         const last = (await Promise.all(published)).filter((rows) => rows.has(second)).at(-1);
-        expect(last?.get(second)).toEqual([{ taskId: threadId }]);
+        expect(last?.get(second)).toEqual([{ taskId: threadId, since: expect.any(String) }]);
       },
       { timeout: 4_000 },
     );
@@ -562,7 +562,7 @@ it("names a connected agent's task as the holder of the tab its script binds, so
       async () => {
         expect(done).toBe(false);
         const state = await home.service.pageTabs.state!(j.task.userId, await row(j, tab.id));
-        expect(state.usedBy).toEqual([{ taskId: threadId }]);
+        expect(state.usedBy).toEqual([{ taskId: threadId, since: expect.any(String) }]);
       },
       { timeout: 4_000 },
     );

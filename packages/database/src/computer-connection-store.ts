@@ -251,8 +251,22 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
   }): Promise<{
     readonly appApproval: "ask" | "automatic";
     readonly revision: number;
-    /** The device's own switches, read with it: what its Apps switch says, at no other read. */
-    readonly accessPolicy?: unknown;
+  }> {
+    const { accessPolicy: _accessPolicy, ...policy } = await this.deviceComputerUseFacts(input);
+    return policy;
+  }
+
+  /**
+   * A device's computer-use policy with its own switches, in the one read the policy takes: what
+   * its Apps switch says, for a listing that decides the device's own refusal from it.
+   */
+  async deviceComputerUseFacts(input: {
+    readonly deviceId: DeviceId;
+    readonly ownerUserId: UserId;
+  }): Promise<{
+    readonly appApproval: "ask" | "automatic";
+    readonly revision: number;
+    readonly accessPolicy: unknown;
   }> {
     return withPersonalReadTransaction(this.database, async (transaction) => {
       const device = await this.#computerUsePolicyOwner(
