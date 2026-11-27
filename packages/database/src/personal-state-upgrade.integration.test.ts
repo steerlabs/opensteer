@@ -136,7 +136,8 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0121_one_device_switch_record_contract",
         "0122_command_attempt_outcomes",
         "0123_agent_operation_endings",
-        "0124_retire_archived_profile_tabs",
+        "0124_agent_session_device_holds",
+        "0125_retire_archived_profile_tabs",
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`
@@ -862,18 +863,18 @@ test("resumes offline settlement of a Run with a large live node set", async () 
   }
 });
 
-test("0124 retires open and closed tabs of already-archived profiles, drops newly emptied groups, preserves mixed and unrelated groups, and advances layout revision", async () => {
+test("0125 retires open and closed tabs of already-archived profiles, drops newly emptied groups, preserves mixed and unrelated groups, and advances layout revision", async () => {
   const clone = await cloneTestDatabase("host");
   const database = createDatabase<DatabaseSchema>({ connectionString: clone.url });
   try {
     await sql`drop schema public cascade; create schema public`.execute(database);
     const all = await migrationProvider().getMigrations();
-    const through0123 = Object.fromEntries(
-      Object.entries(all).filter(([name]) => name <= "0123_agent_operation_endings"),
+    const through0124 = Object.fromEntries(
+      Object.entries(all).filter(([name]) => name <= "0124_agent_session_device_holds"),
     );
     await migrateToLatest(database, {
       async getMigrations() {
-        return through0123;
+        return through0124;
       },
     });
     const owner = await seedPersonalFixture(database, "/fixture/retire-archived-tabs");

@@ -1086,6 +1086,7 @@ export async function createHostRuntime(
     });
     computerUse = new ComputerUseService({
       deploymentId: deployment.id,
+      agentSessionDatabase: store.database,
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),
       onAuthorityRevoked: ({ runId, bindingGeneration }) =>
         devices.resetComputerGeneration(runId, bindingGeneration),

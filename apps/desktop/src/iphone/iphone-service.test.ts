@@ -118,6 +118,53 @@ it.each([true, false])(
   },
 );
 
+it.each(["failed", "outcome-unknown", "no-session"] as const)(
+  "keeps the native evidence for an explicit iPhone close (%s)",
+  async (code) => {
+    const f = await fixture();
+    cleanups.push(f.cleanup);
+    await f.bind();
+    const connection = f.service.forSlot(ownerA).connect(() => undefined);
+    await connection.request(
+      "iphone.targets",
+      {
+        assignments: [
+          { deviceId: f.deviceId, generation: 1, role: "screen", definitionId: "iphone-screen" },
+        ],
+      },
+      f.options(),
+    );
+    const session = {
+      deviceId: f.deviceId,
+      driverGeneration: 1,
+      sessionId: "session",
+      runId: "run",
+    };
+    await connection.request("iphone.session.open", { ...session, access: "control" }, f.options());
+    f.native.failures.set(
+      "session.close",
+      code === "outcome-unknown"
+        ? new Error("Lost native close reply")
+        : new IphoneServiceError(code),
+    );
+    const close = () => connection.request("iphone.session.close", session, f.options());
+    const sends = () => f.native.calls.filter(({ method }) => method === "session.close").length;
+    if (code === "no-session") await expect(close()).resolves.toEqual({});
+    else if (code === "outcome-unknown")
+      await expect(close()).rejects.toMatchObject({ effect: "unknown" });
+    else await expect(close()).rejects.toMatchObject({ code: "failed", effect: "not-started" });
+    expect(sends()).toBe(1);
+    f.native.failures.delete("session.close");
+    if (code === "outcome-unknown") {
+      await expect(close()).rejects.toMatchObject({ effect: "unknown" });
+      expect(sends()).toBe(1);
+    } else {
+      await expect(close()).resolves.toEqual({});
+      expect(sends()).toBe(code === "failed" ? 2 : 1);
+    }
+  },
+);
+
 it("ends USB input on a Wi-Fi transport event and never accepts or replays its late receipt", async () => {
   const f = await fixture();
   cleanups.push(f.cleanup);

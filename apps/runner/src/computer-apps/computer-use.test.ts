@@ -1061,7 +1061,10 @@ describe("computer use over the desktop bridge", () => {
         {
           ...fence,
           type: "runner.integrations.computer-use-event",
-          event: { event: "session.stopped", params: { reason: "app-quit", sessionId } },
+          event: {
+            event: "session.stopped",
+            params: { reason: "app-quit", sessionId, unconfirmed: true },
+          },
         },
       ]),
     );
@@ -1239,6 +1242,9 @@ describe("computer use over the desktop bridge", () => {
     await fixture.handle(observeFrame("theirs", calendar, otherSessionId));
     await fixture.settled(2);
     fixture.bridge.answer("session.act", () => "hold");
+    fixture.bridge.answer("session.close", () => ({
+      error: { code: "failed", message: "The session could not be ended." },
+    }));
 
     await fixture.handle({ ...actFrame("late"), timeoutMs: 100 });
     await fixture.settled(3);
@@ -1257,7 +1263,10 @@ describe("computer use over the desktop bridge", () => {
       {
         ...fence,
         type: "runner.integrations.computer-use-event",
-        event: { event: "session.stopped", params: { reason: "app-quit", sessionId } },
+        event: {
+          event: "session.stopped",
+          params: { reason: "app-quit", sessionId, unconfirmed: true },
+        },
       },
     ]);
 

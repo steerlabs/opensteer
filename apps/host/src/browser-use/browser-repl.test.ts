@@ -1059,6 +1059,42 @@ describe("browser REPL", () => {
     }
   });
 
+  it.each([
+    ["while (true) {}", true],
+    ["await sleep(0); while (true) {}", false],
+  ])("logs the CPU slice refusal for %s without changing the answer", async (code, firstSlice) => {
+    const stderr = vi.spyOn(process.stderr, "write");
+    const { service, run } = setup();
+    try {
+      const message = "The code ran for 100 ms of CPU time without awaiting; split the work.";
+      expect(JSON.stringify(await run(code))).toBe(
+        JSON.stringify({
+          content: [{ type: "text", text: `slice-limit: ${message}` }],
+          isError: true,
+          structuredContent: { error: { code: "slice-limit", message, performed: [] } },
+        }),
+      );
+      expect(await run("return 42")).toEqual({ content: [text(42)] });
+      await service.close();
+      const prefix = "browser.repl.slice-limit ";
+      const lines = stderr.mock.calls
+        .map(([chunk]) => String(chunk))
+        .filter((line) => line.startsWith(prefix));
+      expect(lines).toHaveLength(1);
+      const clock = JSON.parse(lines[0]!.slice(prefix.length));
+      expect(clock).toMatchObject({
+        limit: "cpu",
+        firstSlice,
+        scriptChars: code.length,
+      });
+      expect(clock.threadCpuMs - clock.hostCpuMs).toBeGreaterThan(limits.sliceMs);
+      expect(clock.wallMs).toBeGreaterThan(0);
+      expect(clock.workerAgeMs).toBeGreaterThanOrEqual(clock.wallMs);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it("interrupts guest CPU starvation and counts text, decoded image bytes and image count", async () => {
     const oversizedBridge = "x".repeat(limits.bridgeBytes + 1);
     const screenshot = vi

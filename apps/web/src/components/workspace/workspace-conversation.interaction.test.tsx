@@ -857,12 +857,13 @@ describe("a conversation's foot", () => {
    * The transcript scrolls a 400px window of `content`, clamped as a browser
    * clamps it; the rest of the layout is not measured.
    */
-  function transcriptGeometry(geometry: { content: number }) {
+  function transcriptGeometry(geometry: { content: number; viewport?: number }) {
     const tops = new WeakMap<Element, number>();
-    const max = () => geometry.content - 400;
+    const viewport = () => geometry.viewport ?? 400;
+    const max = () => geometry.content - viewport();
     const size = (element: Element, key: "clientHeight" | "scrollHeight") =>
       element.classList.contains("transcript-scroll")
-        ? { clientHeight: 400, scrollHeight: geometry.content }[key]
+        ? { clientHeight: viewport(), scrollHeight: geometry.content }[key]
         : 0;
     for (const key of ["clientHeight", "scrollHeight"] as const)
       vi.spyOn(HTMLElement.prototype, key, "get").mockImplementation(function (this: HTMLElement) {
@@ -919,6 +920,34 @@ describe("a conversation's foot", () => {
     geometry.content = 2400;
     await scrollTo(scroller, 1850);
     expect(scroller.scrollTop, "A scroll up beside a reflow was taken for the reflow").toBe(1850);
+  });
+
+  it("keeps a follower at the foot when the content gets shorter and then the window does, before the scroller is read again", async () => {
+    await mount(`/tasks/${task}`);
+    const geometry = { content: 2000, viewport: 400 };
+    transcriptGeometry(geometry);
+    const scroller = element<HTMLElement>(".transcript-scroll");
+    for (const _ of [1, 2]) await scrollTo(scroller, 1600);
+    expect(document.querySelector(".transcript__jump")).toBeNull();
+
+    // A window made narrower and shorter: the rows measure shorter and the list keeps its foot in
+    // its own commit, at the old height; the new height lands before this scroller is read.
+    geometry.content = 1700;
+    scroller.scrollTop = geometry.content;
+    expect(scroller.scrollTop).toBe(1300);
+    geometry.viewport = 250;
+    await act(async () => {
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(scroller.scrollTop, "Shorter content was taken for the reader scrolling up").toBe(1450);
+    expect(document.querySelector(".transcript__jump")).toBeNull();
+
+    // The reader's own scroll up beside shorter content still lets go: it moved further than the
+    // content shrank.
+    geometry.content = 1600;
+    await scrollTo(scroller, 1200);
+    expect(scroller.scrollTop, "A scroll up beside shorter content was not theirs").toBe(1200);
+    expect(element(".transcript__jump")).not.toBeNull();
   });
 
   it("a link overtaken by a newer link in the same task reports nothing missing and leaves the reader at the newer one", async () => {

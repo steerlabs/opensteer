@@ -688,7 +688,10 @@ const ThreadView = memo(function ThreadView({
   // scroll before ResizeObserver, and a changed viewport, content height or
   // scroll owner does not mean the reader moved. Requests matter too: a docked
   // request grows the input surface and would otherwise push the newest
-  // activity out of view.
+  // activity out of view. Content that got shorter moves the position up by
+  // itself, by as much as it shrank (the browser clamps it, the list keeps its
+  // foot in its own commit), and the window can get shorter before this reads
+  // again: only a move further up than that is the reader's.
   const readScroller = (scrolled: boolean) => {
     const scroller = currentScroller();
     if (!scroller) return;
@@ -700,7 +703,10 @@ const ThreadView = memo(function ThreadView({
       before.viewport === scroller.clientHeight;
     const previous =
       before?.scroller === scroller
-        ? tailRef.current
+        ? {
+            ...tailRef.current,
+            offset: tailRef.current.offset - Math.max(0, before.height - scroller.scrollHeight),
+          }
         : { ...tailRef.current, offset: scroller.scrollTop };
     const { follows } = readTail(
       previous,
