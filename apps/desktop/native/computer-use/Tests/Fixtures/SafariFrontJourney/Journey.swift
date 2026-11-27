@@ -248,9 +248,12 @@ enum PersonInput {
   func screenPoint(index: Int, window: CGRect) throws -> CGPoint {
     let line = try tree.split(separator: "\n").first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[\(index)]") }
       .unwrap("tree line \(index)")
-    let open = try line.lastIndex(of: "(").unwrap("element frame")
-    let numbers = line[open...].split(whereSeparator: { !$0.isNumber && $0 != "." }).compactMap { Double($0) }
-    try require(numbers.count >= 4, "element frame in \(line)")
+    // The first "(x,y w×h)" of the line; a "(focused)" may follow it.
+    let text = String(line)
+    let pattern = try NSRegularExpression(pattern: #"\((-?[0-9.]+),(-?[0-9.]+) ([0-9.]+)×([0-9.]+)\)"#)
+    let match = try pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)).unwrap("element frame in \(line)")
+    let numbers = (1...4).compactMap { Range(match.range(at: $0), in: text).flatMap { Double(text[$0]) } }
+    try require(numbers.count == 4, "element frame in \(line)")
     return CGPoint(x: window.minX + numbers[0] + numbers[2] / 2, y: window.minY + numbers[1] + numbers[3] / 2)
   }
   /// One call; its receipt, or the error it ended with.
