@@ -116,6 +116,117 @@ it.each(["ready", "acquiring"] as const)(
   },
 );
 
+// Measured on Linux with pinned Chromium: Chromium answers Playwright's Target.closeTarget with
+// success, the tab's navigation then commits, and the tab never ends; the browser asked once
+// more ends it at once. Modelled here: Playwright's close waits for an end that only the
+// browser's second close brings.
+describe("a first close Chromium answers but never carries out", () => {
+  async function lostCloseFixture(endsOn: "browser close again" | "playwright close" | "never") {
+    const f = await nativeCloseFixture();
+    const events = new EventEmitter();
+    let physicallyClosed = false;
+    const ended = Promise.withResolvers<void>();
+    const end = () => {
+      if (physicallyClosed) return;
+      physicallyClosed = true;
+      events.emit("close");
+      ended.resolve();
+    };
+    const page = Object.assign(events, {
+      isClosed: () => physicallyClosed,
+      close: vi.fn(async () => {
+        if (endsOn === "playwright close") end();
+        await ended.promise;
+      }),
+    });
+    f.context.newCDPSession.mockResolvedValue(
+      Object.assign(new EventEmitter(), {
+        detach: vi.fn(async () => undefined),
+        send: vi.fn(async (method: string) =>
+          method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-7" } } : {},
+        ),
+      }),
+    );
+    f.cdp.send.mockImplementation(async (method: string) => {
+      if (method === "Target.closeTarget" && endsOn === "browser close again") end();
+      return method === "Target.closeTarget" ? { success: true } : {};
+    });
+    const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+    vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
+    const handle = await ownPage(launched, f.context, page);
+    await handle.targetId();
+    const closeTargets = () =>
+      f.cdp.send.mock.calls.filter(([method]) => method === "Target.closeTarget");
+    return {
+      handle,
+      page,
+      closeTargets,
+      end,
+      async dispose() {
+        end();
+        vi.useRealTimers();
+        f.exit();
+        await launched.close();
+        await rm(f.directory, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("asks the browser again for the page's own target and ends within a quarter second", async () => {
+    const t = await lostCloseFixture("browser close again");
+    try {
+      vi.useFakeTimers();
+      let closed = false;
+      const closing = t.handle.close().then(() => (closed = true));
+      await vi.advanceTimersByTimeAsync(249);
+      expect(t.closeTargets(), "Playwright's own close is given its chance first").toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(closed, "The page ends once the browser is asked again").toBe(true);
+      await closing;
+      expect(t.handle.isClosed()).toBe(true);
+      expect(t.page.close).toHaveBeenCalledExactlyOnceWith({ runBeforeUnload: false });
+      expect(t.closeTargets(), "Only this page's own target is closed").toEqual([
+        ["Target.closeTarget", { targetId: "target-7" }],
+      ]);
+    } finally {
+      await t.dispose();
+    }
+  });
+
+  it("asks nothing more of the browser when Playwright's close ends the page", async () => {
+    const t = await lostCloseFixture("playwright close");
+    try {
+      vi.useFakeTimers();
+      await t.handle.close();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(t.handle.isClosed()).toBe(true);
+      expect(t.closeTargets()).toEqual([]);
+    } finally {
+      await t.dispose();
+    }
+  });
+
+  it("asks five times, sooner first, then leaves the attempt to its owner", async () => {
+    const t = await lostCloseFixture("never");
+    try {
+      vi.useFakeTimers();
+      let closed = false;
+      const closing = t.handle.close().then(() => (closed = true));
+      const asked: number[] = [];
+      for (const at of [250, 750, 1_750, 3_750, 7_750, 20_000]) {
+        await vi.advanceTimersByTimeAsync(at - (asked.at(-1) ?? 0));
+        asked.push(at);
+        expect(t.closeTargets().length, `asked by ${at} ms`).toBe(Math.min(asked.length, 5));
+      }
+      expect(closed, "Only the page's end settles the attempt").toBe(false);
+      t.end();
+      await closing;
+    } finally {
+      await t.dispose();
+    }
+  });
+});
+
 describe("Chromium proxy launch", () => {
   it("keeps implicit loopback bypass for a native profile", async () => {
     const f = await nativeCloseFixture({

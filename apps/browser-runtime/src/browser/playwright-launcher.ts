@@ -1148,6 +1148,12 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
 const targetLookupMs = 5_000;
 /** One debugger round trip to a page or browser that may be dying. */
 const nameTargetMs = 2_000;
+/**
+ * How long a page's first close waits before each time it asks the browser again to close the
+ * page's target (`closeNatively`): about 8 s in all, inside the 10 s a close attempt has before
+ * its owner counts it hung and asks with a new attempt.
+ */
+const closeAgainMs = [250, 500, 1_000, 2_000, 4_000] as const;
 
 /** Opaque restore token for a Chromium tab discarded by `chrome.tabs.discard`. */
 const chromiumDiscardRestoreSchema = z.object({
@@ -3174,10 +3180,11 @@ class PlaywrightPageHandle implements BrowserPage {
 
   /**
    * Each call is a new attempt; a page asked to close never returns to service.
-   * The first closes through Playwright, which waits on its own first request
-   * forever once that hangs, so later attempts go around it: they retire this
-   * page's debugger again and close the one target from the browser itself.
-   * Nothing wider than this page is ever closed.
+   * The first closes through Playwright and, while the page lives on, asks the
+   * browser again for this page's target (`closeNatively`). Playwright waits on
+   * its own first request forever once that hangs, so later attempts go around
+   * it: they retire this page's debugger again and close the one target from the
+   * browser itself. Nothing wider than this page is ever closed.
    */
   close(options?: { readonly reason?: PageEndReason }): Promise<void> {
     if (this.isClosed()) return Promise.resolve();
@@ -3194,9 +3201,9 @@ class PlaywrightPageHandle implements BrowserPage {
         return;
       }
       if (first) {
-        // Native close can wait on a navigation still held by this private debugger.
+        // Retired first, so nothing new reaches a page that is going.
         await this.cdpChannel?.detach();
-        if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+        if (!this.page.isClosed()) await this.closeNatively();
         return;
       }
       // M3: a page put to sleep is closed again only on its sleep's lane, after the sleep.
@@ -3205,6 +3212,37 @@ class PlaywrightPageHandle implements BrowserPage {
       await this.closeAround();
     })();
     return operation;
+  }
+
+  /**
+   * Playwright sends Target.closeTarget once and waits for the page to end. Chromium answers
+   * that close with success, yet a close that meets the tab's committing navigation never ends
+   * the tab, and with a debugger attached Chromium never stops waiting for it: on a loaded Linux
+   * machine, about one close in ten sent just after a navigation started. The browser asked
+   * again closes the committed document at once, so until the page ends its own target is
+   * asked again, sooner first.
+   */
+  private async closeNatively(): Promise<void> {
+    const closing = this.page.close({ runBeforeUnload: false });
+    let settled = false;
+    const ended = closing.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    for (const waitMs of closeAgainMs) {
+      await Promise.race([ended, delay(waitMs)]);
+      if (settled || this.page.isClosed()) break;
+      await this.closeTargetAgain();
+    }
+    await closing;
+  }
+
+  /** One more browser close of this page's own target; a failure leaves the attempt waiting. */
+  private async closeTargetAgain(): Promise<void> {
+    const closeTarget = this.contextHandle.closeTarget;
+    if (!closeTarget) return;
+    const targetId = this.knownTargetId ?? (await this.nameTarget());
+    if (targetId && !this.page.isClosed()) await closeTarget(targetId).catch(() => undefined);
   }
 
   /** A later close attempt goes around Playwright, to the browser's own target close. */
