@@ -3211,7 +3211,11 @@ it("follows document.title changes and single-page app navigations without a loa
   if (!address || typeof address === "string") throw new Error("Missing HTTP port.");
   const origin = `http://127.0.0.1:${address.port}`;
 
-  const launcher = new PlaywrightChromiumLauncher({ executablePath });
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
   const claims = validClaims({
     initialNavigation: { operationKey: "title-follow-init", url: `${origin}/start` },
   });

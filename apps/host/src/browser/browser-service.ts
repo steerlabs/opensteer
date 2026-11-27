@@ -5106,7 +5106,7 @@ export class BrowserService {
         message: "Opening a page requires a Run or the person.",
       });
     let openHold: { sessionId: BrowserSessionId; surfaceId: BrowserSurfaceId } | undefined;
-    const agent =
+    const agent: (BrowserTabOpenAgent & { readonly environmentId?: EnvironmentId }) | undefined =
       actor.kind === "run"
         ? {
             ownerId,

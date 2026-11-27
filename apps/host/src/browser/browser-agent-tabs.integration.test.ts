@@ -411,7 +411,7 @@ integration("page tab adapter", () => {
     const computerId = await store.requireSelfDeviceId(f.runnerId);
     let tabService: TabService | undefined;
     let closing = false;
-    const seenFirstUsedBy = new Map<string, { taskId: string; since?: string }[]>();
+    const seenFirstUsedBy = new Map<string, { taskId: string; since?: string | undefined }[]>();
     const observePublish = async () => {
       if (!tabService || closing) return;
       const state = await tabService.bootstrap(f.userId, 240 * 1024);
