@@ -1,15 +1,16 @@
 /**
  * Every web journey (`scripts/<name>-journey.ts`), in one place. Each runs the production web
- * build against the mock Host in headless Chromium. `pnpm test:journeys` runs them all, or one
- * shard of them, and CI runs every shard, so a journey that stops holding fails a check
- * instead of rotting unseen. `journeys.test.ts` fails when a journey file is in neither list.
+ * build against the mock Host in headless Chromium. `pnpm test:journeys` (run-journeys.ts) is the
+ * one way they run: all of them, or one shard. CI's browser-journeys job runs every shard, and
+ * Check fails unless together they ran every journey listed here, so a journey that stops
+ * holding fails a check instead of rotting unseen. `journeys.test.ts` fails when a journey file
+ * is in neither list.
  */
 
 export interface WebJourney {
   /** `scripts/<name>-journey.ts`, run by the package script `test:<name>`. */
   readonly name: string;
-  /** Wall time on a Mac, build included (task-done and task-marks without their removed-feature
-   * steps); shards are balanced by it. */
+  /** Wall time on a Mac, build included; shards are balanced by it. */
   readonly seconds: number;
 }
 

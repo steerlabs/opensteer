@@ -1,11 +1,14 @@
 /**
  * Runs the web journeys listed in `journeys.ts`, one after another, and fails if any fails.
  *
- *   pnpm --filter @opensteer/web test:journeys [-- --shard 1/2] [--evidence DIR] [name ...]
+ *   pnpm --filter @opensteer/web test:journeys [--shard 1/2] [--evidence DIR] [--inventory FILE]
+ *     [name ...]
  *
  * Each journey runs with its own temporary directory under the evidence directory (default
  * `opensteer-web-journeys` in the system's), so its screenshots and results stay there.
  * A failing journey does not stop the others; `journeys.json` there says how each one ended.
+ * `--inventory` writes which journeys this shard ran, in the form CI's Check reads for every
+ * sharded lane (ci-inventories.mjs), so a journey no shard ran fails Check.
  */
 import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -16,8 +19,14 @@ import { journeyShard, webJourneys } from "./journeys.js";
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
-  options: { evidence: { type: "string" }, shard: { type: "string" } },
+  options: {
+    evidence: { type: "string" },
+    inventory: { type: "string" },
+    shard: { type: "string" },
+  },
 });
+if (values.inventory && positionals.length)
+  throw new Error("An inventory is of a whole shard: name no journeys with --inventory.");
 const [index, count] = (values.shard ?? "1/1").split("/").map(Number);
 const unknown = positionals.filter((name) => !webJourneys.some((journey) => journey.name === name));
 if (unknown.length) throw new Error(`No web journey named ${unknown.join(", ")}.`);
@@ -57,6 +66,22 @@ for (const journey of chosen) {
 }
 
 await writeFile(path.join(evidence, "journeys.json"), `${JSON.stringify(results, null, 2)}\n`);
+if (values.inventory)
+  await writeFile(
+    path.resolve(values.inventory),
+    `${JSON.stringify(
+      {
+        version: 1,
+        lane: "journeys",
+        shard: index,
+        total: count,
+        discovered: webJourneys.map((journey) => journey.name).sort(),
+        executed: results.map((result) => result.name).sort(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
 console.log(`\nWeb journeys, shard ${index}/${count}:`);
 for (const result of results)
   console.log(`  ${result.passed ? "ok  " : "FAIL"} ${result.name} (${result.seconds} s)`);
