@@ -849,7 +849,7 @@ export class ComputerUseBridgeServer {
         send(socket, {
           event: "session.stopped",
           kind: "event",
-          params: { reason: "app-quit", sessionId },
+          params: { reason: "app-quit", sessionId, unconfirmed: true },
         });
       }
     });
@@ -1396,13 +1396,13 @@ export class ComputerUseBridgeServer {
       }
     }
     this.#refuseWith(refuse, method, params, outcome);
-    // After the answer, so the Runner reads the refusal first: the session it
-    // named is gone, and its Host must start another rather than reuse it.
+    // Fence the binding after the Runner reads the refusal. The helper has
+    // not confirmed that the session is gone.
     if (endedLate && sessionId && owner.alive) {
       send(socket, {
         event: "session.stopped",
         kind: "event",
-        params: { reason: "app-quit", sessionId },
+        params: { reason: "app-quit", sessionId, unconfirmed: true },
       });
     }
   }

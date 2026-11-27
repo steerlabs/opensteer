@@ -1223,6 +1223,8 @@ const computerUseEventVariants = [
     event: z.literal("session.stopped"),
     params: z.strictObject({
       reason: ComputerUseStopReasonSchema,
+      /** A local fence announced without a receipt from the helper. */
+      unconfirmed: z.literal(true).optional(),
       /**
        * The Run the stopped session belonged to. A phone names it, because
        * its owner's Stop can reach the Host only on a later stream, after the

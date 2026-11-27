@@ -698,7 +698,7 @@ describe("ComputerUseBridgeServer", () => {
         {
           event: "session.stopped",
           kind: "event",
-          params: { reason: "app-quit", sessionId: sessionA },
+          params: { reason: "app-quit", sessionId: sessionA, unconfirmed: true },
         },
       ]),
     );
@@ -793,13 +793,13 @@ describe("ComputerUseBridgeServer", () => {
       expect(second.events).toContainEqual({
         event: "session.stopped",
         kind: "event",
-        params: { reason: "app-quit", sessionId: sessionB },
+        params: { reason: "app-quit", sessionId: sessionB, unconfirmed: true },
       }),
     );
     expect(first.events).toContainEqual({
       event: "session.stopped",
       kind: "event",
-      params: { reason: "app-quit", sessionId: sessionA },
+      params: { reason: "app-quit", sessionId: sessionA, unconfirmed: true },
     });
   });
 

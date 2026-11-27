@@ -692,7 +692,7 @@ export class ComputerUseService {
     entry.spent = true;
     const session = entry.session;
     session.inFlight -= 1;
-    if (!session.dispatched && session.inFlight === 0) this.#forget(session);
+    if (!session.dispatched && session.inFlight === 0) void this.#forget(session);
   }
 
   #spend(lease: ComputerUseLease): {
@@ -1057,7 +1057,7 @@ export class ComputerUseService {
             checkSession();
           } catch (error) {
             // Stop or route loss won while the reservation was being written. Nothing left.
-            await this.#sendClose(session);
+            await this.#deliverClose(session);
             throw error;
           }
         }
@@ -1092,10 +1092,7 @@ export class ComputerUseService {
       });
     } catch (error) {
       session.inFlight -= 1;
-      if (!session.dispatched && session.inFlight === 0) {
-        this.#forget(session);
-        if (session.agentHold) await this.#deliverClose(session);
-      }
+      if (!session.dispatched && session.inFlight === 0) await this.#forget(session);
       throw error;
     } finally {
       session.pending.delete(requestId);
@@ -1188,10 +1185,7 @@ export class ComputerUseService {
         // deadline and its grace passed — so whatever the Mac is still doing
         // for it belongs to nobody. Only this session ends; the Run may use
         // the Mac again, which a Stop would not allow.
-        if (this.#sessions.get(key) === session) {
-          this.#forget(session);
-          void this.#deliverClose(session);
-        }
+        if (this.#sessions.get(key) === session) void this.#forget(session, { close: true });
         throw new ComputerUseError(
           operation === "act" ? "outcome-unknown" : "failed",
           operation === "act"
@@ -1430,13 +1424,26 @@ export class ComputerUseService {
       this.#loseSession(session);
       return;
     }
-    this.#forget(session);
-    if (mayBeOpen) void this.#deliverClose(session);
+    void this.#forget(session, { close: mayBeOpen });
   }
 
-  #forget(session: Session): void {
+  /** Remove local authority only after any recorded device hold has a close or receipt in flight. */
+  #forget(
+    session: Session,
+    options?: {
+      close?: boolean;
+      outcome?: "ended" | "unknown";
+      submitted?: (() => void) | undefined;
+    },
+  ): Promise<void> {
+    if (options?.outcome && session.agentHold && !this.#closingSessions.has(session))
+      session.agentHold.outcome ??= session.dispatched ? options.outcome : "ended";
+    const closing =
+      session.agentHold || (options?.close && session.dispatched)
+        ? this.#deliverClose(session, options?.submitted)
+        : Promise.resolve();
     const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
-    if (this.#sessions.get(key) !== session) return;
+    if (this.#sessions.get(key) !== session) return closing;
     this.#sessions.delete(key);
     this.#scheduleSweep();
     session.cancellation.abort();
@@ -1450,6 +1457,7 @@ export class ComputerUseService {
     if (session.activityTimer) clearTimeout(session.activityTimer);
     if (session.actingTimer) clearTimeout(session.actingTimer);
     if (session.confirmed) this.#onSessionsChanged();
+    return closing;
   }
 
   #sentence(
@@ -1657,9 +1665,8 @@ export class ComputerUseService {
   // ---- ending ----------------------------------------------------------
 
   /** Ends this exact record without requiring authority that cleanup has already withdrawn. */
-  async #closeSession(session: Session): Promise<void> {
-    this.#forget(session);
-    await this.#deliverClose(session);
+  #closeSession(session: Session): Promise<void> {
+    return this.#forget(session, { close: true });
   }
 
   /** Agent release is attempt-authorized; its cleanup never resolves another generation. */
@@ -1680,9 +1687,11 @@ export class ComputerUseService {
     }
     if (!session) return false;
     if (!this.#holds(session)) return false;
-    this.#forget(session);
     // Do not wait for an admission turn from inside the turn releasing it.
-    void this.#deliverClose(session, agentSessionAuthority(authority)?.submitted);
+    void this.#forget(session, {
+      close: true,
+      submitted: agentSessionAuthority(authority)?.submitted,
+    });
     return true;
   }
 
@@ -1711,7 +1720,8 @@ export class ComputerUseService {
   #deliverClose(session: Session, submitted?: () => void): Promise<void> {
     const existing = this.#closingSessions.get(session);
     if (existing) return existing;
-    const close = this.#sendClose(session, submitted).finally(() => {
+    const work = this.#sendClose(session, submitted);
+    const close = (session.agentHold ? this.#write(work) : work).finally(() => {
       this.#closingSessions.delete(session);
     });
     this.#closingSessions.set(session, close);
@@ -1892,14 +1902,8 @@ export class ComputerUseService {
   }
 
   #loseSession(session: Session): void {
-    this.#forget(session);
-    if (!session.agentHold) {
-      this.#undeliveredCloses.delete(session);
-      return;
-    }
-    if (this.#closingSessions.has(session)) return;
-    session.agentHold.outcome ??= session.dispatched ? "unknown" : "ended";
-    void this.#write(this.#deliverClose(session)).catch(this.#onError);
+    if (!session.agentHold) this.#undeliveredCloses.delete(session);
+    void this.#forget(session, { outcome: "unknown" });
   }
 
   /** Applies an unsolicited event from the current fenced Runner stream. */
@@ -1940,16 +1944,12 @@ export class ComputerUseService {
     }
     if (event.params.reason === "user")
       void this.#holdStop(session, event.params.runId === session.runId).catch(this.#onError);
-    this.#forget(session);
     // A phone may have received another old-session observe before its
     // Stop reached us. A matching Close drains that work on the same
     // admission queue, ahead of the next holder, without retiring IDs here.
     if (event.params.reason === "user" && session.display !== null)
-      void this.#deliverClose(session);
-    else if (session.agentHold && !this.#closingSessions.has(session)) {
-      session.agentHold.outcome ??= "ended";
-      void this.#write(this.#deliverClose(session)).catch(this.#onError);
-    }
+      void this.#forget(session, { close: true });
+    else void this.#forget(session, { outcome: event.params.unconfirmed ? "unknown" : "ended" });
   }
 
   /**
@@ -1987,8 +1987,7 @@ export class ComputerUseService {
     if (heldMeanwhile) return this.#recordStop(heldMeanwhile);
     if (!this.#holds(session)) return;
     const recorded = this.#holdStop(session);
-    this.#forget(session);
-    void this.#deliverClose(session);
+    void this.#forget(session, { close: true });
     await recorded;
   }
 
@@ -2138,8 +2137,7 @@ export class ComputerUseService {
       await this.#assertAuthority(authority);
     } catch (error) {
       if (!authorityRefused(error)) throw authorityUnchecked();
-      this.#forget(session);
-      if (session.dispatched) void this.#deliverClose(session);
+      void this.#forget(session, { close: true });
       throw authorityEnded();
     }
   }
