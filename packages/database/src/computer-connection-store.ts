@@ -251,9 +251,16 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
   }): Promise<{
     readonly appApproval: "ask" | "automatic";
     readonly revision: number;
+    /** The device's own switches, read with it: what its Apps switch says, at no other read. */
+    readonly accessPolicy?: unknown;
   }> {
     return withPersonalReadTransaction(this.database, async (transaction) => {
-      await this.#computerUsePolicyOwner(transaction, input.deviceId, input.ownerUserId, false);
+      const device = await this.#computerUsePolicyOwner(
+        transaction,
+        input.deviceId,
+        input.ownerUserId,
+        false,
+      );
       const policy = await computerUsePolicyInTransaction(
         transaction,
         input.deviceId,
@@ -261,6 +268,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
       );
       return {
         ...policy,
+        accessPolicy: device.accessPolicy,
       };
     });
   }
@@ -273,7 +281,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
   ) {
     const runner = await transaction
       .selectFrom("devices")
-      .select(["id", "name", "removedAt"])
+      .select(["id", "name", "removedAt", "accessPolicy"])
       .where("id", "=", deviceId)
       .$if(lock, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();

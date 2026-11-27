@@ -809,6 +809,10 @@ export class ComputerAppApprovalService {
       machines: inventory.machines.map((machine) => ({
         ...machine,
         appApproval: policies.get(machine.deviceId)!.appApproval,
+        // Its Apps switch, from the same read: what the device's own refusal is decided from.
+        ...(policies.get(machine.deviceId)!.accessPolicy === undefined
+          ? {}
+          : { accessPolicy: policies.get(machine.deviceId)!.accessPolicy as unknown }),
         apps: (byRunner.get(machine.deviceId) ?? []).flatMap((connection) =>
           connection.definitionId === computerUseDefinitionId && connection.computer?.app
             ? [

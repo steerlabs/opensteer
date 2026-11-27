@@ -806,6 +806,7 @@ function withMacs(
           listCallableTools: this.listCallableTools,
           computerToolEnabled: () => true,
           computerUseVersion: () => 2,
+          localDeviceAccessBlocked: async () => undefined,
         } as unknown as DeviceService,
         input,
         run,

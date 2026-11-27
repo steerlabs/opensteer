@@ -405,14 +405,21 @@ export function discoverHandler(
     const appItem = (
       computerId: string,
       computer: string,
-      app: { bundleId: string; name: string; access?: "read" | "read-write" | undefined },
+      app: {
+        bundleId: string;
+        name: string;
+        access?: "read" | "read-write" | undefined;
+        blocked?: DiscoverItem["blocked"];
+      },
     ): DiscoverItem => ({
       id: "app:" + encode([computerId, app.bundleId]),
       kind: "app",
       name: app.name,
       computer,
-      reachable: app.access !== undefined,
+      reachable: app.access !== undefined && !app.blocked,
       ...(app.access ? { access: app.access === "read" ? "read-only" : "read-write" } : {}),
+      // What keeps it, as a call to it says it (the device's own refusal first).
+      ...(app.blocked ? { blocked: app.blocked } : {}),
       untrusted: true,
       use: itemUse("computer_use", "app", app.bundleId, computerId),
     });
