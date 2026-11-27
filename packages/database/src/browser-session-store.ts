@@ -2098,6 +2098,7 @@ export async function transitionBrowserSession(
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
     readonly state: Exclude<HostedBrowserSessionState, "closed">;
+    readonly notifyTabs?: boolean;
   },
 ): Promise<{
   readonly session: BrowserSessionRecord;
@@ -2115,6 +2116,7 @@ export async function closeUnpooledBrowserSession(
   input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
+    readonly notifyTabs?: boolean;
   },
 ): Promise<{
   readonly session: BrowserSessionRecord;
@@ -2128,6 +2130,7 @@ async function writeBrowserSessionState(
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
     readonly state: HostedBrowserSessionState;
+    readonly notifyTabs?: boolean;
   },
   unpooledOnly: boolean,
 ): Promise<{
@@ -2193,7 +2196,7 @@ async function writeBrowserSessionState(
       }
       mutation.bumpResource("browser-placement");
       mutation.bumpResource("browser-availability");
-      mutation.bumpResource("tab");
+      if (input.notifyTabs !== false) mutation.bumpResource("tab");
       return { session: row };
     }
     const existing = await transaction

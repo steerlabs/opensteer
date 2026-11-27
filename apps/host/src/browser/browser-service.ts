@@ -600,6 +600,7 @@ export interface BrowserSessionRepository {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
     readonly state: Exclude<HostedBrowserSessionState, "closed">;
+    readonly notifyTabs?: boolean;
   }): Promise<{
     readonly session: BrowserSessionRecord;
   }>;
@@ -607,6 +608,7 @@ export interface BrowserSessionRepository {
   closeUnpooledBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
+    readonly notifyTabs?: boolean;
   }): Promise<{
     readonly session: BrowserSessionRecord;
   }>;
@@ -865,7 +867,10 @@ interface BrowserServiceOptions {
   readonly onHoldsDropped?: (ownerId: UserId, tabIds: readonly BrowserSurfaceId[]) => void;
   readonly onPlaceNotice?: (ownerId: UserId, notice: BrowserPlaceActivityNotice) => void;
   readonly connectTimeoutMs?: number;
-  readonly onSessionsChanged: (sessionIds: readonly BrowserSessionId[]) => void;
+  readonly onSessionsChanged: (
+    sessionIds: readonly BrowserSessionId[],
+    options?: { readonly tabs?: boolean },
+  ) => void;
   /**
    * What a person sees about one browser changed: its page, or whether an
    * agent is acting in it. These change often, so they never reread a list.
@@ -1049,7 +1054,12 @@ export class BrowserService {
   readonly #passkeyOwnOrigins: () => readonly string[];
   readonly #authConsumers = new Map<AuthSessionId, Set<BrowserConsumerPeer>>();
   readonly #connectTimeoutMs: number;
-  readonly #onSessionsChanged: (sessionIds: readonly BrowserSessionId[]) => void;
+  readonly #onSessionsChanged: (
+    sessionIds: readonly BrowserSessionId[],
+    options?: { readonly tabs?: boolean },
+  ) => void;
+  /** Sessions being stopped after their profile's archive already retired and announced their tabs. */
+  readonly #retiredProfileSessions = new Set<BrowserSessionId>();
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
   readonly #onProfileArchived: NonNullable<BrowserServiceOptions["onProfileArchived"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
@@ -1239,14 +1249,14 @@ export class BrowserService {
       }
     };
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
-    this.#onSessionsChanged = (sessionIds) => {
+    this.#onSessionsChanged = (sessionIds, changeOptions) => {
       for (const id of sessionIds) {
         this.#brokers.get(id)?.refreshSessionState();
         // Attachments changed: who may use the session is part of its comparison.
         this.#shadows.get(id)?.catalogChanged();
       }
       this.#invalidatePageSessions(sessionIds);
-      options.onSessionsChanged(sessionIds);
+      options.onSessionsChanged(sessionIds, changeOptions);
     };
     this.#onTabsChanged();
     this.#onProfilesChanged = (ownerId) => {
@@ -2232,15 +2242,25 @@ export class BrowserService {
     this.invalidatePlaceAuthority();
     // Stop the sessions that were live when the archive committed directly from their records:
     // `stop()` looks up `getBrowserSessionForOwner`, which filters out archived profiles.
-    const stops = await Promise.allSettled(
-      sessions
-        ? sessions.map((session) => this.#stopDeletedProfileSession(session))
-        : sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
-    );
+    // The archive commit already retired and announced their tabs; suppress duplicate tab notices
+    // while keeping session `browser-placement` and `browser-availability` notices.
+    const retiredSessionIds = sessions ? sessions.map((session) => session.id) : sessionIds;
+    for (const id of retiredSessionIds) this.#retiredProfileSessions.add(id);
+    let stops: PromiseSettledResult<void>[];
+    try {
+      stops = await Promise.allSettled(
+        sessions
+          ? sessions.map((session) => this.#stopDeletedProfileSession(session))
+          : sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
+      );
+    } finally {
+      for (const id of retiredSessionIds) this.#retiredProfileSessions.delete(id);
+    }
     for (const stop of stops) if (stop.status === "rejected") this.#onError(stop.reason);
     if (retiredTabIds?.length) {
       this.#onHoldsDropped(input.ownerId, retiredTabIds);
-      this.#onTabsChanged(input.ownerId, retiredTabIds, true);
+      // Invalidate standalone warm catalogs without emitting a second `tab` notice.
+      this.#onTabsChanged(input.ownerId, retiredTabIds);
     }
     if (deletion) await this.#eraseLocalProfiles?.(deletion.computerId).catch(() => undefined);
     await this.#ownerProfilesChanged(input.ownerId);
@@ -10344,6 +10364,7 @@ export class BrowserService {
     const pooled =
       (pool !== undefined && record.runtimeId === pool.runtimeId) ||
       (this.#pooledRunner !== undefined && record.runnerId === this.#pooledRunner);
+    const notifyTabs = !this.#retiredProfileSessions.has(record.id);
     if (pooled && this.#repository instanceof OpensteerStore) {
       // "The person asked to stop" is durable before the Stop returns, whatever a broker of it
       // is doing (one already finishing a lost channel included, W2): under the slot's lock,
@@ -10353,8 +10374,9 @@ export class BrowserService {
         : await stopBrowserPoolSession(this.#repository.database, {
             sessionId: record.id,
             runnerId: record.runnerId,
+            ...(notifyTabs ? {} : { notifyTabs: false }),
           });
-      if (written) this.#onSessionsChanged([record.id]);
+      if (written) this.#onSessionsChanged([record.id], notifyTabs ? undefined : { tabs: false });
       // Its channel, if it has one, is closed as a Stop closes it; the runtime's own `closed`,
       // or the end step's answer, ends the row.
       if (broker) await (broker.pooled ? broker.stopWithReceipt(5_000) : broker.stop());
@@ -10414,15 +10436,22 @@ export class BrowserService {
           readonly evidence: "not-pooled";
         },
   ): Promise<BrowserSessionRecord> {
+    const notifyTabs = !this.#retiredProfileSessions.has(input.sessionId);
     if (input.state === "closed" && input.evidence !== "not-pooled") {
       const database = (this.#repository as OpensteerStore).database;
-      await closeBrowserPoolSessions(database, input.target, [input.sessionId], input.evidence);
+      await closeBrowserPoolSessions(
+        database,
+        input.target,
+        [input.sessionId],
+        input.evidence,
+        notifyTabs,
+      );
       const owner = await readBrowserPoolOwner(database);
       const row = owner
         ? await this.#repository.getBrowserSessionForOwner(input.sessionId, owner)
         : null;
       if (!row) throw new Error("The pooled browser session is gone.");
-      this.#onSessionsChanged([row.id]);
+      this.#onSessionsChanged([row.id], notifyTabs ? undefined : { tabs: false });
       return row;
     }
     const { from, sessionId } = input;
@@ -10433,13 +10462,15 @@ export class BrowserService {
         ? await this.#repository.closeUnpooledBrowserSession({
             ...(from ? { from } : {}),
             sessionId,
+            ...(notifyTabs ? {} : { notifyTabs: false }),
           })
         : await this.#repository.transitionBrowserSession({
             ...(from ? { from } : {}),
             sessionId,
             state: input.state,
+            ...(notifyTabs ? {} : { notifyTabs: false }),
           });
-    this.#onSessionsChanged([transitioned.session.id]);
+    this.#onSessionsChanged([transitioned.session.id], notifyTabs ? undefined : { tabs: false });
     return transitioned.session;
   }
 

@@ -889,6 +889,7 @@ export class OpensteerStore {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
     readonly state: Exclude<HostedBrowserSessionState, "closed">;
+    readonly notifyTabs?: boolean;
   }) {
     return browserSessionStore.transitionBrowserSession(this.#database, input);
   }
@@ -896,6 +897,7 @@ export class OpensteerStore {
   async closeUnpooledBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
+    readonly notifyTabs?: boolean;
   }) {
     return browserSessionStore.closeUnpooledBrowserSession(this.#database, input);
   }

@@ -401,7 +401,11 @@ export async function advanceBrowserPoolSlot(
  */
 export async function stopBrowserPoolSession(
   database: Kysely<DatabaseSchema>,
-  input: { readonly sessionId: BrowserSessionId; readonly runnerId: RunnerId },
+  input: {
+    readonly sessionId: BrowserSessionId;
+    readonly runnerId: RunnerId;
+    readonly notifyTabs?: boolean;
+  },
 ): Promise<"closing" | "closed" | undefined> {
   return commitPersonalMutation(
     database,
@@ -427,18 +431,23 @@ export async function stopBrowserPoolSession(
       // On a parked guest the Stop is answered by the pause itself: the next wake ends the
       // session in the guest before it serves anyone (V2).
       if (state === "closed")
-        await endBrowserPoolSessions(tx, [
-          {
-            id: input.sessionId,
-            from: ["starting", "ready", "closing"],
-            end: { state: "closed", evidence: { kind: "guest-paused" }, target: slot! },
-          },
-        ]);
+        await endBrowserPoolSessions(
+          tx,
+          [
+            {
+              id: input.sessionId,
+              from: ["starting", "ready", "closing"],
+              end: { state: "closed", evidence: { kind: "guest-paused" }, target: slot! },
+            },
+          ],
+          input.notifyTabs,
+        );
       else
         await transitionBrowserSession(tx, {
           from: ["starting", "ready", "closing"],
           sessionId: input.sessionId,
           state,
+          ...(input.notifyTabs === undefined ? {} : { notifyTabs: input.notifyTabs }),
         });
       return state;
     },
@@ -545,6 +554,7 @@ export async function closeBrowserPoolSessions(
   target: BrowserPoolSessionTarget,
   sessionIds: readonly BrowserSessionId[],
   evidence: BrowserPoolCloseEvidence,
+  notifyTabs = true,
 ): Promise<void> {
   if (!sessionIds.length) return;
   await commitPersonalMutation(
@@ -557,6 +567,7 @@ export async function closeBrowserPoolSessions(
           from: ["starting", "ready", "closing"],
           end: { state: "closed", evidence, target },
         })),
+        notifyTabs,
       ),
     undefined,
     "once-bounded",
@@ -582,6 +593,7 @@ async function endBrowserPoolSessions(
           readonly target: BrowserPoolSessionTarget;
         };
   }[],
+  notifyTabs = true,
 ): Promise<void> {
   if (!ends.length) return;
   const ordered = [...ends].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -627,7 +639,7 @@ async function endBrowserPoolSessions(
       .execute(databaseOperationOptions());
     mutation.bumpResource("browser-placement");
     mutation.bumpResource("browser-availability");
-    mutation.bumpResource("tab");
+    if (notifyTabs) mutation.bumpResource("tab");
   });
 }
 

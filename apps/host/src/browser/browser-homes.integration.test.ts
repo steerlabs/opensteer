@@ -877,4 +877,163 @@ describeStore("Host browser homes", (it) => {
       await browser.close();
     }
   });
+
+  it("publishes exactly one tab-removal notice after invalidating the warm catalog on profile deletion while keeping session notices", async ({
+    storeFixture: fixture,
+  }) => {
+    const run = await setup(fixture);
+    const tabStore = new TabStore(fixture.database);
+    const unused = async () => {
+      throw new Error("unused");
+    };
+    const tabs = new TabService({
+      store: tabStore,
+      devices: fixture.store,
+      pages: {
+        open: unused,
+        state: async () => ({ state: "asleep", usedBy: [] }),
+        activate: unused,
+        bind: unused,
+        closeViewers: async () => undefined,
+      },
+      nativeTargets: {
+        resolveWindow: unused,
+        windowState: async () => ({ state: "asleep", usedBy: [] }),
+        phoneState: async () => ({ state: "asleep", usedBy: [] }),
+        openOwnerView: unused,
+        closeOwnerViews: async () => undefined,
+        onTargetAcquired: () => () => undefined,
+      },
+      apps: { get: unused },
+      computer: async (owner, id, db) => ({
+        ...(await tabComputer(owner, id, db)),
+        connected: true,
+      }),
+      canRead: canReadTab,
+      readAuthority: tabReadAuthority,
+      canReadTask: async () => true,
+      authorize: authorizeTabTarget,
+      authorizeMembership: authorizeTabActor,
+      onError: (error) => {
+        throw error;
+      },
+    });
+    const announcements: string[] = [];
+    const person = { kind: "person", ownerId: run.userId } as const;
+    let tabListAtNotice: Promise<string[]> | null = null;
+    let changedTabsAtNotice: string[] = [];
+    let recording = false;
+    const removeHooks = fixture.observePersonalReactions({
+      notice: (notice) => {
+        if (!recording) return;
+        // Mirrors runtime.ts wake(): invalidate the warm catalog before publishing the durable revision.
+        if (notice.changedTabs.size > 0)
+          tabs.changed(
+            undefined,
+            [...notice.changedTabs].map((id) => TabIdSchema.parse(id)),
+          );
+        else if (notice.resourceKinds.has("tab-layout")) tabs.changed();
+        for (const kind of notice.resourceKinds) announcements.push(`durable:${kind}`);
+        if (notice.resourceKinds.has("tab") && !tabListAtNotice) {
+          changedTabsAtNotice = [...notice.changedTabs];
+          tabListAtNotice = tabs.list(person, {}).then((view) => view.tabs.map((t) => t.tabId));
+        }
+      },
+      reaction: () => undefined,
+    });
+    const browser = new BrowserService({
+      deploymentId: createId("deployment"),
+      hostOrigin: new URL("https://host.test"),
+      repository: fixture.store,
+      signer: {} as never,
+      personal: true,
+      localProfiles: new BrowserLocalProfiles({
+        deploymentId: createId("deployment"),
+        baseUrl: new URL("https://host.test"),
+        repository: fixture.store,
+      }),
+      profileRequestRunner: async () => run.runnerId,
+      onSessionsChanged: (_ids, options) => {
+        if (!recording) return;
+        announcements.push(
+          "announce:browser-placement",
+          "announce:browser-availability",
+          ...(options?.tabs === false ? [] : ["announce:tab"]),
+        );
+      },
+      onTabsChanged: (ownerId, tabIds, stateChanged) => {
+        tabs.changed(ownerId, tabIds);
+        if (recording && stateChanged) announcements.push("announce:tab");
+      },
+      onError: (error) => {
+        throw error;
+      },
+      targetResolver: { placements: () => [], resolve: () => undefined },
+    });
+    const admin = new AdministrationService(
+      { store: fixture.store, browser } as never,
+      () => undefined,
+    );
+    try {
+      const profile = await fixture.store.createBrowserProfile({
+        ownerId: run.userId,
+        name: "Ephemeral",
+        homeRunnerId: run.runnerId,
+        idempotencyKey: "one-notice-profile",
+      });
+      const sessionId = createBrowserSessionId();
+      await sql`insert into browser_sessions(id,tab_group_id,origin,profile_id,placement_key,runner_id,runtime_id,state)
+        values(${sessionId},${sessionId},'person',${profile.id},'ephemeral',${run.runnerId},'browser','ready')`.execute(
+        fixture.database,
+      );
+      const tabId = TabIdSchema.parse(`${sessionId}-tab`);
+      await tabStore.open(
+        {
+          id: tabId,
+          ownerId: run.userId,
+          computerId: DeviceIdSchema.parse(run.runnerId),
+          kind: "page",
+          title: "One Notice Tab",
+          url: "https://example.test/one",
+          profileId: profile.id,
+          profileName: "Ephemeral",
+          openedBy: "person",
+          pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
+        },
+        "one-notice-open",
+      );
+      // Warm the person's tab catalog before deletion.
+      expect((await tabs.list(person, {})).tabs.map((t) => t.tabId)).toEqual([tabId]);
+
+      recording = true;
+      await admin.execute(
+        { kind: "person", userId: run.userId },
+        {
+          type: "browser.profile.delete",
+          idempotencyKey: "one-notice-delete",
+          profileId: profile.id,
+        },
+      );
+      recording = false;
+
+      const tabNotices = announcements.filter(
+        (entry) => entry === "durable:tab" || entry === "announce:tab",
+      );
+      expect(tabNotices, JSON.stringify(announcements)).toEqual(["durable:tab"]);
+      expect(changedTabsAtNotice).toEqual([tabId]);
+      expect(await tabListAtNotice).toEqual([]);
+      expect(
+        announcements.some((entry) => entry.endsWith(":browser-placement")),
+        JSON.stringify(announcements),
+      ).toBe(true);
+      expect(
+        announcements.some((entry) => entry.endsWith(":browser-availability")),
+        JSON.stringify(announcements),
+      ).toBe(true);
+    } finally {
+      removeHooks();
+      tabs.dispose();
+      await browser.close();
+    }
+  });
 });
