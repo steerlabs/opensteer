@@ -402,8 +402,12 @@ it.each([
       expect(opened.isError, text(opened)).not.toBe(true);
       const tabId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(opened))?.[0];
       if (!tabId) throw new Error(`The script returned no tab: ${text(opened)}`);
-      // The pooled browser sleeps between the calls, as a Cloud Computer's does when idle.
-      if (park) expect(await home.coordinator.tryPark()).toBe("parked");
+      // The pooled browser sleeps between the calls, as a Cloud Computer's does when idle: once
+      // the first call's hold on its gate is let go, as every other park in this file waits for.
+      if (park) {
+        await vi.waitFor(() => expect(home!.coordinator.gate.held).toBe(0));
+        expect(await home.coordinator.tryPark()).toBe("parked");
+      }
       let done = false;
       const working = work
         .useTab(
