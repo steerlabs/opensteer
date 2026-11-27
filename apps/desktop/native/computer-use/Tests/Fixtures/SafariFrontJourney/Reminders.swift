@@ -88,10 +88,20 @@ final class HelperSocket {
         let id = try socket.send("data.request", ["grant": grant])
         var reply: [String: Any]?
         var prompt: [String: Any] = ["grant": grant]
-        let deadline = Date().addingTimeInterval(45)
+        let deadline = Date().addingTimeInterval(75)
         var answered = false
+        var others: [[String: Any]] = []
         while reply == nil, Date() < deadline {
           reply = try socket.poll(id, ms: 50)
+          // Another macOS question first (a helper identity new to this Mac is asked about
+          // Accessibility): its words are kept and it is declined, as a person here would.
+          if reply == nil, let other = otherPrompt(), others.count < 4 {
+            await shot(out, "other-prompt-\(grant)-\(others.count)")
+            var facts = other.facts
+            facts["press"] = AXUIElementPerformAction(other.decline, kAXPressAction as CFString).rawValue
+            others.append(facts)
+            await sleepSeconds(1)
+          }
           if reply == nil, !answered, let found = findPrompt() {
             prompt.merge(found.facts) { $1 }
             await shot(out, "prompt-\(grant)")
@@ -112,7 +122,8 @@ final class HelperSocket {
           }
         }
         prompt["answered"] = answered
-        prompt["reply"] = reply?["result"] ?? reply?["error"] ?? "no reply in 45 s"
+        prompt["otherPrompts"] = others
+        prompt["reply"] = reply?["result"] ?? reply?["error"] ?? "no reply in 75 s"
         prompts.append(prompt)
       }
       report["prompts"] = prompts
@@ -209,6 +220,26 @@ final class HelperSocket {
         guard let allow = buttons.first(where: { ["Allow Full Access", "Allow", "OK"].contains($0.0) }) else { continue }
         return (allow.1, ["process": app.localizedName ?? "", "bundle": app.bundleIdentifier ?? "",
           "pid": Int(app.processIdentifier), "texts": texts, "buttons": buttons.map(\.0)])
+      }
+    }
+    return nil
+  }
+  /// A macOS question about anything but Calendar or Reminders, with its declining button.
+  static func otherPrompt() -> (decline: AXUIElement, facts: [String: Any])? {
+    let hosts = ["com.apple.accessibility.universalAccessAuthWarn", "com.apple.UserNotificationCenter"]
+    for app in NSWorkspace.shared.runningApplications where hosts.contains(app.bundleIdentifier ?? "") {
+      let element = AXUIElementCreateApplication(app.processIdentifier)
+      AXUIElementSetMessagingTimeout(element, 0.3)
+      for window in AXValueReader.copyElements(element, kAXWindowsAttribute) {
+        var texts: [String] = []
+        var buttons: [(String, AXUIElement)] = []
+        collect(window, depth: 0, texts: &texts, buttons: &buttons)
+        let words = texts.joined(separator: " ")
+        guard !words.contains("Calendar"), !words.contains("Reminders"),
+          let decline = buttons.first(where: { ["Deny", "Don’t Allow", "Don't Allow", "Cancel"].contains($0.0) })
+        else { continue }
+        return (decline.1, ["process": app.localizedName ?? "", "bundle": app.bundleIdentifier ?? "",
+          "texts": texts, "buttons": buttons.map(\.0)])
       }
     }
     return nil
