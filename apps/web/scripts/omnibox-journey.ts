@@ -18,7 +18,11 @@ const check: typeof recordCheck = async (name, run) => {
   process.stdout.write(`${result.status}: ${result.error ?? name}\n`);
   if (result.status === "failed") throw new Error(result.error ?? name);
 };
-const web = await openMockWeb("opensteer-omnibox-web");
+// A check compares the address's pixels with and without the field's selection. Text is drawn
+// grayscale, as headless Chromium on macOS always draws it: on Linux and Windows it switches
+// between subpixel and grayscale with the field's selection, which the comparison would read as
+// the selection's paint.
+const web = await openMockWeb("opensteer-omnibox-web", { chromiumArgs: ["--disable-lcd-text"] });
 const context = await web.browser.newContext({ viewport: { width: 1440, height: 1000 } });
 await context.addInitScript("globalThis.__name = (value) => value;");
 const page = await context.newPage();

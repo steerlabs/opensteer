@@ -29,7 +29,13 @@ export interface MockWeb {
  * Builds the web app against the mock Host into a temporary `name-*` directory,
  * serves it and starts Chromium.
  */
-export async function openMockWeb(name: string): Promise<MockWeb> {
+export async function openMockWeb(
+  name: string,
+  options: {
+    /** Extra Chromium switches, for a journey whose measure depends on how Chromium draws. */
+    readonly chromiumArgs?: readonly string[];
+  } = {},
+): Promise<MockWeb> {
   const buildDirectory = await mkdtemp(path.join(tmpdir(), `${name}-`));
   const server = createServer((request, response) => {
     void serve(buildDirectory, request, response);
@@ -46,11 +52,7 @@ export async function openMockWeb(name: string): Promise<MockWeb> {
       process.env.OPENSTEER_JOURNEY_BROWSER === "webkit"
         ? await webkit.launch({ headless: true })
         : await chromium.launch({
-            // Text is antialiased the same way on every platform, as headless Chromium on
-            // macOS always does: on Linux and Windows it switches between subpixel and
-            // grayscale with the state of things around the text (a text field's selection,
-            // for one), which a screenshot comparison would read as paint.
-            args: ["--disable-lcd-text"],
+            args: [...(options.chromiumArgs ?? [])],
             headless: true,
             ...(executablePath ? { executablePath } : {}),
           });
