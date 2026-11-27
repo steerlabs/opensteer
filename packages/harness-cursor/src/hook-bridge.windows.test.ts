@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { warmWindowsPowerShell } from "../../../tests/windows-powershell.test-support.js";
 import {
   CursorHookBridge,
   createCursorHookEndpoint,
@@ -46,6 +47,8 @@ function ownHook(child: SupervisedProcess) {
   });
   return { output, stop };
 }
+
+const powerShellArgs = ["-ExecutionPolicy", "Bypass"];
 
 function inheritedEnvironment(): Record<string, string> {
   return Object.fromEntries(
@@ -94,7 +97,7 @@ async function runLikeCursor(command: string, cwd: string, payload: string, sign
   await writeFile(script, `﻿${body}`, "utf8");
   signal?.throwIfAborted();
   const child = spawnSupervised({
-    args: ["-ExecutionPolicy", "Bypass", "-File", script],
+    args: [...powerShellArgs, "-File", script],
     cwd,
     environment,
     executable: environment.SHELL ?? "",
@@ -116,6 +119,11 @@ async function runLikeCursor(command: string, cwd: string, payload: string, sign
 }
 
 describe("Cursor approval hooks on Windows", () => {
+  warmWindowsPowerShell("Cursor approval hooks", () => {
+    const environment = cursorHookShellEnvironment(inheritedEnvironment());
+    return { executable: environment.SHELL ?? "", environment, args: powerShellArgs };
+  });
+
   it("names Windows PowerShell as the hook shell", () => {
     const shell = cursorHookShellEnvironment(inheritedEnvironment()).SHELL ?? "";
     expect(shell.toLowerCase()).toMatch(/\\system32\\windowspowershell\\v1\.0\\powershell\.exe$/u);
