@@ -14,7 +14,6 @@ export {
 export {
   connectionComputerKinds,
   connectionDirectTools,
-  connectionHasBrowserProfiles,
   connectionTaskKind,
   connectionToolDescription,
   connectionTaskCreateInput,

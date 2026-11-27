@@ -71,6 +71,7 @@ export interface PageTabsPort {
     target: Extract<TabTarget, { kind: "page" }>,
     key: string,
     typed?: boolean,
+    onRollback?: (rollback: () => void) => void,
   ): Promise<TabWrite>;
   admitted?(row: TabWrite): Promise<void>;
   states?(ownerId: UserId, rows: TabRecord[]): Promise<Map<TabId, NativeTabTargetState>>;
@@ -967,9 +968,18 @@ export class TabService implements TabServicePort {
       `tab_${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`,
     );
     let write: TabWrite;
+    let rollbackOpen: (() => void) | undefined;
     let appFence: { version: number; generation: number | null } | undefined;
     if (target.kind === "page")
-      write = await this.options.pages.open(actor, target, operationKey(actor, key), typed);
+      write = await this.options.pages.open(
+        actor,
+        target,
+        operationKey(actor, key),
+        typed,
+        (rollback) => {
+          rollbackOpen = rollback;
+        },
+      );
     else if (target.kind === "app") {
       const app = await this.options.apps.get(ownerId, target.appId);
       appFence = { version: app.version, generation: app.server?.generation ?? null };
@@ -1014,39 +1024,45 @@ export class TabService implements TabServicePort {
         };
       }
     }
-    const result = await this.options.store.open(
-      write,
-      operationKey(actor, key),
-      async (tx) => {
-        await this.options.authorize(actor, target, tx);
-        await this.options.authorize(actor, write, tx);
-        if (target.kind === "app") {
-          const current = await tx
-            .selectFrom("apps")
-            .select(["deleting", "computerId", "latestVersion"])
-            .where("id", "=", target.appId)
-            .where("ownerId", "=", ownerId)
-            .executeTakeFirst();
-          if (
-            !current ||
-            current.deleting ||
-            (await requireSelfDeviceId(tx, current.computerId)) !== write.computerId
-          )
-            notFound();
-          if (current.latestVersion !== appFence!.version) conflict();
-          if (appFence!.generation !== null) {
-            const server = await tx
-              .selectFrom("appServers")
-              .select("generation")
-              .where("appId", "=", target.appId)
+    let result: Awaited<ReturnType<TabStore["open"]>>;
+    try {
+      result = await this.options.store.open(
+        write,
+        operationKey(actor, key),
+        async (tx) => {
+          await this.options.authorize(actor, target, tx);
+          await this.options.authorize(actor, write, tx);
+          if (target.kind === "app") {
+            const current = await tx
+              .selectFrom("apps")
+              .select(["deleting", "computerId", "latestVersion"])
+              .where("id", "=", target.appId)
+              .where("ownerId", "=", ownerId)
               .executeTakeFirst();
-            if (Number(server?.generation) !== appFence!.generation) conflict();
+            if (
+              !current ||
+              current.deleting ||
+              (await requireSelfDeviceId(tx, current.computerId)) !== write.computerId
+            )
+              notFound();
+            if (current.latestVersion !== appFence!.version) conflict();
+            if (appFence!.generation !== null) {
+              const server = await tx
+                .selectFrom("appServers")
+                .select("generation")
+                .where("appId", "=", target.appId)
+                .executeTakeFirst();
+              if (Number(server?.generation) !== appFence!.generation) conflict();
+            }
           }
-        }
-      },
-      target,
-      initialRevision,
-    );
+        },
+        target,
+        initialRevision,
+      );
+    } catch (error) {
+      rollbackOpen?.();
+      throw error;
+    }
     const meta = tabMutationMeta(result);
     const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
     try {
