@@ -451,26 +451,76 @@ const jsonBytes = (value: unknown) => encoder.encode(JSON.stringify(value)).byte
 
 /** One `.name` or `["name"]` member of a tool expression. */
 const expressionMember =
-  /^(?:\.([A-Za-z_$][\w$]*)|\[("(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*")\])/;
+  /^(?:\.([A-Za-z_$][\w$]*)(?=[.[]|$)|\[("(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*")\])/;
+/** One non-identifier dotted segment (e.g. hyphenated namespace or percent-encoded tool name). */
+const dottedSegment = /^\.([^.[\]]+)/;
+const hasControlCharacter = (value: string): boolean => {
+  for (let i = 0; i < value.length; i++) if (value.charCodeAt(i) < 0x20) return true;
+  return false;
+};
+
+export interface ParsedToolPath {
+  readonly canonical: string;
+  readonly namespace: string | null;
+  readonly malformed: boolean;
+}
+
+/**
+ * The one lexical parser for a tool path or `tools...` expression: returns its canonical dotted
+ * path, its top-level plugin namespace (when a member inside a namespace is named), and whether a
+ * `tools.` / `tools[` expression or raw path is lexically malformed. Never throws on invalid input.
+ */
+export const parseToolPath = (name: string): ParsedToolPath => {
+  const trimmed = name.trim();
+  if (hasControlCharacter(trimmed)) return { canonical: trimmed, namespace: null, malformed: true };
+  if (trimmed === "tools") return { canonical: "", namespace: null, malformed: false };
+  if (trimmed.startsWith("tools.") || trimmed.startsWith("tools[")) {
+    const segments: Array<string> = [];
+    let strict = true;
+    for (let rest = trimmed.slice("tools".length); rest !== "";) {
+      const member = expressionMember.exec(rest);
+      if (member !== null) {
+        const [matched, identifier, quoted] = member;
+        if (identifier !== undefined) segments.push(identifier);
+        else if (quoted !== undefined) {
+          try {
+            segments.push(String(JSON.parse(quoted)));
+          } catch {
+            return { canonical: trimmed, namespace: null, malformed: true };
+          }
+        } else segments.push("");
+        rest = rest.slice(matched.length);
+        continue;
+      }
+      // A non-identifier dotted segment (such as a hyphenated namespace or percent-encoded name)
+      // keeps the raw path for the engine; any malformed bracket or empty segment is refused.
+      const dotted = dottedSegment.exec(rest);
+      if (dotted === null) return { canonical: trimmed, namespace: null, malformed: true };
+      strict = false;
+      segments.push(dotted[1]!);
+      rest = rest.slice(dotted[0].length);
+    }
+    if (segments.length === 0) return { canonical: trimmed, namespace: null, malformed: true };
+    return {
+      canonical: strict ? segments.join(".") : trimmed,
+      namespace: segments.length > 1 && segments[0]!.length > 0 ? segments[0]! : null,
+      malformed: false,
+    };
+  }
+  const dot = trimmed.indexOf(".");
+  return {
+    canonical: trimmed,
+    namespace: dot > 0 ? trimmed.slice(0, dot) : null,
+    malformed: false,
+  };
+};
+
 /**
  * The canonical path of a name an agent passes: a tool expression such as
  * `tools["my-app"].issues` becomes `my-app.issues`, and `tools` alone
  * becomes "". Other names are already canonical paths.
  */
-export const canonical = (name: string) => {
-  const trimmed = name.trim();
-  if (trimmed !== "tools" && !trimmed.startsWith("tools.") && !trimmed.startsWith("tools["))
-    return trimmed;
-  const segments: Array<string> = [];
-  for (let rest = trimmed.slice("tools".length); rest !== "";) {
-    const member = expressionMember.exec(rest);
-    if (member === null) return trimmed;
-    const [matched, identifier, quoted] = member;
-    segments.push(identifier ?? (quoted === undefined ? "" : String(JSON.parse(quoted))));
-    rest = rest.slice(matched.length);
-  }
-  return segments.join(".");
-};
+export const canonical = (name: string) => parseToolPath(name).canonical;
 /** Whether a canonical path lies in a canonical namespace. */
 const within = (path: string, namespace: string) =>
   path === namespace || path.startsWith(`${namespace}.`);

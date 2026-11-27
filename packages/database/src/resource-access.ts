@@ -192,6 +192,27 @@ interface ConnectionTargetCheck {
   readonly writeTargetName?: string | undefined;
 }
 
+/** Whether a browser profile still exists, belongs to this owner, and is not archived. */
+function activeOwnedBrowserProfileExists(ownerUserId: UserId, profileId: string) {
+  return sql<boolean>`exists (
+    select 1 from browser_profiles
+    where id = ${profileId}
+      and owner_id = ${ownerUserId}
+      and archived_at is null
+  )`;
+}
+
+async function activeOwnedBrowserProfile(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  profileId: string,
+): Promise<boolean> {
+  const row = await database
+    .selectNoFrom(activeOwnedBrowserProfileExists(ownerUserId, profileId).as("active"))
+    .executeTakeFirst();
+  return row?.active === true;
+}
+
 /**
  * The one statement for where a connection stands: its row and its state (`connectionState`).
  * Every reader of a connection's standing is a view of this (`readConnectionRowStanding`,
@@ -204,6 +225,8 @@ async function readConnectionStanding(
   lock: boolean,
   /** Also why its work ended (its cleanup's reason): read only by a refusal that names it. */
   withCause = false,
+  /** Concrete browser profile being admitted: active and owned, read in the same statement. */
+  browserProfileId?: string,
 ) {
   const query = database
     .selectFrom("agentConnections")
@@ -221,12 +244,17 @@ async function readConnectionStanding(
       connectionState().as("connectionState"),
     ])
     .$if(withCause, (query) => query.select("cleanupReason"))
+    .$if(browserProfileId !== undefined, (query) =>
+      query.select(
+        activeOwnedBrowserProfileExists(ownerUserId, browserProfileId!).as("browserProfileActive"),
+      ),
+    )
     .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId);
   const row = await (lock ? query.forShare("agentConnections") : query).executeTakeFirst();
   if (!row) return undefined;
-  const { connectionState: state, ...connection } = row;
-  return { connection, state };
+  const { connectionState: state, browserProfileActive, ...connection } = row;
+  return { connection, state, browserProfileActive };
 }
 
 /**
@@ -285,7 +313,16 @@ export async function readConnectionRowStanding(
   lock = false,
   { grantTarget, writeTargetName }: ConnectionTargetCheck = {},
 ) {
-  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, lock);
+  const browserProfileId =
+    grantTarget?.kind === "browser-profile" ? grantTarget.profileId : undefined;
+  const read = await readConnectionStanding(
+    database,
+    ownerUserId,
+    agentConnectionId,
+    lock,
+    false,
+    browserProfileId,
+  );
   if (!read || read.state !== "live")
     return {
       row: undefined,
@@ -301,7 +338,7 @@ export async function readConnectionRowStanding(
   );
   const row = { ...read.connection, grant };
   const access = grantTarget && agentGrantAccess(grant, grantTarget);
-  if (access === null)
+  if (access === null || (browserProfileId !== undefined && read.browserProfileActive !== true))
     throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
   if (access === "read" && writeTargetName !== undefined)
     throw forbidden(`${writeTargetName} is shared for reading only.`);
@@ -740,6 +777,11 @@ async function admitExecutionWith(
   const { subject, ownerUserId } = input;
   const base = { ownerUserId, subject, runId: null, runMode: null } as const;
   if (subject.kind === "person") {
+    if (
+      input.grantTarget?.kind === "browser-profile" &&
+      !(await activeOwnedBrowserProfile(database, ownerUserId, input.grantTarget.profileId))
+    )
+      throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
     const task = input.threadId ? await ownedThread(database, input.threadId, ownerUserId) : null;
     return {
       ...base,
@@ -790,13 +832,19 @@ async function admitExecutionWith(
     taskMode: facts.taskMode,
     runMode: facts.runMode,
   };
-  if (!facts.agentConnectionId)
+  if (!facts.agentConnectionId) {
+    if (
+      input.grantTarget?.kind === "browser-profile" &&
+      !(await activeOwnedBrowserProfile(database, ownerUserId, input.grantTarget.profileId))
+    )
+      throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
     return {
       ...execution,
       actor: "native",
       agentConnection: null,
       mode: facts.runMode ?? facts.taskMode,
     };
+  }
   // A session acts directly and needs no Tasks switch; delegated work needs it.
   const session = subject.bindingId.startsWith("session:");
   const connection = session
@@ -953,6 +1001,8 @@ export async function reachesTarget(
   target: AgentGrantTarget,
 ): Promise<boolean> {
   if (authorizeTarget(execution, target) === null) return false;
+  if (target.kind === "browser-profile")
+    return activeOwnedBrowserProfile(database, execution.ownerUserId, target.profileId);
   const approvalId =
     target.kind === "computer-app"
       ? target.approvalId
@@ -1581,6 +1631,20 @@ interface CommandReach {
 const inReach: CommandReach = { reach: true, ownWork: true };
 const outOfReach: CommandReach = { reach: false, ownWork: false };
 
+/** The callerKey recorded in `commands.authority_source` for this admitted execution. */
+function commandCallerKey(execution: ExecutionAuthority): string | null {
+  if (execution.subject.kind === "connection")
+    return `connection:${execution.subject.agentConnectionId}`;
+  if (execution.subject.kind === "binding") {
+    if (execution.subject.bindingId.startsWith("session:"))
+      return execution.agentConnection
+        ? `connection:${execution.agentConnection.agentConnectionId}`
+        : null;
+    return execution.subject.bindingId;
+  }
+  return null;
+}
+
 /**
  * Whether the governed thing exists and is within this agent's reach, and whether a task row's
  * task is its own work. A task is reached in its lineage (a connection's own, or the person's
@@ -1645,23 +1709,67 @@ async function commandReach(
   const granted = (target: AgentGrantTarget | null) =>
     !selected || (target !== null && authorizeTarget(execution, target) !== null);
   const profile = async (profileId: string): Promise<boolean> => {
+    if (!granted({ kind: "browser-profile", profileId })) return false;
+    const idempotencyKey =
+      command.type === "browser.profile.delete" &&
+      "idempotencyKey" in command &&
+      typeof command.idempotencyKey === "string"
+        ? command.idempotencyKey
+        : null;
+    const callerKey = idempotencyKey === null ? null : commandCallerKey(execution);
+    if (idempotencyKey === null || callerKey === null)
+      return activeOwnedBrowserProfile(database, owner, profileId);
+    // An active owned profile is in reach; an archived owned profile is reached only by a retry
+    // of the same caller's succeeded browser.profile.delete carrying its resolved idempotency key.
     const row = await database
-      .selectFrom("browserProfiles")
-      .select("ownerId")
-      .where("id", "=", profileId as never)
+      .selectNoFrom(
+        sql<boolean>`exists (
+          select 1 from browser_profiles
+          where id = ${profileId}
+            and owner_id = ${owner}
+            and (
+              archived_at is null
+              or exists (
+                select 1 from commands
+                where requested_by = ${owner}
+                  and idempotency_key = ${idempotencyKey}
+                  and type = 'browser.profile.delete'
+                  and status = 'succeeded'
+                  and authority_source->>'callerKey' = ${callerKey}
+                  and payload->'request'->>'profileId' = ${profileId}
+              )
+            )
+        )`.as("active"),
+      )
       .executeTakeFirst();
-    return row?.ownerId === owner && granted({ kind: "browser-profile", profileId });
+    return row?.active === true;
   };
-  /** Tabs by id: every one the owner's, and under a selected grant in a profile it holds. */
+  /** Tabs by id: every one the owner's in an active profile (or Guest), and under a selected grant in a profile it holds. */
   const tabsReach = async (ids: readonly string[]): Promise<CommandReach> => {
     const tabs = await database
       .selectFrom("personalTabs")
-      .select(["profileId", "ownerId", "openedBy"])
-      .where("id", "in", ids as never)
+      .leftJoin("browserProfiles", "browserProfiles.id", "personalTabs.profileId")
+      .select([
+        "personalTabs.profileId",
+        "personalTabs.ownerId",
+        "personalTabs.openedBy",
+        "browserProfiles.ownerId as profileOwnerId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
+      .where("personalTabs.id", "in", ids as never)
       .execute();
     if (tabs.length !== new Set(ids).size || tabs.some((tab) => tab.ownerId !== owner))
       return outOfReach;
     if (
+      tabs.some(
+        (tab) =>
+          tab.profileId !== null &&
+          (tab.profileOwnerId !== owner || tab.profileArchivedAt !== null),
+      )
+    )
+      return outOfReach;
+    if (
+      selected &&
       tabs.some(
         (tab) =>
           !granted(
@@ -1755,9 +1863,10 @@ async function commandReach(
       return tabsReach(ids);
     }
     case "tab-group": {
-      // A group is reached only when every tab in it is (a selected grant through the profiles
-      // its tabs are in; never an empty one), decided in one statement whatever the group is: a
-      // hidden group does the same work as a missing one and answers the same (A6, rule 5).
+      // A group is reached only when every tab in it is (in an active owned profile or Guest, and
+      // under a selected grant through the profiles it holds; never an empty one for selected),
+      // decided in one statement whatever the group is: a hidden group does the same work as a
+      // missing one and answers the same (A6, rule 5).
       const grantedProfiles = selected
         ? (connection?.grant.scope === "selected" ? connection.grant.resources : [])
             .flatMap((entry) => (entry.kind === "browser-profile" ? [entry.profileId] : []))
@@ -1772,16 +1881,21 @@ async function commandReach(
             and item->>'kind' = 'group'
             and item->'group'->>'groupId' = ${resource.id}
             and (${!selected}
-              or (jsonb_array_length(coalesce(item->'group'->'tabIds', '[]'::jsonb)) > 0
-                and not exists (
-                  select 1
-                  from jsonb_array_elements_text(coalesce(item->'group'->'tabIds', '[]'::jsonb))
-                    member(tab_id)
-                  where not exists (
-                    select 1 from personal_tabs tab
-                    where tab.id = member.tab_id
-                      and tab.owner_id = ${owner}
-                      and tab.profile_id = any(${grantedProfiles}::text[])))))
+              or jsonb_array_length(coalesce(item->'group'->'tabIds', '[]'::jsonb)) > 0)
+            and not exists (
+              select 1
+              from jsonb_array_elements_text(coalesce(item->'group'->'tabIds', '[]'::jsonb))
+                member(tab_id)
+              left join personal_tabs tab
+                on tab.id = member.tab_id and tab.owner_id = ${owner}
+              left join browser_profiles profile
+                on profile.id = tab.profile_id
+                  and profile.owner_id = ${owner}
+                  and profile.archived_at is null
+              where tab.id is null
+                or (tab.profile_id is not null and profile.id is null)
+                or (${selected}
+                  and (tab.profile_id is null or not (tab.profile_id = any(${grantedProfiles}::text[])))))
         ) as reach
       `.execute(database);
       // A group records no opener: it is never an agent's own work.
@@ -1790,16 +1904,24 @@ async function commandReach(
     case "browser-session": {
       const session = await database
         .selectFrom("browserSessions")
-        .select("profileId")
-        .where("id", "=", resource.id as never)
+        .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+        .select([
+          "browserSessions.profileId",
+          "browserProfiles.ownerId as profileOwnerId",
+          "browserProfiles.archivedAt as profileArchivedAt",
+        ])
+        .where("browserSessions.id", "=", resource.id as never)
         .executeTakeFirst();
       if (!session) return outOfReach;
       if (
-        !granted(
-          session.profileId === null
-            ? null
-            : { kind: "browser-profile", profileId: session.profileId },
-        )
+        session.profileId !== null &&
+        (session.profileOwnerId !== owner || session.profileArchivedAt !== null)
+      )
+        return outOfReach;
+      if (
+        selected &&
+        (session.profileId === null ||
+          !granted({ kind: "browser-profile", profileId: session.profileId }))
       )
         return outOfReach;
       const used =

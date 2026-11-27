@@ -372,6 +372,22 @@ describe("browser_connect", () => {
       message: "This browser tab does not support direct browser connections.",
     });
   });
+
+  it("refuses profileId on a Chrome-tabs-only grant before looking up tabs or profiles", async () => {
+    const { handlers, ports } = fixture();
+    const chromeOnly = connection({
+      scope: "selected",
+      tasks: false,
+      resources: [{ kind: "chrome-tabs", sourceId: createId("browserSource") }],
+    });
+    expect(
+      await refusal(handlers.browser_use(call(chromeOnly, { code: "print(1)", profileId: mine }))),
+    ).toMatchObject({ code: "bad_request" });
+    expect(
+      await refusal(handlers.browser_connect(call(chromeOnly, { profileId: mine }))),
+    ).toMatchObject({ code: "bad_request" });
+    expect(ports.tabs.list).not.toHaveBeenCalled();
+  });
 });
 
 describe("BrowserScriptConfinement", () => {

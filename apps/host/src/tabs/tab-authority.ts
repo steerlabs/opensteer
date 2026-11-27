@@ -168,7 +168,8 @@ function tabTargetAuthority(
   const profileRows = database
     .selectFrom("browserProfiles")
     .select(["id", "homeRunnerId"])
-    .where("ownerId", "=", ownerId);
+    .where("ownerId", "=", ownerId)
+    .where("archivedAt", "is", null);
   let profiles: ReturnType<typeof profileRows.execute> | undefined;
   const appRows = database
     .selectFrom("apps")

@@ -221,3 +221,157 @@ describe("plugin_call's reason for a tool that is there but cannot run", () => {
     expect(await call("read", `tools.${namespace}.x%2525`)).toContain(read.message);
   });
 });
+
+describe("connected plugin shape errors before grant lookup", () => {
+  const connectionWith = (pluginId: string) =>
+    ({
+      kind: "connection",
+      userId: "usr_test",
+      key: `connection:${pluginId}`,
+      connectionId: `agc_${pluginId}`,
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [
+          { kind: "plugin", target: { kind: "installed", pluginId }, access: "read-write" },
+        ],
+      },
+      grantRevision: 1,
+      accessMode: "full-access",
+    }) as unknown as AgentCaller;
+
+  it("refuses oversized plugin_call and plugin_execute payloads before looking up tools or providers", async () => {
+    const resolveTools = vi.fn(async () => []);
+    const list = vi.fn(async () => []);
+    const providers = vi.fn(async () => []);
+    const handlers = new PluginToolHandlers({
+      service: { list, resolveTools },
+      localProviders: { providers },
+      sessions: () => ({}),
+      authority: {
+        admit: () => ({ caller: "connection", mode: "automatic" }),
+        scoped: (_caller: unknown, work: () => unknown) => work(),
+      },
+      settings: { settings: async () => [] },
+    } as unknown as PluginToolHandlers["options"]).handlers();
+    const caller = connectionWith("plg_absent");
+    const big = "a".repeat(25_000);
+    for (const calls of [
+      { path: "tools.alpha.read", input: { big } },
+      [{ path: "tools.alpha.read", input: { big } }],
+    ]) {
+      const error = await handlers.plugin_call!({
+        caller,
+        input: { calls },
+        operationKey: "k",
+      } as never).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect(
+        agentToolFailureResult(agentToolFailure(error, "write", undefined, true)),
+      ).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "invalid_input" } },
+      });
+    }
+    const execError = await handlers.plugin_execute!({
+      caller,
+      input: { namespace: "tools.alpha", code: `return "${big}";` },
+      operationKey: "k",
+    } as never).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(
+      agentToolFailureResult(agentToolFailure(execError, "write", undefined, true)),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "invalid_input" } },
+    });
+    expect(resolveTools).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    expect(providers).not.toHaveBeenCalled();
+  });
+
+  it("refuses a plugin_call array naming two different plugins before resolving tools", async () => {
+    const resolveTools = vi.fn(async () => []);
+    const handlers = new PluginToolHandlers({
+      service: { list: async () => [], resolveTools },
+      localProviders: { providers: async () => [] },
+      sessions: () => ({}),
+      authority: {
+        admit: () => ({ caller: "connection", mode: "automatic" }),
+        scoped: (_caller: unknown, work: () => unknown) => work(),
+      },
+      settings: { settings: async () => [] },
+    } as unknown as PluginToolHandlers["options"]).handlers();
+    const caller = connectionWith("plg_only_one");
+    const error = await handlers.plugin_call!({
+      caller,
+      input: {
+        calls: [
+          { path: 'tools["local-alpha-11111111"].read', input: {} },
+          { path: 'tools["local-beta-22222222"]["write"]', input: {} },
+        ],
+      },
+      operationKey: "k",
+    } as never).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(agentToolFailureResult(agentToolFailure(error, "write", undefined, true))).toMatchObject(
+      {
+        isError: true,
+        structuredContent: {
+          error: { code: "invalid_input", message: "Call one plugin per operation." },
+        },
+      },
+    );
+    expect(resolveTools).not.toHaveBeenCalled();
+  });
+
+  it("refuses malformed bracket/tool paths with invalid_input before resolving tools, identically for holder and non-holder", async () => {
+    const resolveTools = vi.fn(async () => []);
+    const handlers = new PluginToolHandlers({
+      service: { list: async () => [], resolveTools },
+      localProviders: { providers: async () => [] },
+      sessions: () => ({}),
+      authority: {
+        admit: () => ({ caller: "connection", mode: "automatic" }),
+        scoped: (_caller: unknown, work: () => unknown) => work(),
+      },
+      settings: { settings: async () => [] },
+    } as unknown as PluginToolHandlers["options"]).handlers();
+    const holder = connectionWith("plg_fixture");
+    const other = connectionWith("plg_other");
+    for (const path of [
+      'tools["fixture"]["line\nbreak"]',
+      'tools["fixture"]["tab\there"]',
+      'tools["fixture"]["unclosed',
+      "tools.fixture..read",
+    ]) {
+      for (const calls of [{ path, input: {} }, [{ path, input: {} }]]) {
+        const callFor = async (caller: AgentCaller) => {
+          const error = await handlers.plugin_call!({
+            caller,
+            input: { calls },
+            operationKey: "k",
+          } as never).then(
+            () => undefined,
+            (caught: unknown) => caught,
+          );
+          return agentToolFailureResult(agentToolFailure(error, "write", undefined, true));
+        };
+        const held = await callFor(holder);
+        const unheld = await callFor(other);
+        expect(held, path).toMatchObject({
+          isError: true,
+          structuredContent: { error: { code: "invalid_input" } },
+        });
+        expect(unheld, path).toEqual(held);
+      }
+    }
+    expect(resolveTools).not.toHaveBeenCalled();
+  });
+});

@@ -1,3 +1,4 @@
+import { connectionHasBrowserProfiles } from "@opensteer/agent-tools";
 import {
   OpensteerError,
   TabIdSchema,
@@ -507,6 +508,11 @@ export class BrowserToolHandlers {
     place: { readonly tabId?: string | undefined; readonly profileId?: string | undefined },
     tool: "browser_use" | "browser_connect",
   ): Promise<BrowserTarget> {
+    if (place.profileId !== undefined && !connectionHasBrowserProfiles(caller.grant))
+      throw refused(
+        "bad_request",
+        "Omit profileId for shared Chrome tabs; pass tabId from discover.",
+      );
     const profiles = (await this.#ports.profiles(caller.userId)).filter(
       (profile) =>
         profile.purpose !== "engine-sign-in" &&

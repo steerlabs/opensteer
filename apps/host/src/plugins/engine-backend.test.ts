@@ -11,7 +11,12 @@ import {
   type ToolSearchInput,
   type PluginEngine,
 } from "@opensteer/plugin-engine-sdk/core";
-import { CurrentMcpExecution, resolveCatalogTools } from "@opensteer/plugin-engine-mcp";
+import {
+  CurrentMcpExecution,
+  canonical,
+  parseToolPath,
+  resolveCatalogTools,
+} from "@opensteer/plugin-engine-mcp";
 import { compositeBackend } from "./engine-backend.js";
 import type { engineAccounts } from "./engine-accounts.js";
 
@@ -241,4 +246,25 @@ test("resolves each path to the tool the engine's own escaping names, a blocked 
     { ...named, readOnly: true },
     null,
   ]);
+});
+
+test("canonical and parseToolPath never throw on invalid bracket strings and extract namespaces cleanly", () => {
+  const malformed = 'tools["fixture"]["line\nbreak"]';
+  expect(() => canonical(malformed)).not.toThrow();
+  expect(canonical(malformed)).toBe(malformed);
+  expect(parseToolPath(malformed)).toEqual({
+    canonical: malformed,
+    namespace: null,
+    malformed: true,
+  });
+  expect(parseToolPath('tools["my.plugin"]["line\\nbreak"]')).toEqual({
+    canonical: "my.plugin.line\nbreak",
+    namespace: "my.plugin",
+    malformed: false,
+  });
+  expect(parseToolPath('tools["fixture"]')).toEqual({
+    canonical: "fixture",
+    namespace: null,
+    malformed: false,
+  });
 });

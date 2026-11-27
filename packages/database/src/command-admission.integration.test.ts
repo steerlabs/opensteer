@@ -9,7 +9,8 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { Command, CommandType } from "@opensteer/protocol/command-table";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
+import pg from "pg";
 import {
   commandAdmission,
   replayAdministrationCommand,
@@ -19,6 +20,7 @@ import {
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { beginAgentSession } from "./agent-session-store.js";
 import { admitCommand, commandSubject } from "./resource-access.js";
+import { jsonValue } from "./store-primitives.js";
 import {
   commandResourceKey,
   commandTable,
@@ -509,7 +511,10 @@ describeStore("one admission for Home commands", (it) => {
       });
     const profile = await newProfile(`Profile ${randomUUID().slice(0, 4)}`);
     const deviceId = await storeFixture.store.requireSelfDeviceId(f.runnerId);
-    const tab = async (openedBy: "person" | { taskId: string }, profileId = profile.id) => {
+    const tab = async (
+      openedBy: "person" | { taskId: string },
+      profileId: typeof profile.id | null = profile.id,
+    ) => {
       const id = createId("tab");
       await database
         .insertInto("personalTabs")
@@ -521,7 +526,7 @@ describeStore("one admission for Home commands", (it) => {
           title: "Bank",
           url: "https://bank.example",
           profileId,
-          profileName: "Profile",
+          profileName: profileId === null ? null : "Profile",
           openedBy: JSON.stringify(openedBy) as never,
         } as never)
         .execute();
@@ -1632,5 +1637,298 @@ describeStore("one admission for Home commands", (it) => {
       } as never,
     });
     expect(ownRun.answer).toBe("now");
+  });
+
+  it("refuses commands naming an archived browser profile or its tabs, groups and sessions across every agent while keeping Guest targets", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const { profile, tab, browserSession } = await browserFixtures(storeFixture, f);
+    const tabId = await tab("person");
+    const guestTabId = await tab("person", null as never);
+    const sessionId = await browserSession(null);
+    const guestSessionId = `bsn_${randomUUID()}`;
+    await database
+      .insertInto("browserSessions")
+      .values({
+        id: guestSessionId,
+        tabGroupId: guestSessionId,
+        origin: "agent",
+        profileId: null,
+        placementKey: guestSessionId,
+        runnerId: f.runnerId,
+        runtimeId: "runtime",
+        state: "ready",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as never)
+      .execute();
+    const groupId = `tgr_${randomUUID()}`;
+    const guestGroupId = `tgr_${randomUUID()}`;
+    const layoutItems = [
+      { kind: "group", group: { groupId, name: "Work", color: "blue", tabIds: [tabId] } },
+      {
+        kind: "group",
+        group: { groupId: guestGroupId, name: "Guest", color: "gray", tabIds: [guestTabId] },
+      },
+    ];
+    await database
+      .insertInto("tabLayouts")
+      .values({
+        ownerId: f.userId,
+        revision: 1,
+        items: JSON.stringify(layoutItems) as never,
+      })
+      .onConflict((oc) =>
+        oc.column("ownerId").doUpdateSet({
+          revision: 1,
+          items: JSON.stringify(layoutItems) as never,
+        }),
+      )
+      .execute();
+    const selected = await connect({
+      scope: "selected",
+      tasks: false,
+      resources: [{ kind: "browser-profile", profileId: profile.id }],
+    });
+    const everything = await connect({ scope: "everything" });
+    const countQueries = async <T>(
+      action: () => Promise<T>,
+    ): Promise<{ value: T; count: number }> => {
+      let count = 0;
+      const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
+      const original = prototype.query;
+      const spy = vi.spyOn(prototype, "query").mockImplementation(function (
+        this: pg.Client,
+        ...args: unknown[]
+      ) {
+        count++;
+        return Reflect.apply(original, this, args);
+      });
+      try {
+        return { value: await action(), count };
+      } finally {
+        spy.mockRestore();
+      }
+    };
+    const admit = async (callerKey: string, command: Record<string, unknown>) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(callerKey),
+          command: { idempotencyKey: randomUUID(), ...command } as never,
+        })
+      ).answer;
+    const rename = { type: "browser.profile.rename", profileId: profile.id, name: "Renamed" };
+    const open = {
+      type: "tab.open",
+      target: { kind: "page", url: "https://bank.example", profileId: profile.id },
+    };
+    const closeTab = { type: "tab.close", tabIds: [tabId] };
+    const closeGroup = { type: "tab.group.close", groupId };
+    const closeSession = { type: "browser.session.close", sessionId };
+    const closeGuestTab = { type: "tab.close", tabIds: [guestTabId] };
+    const closeGuestGroup = { type: "tab.group.close", groupId: guestGroupId };
+    const closeGuestSession = { type: "browser.session.close", sessionId: guestSessionId };
+    // Before archiving: reachable, and record exact statement counts for each query.
+    const countsBefore: Record<string, number> = {};
+    for (const [label, callerKey, command] of [
+      ["everything:tab.close", `connection:${everything.id}`, closeTab],
+      ["everything:tab.group.close", `connection:${everything.id}`, closeGroup],
+      ["everything:browser.session.close", `connection:${everything.id}`, closeSession],
+      ["selected:tab.close", `connection:${selected.id}`, closeTab],
+      ["selected:tab.group.close", `connection:${selected.id}`, closeGroup],
+      ["selected:browser.session.close", `connection:${selected.id}`, closeSession],
+    ] as const) {
+      const measured = await countQueries(() => admit(callerKey, command));
+      countsBefore[label] = measured.count;
+      expect(measured.value, label).not.toBe("not_found");
+    }
+    expect(countsBefore).toEqual({
+      "everything:tab.close": 7,
+      "everything:tab.group.close": 7,
+      "everything:browser.session.close": 7,
+      "selected:tab.close": 7,
+      "selected:tab.group.close": 7,
+      "selected:browser.session.close": 7,
+    });
+    expect(await admit(`connection:${selected.id}`, rename)).not.toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, open)).not.toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, rename)).not.toBe("not_found");
+    expect(await admit(`run:${f.run.id}`, open)).not.toBe("not_found");
+    // Archive the profile directly so this tests command-admission authority even if stale rows exist.
+    await database
+      .updateTable("browserProfiles")
+      .set({ archivedAt: new Date() })
+      .where("id", "=", profile.id)
+      .execute();
+    // After archiving: not_found across every agent (selected, everything, native Run).
+    expect(await admit(`connection:${selected.id}`, rename)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, open)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeTab)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeGroup)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeSession)).toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, rename)).toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, closeTab)).toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, closeGroup)).toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, closeSession)).toBe("not_found");
+    expect(await admit(`run:${f.run.id}`, open)).toBe("not_found");
+    expect(await admit(`run:${f.run.id}`, closeTab)).toBe("not_found");
+    expect(await admit(`run:${f.run.id}`, closeGroup)).toBe("not_found");
+    expect(await admit(`run:${f.run.id}`, closeSession)).toBe("not_found");
+    // Guest targets (`profileId === null`) remain reachable for `everything` and unavailable for `selected`.
+    expect(await admit(`connection:${everything.id}`, closeGuestTab)).not.toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, closeGuestGroup)).not.toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, closeGuestSession)).not.toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeGuestTab)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeGuestGroup)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeGuestSession)).toBe("not_found");
+  });
+
+  it("limits archived-profile replay reach to the same caller's succeeded browser.profile.delete only", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const { profile } = await browserFixtures(storeFixture, f);
+    const connA = await connect({ scope: "everything" });
+    const connB = await connect({ scope: "everything" });
+    const principal = await database
+      .selectFrom("principals")
+      .select("id")
+      .where("userId", "=", f.userId)
+      .executeTakeFirstOrThrow();
+    const deleteKey = `delete-key-${randomUUID()}`;
+    const failedDeleteKey = `failed-delete-key-${randomUUID()}`;
+    await database
+      .insertInto("commands")
+      .values([
+        {
+          id: createId("command"),
+          requestedBy: f.userId,
+          actorPrincipalId: principal.id,
+          authoritySource: jsonValue({
+            kind: "mcp",
+            callerKind: "connection",
+            callerKey: `connection:${connA.id}`,
+          }),
+          idempotencyKey: deleteKey,
+          type: "browser.profile.delete",
+          payload: jsonValue({
+            request: { profileId: profile.id },
+            result: { deletion: null },
+          }),
+          status: "succeeded",
+          environmentId: null,
+          threadId: null,
+          runId: null,
+          dispatcherId: null,
+          lastError: null,
+        },
+        {
+          id: createId("command"),
+          requestedBy: f.userId,
+          actorPrincipalId: principal.id,
+          authoritySource: jsonValue({
+            kind: "mcp",
+            callerKind: "connection",
+            callerKey: `connection:${connA.id}`,
+          }),
+          idempotencyKey: failedDeleteKey,
+          type: "browser.profile.delete",
+          payload: jsonValue({
+            request: { profileId: profile.id },
+            result: null,
+          }),
+          status: "failed",
+          environmentId: null,
+          threadId: null,
+          runId: null,
+          dispatcherId: null,
+          lastError: jsonValue({ message: "boom" }),
+        },
+      ])
+      .execute();
+    await database
+      .updateTable("browserProfiles")
+      .set({ archivedAt: new Date() })
+      .where("id", "=", profile.id)
+      .execute();
+
+    const admit = async (
+      subject: ReturnType<typeof commandSubject>,
+      command: Record<string, unknown>,
+    ) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject,
+          command: command as never,
+        })
+      ).answer;
+
+    // True retry by the same caller with the succeeded delete's key is admitted.
+    expect(
+      await admit(commandSubject(`connection:${connA.id}`), {
+        type: "browser.profile.delete",
+        profileId: profile.id,
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("now");
+
+    // The same caller acting through its active direct session still matches its recorded callerKey.
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connA.id,
+      purpose: "direct-delete-retry",
+    });
+    expect(
+      await admit(commandSubject(`session:${session.id}`), {
+        type: "browser.profile.delete",
+        profileId: profile.id,
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("now");
+
+    // Another command (rename, history clear) carrying the delete's key reads not_found.
+    expect(
+      await admit(commandSubject(`connection:${connA.id}`), {
+        type: "browser.profile.rename",
+        profileId: profile.id,
+        name: "Renamed",
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("not_found");
+    expect(
+      await admit(commandSubject(`connection:${connA.id}`), {
+        type: "browser.history.clear",
+        profileId: profile.id,
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("not_found");
+
+    // Another caller (another connection or a native Run) carrying the delete's key reads not_found.
+    expect(
+      await admit(commandSubject(`connection:${connB.id}`), {
+        type: "browser.profile.delete",
+        profileId: profile.id,
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("not_found");
+    expect(
+      await admit(commandSubject(`run:${f.run.id}`), {
+        type: "browser.profile.delete",
+        profileId: profile.id,
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("not_found");
+
+    // A non-succeeded browser.profile.delete row does not keep the archived profile reachable.
+    expect(
+      await admit(commandSubject(`connection:${connA.id}`), {
+        type: "browser.profile.delete",
+        profileId: profile.id,
+        idempotencyKey: failedDeleteKey,
+      }),
+    ).toBe("not_found");
   });
 });
