@@ -968,7 +968,7 @@ integration("what a connection is shown", () => {
         grant: {
           scope: "selected",
           tasks: false,
-          resources: [{ kind: "browser-profile", profileId: w.profileId }],
+          resources: [{ kind: "browser-profile", profileId: w.profileId as never }],
         } as AgentGrant,
         forbidden: [
           w.calendar,
