@@ -5,7 +5,12 @@ import {
   FakeContext,
   FakePage,
 } from "@opensteer/browser-runtime-core/test-support";
-import { TabStore, type DatabaseSchema } from "@opensteer/database";
+import {
+  AgentConnectionStore,
+  beginAgentSession,
+  TabStore,
+  type DatabaseSchema,
+} from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
 import {
   createStoreFixture,
@@ -16,11 +21,12 @@ import { BrowserAttachTicketClaimsSchema, type InitialPageReady } from "@openste
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { EventEmitter } from "node:events";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql, type Kysely } from "kysely";
 import { describe, expect, it, vi } from "vitest";
+import { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import { BrowserService, type BrowserRuntimeConnection } from "./browser-service.js";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
@@ -345,6 +351,238 @@ integration("page tab adapter", () => {
       { timeout: 3000 },
     );
     expect((await tabs.snapshot(f.userId)).rows).toHaveLength(4);
+    expect(errors).toEqual([]);
+  });
+
+  it("carries a connected agent session's holder on the very first tabs.state publish of a new page", async () => {
+    const fixture = await createStoreFixture(),
+      f = await fixture.startRunFixture("connected-holder-first-publish");
+    const root = await realpath(await mkdtemp(join(tmpdir(), "opensteer-tab-holder-")));
+    const { database, store } = fixture;
+    await database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const profile = await store.createBrowserProfile({
+      name: "Connected profile",
+      ownerId: f.userId,
+      homeRunnerId: f.runnerId,
+      idempotencyKey: "connected-holder-profile",
+    });
+    const connections = new AgentConnectionStore(database as unknown as Kysely<DatabaseSchema>);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Connected agent",
+      clientName: "Connected agent",
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+      resource: "https://connected.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(connection.id, randomUUID())).toBe(true);
+    const { session } = await beginAgentSession(database as unknown as Kysely<DatabaseSchema>, {
+      userId: f.userId,
+      agentConnectionId: connection.id,
+    });
+    const sessionBinding = `session:${session.id}`;
+    const tabsStore = new TabStore(database as unknown as Kysely<DatabaseSchema>);
+    const launcher = Object.assign(new FakeIsolatingLauncher(), {
+      localProfiles: {
+        engine: "chromium" as const,
+        createFiles: async () => undefined,
+        release: async () => "released" as const,
+      },
+    });
+    const runtime = new BrowserRuntime({
+      runtimeId: "tabs-holder-test",
+      launcher,
+      localProfiles: { root: join(root, "profiles") },
+      sessionFilesRoot: join(root, "session-files"),
+      ticketVerifier: {
+        verify: async (token) =>
+          BrowserAttachTicketClaimsSchema.parse(
+            JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString()),
+          ),
+      },
+    });
+    await runtime.prepare();
+    const errors: unknown[] = [];
+    const computerId = await store.requireSelfDeviceId(f.runnerId);
+    let tabService: TabService | undefined;
+    let closing = false;
+    const seenFirstUsedBy = new Map<string, { taskId: string; since?: string }[]>();
+    const observePublish = async () => {
+      if (!tabService || closing) return;
+      const state = await tabService.bootstrap(f.userId, 240 * 1024);
+      for (const tab of state.tabs) {
+        if (!seenFirstUsedBy.has(tab.tabId)) seenFirstUsedBy.set(tab.tabId, tab.usedBy);
+      }
+    };
+    const observations: Promise<void>[] = [];
+    const browser = new BrowserService({
+      deploymentId: f.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      personal: true,
+      repository: personalBrowserRepository(store),
+      localProfiles: new BrowserLocalProfiles({
+        deploymentId: f.deploymentId,
+        baseUrl: new URL("http://127.0.0.1"),
+        repository: store,
+      }),
+      tabs: tabsStore,
+      tabPlaces: { write: async () => false, notice: () => {} },
+      signer: new BrowserAttachTicketSigner({
+        keyId: "test",
+        privateKey: generateKeyPairSync("ed25519").privateKey,
+      }),
+      onTabsChanged: (ownerId, ids) => {
+        tabService?.changed(ownerId, ids);
+        observations.push(observePublish());
+      },
+      onSessionsChanged: () => {},
+      onError: (error) => errors.push(error),
+      targetResolver: {
+        placements: () => [
+          {
+            kind: "runner",
+            runnerId: f.runnerId,
+            runtimeId: "tabs-holder-test",
+            label: "Computer",
+            available: true,
+            agents: true,
+            environmentIds: [f.environmentId],
+          },
+        ],
+        resolve: (placement) =>
+          placement.runnerId === f.runnerId
+            ? {
+                runtimeId: "tabs-holder-test",
+                placementKey: "test",
+                localProfileStorage: runtime.localProfileStorage!,
+                cdpBoundary: true,
+                sharedControl: true,
+                targetControl: true,
+                surfaceState: 1,
+                tabRestoreVersion: true,
+                connect: (ticket) => new RuntimeConnection(runtime, ticket),
+              }
+            : undefined,
+      },
+    });
+    tabService = new TabService({
+      store: tabsStore,
+      devices: store,
+      pages: browser.pageTabs,
+      nativeTargets: {
+        onTargetAcquired: () => () => undefined,
+        windowState: async () => ({ state: "asleep", usedBy: [] }),
+        phoneState: async () => ({ state: "asleep", usedBy: [] }),
+        openOwnerView: async () => {
+          throw new Error("unexpected");
+        },
+        closeOwnerViews: async () => undefined,
+        resolveWindow: async () => {
+          throw new Error("unexpected");
+        },
+      },
+      apps: {
+        get: async () => {
+          throw new Error("unexpected");
+        },
+      },
+      computer: async () => ({
+        name: "Computer",
+        connected: true,
+        removed: false,
+        selfRunnerId: f.runnerId,
+      }),
+      canRead: async () => true,
+      canReadTask: async () => true,
+      authorize: async () => undefined,
+      authorizeMembership: async () => undefined,
+      onError: (error) => errors.push(error),
+    });
+    await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
+      close: async () => {
+        closing = true;
+        await Promise.allSettled(observations);
+        tabService?.dispose();
+        await browser.close();
+        await runtime.shutdown();
+        await rm(root, { recursive: true, force: true });
+      },
+    }));
+
+    const agentActor = {
+      kind: "browser-binding" as const,
+      authority: { ownerId: f.userId, agentBindingId: sessionBinding },
+      threadId: session.threadId,
+    };
+
+    // Warm the person's tabs.state catalog before the connected agent opens anything.
+    expect((await tabService.bootstrap(f.userId, 240 * 1024)).tabs).toEqual([]);
+
+    // 1) New agent session: the very first publish after tabs.open (before bindBrowserScript) carries usedBy.
+    const openedNewSession = await tabService.open(
+      agentActor,
+      { kind: "page", profileId: profile.id, url: "https://example.com/new-session" },
+      "connected-new-session",
+    );
+    await Promise.all(observations.splice(0));
+    const afterNewSession = await tabService.bootstrap(f.userId, 240 * 1024);
+    const firstTab = afterNewSession.tabs.find((tab) => tab.tabId === openedNewSession.tab.tabId);
+    expect(openedNewSession.tab.usedBy).toEqual([
+      { taskId: session.threadId, since: expect.any(String) },
+    ]);
+    expect(firstTab?.usedBy).toEqual([{ taskId: session.threadId, since: expect.any(String) }]);
+    expect(seenFirstUsedBy.get(openedNewSession.tab.tabId)).toEqual([
+      { taskId: session.threadId, since: expect.any(String) },
+    ]);
+
+    // 2) Reused person session: #flushTabDescriptors writes the tab row inside openTab; first publish still carries usedBy.
+    const personProfile = await store.createBrowserProfile({
+      name: "Person profile",
+      ownerId: f.userId,
+      homeRunnerId: f.runnerId,
+      idempotencyKey: "connected-holder-person-profile",
+    });
+    const personOpened = await tabService.open(
+      { kind: "person", ownerId: f.userId },
+      { kind: "page", profileId: personProfile.id, url: "https://example.com/person-first" },
+      "person-first",
+    );
+    expect(personOpened.tab.computer.computerId).toBe(computerId);
+    await Promise.all(observations.splice(0));
+    seenFirstUsedBy.clear();
+
+    const openedInPersonSession = await tabService.open(
+      agentActor,
+      { kind: "page", profileId: personProfile.id, url: "https://example.com/in-person-session" },
+      "connected-in-person-session",
+    );
+    await Promise.all(observations.splice(0));
+    const afterPersonSession = await tabService.bootstrap(f.userId, 240 * 1024);
+    const secondTab = afterPersonSession.tabs.find(
+      (tab) => tab.tabId === openedInPersonSession.tab.tabId,
+    );
+    expect(openedInPersonSession.tab.usedBy).toEqual([
+      { taskId: session.threadId, since: expect.any(String) },
+    ]);
+    expect(secondTab?.usedBy).toEqual([{ taskId: session.threadId, since: expect.any(String) }]);
+    expect(seenFirstUsedBy.get(openedInPersonSession.tab.tabId)).toEqual([
+      { taskId: session.threadId, since: expect.any(String) },
+    ]);
+
+    // 3) Releasing holds clears usedBy again.
+    browser.releaseHolds(sessionBinding);
+    const afterRelease = await tabService.bootstrap(f.userId, 240 * 1024);
+    expect(
+      afterRelease.tabs.find((tab) => tab.tabId === openedNewSession.tab.tabId)?.usedBy,
+    ).toEqual([]);
+    expect(
+      afterRelease.tabs.find((tab) => tab.tabId === openedInPersonSession.tab.tabId)?.usedBy,
+    ).toEqual([]);
     expect(errors).toEqual([]);
   });
 });

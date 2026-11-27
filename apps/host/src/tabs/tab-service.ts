@@ -73,6 +73,7 @@ export interface PageTabsPort {
     typed?: boolean,
   ): Promise<TabWrite>;
   admitted?(row: TabWrite): Promise<void>;
+  unadmitted?(actor: TabActor, row: TabWrite): void;
   states?(ownerId: UserId, rows: TabRecord[]): Promise<Map<TabId, NativeTabTargetState>>;
   state(ownerId: UserId, row: TabRecord): Promise<NativeTabTargetState>;
   activate(
@@ -1014,39 +1015,45 @@ export class TabService implements TabServicePort {
         };
       }
     }
-    const result = await this.options.store.open(
-      write,
-      operationKey(actor, key),
-      async (tx) => {
-        await this.options.authorize(actor, target, tx);
-        await this.options.authorize(actor, write, tx);
-        if (target.kind === "app") {
-          const current = await tx
-            .selectFrom("apps")
-            .select(["deleting", "computerId", "latestVersion"])
-            .where("id", "=", target.appId)
-            .where("ownerId", "=", ownerId)
-            .executeTakeFirst();
-          if (
-            !current ||
-            current.deleting ||
-            (await requireSelfDeviceId(tx, current.computerId)) !== write.computerId
-          )
-            notFound();
-          if (current.latestVersion !== appFence!.version) conflict();
-          if (appFence!.generation !== null) {
-            const server = await tx
-              .selectFrom("appServers")
-              .select("generation")
-              .where("appId", "=", target.appId)
+    let result: Awaited<ReturnType<TabStore["open"]>>;
+    try {
+      result = await this.options.store.open(
+        write,
+        operationKey(actor, key),
+        async (tx) => {
+          await this.options.authorize(actor, target, tx);
+          await this.options.authorize(actor, write, tx);
+          if (target.kind === "app") {
+            const current = await tx
+              .selectFrom("apps")
+              .select(["deleting", "computerId", "latestVersion"])
+              .where("id", "=", target.appId)
+              .where("ownerId", "=", ownerId)
               .executeTakeFirst();
-            if (Number(server?.generation) !== appFence!.generation) conflict();
+            if (
+              !current ||
+              current.deleting ||
+              (await requireSelfDeviceId(tx, current.computerId)) !== write.computerId
+            )
+              notFound();
+            if (current.latestVersion !== appFence!.version) conflict();
+            if (appFence!.generation !== null) {
+              const server = await tx
+                .selectFrom("appServers")
+                .select("generation")
+                .where("appId", "=", target.appId)
+                .executeTakeFirst();
+              if (Number(server?.generation) !== appFence!.generation) conflict();
+            }
           }
-        }
-      },
-      target,
-      initialRevision,
-    );
+        },
+        target,
+        initialRevision,
+      );
+    } catch (error) {
+      if (write.kind === "page") this.options.pages.unadmitted?.(actor, write);
+      throw error;
+    }
     const meta = tabMutationMeta(result);
     const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
     try {

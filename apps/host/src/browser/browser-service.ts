@@ -82,6 +82,8 @@ type BrowserTabOpenAgent = {
   readonly agentBindingId: string;
   readonly threadId: ThreadId;
   readonly browserSend?: PooledBrowserSend;
+  readonly holder?: BoundHolder;
+  readonly onHoldAdded?: (sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) => void;
 };
 
 declare const ownedBrowserSessionBrand: unique symbol;
@@ -3599,6 +3601,13 @@ export class BrowserService {
           ({ broker, navigationId } = sent);
           const response = await sent.request;
           ({ tabId } = z.object({ tabId: BrowserSurfaceIdSchema }).parse(response.result));
+          if (
+            agent?.holder &&
+            !budget.signal.aborted &&
+            !this.#endedBindings.has(agent.agentBindingId) &&
+            this.#noteBoundTab(record.id, tabId, agent.agentBindingId, agent.holder, false)
+          )
+            agent.onHoldAdded?.(record.id, tabId);
           if (opens && agent) opens.openers.set(tabId, { taskId: agent.threadId });
         } catch (error) {
           if (
@@ -3636,6 +3645,19 @@ export class BrowserService {
         );
       if (budget.pool && agent && !agent.browserSend)
         await this.#holdForAgent(agent, record, { accessGeneration, recheck: true });
+      if (
+        agent?.holder &&
+        !budget.signal.aborted &&
+        !this.#endedBindings.has(agent.agentBindingId) &&
+        this.#noteBoundTab(
+          record.id,
+          binding.outcome.tabId,
+          agent.agentBindingId,
+          agent.holder,
+          false,
+        )
+      )
+        agent.onHoldAdded?.(record.id, binding.outcome.tabId);
       await this.#flushTabDescriptors(record.id);
       this.#onTabsChanged();
       const visible = await this.#visibleOpenerThreads(ownerId, [record]);
@@ -4879,6 +4901,11 @@ export class BrowserService {
   readonly pageTabs: PageTabsPort = {
     open: (actor, target, key, typed) => this.#openWorkspacePage(actor, target, key, typed),
     admitted: async (write) => {
+      if (write.pageBinding) {
+        const prefix = `${write.pageBinding.sessionId}:${write.id}:`;
+        for (const key of this.#pendingOpenHolds)
+          if (key.startsWith(prefix)) this.#pendingOpenHolds.delete(key);
+      }
       const row = await this.#workspaceTabs?.get(write.ownerId, write.id);
       if (row?.pageBinding && row.pageBinding.sessionId === write.pageBinding?.sessionId) {
         this.#workspacePageGenerations.set(
@@ -4888,6 +4915,12 @@ export class BrowserService {
         if (row.url && row.url !== "about:blank") this.#pagesAwaitingNavigation.add(row.id);
         await this.#flushTabDescriptors(row.pageBinding.sessionId);
       }
+    },
+    unadmitted: (actor, write) => {
+      if (actor.kind !== "browser-binding" || !write.pageBinding) return;
+      const key = `${write.pageBinding.sessionId}:${write.id}:${actor.authority.agentBindingId}`;
+      if (this.#pendingOpenHolds.delete(key))
+        this.#unnoteBoundTab(write.pageBinding.sessionId, write.id, actor.authority.agentBindingId);
     },
     states: (ownerId, rows) => this.#workspacePageStates(ownerId, rows),
     state: async (ownerId, row) => (await this.#workspacePageStates(ownerId, [row])).get(row.id)!,
@@ -5072,6 +5105,7 @@ export class BrowserService {
         code: "forbidden",
         message: "Opening a page requires a Run or the person.",
       });
+    let openHold: { sessionId: BrowserSessionId; surfaceId: BrowserSurfaceId } | undefined;
     const agent =
       actor.kind === "run"
         ? {
@@ -5084,6 +5118,10 @@ export class BrowserService {
           ? {
               ...actor.authority,
               threadId: actor.threadId,
+              holder: { ownerId: actor.authority.ownerId, threadId: actor.threadId },
+              onHoldAdded: (sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) => {
+                openHold = { sessionId, surfaceId };
+              },
               ...(actor.browserSend ? { browserSend: actor.browserSend } : {}),
             }
           : undefined;
@@ -5134,50 +5172,60 @@ export class BrowserService {
       agent,
       actor.kind === "browser-binding" ? actor.signal : undefined,
     );
-    const record = await this.#repository.getBrowserSessionForOwner(opened.sessionId, ownerId);
-    if (!record)
-      throw new OpensteerError({
-        code: "not_found",
-        message: "The browser ended before opening its tab.",
-      });
-    if (agent) {
-      await this.#admitAgentBackend(
-        { ...agent, sessionId: record.id },
-        undefined,
-        !agent.browserSend,
-      );
-      await this.#recordAgentTabPlace(agent, record, opened.tabId);
+    try {
+      const record = await this.#repository.getBrowserSessionForOwner(opened.sessionId, ownerId);
+      if (!record)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "The browser ended before opening its tab.",
+        });
+      if (agent) {
+        await this.#admitAgentBackend(
+          { ...agent, sessionId: record.id },
+          undefined,
+          !agent.browserSend,
+        );
+        await this.#recordAgentTabPlace(agent, record, opened.tabId);
+      }
+      const descriptor = this.#brokers
+        .get(record.id)
+        ?.clientRows(this.#presence(record.id))
+        .records.get(opened.tabId);
+      const openedBy: TabOpenedBy = agent ? { taskId: agent.threadId } : "person";
+      this.#workspacePageGenerations.set(`${record.id}:${opened.tabId}`, 1);
+      if (openHold && agent)
+        this.#pendingOpenHolds.add(
+          `${openHold.sessionId}:${openHold.surfaceId}:${agent.agentBindingId}`,
+        );
+      return {
+        id: opened.tabId,
+        ownerId,
+        kind: "page",
+        computerId: await this.#selfDeviceId(record.runnerId),
+        title: descriptor?.title ?? target.url,
+        url:
+          descriptor?.url === "about:blank" && target.url !== "about:blank"
+            ? target.url
+            : (descriptor?.url ?? target.url),
+        favicon: (() => {
+          const broker = this.#brokers.get(record.id);
+          const ref = broker?.clientRows(this.#presence(record.id)).iconRef(opened.tabId);
+          return ref ? (broker?.icon(ref) ?? null) : null;
+        })(),
+        profileId: record.profileId,
+        profileName: profile?.name ?? null,
+        openedBy,
+        pageBinding: {
+          lineageId: opened.groupId ?? record.id,
+          sessionId: record.id,
+          surfaceId: opened.tabId,
+        },
+      };
+    } catch (error) {
+      if (openHold && agent)
+        this.#unnoteBoundTab(openHold.sessionId, openHold.surfaceId, agent.agentBindingId);
+      throw error;
     }
-    const descriptor = this.#brokers
-      .get(record.id)
-      ?.clientRows(this.#presence(record.id))
-      .records.get(opened.tabId);
-    const openedBy: TabOpenedBy = agent ? { taskId: agent.threadId } : "person";
-    this.#workspacePageGenerations.set(`${record.id}:${opened.tabId}`, 1);
-    return {
-      id: opened.tabId,
-      ownerId,
-      kind: "page",
-      computerId: await this.#selfDeviceId(record.runnerId),
-      title: descriptor?.title ?? target.url,
-      url:
-        descriptor?.url === "about:blank" && target.url !== "about:blank"
-          ? target.url
-          : (descriptor?.url ?? target.url),
-      favicon: (() => {
-        const broker = this.#brokers.get(record.id);
-        const ref = broker?.clientRows(this.#presence(record.id)).iconRef(opened.tabId);
-        return ref ? (broker?.icon(ref) ?? null) : null;
-      })(),
-      profileId: record.profileId,
-      profileName: profile?.name ?? null,
-      openedBy,
-      pageBinding: {
-        lineageId: opened.groupId ?? record.id,
-        sessionId: record.id,
-        surfaceId: opened.tabId,
-      },
-    };
   }
   async #restoreWorkspacePage(
     ownerId: UserId,
@@ -5709,17 +5757,31 @@ export class BrowserService {
       pageBinding,
       ...(descriptor.favicon !== undefined ? { favicon: descriptor.favicon } : {}),
     };
-    await tabs.open(write, `connected-page:${record.id}:${descriptor.id}`, async (tx) => {
-      if (
-        this.#endedBindings.has(claims.authority.agentBindingId) ||
-        (claims.authority.expiresAt ?? Infinity) <= Date.now()
-      )
-        throw new BrowserCdpConnectionEnded("This page's browser authority has ended.");
-      await authorizeTabTarget(actor, write, tx);
-    });
-    const row = await tabs.get(ownerId, descriptor.id);
-    if (!row) throw new BrowserCdpConnectionEnded("This page is no longer an open task tab.");
-    return row;
+    const noted =
+      !this.#endedBindings.has(claims.authority.agentBindingId) &&
+      this.#noteBoundTab(
+        record.id,
+        descriptor.id,
+        claims.authority.agentBindingId,
+        { ownerId, threadId },
+        false,
+      );
+    try {
+      await tabs.open(write, `connected-page:${record.id}:${descriptor.id}`, async (tx) => {
+        if (
+          this.#endedBindings.has(claims.authority.agentBindingId) ||
+          (claims.authority.expiresAt ?? Infinity) <= Date.now()
+        )
+          throw new BrowserCdpConnectionEnded("This page's browser authority has ended.");
+        await authorizeTabTarget(actor, write, tx);
+      });
+      const row = await tabs.get(ownerId, descriptor.id);
+      if (!row) throw new BrowserCdpConnectionEnded("This page is no longer an open task tab.");
+      return row;
+    } catch (error) {
+      if (noted) this.#unnoteBoundTab(record.id, descriptor.id, claims.authority.agentBindingId);
+      throw error;
+    }
   }
 
   async #closeUnrecordedStandardCdpPage(
@@ -8226,6 +8288,7 @@ export class BrowserService {
     BrowserSessionId,
     Map<BrowserSurfaceId, Map<string, BoundHolder>>
   >();
+  readonly #pendingOpenHolds = new Set<string>();
   /** A bind of work that has ended meanwhile (a narrowing, a Stop) records no hold: it fails. */
   #noteBoundTabFor(
     signal: AbortSignal | undefined,
@@ -8242,20 +8305,32 @@ export class BrowserService {
     surfaceId: BrowserSurfaceId,
     binding: string,
     holder: BoundHolder = null,
-  ): void {
+    notify = true,
+  ): boolean {
     const tabs =
       this.#boundTabs.get(sessionId) ?? new Map<BrowserSurfaceId, Map<string, BoundHolder>>();
     this.#boundTabs.set(sessionId, tabs);
     const bindings = tabs.get(surfaceId) ?? new Map<string, BoundHolder>();
     tabs.set(surfaceId, bindings);
     const known = bindings.get(binding);
-    if (bindings.has(binding) && holder === null) return;
+    if (bindings.has(binding) && holder === null) return false;
     const added = !bindings.has(binding);
     // Each bind is the task's work taking the tab up now: its time moves with it.
     bindings.set(binding, holder ? { ...holder, at: this.#activityClock.now() } : (known ?? null));
     if (added) this.#brokers.get(sessionId)?.refreshSessionState();
     // Who holds the tab, or since when, changed: the person's row for it says it.
-    if (holder) this.#onTabsChanged(undefined, [surfaceId]);
+    if (holder && notify) this.#onTabsChanged(undefined, [surfaceId]);
+    return added;
+  }
+  #unnoteBoundTab(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId, binding: string): void {
+    this.#pendingOpenHolds.delete(`${sessionId}:${surfaceId}:${binding}`);
+    const tabs = this.#boundTabs.get(sessionId);
+    const bindings = tabs?.get(surfaceId);
+    if (!bindings?.delete(binding)) return;
+    if (!bindings.size) tabs!.delete(surfaceId);
+    if (!tabs!.size) this.#boundTabs.delete(sessionId);
+    this.#brokers.get(sessionId)?.refreshSessionState();
+    this.#onTabsChanged(undefined, [surfaceId]);
   }
   /**
    * A binding's script took up again a tab it already holds a handle for: its holder record for
@@ -8282,6 +8357,9 @@ export class BrowserService {
    * and so is whatever names those tabs as where work is.
    */
   #dropSessionHolds(sessionId: BrowserSessionId): void {
+    const prefix = `${sessionId}:`;
+    for (const key of this.#pendingOpenHolds)
+      if (key.startsWith(prefix)) this.#pendingOpenHolds.delete(key);
     const tabs = this.#boundTabs.get(sessionId);
     this.#boundTabs.delete(sessionId);
     if (!tabs?.size) return;
@@ -8300,6 +8378,9 @@ export class BrowserService {
    * The binding is not ended; its next command binds again under the rule and holds afresh.
    */
   releaseHolds(agentBindingId: string): void {
+    const suffix = `:${agentBindingId}`;
+    for (const key of this.#pendingOpenHolds)
+      if (key.endsWith(suffix)) this.#pendingOpenHolds.delete(key);
     for (const [sessionId, tabs] of this.#boundTabs) {
       const released: BrowserSurfaceId[] = [];
       for (const [surfaceId, bindings] of tabs)
@@ -10235,6 +10316,9 @@ export class BrowserService {
       if (attachment.binding === agentBindingId) attachment.close();
     for (const actor of this.#actors.values())
       if (actor.binding === agentBindingId) this.#clearActor(actor);
+    const pendingSuffix = `:${agentBindingId}`;
+    for (const key of this.#pendingOpenHolds)
+      if (key.endsWith(pendingSuffix)) this.#pendingOpenHolds.delete(key);
     for (const [sessionId, tabs] of this.#boundTabs) {
       let changed = false;
       for (const [surfaceId, bindings] of tabs)
