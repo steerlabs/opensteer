@@ -371,6 +371,8 @@ export async function deleteBrowserProfileInTransaction(
     readonly profileId: BrowserProfileId;
     readonly deletionId?: string;
     readonly binding?: LocalProfileBinding;
+    /** Pre-retired tab IDs when the caller already ran `removeProfileTabs` earlier in this transaction. */
+    readonly retiredTabIds?: readonly TabId[];
   },
 ): Promise<NativeProfileDeletionResult> {
   await assertPersonalOwner(transaction, input.ownerId);
@@ -407,7 +409,8 @@ export async function deleteBrowserProfileInTransaction(
     .execute(databaseOperationOptions());
   // Retire the profile's tabs and emptied groups before locking browser_profiles (lock order:
   // tab_layouts 124 -> personal_tabs 125 -> browser_profiles 158).
-  const retiredTabIds = await removeProfileTabs(transaction, input.ownerId, input.profileId);
+  const retiredTabIds =
+    input.retiredTabIds ?? (await removeProfileTabs(transaction, input.ownerId, input.profileId));
   const now = new Date();
   await transaction
     .updateTable("browserProfiles")
