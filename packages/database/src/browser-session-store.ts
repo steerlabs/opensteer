@@ -16,7 +16,6 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
-import { removeProfileTabs } from "./tab-store.js";
 import { eventDataSchemas, type EventData } from "@opensteer/core";
 import { storableText } from "./storable-json.js";
 import {
@@ -387,27 +386,6 @@ export async function deleteBrowserProfileInTransaction(
   if (!owned) {
     throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
   }
-  const live = await transaction
-    .selectFrom("browserSessions")
-    .select([
-      "createdAt",
-      "runnerId",
-      "id",
-      "origin",
-      "opener",
-      "placementKey",
-      "profileId",
-      "runtimeId",
-      "state",
-      "updatedAt",
-    ])
-    .where("profileId", "=", input.profileId)
-    .where("state", "not in", ["closed", "failed"])
-    .orderBy("id")
-    .execute(databaseOperationOptions());
-  // Retire the profile's tabs and emptied groups before locking browser_profiles (lock order:
-  // tab_layouts 124 -> personal_tabs 125 -> browser_profiles 158).
-  const retiredTabIds = await removeProfileTabs(transaction, input.ownerId, input.profileId);
   const now = new Date();
   await transaction
     .updateTable("browserProfiles")
@@ -427,6 +405,13 @@ export async function deleteBrowserProfileInTransaction(
     .deleteFrom("browserHistoryIcons")
     .where("profileId", "=", input.profileId)
     .execute(databaseOperationOptions());
+  const live = await transaction
+    .selectFrom("browserSessions")
+    .select("id")
+    .where("profileId", "=", input.profileId)
+    .where("state", "not in", ["closed", "failed"])
+    .orderBy("id")
+    .execute(databaseOperationOptions());
   const storage = profileStorage(owned);
   const binding = input.binding ?? (storage.kind === "unbound" ? undefined : storage.binding);
   const deletion = binding
@@ -440,12 +425,7 @@ export async function deleteBrowserProfileInTransaction(
       mutation.bumpResource("browser-placement");
       mutation.bumpResource("browser-availability");
     }
-    return {
-      sessionIds: live.map((session) => session.id),
-      sessions: live,
-      retiredTabIds,
-      ...(deletion ? { deletion } : {}),
-    };
+    return { sessionIds: live.map((session) => session.id), ...(deletion ? { deletion } : {}) };
   });
 }
 
