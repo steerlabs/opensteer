@@ -507,7 +507,9 @@ export function ComputerDisplay({
     !stale &&
     displayState?.input === "available";
   const go = (to: PhoneNavigationTo) => {
-    if (picture !== null) inputLease?.input(picture.generation, [{ kind: "nav", to }]);
+    if (picture === null) return;
+    if (controls.current) controls.current.navigate(picture.generation, to);
+    else inputLease?.input(picture.generation, [{ kind: "nav", to }]);
   };
   const state = displayState?.power === "available" ? displayState.display?.state : null;
   const power =

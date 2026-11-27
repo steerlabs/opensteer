@@ -1,5 +1,4 @@
-import { displayPasteTextMaxLength, type DisplayInputEvent } from "@opensteer/protocol";
-import { editingTextMaxLength } from "@opensteer/protocol/editing";
+import type { DisplayInputEvent } from "@opensteer/protocol";
 
 /** The contract's bounds on one text event (`DisplayInputEventSchema`). */
 export const maxInsertCharacters = 1_000;
@@ -26,28 +25,6 @@ export function mergeDisplayInput(
     // A turn past one event's bound goes as another event rather than being lost.
     return Math.abs(dx) <= 1 && Math.abs(dy) <= 1 ? { ...next, dx, dy } : null;
   }
-  if (last.kind === "edit" && next.kind === "edit")
-    return last.edit.contextId === next.edit.contextId &&
-      last.edit.before === "" &&
-      last.edit.after === "" &&
-      next.edit.before === "" &&
-      next.edit.after === "" &&
-      last.edit.text.length + next.edit.text.length <= editingTextMaxLength
-      ? {
-          kind: "edit",
-          edit: {
-            contextId: last.edit.contextId,
-            text: last.edit.text + next.edit.text,
-            before: "",
-            after: "",
-          },
-        }
-      : null;
-  if (last.kind === "paste" && next.kind === "paste" && "text" in last && "text" in next)
-    return last.contextId === next.contextId &&
-      last.text.length + next.text.length <= displayPasteTextMaxLength
-      ? { kind: "paste", text: last.text + next.text, contextId: last.contextId }
-      : null;
   if (last.kind !== "text" || next.kind !== "text") return null;
   if ("insert" in last && "insert" in next)
     return last.insert.length + next.insert.length <= maxInsertCharacters

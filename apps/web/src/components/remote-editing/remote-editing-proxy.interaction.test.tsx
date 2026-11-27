@@ -333,23 +333,18 @@ describe("real shared proxy element", () => {
     await act(async () => waiting.shift()!());
     expect(container.textContent).not.toContain("still catching up");
   });
-  it("shows a stopped burst's delivered count in its own words and keeps it shown", async () => {
+  it("shows a stopped burst's plain stop notice in its own words and keeps it shown", async () => {
     const { DisplayEditingStopped } = await import("@opensteer/client/integrations");
     const { container, element, wire } = setup();
-    const message =
-      "Stopped typing: 32 characters arrived before the device stopped responding; the next 32 may have arrived, and the rest was not sent.";
+    const message = "Typing stopped. Some of it may not have arrived: check the text.";
     wire.send.mockImplementationOnce(async () => {
-      throw new DisplayEditingStopped(message, {
-        delivered: 32,
-        uncertain: 32,
-        unsent: 136,
-        settled: false,
-      });
+      throw new DisplayEditingStopped(message);
     });
     input(element(), "a");
     await act(async () => undefined);
     expect(container.textContent).toContain(message);
     expect(container.textContent).not.toContain("Couldn't confirm");
+    expect(container.textContent).not.toContain("Try again");
   });
   it("uses remote caret and field hints, then replaces sensitive fields with a password proxy", () => {
     const { element, render } = setup();
