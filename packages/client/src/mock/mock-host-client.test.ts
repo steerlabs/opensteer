@@ -24,6 +24,7 @@ import {
 import { hostApi } from "@opensteer/protocol";
 import type { ThreadSummary, CreateThreadInput } from "../host/client.js";
 import { threadStopTarget } from "../host/thread-activity.js";
+import { isThreadUnread } from "../host/thread-unread.js";
 import { defaultThreadPlacement, threadPlacementOptions } from "../host/thread-placement.js";
 import { MockHostClient, mockPasswordSignInRequest } from "./mock-host-client.js";
 
@@ -586,6 +587,30 @@ describe("MockHostClient", () => {
       const after = client.getSnapshot();
       expect(after.runQueue.some(({ threadId }) => threadId === waiting.id)).toBe(false);
       expect(after.threads.find(({ id }) => id === waiting.id)?.inputQueuePaused).toBe(true);
+    } finally {
+      client.dispose();
+    }
+  });
+  it("leaves a task the person stopped, or stopped by marking it Done, read, as the Host does", async () => {
+    const client = createClient();
+    try {
+      const atWork = client
+        .getSnapshot()
+        .threads.filter(
+          ({ listed, purpose, status }) =>
+            listed && purpose === "task" && (status === "running" || status === "waiting"),
+        );
+      const [stopped, done] = atWork;
+      if (!stopped || !done) throw new Error("The mock has too few tasks at work.");
+      // The Host's runNewsAt: the end of a Run the person stopped themselves is not news.
+      await client.stopRun(stopped.id);
+      await client.setTaskDone(done.id, true);
+      for (const id of [stopped.id, done.id]) {
+        const thread = client.getSnapshot().threads.find((thread) => thread.id === id)!;
+        expect(thread.status, thread.title).toBe("idle");
+        expect(isThreadUnread(thread), thread.title).toBe(false);
+        expect(thread.latestRunCompletedAt, thread.title).toBeNull();
+      }
     } finally {
       client.dispose();
     }
