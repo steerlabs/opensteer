@@ -140,7 +140,9 @@ try {
   await page.goto(`${web.origin}/?mock-agents&mock-agent-work=long-panel`);
   await page.getByRole("button", { name: /Open sidebar/ }).click();
   await showPanel(page);
+  // The place is named on its place line; the activity line names it again since a0b0d31c7.
   await panel(page)
+    .locator(".agents-now-panel__where")
     .getByText("Household shopping and weekly groceries shared with family", { exact: true })
     .waitFor();
   await save(page, "panel-728");
