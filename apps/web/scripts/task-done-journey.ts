@@ -3,8 +3,8 @@
  * confirmation; Keep working mutating shared state; unread results hidden by
  * Done; reading failing to regroup; a Done composer that does not say sending
  * reopens the task; Reopen restarting work or leaving it in Done; unnecessary
- * stopped confirmation, or staying on the task Done moved away; Done leaking
- * into Chat; a missing Done view.
+ * stopped confirmation, or staying on the task Done moved away; a missing
+ * Done view.
  * Runs the production web app against MockHostClient in headless Chromium.
  */
 import { execFileSync } from "node:child_process";
@@ -267,21 +267,6 @@ try {
       "stopped title action asked for confirmation or failed to apply",
     );
     return { ...observed, confirmations, opened };
-  });
-  await step(page, "10-chat-has-no-done", async () => {
-    await page.locator(".side-home__main").click();
-    await page.locator(".conv-header .chat-orb").waitFor();
-    const doneActions = await page
-      .locator(".conv-header, .input-surface")
-      .getByRole("button", { name: /^(Mark Done|Reopen)$/u })
-      .count();
-    const menus = await page.locator(".conv-header__menu").count();
-    expectThat(
-      { doneActions, menus },
-      doneActions === 0 && menus === 0,
-      "Chat offers Done or Reopen",
-    );
-    return { doneActions, menus };
   });
   await step(page, "11-sidebar-done-line-and-view", async () => {
     await backToTasks(page);

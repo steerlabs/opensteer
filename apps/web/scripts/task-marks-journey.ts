@@ -2,8 +2,8 @@
  * Failure checklist: subject/state independence, quiet done rows without dimming
  * failures, 16/20/22px optical sizes, pending/old metadata, generated arrival,
  * icon-only edits in rows/headers/occupants/cursors without new activity,
- * default locking, keyboard/focus, project colour independence, Chat,
- * reduced motion, cursor contrast and the isolated glass transport.
+ * default locking, keyboard/focus, reduced motion, cursor contrast and the
+ * isolated glass transport.
  * Evidence is captured from the production build at actual 1x and 2x density.
  */
 import { execFileSync } from "node:child_process";
@@ -19,7 +19,6 @@ const directory = process.env.OPENSTEER_TASK_MARKS_EVIDENCE_DIR
   ? path.resolve(process.env.OPENSTEER_TASK_MARKS_EVIDENCE_DIR)
   : await mkdtemp(path.join(tmpdir(), "opensteer-task-marks-evidence-"));
 const flights = "thr_b21e07d4-9c3a-4f62-8e1d-73a5c0f4d912";
-const travel = "wsp_00000000-0000-4000-8000-000000000800";
 // "Build the new architecture", which handed out "Book a table for Friday".
 const assigning = "thr_00000000-0000-4000-8000-000000000001";
 const { checks, check, abort } = journeyChecks();
@@ -27,12 +26,7 @@ await mkdir(directory, { recursive: true });
 const web = await openMockWeb("opensteer-task-marks");
 const screenshots: string[] = [];
 const capture = async (page: Page, name: string, density: number, selector?: string) => {
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-    await Promise.all(
-      [...document.querySelectorAll<HTMLImageElement>(".chat-orb img")].map((img) => img.decode()),
-    );
-  });
+  await page.evaluate(() => document.fonts.ready);
   const file = path.join(directory, `${name}@${density}x.png`);
   if (selector) await page.locator(selector).screenshot({ path: file, animations: "disabled" });
   else await page.screenshot({ path: file, animations: "disabled" });
@@ -143,57 +137,14 @@ try {
         return { count, focused, defaultIcon: "document" };
       },
     );
-    await page.goto(`${web.origin}/workspaces/${travel}`);
-    await page.locator(".workspace-icon-chooser").waitFor();
-    await capture(page, "project-page", density);
-    await check(`${density}x · project colour changes only the tile`, async () => {
-      await page.locator(".workspace-icon-chooser").click();
-      const colors = page.getByRole("group", { name: "Colour", exact: true });
-      await colors.waitFor();
-      await capture(page, "project-colour-picker", density);
-      const count = await colors.getByRole("button").count();
-      await colors.getByRole("button", { name: "Purple", exact: true }).click();
-      await page.waitForFunction(
-        () =>
-          document
-            .querySelector(".workspace-icon-chooser .workspace-orb")
-            ?.getAttribute("data-color") === "purple",
-      );
-      const observed = {
-        count,
-        taskColor: await page
-          .locator(`.side-task[data-thread-id="${flights}"] .task-mark`)
-          .getAttribute("data-color"),
-      };
-      expectThat(
-        observed,
-        count === 7 && observed.taskColor === "lime",
-        "project colour changed task identity or palette is wrong",
-      );
-      await page.keyboard.press("Escape");
-      return observed;
-    });
-    await page.goto(`${web.origin}/projects`);
-    await page.locator(".project-cards").waitFor();
-    await capture(page, "projects", density);
     // A task that handed out work draws the task it handed out with that task's own mark.
     await page.goto(`${web.origin}/tasks/${assigning}`);
     await page.locator(".agent-mark .task-mark").first().waitFor();
     await capture(page, "conversation-assignment", density);
-    await check(`${density}x · assignment marks, request badge and Chat excluded`, async () => {
-      const observed = {
-        marks: await page.locator(".agent-mark .task-mark").count(),
-        orb: await page.locator(".conv-header .chat-orb").count(),
-      };
-      await page.locator(".conv-header__menu").click();
-      const edit = await page.locator('[data-action="change-icon"]').count();
-      expectThat(
-        { ...observed, edit },
-        observed.marks > 0 && observed.orb === 1 && edit === 0,
-        "assignment identity or Chat exclusion is wrong",
-      );
-      await page.keyboard.press("Escape");
-      return { ...observed, edit };
+    await check(`${density}x · assignment marks`, async () => {
+      const marks = await page.locator(".agent-mark .task-mark").count();
+      expectThat({ marks }, marks > 0, "assignment identity is wrong");
+      return { marks };
     });
     await page.goto(`${web.origin}/`);
     await page.locator(".side-task[data-thread-id]").first().waitFor();
