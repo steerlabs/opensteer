@@ -100,7 +100,7 @@ export interface AppTabPort {
 export type NativeTabTargetState = (
   | { state: "open" | "asleep" }
   | { state: "unavailable"; unavailableCode: TabUnavailableCode; unavailableReason: string }
-) & { usedBy: Array<{ taskId: ThreadId }> };
+) & { usedBy: Array<{ taskId: ThreadId; since?: string }> };
 export interface ResolvedTabWindow {
   windowId: WindowId;
   app: ComputerAppIdentity;

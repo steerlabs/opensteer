@@ -212,6 +212,7 @@ export async function serveMcp(
     listCallableTools: (input: IntegrationRequester) => integrationStore.listCallableTools(input),
     computerToolEnabled: () => false,
     computerUseVersion: async () => undefined,
+    localDeviceAccessBlocked: async () => undefined,
     computerAppApprovals: {
       computerUseInventory: async () => ({ machines: [], phones: [] }),
       computerAppHolders: () => new Map(),

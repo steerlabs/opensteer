@@ -88,6 +88,26 @@ describe("where a task's agent is working", () => {
     });
   });
 
+  it("names, for Watch, the page the task's work took up last, not the row that changed last", () => {
+    // Tester run 15, trials 2, 4, 6 and 7: the task holds two pages; its call works in the second
+    // (taken up last), while the first's row changed later (its title, its picture).
+    const taken = (tabId: string, since: string, updatedAt: string) => ({
+      ...held(tabId, "task", updatedAt),
+      usedBy: [{ taskId: "task", since }],
+    });
+    const first = taken("a", "2026-01-01T00:00:01.000Z", "2026-01-01T00:00:09.000Z");
+    const second = taken("b", "2026-01-01T00:00:05.000Z", "2026-01-01T00:00:06.000Z");
+    expect(threadAgentPage(source(first, second), "task")).toEqual({
+      tabId: TabIdSchema.parse("b"),
+    });
+    // A holder with no time yet (an older Home) comes after any with one.
+    expect(
+      threadAgentPage(source(held("c", "task", "2026-01-01T00:00:10.000Z"), second), "task"),
+    ).toEqual({
+      tabId: TabIdSchema.parse("b"),
+    });
+  });
+
   it("is nothing for a task that holds no place", () => {
     expect(threadAgentPlace(source(held("a", "other", "2026-01-01T00:00:00.000Z")), "task")).toBe(
       null,

@@ -53,23 +53,30 @@ export function threadAgentPlace(
 }
 
 /**
- * The page tab a task's agent used last, for the person's Watch: of the pages the task holds that
- * can be shown now, the one that changed most recently. Holding is the Host's word.
+ * The page tab where a task's agent is working, for the person's Watch: of the pages the task
+ * holds that can be shown now, the one its work took up last (the holder's `since`: a script's
+ * bind of it, a Run's last action in it), which is the page of its operation in flight, else of
+ * its latest. A holder with no time comes after any with one; then the row that changed last.
+ * Holding is the Host's word.
  */
 export function threadAgentPage(
   source: Pick<HostSnapshot, "tabs">,
   threadId: string,
 ): BrowserTabDestination | null {
-  let best: Tab | null = null;
-  for (const tab of source.tabs.rows.values())
+  let best: { readonly tab: Tab; readonly since: string } | null = null;
+  for (const tab of source.tabs.rows.values()) {
+    if (tab.kind !== "page" || tab.state === "unavailable") continue;
+    const holder = tab.usedBy.find((entry) => entry.taskId === threadId);
+    if (!holder) continue;
+    const since = holder.since ?? "";
     if (
-      tab.kind === "page" &&
-      tab.state !== "unavailable" &&
-      tab.usedBy.some((holder) => holder.taskId === threadId) &&
-      (best === null || tab.updatedAt > best.updatedAt)
+      best === null ||
+      since > best.since ||
+      (since === best.since && tab.updatedAt > best.tab.updatedAt)
     )
-      best = tab;
-  return best && { tabId: best.tabId };
+      best = { tab, since };
+  }
+  return best && { tabId: best.tab.tabId };
 }
 
 /**

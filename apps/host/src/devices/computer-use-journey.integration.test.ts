@@ -3448,7 +3448,9 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const run = await world.startRun("Discover computers");
     const gateway = await world.gateway(run);
     const inventory = vi.spyOn(world.computerUse, "eligibleInventory");
-    const policy = vi.spyOn(world.persistence, "getDeviceComputerUsePolicy");
+    // The inventory's one read of each device's policy, with its switches (deviceComputerUseFacts
+    // since the Mac-app listing took its Apps switch from it).
+    const policy = vi.spyOn(world.persistence, "deviceComputerUseFacts");
     await gateway.call("computer_apps", { query: "Computer use" });
     expect(inventory).toHaveBeenCalledTimes(1);
     expect(policy).toHaveBeenCalledTimes(1);

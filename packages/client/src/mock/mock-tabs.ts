@@ -485,9 +485,17 @@ export class MockTabCatalog {
                 }
               : {}),
             openedBy: group.opener.kind === "task" ? { taskId: group.opener.threadId } : "person",
+            // Each task once, with when its work last took the tab up, as the Home says it.
             usedBy: [...new Set(row.occupants.map((occupant) => occupant.threadId))]
               .sort()
-              .map((taskId) => ({ taskId })),
+              .map((taskId) => {
+                const times = row.occupants
+                  .filter((occupant) => occupant.threadId === taskId)
+                  .map(({ lastActiveAt }) => lastActiveAt)
+                  .sort();
+                const since = times.at(-1);
+                return since ? { taskId, since } : { taskId };
+              }),
             createdAt: row.createdAt,
             updatedAt: group.updatedAt,
             iconRef: row.iconRef,

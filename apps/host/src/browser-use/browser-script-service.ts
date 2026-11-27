@@ -20,7 +20,7 @@ type Services = {
     | "tabOccupants"
     | "browserBindingEnded"
   > &
-    Partial<Pick<BrowserService, "pooledScriptPageWitness" | "closedByPerson">>;
+    Partial<Pick<BrowserService, "pooledScriptPageWitness" | "closedByPerson" | "tabTakenUp">>;
   store: Pick<OpensteerStore, "admitExecution">;
   tabs: Pick<TabService, "browserScriptPages" | "bindBrowserScript" | "open">;
   workerEntry?: URL;
@@ -155,6 +155,11 @@ export class BrowserScriptService {
           if ("shared" in port)
             return { ...(await port.value.openPage(tabId, call)), port: port.value };
           return port.openPage(tabId, call);
+        },
+        // A page its script holds a handle for, taken up again: its own port says so.
+        tookUp: (tabId, contextKey) => {
+          const port = this.#ports.get(contextKey);
+          if (port && !("shared" in port)) port.tookUp?.(tabId, contextKey);
         },
         newPage: async (input, call) => {
           const port = byContext(call.contextKey);
