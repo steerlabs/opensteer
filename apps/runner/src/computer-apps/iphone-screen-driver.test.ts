@@ -840,12 +840,21 @@ describe("iPhone screen driver", () => {
       const f = fixture();
       const context = f.context();
       await f.observe(context, observeParams);
-      f.bridge.replies.set("iphone.session.close", async () => {
+      const reply = vi.fn(async () => {
         throw new ComputerUseBridgeError(code, "Native close did not answer successfully");
       });
-      const close = f.connection.close(context, {});
-      if (code === "no-session") await expect(close).resolves.toEqual({});
-      else await expect(close).rejects.toMatchObject({ code });
+      f.bridge.replies.set("iphone.session.close", reply);
+      const close = () => f.connection.close(context, {});
+      if (code === "no-session") await expect(close()).resolves.toEqual({});
+      else await expect(close()).rejects.toMatchObject({ code });
+      expect(reply).toHaveBeenCalledOnce();
+      if (code === "failed") {
+        f.bridge.replies.delete("iphone.session.close");
+        await expect(close()).resolves.toEqual({});
+      } else if (code === "outcome-unknown") {
+        await expect(close()).rejects.toMatchObject({ code });
+        expect(reply).toHaveBeenCalledOnce();
+      }
     },
   );
 
