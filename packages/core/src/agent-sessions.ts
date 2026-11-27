@@ -10,6 +10,7 @@ import {
   AgentSessionIdSchema,
   BrowserSourceIdSchema,
   RequestIdSchema,
+  TabIdSchema,
   ThreadIdSchema,
 } from "./ids.js";
 import { ThreadAccessModeSchema } from "./models.js";
@@ -139,6 +140,18 @@ export const AgentOperationViewSchema = z.object({
   completedAt: z.iso.datetime({ offset: true }).nullable(),
 });
 export type AgentOperationView = z.infer<typeof AgentOperationViewSchema>;
+
+/**
+ * Where a connected agent's session on a task is working now, for the person who owns the Home
+ * only: the tab its last command targeted. A null tab: the session ended, the tab closed, or the
+ * session no longer holds it.
+ */
+export const AgentWorkingInSchema = z.object({
+  threadId: ThreadIdSchema,
+  sessionId: AgentSessionIdSchema,
+  tabId: TabIdSchema.nullable(),
+});
+export type AgentWorkingIn = z.infer<typeof AgentWorkingInSchema>;
 
 /**
  * One command an agent sent through the door, as the person's activity list shows it beside the

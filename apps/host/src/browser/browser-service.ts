@@ -859,6 +859,8 @@ interface BrowserServiceOptions {
     stateChanged?: boolean,
   ) => void;
   readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
+  /** Holds on these tabs were let go of with their browser session: nothing may name them. */
+  readonly onHoldsDropped?: (ownerId: UserId, tabIds: readonly BrowserSurfaceId[]) => void;
   readonly onPlaceNotice?: (ownerId: UserId, notice: BrowserPlaceActivityNotice) => void;
   readonly connectTimeoutMs?: number;
   readonly onSessionsChanged: (sessionIds: readonly BrowserSessionId[]) => void;
@@ -1211,6 +1213,7 @@ export class BrowserService {
     this.#onHistoryChanged = options.onHistoryChanged ?? (() => undefined);
     this.#workspaceTabs = options.tabs;
     this.#onTabsChanged = options.onTabsChanged ?? (() => undefined);
+    this.#onHoldsDropped = options.onHoldsDropped ?? (() => undefined);
     this.#onMissingActor = options.onMissingActor ?? (() => undefined);
     if (options.tabs && !options.tabPlaces)
       throw new Error("Workspace tabs require tab-place persistence and publication hooks.");
@@ -1984,7 +1987,7 @@ export class BrowserService {
         onTerminal: () => {
           if (this.#brokers.get(sessionId) === broker) {
             this.#brokers.delete(sessionId);
-            this.#boundTabs.delete(sessionId);
+            this.#dropSessionHolds(sessionId);
             this.#sessionProfiles.delete(sessionId);
           }
           this.#onTabsChanged();
@@ -5360,7 +5363,7 @@ export class BrowserService {
         );
         const { backend } = await this.#admitAgentBackend({ ...agent, sessionId: session.id });
         await this.#recordAgentTabPlace(agent, session, row.id);
-        this.#noteBoundTab(session.id, row.id, agent.agentBindingId, holder);
+        this.#noteBoundTabFor(signal, session.id, row.id, agent.agentBindingId, holder);
         return { tabId: row.id, sessionId: session.id, backend, reloaded: true };
       }
       const session = await this.#usableAgentSession(agent, old.sessionId, false);
@@ -5377,7 +5380,7 @@ export class BrowserService {
       // V5: a pooled bind records the agent's tab like every other bind, so the tab is the
       // agent's (slept last) from the bind, not from its first input.
       await this.#recordAgentTabPlace(agent, session, row.id);
-      this.#noteBoundTab(session.id, row.id, agent.agentBindingId, holder);
+      this.#noteBoundTabFor(signal, session.id, row.id, agent.agentBindingId, holder);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: false };
     }
     const found =
@@ -5483,7 +5486,7 @@ export class BrowserService {
       await this.pageTabs.admitted!(fresh);
       await this.admitAgentBrowser(agent, "read-write", [session]);
       await this.#recordAgentTabPlace(agent, session, row.id);
-      this.#noteBoundTab(session.id, row.id, agent.agentBindingId, holder);
+      this.#noteBoundTabFor(signal, session.id, row.id, agent.agentBindingId, holder);
       return {
         tabId: row.id,
         sessionId: session.id,
@@ -8218,10 +8221,22 @@ export class BrowserService {
    * while the binding lives, before and beside any actor: a connected agent's direct work has a
    * binding (`session:`) and no place actor, and is its tab's holder only by this.
    */
+  readonly #onHoldsDropped: NonNullable<BrowserServiceOptions["onHoldsDropped"]>;
   readonly #boundTabs = new Map<
     BrowserSessionId,
     Map<BrowserSurfaceId, Map<string, BoundHolder>>
   >();
+  /** A bind of work that has ended meanwhile (a narrowing, a Stop) records no hold: it fails. */
+  #noteBoundTabFor(
+    signal: AbortSignal | undefined,
+    sessionId: BrowserSessionId,
+    surfaceId: BrowserSurfaceId,
+    binding: string,
+    holder: BoundHolder,
+  ): void {
+    signal?.throwIfAborted();
+    this.#noteBoundTab(sessionId, surfaceId, binding, holder);
+  }
   #noteBoundTab(
     sessionId: BrowserSessionId,
     surfaceId: BrowserSurfaceId,
@@ -8259,6 +8274,43 @@ export class BrowserService {
         at: this.#activityClock.now(),
       });
       this.#onTabsChanged(undefined, [tabId as BrowserSurfaceId]);
+    }
+  }
+
+  /**
+   * The one place a browser session's holds are let go of with it: the tabs' readers are told,
+   * and so is whatever names those tabs as where work is.
+   */
+  #dropSessionHolds(sessionId: BrowserSessionId): void {
+    const tabs = this.#boundTabs.get(sessionId);
+    this.#boundTabs.delete(sessionId);
+    if (!tabs?.size) return;
+    const byOwner = new Map<UserId, BrowserSurfaceId[]>();
+    for (const [surfaceId, bindings] of tabs)
+      for (const holder of bindings.values())
+        if (holder)
+          byOwner.set(holder.ownerId, [...(byOwner.get(holder.ownerId) ?? []), surfaceId]);
+    this.#onTabsChanged(undefined, [...tabs.keys()]);
+    for (const [ownerId, surfaces] of byOwner)
+      this.#onHoldsDropped(ownerId, [...new Set(surfaces)]);
+  }
+
+  /**
+   * After a narrowing: the binding lets go of every tab it holds, and the tabs' readers are told.
+   * The binding is not ended; its next command binds again under the rule and holds afresh.
+   */
+  releaseHolds(agentBindingId: string): void {
+    for (const [sessionId, tabs] of this.#boundTabs) {
+      const released: BrowserSurfaceId[] = [];
+      for (const [surfaceId, bindings] of tabs)
+        if (bindings.delete(agentBindingId)) {
+          released.push(surfaceId);
+          if (!bindings.size) tabs.delete(surfaceId);
+        }
+      if (!tabs.size) this.#boundTabs.delete(sessionId);
+      if (!released.length) continue;
+      this.#brokers.get(sessionId)?.refreshSessionState();
+      this.#onTabsChanged(undefined, released);
     }
   }
 
@@ -8790,7 +8842,7 @@ export class BrowserService {
     this.#endPersonUse(broker.groupId);
     this.#brokers.delete(sessionId);
     this.#taskPageOpens.delete(sessionId);
-    this.#boundTabs.delete(sessionId);
+    this.#dropSessionHolds(sessionId);
     void broker.stop().then(
       () => {
         // A pooled close the runtime did not answer left the row closing: the loop ends it.
@@ -9413,6 +9465,9 @@ export class BrowserService {
             onTerminal: async () => {
               for (const actor of this.#actors.values())
                 if (actor.sessionId === sessionId) this.#clearActor(actor);
+              // Its holds go with it first: nothing below (a flush of a row a deleted profile took
+              // with it) may keep a tab named as held or worked in.
+              this.#dropSessionHolds(sessionId);
               const endedBroker = this.#brokers.get(sessionId);
               await this.#flushTabDescriptors(sessionId, endedBroker);
               this.#onTabsChanged();
@@ -9421,7 +9476,6 @@ export class BrowserService {
               this.#announcePresence(sessionId);
               this.#brokers.delete(sessionId);
               this.#taskPageOpens.delete(sessionId);
-              this.#boundTabs.delete(sessionId);
               this.#shadows.get(sessionId)?.stop();
               this.#shadows.delete(sessionId);
               this.#sessionProfiles.delete(sessionId);
@@ -9471,7 +9525,7 @@ export class BrowserService {
         } catch (error) {
           this.#brokers.delete(sessionId);
           this.#taskPageOpens.delete(sessionId);
-          this.#boundTabs.delete(sessionId);
+          this.#dropSessionHolds(sessionId);
           await broker.abort(`The session failed during ${stage}.`).catch(() => undefined);
           await this.#transitionBrowserSession({
             from: pooled ? ["starting"] : ["starting", "ready", "closing"],

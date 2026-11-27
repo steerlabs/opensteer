@@ -61,6 +61,7 @@ import { familyAutomations } from "./task-family.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import type { NodeDetailSubscription, NodeDetailSnapshot } from "./node-detail.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
+import type { AgentWorkingIn } from "@opensteer/core";
 import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
@@ -3073,6 +3074,29 @@ export class HttpHostClient {
     }
   }
 
+  #dropWorkingIn(): void {
+    if (this.#snapshot.agentWorkingIn === undefined) return;
+    const { agentWorkingIn: _dropped, ...snapshot } = this.#snapshot;
+    this.#update(snapshot);
+  }
+
+  /** Where a task's connected agent works now; a session's end removes only its own record. */
+  #applyWorkingIn(notice: AgentWorkingIn): void {
+    const current = this.#snapshot.agentWorkingIn ?? {};
+    const held = current[notice.threadId];
+    if (notice.tabId === null) {
+      if (held?.sessionId !== notice.sessionId) return;
+      const { [notice.threadId]: _ended, ...rest } = current;
+      this.#update({ ...this.#snapshot, agentWorkingIn: rest });
+      return;
+    }
+    if (held?.sessionId === notice.sessionId && held.tabId === notice.tabId) return;
+    this.#update({
+      ...this.#snapshot,
+      agentWorkingIn: { ...current, [notice.threadId]: notice },
+    });
+  }
+
   /** Which apps an agent is acting in on the reader's Macs; patched in place. */
   #applyComputerPresence(
     sessions: readonly {
@@ -4777,6 +4801,8 @@ export class HttpHostClient {
         clearTimeout(waited);
         if (this.#socket !== socket) return;
         try {
+          // Where agents work is told again on this socket as it attaches: nothing older is kept.
+          this.#dropWorkingIn();
           this.#stream.attach((message) => socket.send(JSON.stringify(message)));
         } catch {
           this.#socketFailed();
@@ -4972,6 +4998,11 @@ export class HttpHostClient {
       case "host.computer-presence":
         this.#applyComputerPresence(message.sessions);
         break;
+      case "host.agent-working-in": {
+        const { type: _type, ...notice } = message;
+        this.#applyWorkingIn(notice);
+        break;
+      }
       case "host.computer-view.changed":
         this.#update({
           ...this.#snapshot,

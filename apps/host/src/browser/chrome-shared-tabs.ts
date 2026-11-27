@@ -147,6 +147,7 @@ export class ChromeSharedTabs {
   readonly #receipts: ReturnType<typeof sharedChromeAttempts> | undefined;
   readonly #device: DeviceAccess;
   readonly #changed: (ownerId: UserId) => void;
+  readonly #removed: (ownerId: UserId, tabId: string) => void;
   readonly #onError: (error: unknown) => void;
   /** This Home's addresses as the Host holds them now (`home-addresses.ts`). */
   readonly #home: () => ThisHomeAddressSet;
@@ -157,6 +158,11 @@ export class ChromeSharedTabs {
       readonly attempts?: ReturnType<typeof sharedChromeAttempts>;
       readonly device?: DeviceAccess;
       readonly changed?: (ownerId: UserId) => void;
+      /**
+       * A shared tab is gone for good: unshared, its sharing stopped, or its Chrome gone. The one
+       * place every such end passes; nothing may go on naming it as where work is.
+       */
+      readonly removed?: (ownerId: UserId, tabId: string) => void;
       readonly onError?: (error: unknown) => void;
       readonly homeAddresses?: () => ThisHomeAddressSet;
     } = {},
@@ -169,6 +175,7 @@ export class ChromeSharedTabs {
         throw unavailable();
       });
     this.#changed = options.changed ?? (() => {});
+    this.#removed = options.removed ?? (() => {});
     this.#onError =
       options.onError ?? ((error) => console.error("Shared Chrome cleanup failed", error));
     const none = new ThisHomeAddressSet(noHomeAddresses);
@@ -882,6 +889,7 @@ export class ChromeSharedTabs {
       if (child.info.openerShareId === tabId) void this.#unshare(source, child.info.shareId);
     source.backend.detachedCleanly(tabId);
     source.backend.remove(tabId);
+    this.#removed(source.ownerId, tabId);
     this.#changed(source.ownerId);
     if (!attempt || !evidence) return Promise.resolve();
     const legacy = !source.detachReplay;

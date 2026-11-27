@@ -202,6 +202,7 @@ import {
   SequenceSchema,
   ThreadAccessModeSchema,
   ThreadIdSchema,
+  AgentWorkingInSchema,
   ThreadInputQueueViewSchema,
   ThreadInputSchema,
   ThreadSchema,
@@ -5240,6 +5241,14 @@ export class MockHostClient implements HostClient {
     this.#state.mockAgentTakesTab(tabId, threadId);
   }
 
+  /**
+   * For tests and journeys: the Home says the task's connected agent works in this tab now, or,
+   * with null, that it works in none (its session ended, or the tab closed).
+   */
+  mockAgentWorksIn(threadId: string, tabId: string | null): void {
+    this.#state.mockAgentWorksIn(threadId, tabId);
+  }
+
   /** Ends one of the preview's direct operations and publishes its task again, as the Home does. */
   settleAgentOperation(id: string, outcome: "completed" | "failed" | "unknown"): void {
     this.#state.settleAgentOperation(id, outcome);
@@ -8125,6 +8134,22 @@ class MockHostState {
       };
     });
     this.update({ ...this.snapshot, browserSessions });
+  }
+
+  mockAgentWorksIn(threadId: string, tabId: string | null): void {
+    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
+    const sessionId = thread?.externalWork?.sessionId;
+    if (!sessionId) throw new Error("No connected agent works this mock task.");
+    const notice = AgentWorkingInSchema.parse({
+      threadId,
+      sessionId,
+      tabId,
+    });
+    const { [threadId]: _previous, ...rest } = this.snapshot.agentWorkingIn ?? {};
+    this.update({
+      ...this.snapshot,
+      agentWorkingIn: tabId === null ? rest : { ...rest, [threadId]: notice },
+    });
   }
 
   mockStartedTask(originConnectionId: string, title: string): string {

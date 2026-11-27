@@ -246,6 +246,7 @@
     "apps/host/src/agent-phone/update-hub.ts",
     "apps/host/src/agent-phone/update-release.ts",
     "apps/host/src/agent-sessions/agent-session-service.ts",
+    "apps/host/src/agent-sessions/agent-working-in.ts",
     "apps/host/src/agents/agent-tools-plan.ts",
     "apps/host/src/agents/automatic-models.ts",
     "apps/host/src/agents/browser-capability.ts",

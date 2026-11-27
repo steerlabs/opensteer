@@ -651,6 +651,8 @@ export async function createHostRuntime(
     // Only the Host knows the origin its own web app answers on, so it is the
     // Host that teaches the store how to name a Thread in a channel message.
     let tabs: TabService | undefined;
+    /** The connected agents' sessions, once made: the tab service, made first, tells them of closes. */
+    let agentSessionsLate: AgentSessionService | undefined;
     let apps: AppService | undefined;
     const tabStore = new TabStore(database);
     const toolActivity = new AgentToolActivityStore(database);
@@ -1345,6 +1347,10 @@ export async function createHostRuntime(
         }),
       deploymentId: deployment.id,
       onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
+      // A browser session's end let go of its tabs: no connected agent works in them now.
+      onHoldsDropped: (ownerId, tabIds) => {
+        for (const tabId of tabIds) agentSessionsLate?.workingIn.forgetTab(ownerId, tabId);
+      },
       hostOrigin: config.canonicalOrigin,
       personal: true,
       profileRequestRunner: async (runId) =>
@@ -1448,6 +1454,8 @@ export async function createHostRuntime(
         tabs?.changed(ownerId);
         announceResources("tab");
       },
+      // A shared tab gone is no longer where any connected agent works.
+      removed: (ownerId, tabId) => agentSessionsLate?.workingIn.forgetTab(ownerId, tabId),
       device: async (ownerId, deviceId, list, person) => {
         const computer = await tabComputer(ownerId, deviceId, database);
         if (computer.removed || !computer.selfRunnerId)
@@ -1759,6 +1767,8 @@ export async function createHostRuntime(
       authorizeMembership: authorizeTabActor,
       deniedRows: deniedTabRows,
       onError: (error) => reportBrowserUsageError(error),
+      // A closed tab is no longer where any connected agent works (late: the sessions come later).
+      closed: (ownerId, tabId) => agentSessionsLate?.workingIn.forgetTab(ownerId, tabId),
     });
     // A connection gaining authority settles Requests targeting the hosting
     // computer and resumes their agents. The reaction is bound once the platform
@@ -3531,6 +3541,7 @@ export async function createHostRuntime(
       tabs: browserScriptConfinement.tabs(tabs),
       sharedChromeTabs: chromeTabs,
       ...(options.replWorkerEntry ? { workerEntry: options.replWorkerEntry } : {}),
+      workingIn: (bindingId, tabId) => agentSessions.workingIn.note(bindingId, tabId),
     });
     const agentSessions = new AgentSessionService({
       store,
@@ -3548,7 +3559,17 @@ export async function createHostRuntime(
         });
       },
       onError: (error) => reportAgentSessionError(error),
+      // After a narrowing, a session it leaves running starts afresh: its script contexts (and
+      // every page attachment they hold) and its holds go; its next command binds again.
+      resetBinding: (bindingId) => {
+        browserScripts.resetBrowserScriptsForBinding(bindingId);
+        browser.releaseHolds(bindingId);
+      },
+      // Where a session works now goes to the person who owns the Home, and to no one else.
+      onWorkingIn: (ownerUserId, notice) =>
+        realtime.sendToUsers([ownerUserId], { type: "host.agent-working-in", ...notice }),
     });
+    agentSessionsLate = agentSessions;
     onSessionRequestClosed = (requestId) => agentSessions.requestClosed(requestId);
     const triggerTools = new TriggerToolHandlers(triggers, store, {
       requests: () => commandRequestsForTools,

@@ -17,6 +17,7 @@ import {
   type AgentOperationTarget,
   type AgentSessionEndReason,
   type AgentSessionId,
+  type AgentWorkingIn,
   type RequestId,
   type RequestResponse,
   type RequestPresentation,
@@ -53,6 +54,7 @@ import {
 } from "@opensteer/database";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { DeadlineDrain } from "../runtime/deadline-drain.js";
+import { AgentWorkingInRegistry } from "./agent-working-in.js";
 import { ReplFailureSchema, type ReplFailure } from "../computer-use/computer-repl/messages.js";
 import type { BrowserPoolReservation } from "../browser/browser-pool-gate.js";
 
@@ -334,6 +336,12 @@ export class AgentSessionService {
     { readonly controller: AbortController; readonly connectionId: string; work: number }
   >();
   readonly #closingSessions = new Map<AgentSessionId, AbortSignal>();
+  /**
+   * Each session this process ran work for, with its connection, until its end is handled: what
+   * it left open elsewhere (a tab it holds, a script context, a raw CDP client) outlives its
+   * calls, so a connection's change closes it even when no call is running.
+   */
+  readonly #worked = new Map<AgentSessionId, string>();
   /** Operations executing or waiting on pooled admission, joined by concurrent resumes. */
   readonly #running = new Map<
     AgentOperationId,
@@ -341,11 +349,17 @@ export class AgentSessionService {
       readonly controller: AbortController;
       readonly result: Promise<DirectOperationResult<unknown>>;
       readonly taskId: ThreadId;
+      readonly sessionId: AgentSessionId;
+      /** The grant revision it was admitted under: a narrowing stops it only when it is older. */
+      readonly grantRevision: number;
       readonly mode: ThreadAccessMode;
       readonly pooled?: { readonly sessionId: AgentSessionId; readonly connectionId: string };
     }
   >();
   readonly #decisions = new EventEmitter();
+  /** Where each session is working now, for its owner's Watch; in memory only. */
+  readonly workingIn: AgentWorkingInRegistry;
+  readonly #resetBinding: (bindingId: string) => void | Promise<void>;
   readonly #holdMs: number;
   readonly #executionMs: number;
   readonly #sweeper: DeadlineDrain;
@@ -360,8 +374,18 @@ export class AgentSessionService {
     readonly holdMs?: number;
     /** An operation's own bound when it names none (two minutes; tests shorten it). */
     readonly executionMs?: number;
+    /** Tells the person who owns the Home where a session is working now, when that changes. */
+    readonly onWorkingIn?: (ownerUserId: UserId, notice: AgentWorkingIn) => void;
+    /**
+     * After a narrowing, for a session it leaves running: does at once what its next call does
+     * on the grant revision change (its script contexts disposed, every page attachment closed)
+     * and lets go of every tab it holds. The binding is not ended.
+     */
+    readonly resetBinding?: (bindingId: string) => void | Promise<void>;
   }) {
     this.#store = options.store;
+    this.workingIn = new AgentWorkingInRegistry(options.onWorkingIn ?? (() => {}));
+    this.#resetBinding = options.resetBinding ?? (() => {});
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
     this.#executionMs = options.executionMs ?? defaultExecutionMs;
     this.#closeBinding = options.closeBinding ?? (() => {});
@@ -409,6 +433,8 @@ export class AgentSessionService {
       );
       this.#sessions.delete(id);
     }
+    this.#worked.clear();
+    this.workingIn.clear();
   }
 
   /** The one entry point every direct tool calls. */
@@ -566,7 +592,7 @@ export class AgentSessionService {
   ): Promise<void> {
     for (const [id, attempt] of this.#running)
       if (attempt.pooled?.connectionId === connectionId) await this.stopDirectOperation(id, ending);
-    const live = [...this.#sessions].filter(([, entry]) => entry.connectionId === connectionId);
+    const live = [...this.#worked].filter(([, connection]) => connection === connectionId);
     if (!live.length) return;
     const ended = all
       ? live.map(([id]) => id)
@@ -583,6 +609,41 @@ export class AgentSessionService {
             .execute()
         ).map(({ id }) => id);
     await Promise.all(ended.map((id) => this.#abort(id, ending)));
+    if (all) return;
+    // A session the narrowing leaves running starts afresh, as its next call would on the grant
+    // revision change: its work admitted under an older revision ends as narrowed (the cleanup
+    // stops exactly that set); work admitted since runs on. Once the stopped work has
+    // ended, its idle script contexts and its holds go, and so does its Watch record. Its next
+    // command is admitted again by the rule and takes its hold again.
+    const current = await this.#store.database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", connectionId as never)
+      .executeTakeFirst();
+    await Promise.all(
+      live
+        .filter(([id]) => !ended.includes(id))
+        .map(async ([id]) => {
+          const running = [...this.#running].filter(
+            ([, attempt]) =>
+              attempt.sessionId === id &&
+              (current === undefined || attempt.grantRevision < current.grantRevision),
+          );
+          const reset = async () => {
+            await this.#resetBinding(`session:${id}`);
+            this.workingIn.clearSession(id);
+          };
+          // With nothing older running it starts afresh now. Older work is stopped by the cleanup
+          // itself (pooled in the pass above, the rest right after this step) and is not waited
+          // for here: an executor that does not return at once keeps the cleanup Stopping until
+          // it does. The reset follows its end; a bind it finishes meanwhile records no hold.
+          if (!running.length) await reset();
+          else
+            void Promise.allSettled(running.map(([, attempt]) => attempt.result))
+              .then(reset)
+              .catch(this.#onError);
+        }),
+    );
   }
 
   async endIdle(now = Date.now()): Promise<void> {
@@ -610,6 +671,8 @@ export class AgentSessionService {
       if (attempt.pooled?.sessionId === sessionId) attempt.controller.abort(error);
     const entry = this.#sessions.get(sessionId);
     entry?.controller.abort(error);
+    this.#worked.delete(sessionId);
+    this.workingIn.close(sessionId);
     await this.#closeBinding(`session:${sessionId}`, error.message);
     if (this.#sessions.get(sessionId) === entry) this.#sessions.delete(sessionId);
   }
@@ -808,6 +871,8 @@ export class AgentSessionService {
         controller,
         result,
         taskId,
+        sessionId: row.sessionId,
+        grantRevision: row.grantRevision,
         mode: row.mode,
         pooled: { sessionId: row.sessionId, connectionId: row.connectionId },
       });
@@ -832,7 +897,14 @@ export class AgentSessionService {
     const running = withAgentOperationReceipt(this.#store.database, handed, taskId, () =>
       this.#execute(operation, handed, taskId, bindingId, controller.signal),
     );
-    this.#running.set(handed.id, { controller, result: running, taskId, mode: handed.mode });
+    this.#running.set(handed.id, {
+      controller,
+      result: running,
+      taskId,
+      sessionId: handed.sessionId,
+      grantRevision: handed.grantRevision,
+      mode: handed.mode,
+    });
     const forget = () => this.#running.delete(handed.id);
     void running.then(forget, forget);
     return this.#awaitExecution(operation, handed, taskId, running);
@@ -1010,6 +1082,7 @@ export class AgentSessionService {
       work: 0,
     };
     this.#sessions.set(row.sessionId, entry);
+    this.#worked.set(row.sessionId, row.connectionId);
     entry.work++;
     const deadline = pooled?.deadline ?? Date.now() + (operation.timeoutMs ?? this.#executionMs);
     const closing = this.#closingSessions.get(row.sessionId);
@@ -1081,6 +1154,7 @@ export class AgentSessionService {
       let scriptError: ReplFailure | undefined;
       try {
         if (pooled || closing) signal.throwIfAborted();
+        this.workingIn.begin(row.sessionId, taskId, operation.ownerUserId);
         result = await operation.execute({
           sessionId: row.sessionId,
           taskId,

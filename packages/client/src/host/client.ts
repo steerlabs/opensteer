@@ -850,6 +850,11 @@ export interface HostSnapshot {
   /** Bumped by host.apps.changed and every reconnect; an Apps page rereads on change. */
   readonly appsRevision: number;
   readonly appVersions?: Readonly<Record<string, number>>;
+  /**
+   * Where each task's connected agent is working now, by task id: what the Home that owns it said
+   * on this socket (`host.agent-working-in`), dropped as each socket attaches.
+   */
+  readonly agentWorkingIn?: Readonly<Record<string, import("@opensteer/core").AgentWorkingIn>>;
   readonly savedViewReadiness?: SavedViewReadiness;
   /**
    * Per conversation this client shows, whether its browser usage has been

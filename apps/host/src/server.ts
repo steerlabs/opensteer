@@ -423,6 +423,11 @@ export interface HostServerDependencies {
       readonly threadId: import("@opensteer/core").ThreadId;
       readonly sessionId: import("@opensteer/core").AgentSessionId;
     }): Promise<{ readonly ended: boolean }>;
+    /** Where each connected agent's session is working now, in memory, for its owner only. */
+    readonly workingIn?: Pick<
+      import("./agent-sessions/agent-working-in.js").AgentWorkingInRegistry,
+      "note" | "current"
+    >;
   };
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
@@ -749,7 +754,12 @@ export async function createHostServer(
     personalRemoteAccess: dependencies.personalRemoteAccess?.service,
   });
   registerAgentCdpBridge(app, dependencies.browser, dependencies.runToolTokens);
-  registerStandardCdpRoute(app, dependencies.browser, dependencies.browserSources.liveTabs);
+  registerStandardCdpRoute(
+    app,
+    dependencies.browser,
+    dependencies.browserSources.liveTabs,
+    dependencies.agentOperations?.workingIn,
+  );
   registerAgentToolRoute(app, {
     callers: dependencies.agentTools.options.callers,
     service: dependencies.agentTools,
@@ -3062,6 +3072,12 @@ export async function createHostServer(
         ...(dependencies.liveText ? { liveText: dependencies.liveText } : {}),
         refreshOwner: () => dependencies.ownerProfile?.refreshSoon(),
         probeMachines: () => dependencies.runners.probeFullDiskAccess(),
+        // Where each of the owner's connected agents works now, as this socket attaches.
+        attachedNotices: (userId) =>
+          (dependencies.agentOperations?.workingIn?.current(userId) ?? []).map((notice) => ({
+            type: "host.agent-working-in" as const,
+            ...notice,
+          })),
         reauthenticate: async () =>
           (
             await dependencies.authenticator.authenticateSessionContext(request.headers, {

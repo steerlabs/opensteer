@@ -9,17 +9,25 @@ import type { BrowserService } from "./browser-service.js";
 import { registerStandardCdpRoute } from "./standard-cdp-route.js";
 
 /** The Home's Standard CDP endpoint as the Host registers it, and a raw client for it. */
-export async function standardCdpEndpoint(service: () => BrowserService) {
+export async function standardCdpEndpoint(
+  service: () => BrowserService,
+  workingIn?: Parameters<typeof registerStandardCdpRoute>[3],
+) {
   const app = Fastify();
   installPersonalVersionGate(app);
   installHostHttpBoundary(app);
   await app.register(websocket, { options: { maxPayload: standardCdpMessageMaxBytes } });
-  registerStandardCdpRoute(app, {
-    get standardCdpTickets() {
-      return service().standardCdpTickets;
+  registerStandardCdpRoute(
+    app,
+    {
+      get standardCdpTickets() {
+        return service().standardCdpTickets;
+      },
+      attachStandardCdpForAgent: (...args) => service().attachStandardCdpForAgent(...args),
     },
-    attachStandardCdpForAgent: (...args) => service().attachStandardCdpForAgent(...args),
-  });
+    undefined,
+    workingIn,
+  );
   const address = await app.listen({ port: 0, host: "127.0.0.1" });
   const open = async (endpoint: string) => {
     const url = new URL(new URL(endpoint).pathname, address.replace(/^http/u, "ws"));

@@ -1692,7 +1692,9 @@ export class DeviceService {
     const currentGrant = await this.#store.requesterGrant(requester);
     if (grant.kind !== "computer-app" || !currentGrant || !agentGrantAccess(currentGrant, grant))
       notThisSessionsTarget();
-    const driver = await this.#sessionDeviceDriver(placement, true);
+    // The device's refusal, worded for the connected agent: read once, for the driver and the call.
+    const blocked = await this.localDeviceAccessBlocked(placement.deviceId, true);
+    const driver = await this.#sessionDeviceDriver(placement, true, { blocked });
     const bundleId = computer?.app?.bundleId;
     // The name the person approved the app under: the alias a grant recorded, else the name the
     // approval itself stored (an app added from its device page has no grant). Never what the
@@ -1716,11 +1718,17 @@ export class DeviceService {
         device: { id: placement.deviceId, name: placement.runnerName },
       }),
       generation: computerApprovalGeneration(driver, computer),
+      /** Why the device refuses agents now; the call refuses with it before any operation. */
+      ...(blocked ? { blocked } : {}),
     };
   }
 
-  async #sessionDeviceDriver(placement: ComputerPlacement, entry = false) {
-    const blocked = await this.localDeviceAccessBlocked(placement.deviceId);
+  async #sessionDeviceDriver(
+    placement: ComputerPlacement,
+    entry = false,
+    known?: { readonly blocked: Awaited<ReturnType<DeviceService["localDeviceAccessBlocked"]>> },
+  ) {
+    const blocked = known ? known.blocked : await this.localDeviceAccessBlocked(placement.deviceId);
     if (blocked?.code === "computer_stopped") {
       if (entry) throw new ToolBlockedError(blocked);
       throw new DeviceAccessRefusal(

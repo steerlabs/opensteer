@@ -135,6 +135,8 @@ export interface TabServiceOptions {
     database: TabDatabase,
   ): Promise<ReadonlySet<TabId>>;
   onError(error: unknown): void;
+  /** A tab closed, by whoever closed it: nothing may go on naming it as a place work is in. */
+  closed?(ownerId: UserId, tabId: TabId): void;
 }
 function owner(actor: TabActor): UserId {
   if (actor.kind === "browser-binding") return actor.authority.ownerId;
@@ -1198,6 +1200,7 @@ export class TabService implements TabServicePort {
       const ending = cleanup
         .filter(({ row }) => result.tabIds.includes(row.id))
         .map(async ({ row, closePage }) => {
+          this.options.closed?.(ownerId, row.id);
           if (row.kind === "page" && actor.kind === "person")
             this.options.pages.personClosed?.(row);
           if (row.kind === "page") await this.options.pages.closeViewers(ownerId, row, closePage);
@@ -1274,6 +1277,7 @@ export class TabService implements TabServicePort {
       const ending = cleanup
         .filter(({ row }) => result.tabIds.includes(row.id))
         .map(async ({ row, closePage }) => {
+          this.options.closed?.(owner(actor), row.id);
           if (row.kind === "page" && actor.kind === "person")
             this.options.pages.personClosed?.(row);
           if (row.kind === "page")

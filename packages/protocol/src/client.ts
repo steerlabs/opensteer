@@ -12,7 +12,11 @@ import { HostAppsChangedSchema } from "./apps.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
 import { PluginChangeSchema, PluginEngineStateViewSchema } from "./plugins.js";
 
-import { DeploymentIdSchema, DeploymentResumeCursorSchema } from "@opensteer/core";
+import {
+  AgentWorkingInSchema,
+  DeploymentIdSchema,
+  DeploymentResumeCursorSchema,
+} from "@opensteer/core";
 
 import {
   LiveRunProgressViewSchema,
@@ -360,6 +364,14 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
       .min(1)
       .max(100),
     type: z.literal("host.computer-presence"),
+  }),
+  // Where a connected agent's session on a task is working now: sent when its tab changes or is
+  // no longer its own, when the session ends, and for each named tab as the socket attaches. In
+  // the Home's memory only, and only to the person who owns the Home; no read carries it.
+  z.object({
+    ...clientMessageBase,
+    ...AgentWorkingInSchema.shape,
+    type: z.literal("host.agent-working-in"),
   }),
   // The computers list changed — a Runner connected or disconnected, a computer
   // was added, renamed, or removed, or an access policy was written. It names
