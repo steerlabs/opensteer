@@ -1,11 +1,11 @@
 import { collectStreamText, spawnSupervised, type SupervisedProcess } from "@opensteer/harness";
+import { warmWindowsPowerShell } from "@opensteer/harness/test-support/windows-powershell";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { warmWindowsPowerShell } from "../../../tests/windows-powershell.test-support.js";
 import {
   CursorHookBridge,
   createCursorHookEndpoint,

@@ -7,8 +7,8 @@ import {
   spawnSupervised,
   type SupervisedProcess,
 } from "@opensteer/harness";
+import { warmWindowsPowerShell } from "@opensteer/harness/test-support/windows-powershell";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { warmWindowsPowerShell } from "../../../../tests/windows-powershell.test-support.js";
 import { ExecutionContainment } from "./execution-containment.js";
 
 const directories: string[] = [];

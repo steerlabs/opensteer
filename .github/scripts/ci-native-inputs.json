@@ -620,7 +620,6 @@
     "tests/quarantine.json",
     "tests/windows-lane.windows.test.ts",
     "tests/windows-personal-stack.windows.test.ts",
-    "tests/windows-powershell.test-support.ts",
     "tsconfig.base.json",
     "tsconfig.json",
     "tsconfig.package.json",

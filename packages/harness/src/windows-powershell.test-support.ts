@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { beforeAll } from "vitest";
-import { runSupervisedCommand } from "../packages/harness/src/process-supervisor.js";
+import { runSupervisedCommand } from "./process-supervisor.js";
 
 const startupTimeoutMs = 60_000;
 

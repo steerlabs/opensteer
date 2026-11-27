@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./process-supervisor": "./src/process-supervisor.ts"
+    "./process-supervisor": "./src/process-supervisor.ts",
+    "./test-support/windows-powershell": "./src/windows-powershell.test-support.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
