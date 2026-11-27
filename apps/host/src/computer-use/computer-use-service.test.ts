@@ -1393,17 +1393,17 @@ describe("ComputerUseService call lifecycle", () => {
   it.each(["bind", "windows"] as const)(
     "keeps an abandoned Mac %s that could launch unknown",
     async (operation) => {
-      const test = harness();
+      const fixture = harness();
       try {
-        test.outcomes.push({
+        fixture.outcomes.push({
           abandoned: "deadline",
           code: "failed",
           kind: "error",
           message: "That computer did not answer in time.",
           retryable: true,
         });
-        const lease = await test.service.prepare(callable, context);
-        const sent = await test.service.sendWindowOperation(
+        const lease = await fixture.service.prepare(callable, context);
+        const sent = await fixture.service.sendWindowOperation(
           lease,
           callable,
           operation,
@@ -1415,7 +1415,7 @@ describe("ComputerUseService call lifecycle", () => {
           retryable: false,
         });
       } finally {
-        await test.service.shutdown();
+        await fixture.service.shutdown();
       }
     },
   );
