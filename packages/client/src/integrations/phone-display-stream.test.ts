@@ -1110,7 +1110,7 @@ describe("display editing receipt adapter", () => {
     await Promise.all([second, third]);
     editing.dispose();
   });
-  it("flushes held movement before an immediate press and proxy edit", async () => {
+  it("keeps held movement in order before a press and proxy copy while pacing by receipts", async () => {
     const { socket, editing } = await editingFixture();
     const calls = [editing.input(1, [pointer(0.1)]), editing.input(1, [pointer(0.7)])];
     expect(socket.messages("display.input")).toHaveLength(1);
@@ -1119,16 +1119,20 @@ describe("display editing receipt adapter", () => {
     calls.push(editing.input(1, [pointer(0.8)]));
     const contextId = "00000000-0000-4000-8000-000000000001";
     calls.push(editing.send({ kind: "copy", contextId }));
+    expect(socket.messages("display.input").map((batch) => batch.events)).toEqual([[pointer(0.1)]]);
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
     expect(socket.messages("display.input").map((batch) => batch.events)).toEqual([
       [pointer(0.1)],
-      [pointer(0.7)],
-      [press],
-      [pointer(0.8)],
+      [pointer(0.7), press, pointer(0.8)],
+    ]);
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "dispatched" });
+    expect(socket.messages("display.input").map((batch) => batch.events)).toEqual([
+      [pointer(0.1)],
+      [pointer(0.7), press, pointer(0.8)],
       [{ kind: "copy", contextId }],
     ]);
-    for (let sequence = 0; sequence < 5; sequence++)
-      socket.json({ type: "display.input.result", sequence, outcome: "dispatched" });
-    socket.json({ type: "display.clipboard", sequence: 4, outcome: "empty" });
+    socket.json({ type: "display.input.result", sequence: 2, outcome: "dispatched" });
+    socket.json({ type: "display.clipboard", sequence: 2, outcome: "empty" });
     await Promise.all(calls);
     editing.dispose();
   });
@@ -1214,19 +1218,20 @@ describe("display editing receipt adapter", () => {
     await Promise.all(run);
     editing.dispose();
   });
-  it("waits for the last outstanding receipt before releasing held movement", async () => {
+  it("waits for the outstanding receipt before releasing queued nav and movement in order", async () => {
     const { socket, editing } = await editingFixture();
     const calls = [
       editing.input(1, [pointer(0.1)]),
       editing.input(1, [{ kind: "nav", to: "back" }]),
       editing.input(1, [pointer(0.8)]),
     ];
-    expect(socket.messages("display.input")).toHaveLength(2);
-    socket.json({ type: "display.input.result", sequence: 1, outcome: "dispatched" });
-    expect(socket.messages("display.input")).toHaveLength(2);
+    expect(socket.messages("display.input")).toHaveLength(1);
     socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
-    expect(socket.messages("display.input")).toHaveLength(3);
-    socket.json({ type: "display.input.result", sequence: 2, outcome: "dispatched" });
+    expect(socket.messages("display.input").map((batch) => batch.events)).toEqual([
+      [pointer(0.1)],
+      [{ kind: "nav", to: "back" }, pointer(0.8)],
+    ]);
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "dispatched" });
     await Promise.all(calls);
     editing.dispose();
   });
@@ -1406,11 +1411,12 @@ describe("display editing receipt adapter", () => {
     expect(socket.messages("display.input")).toHaveLength(3);
     socket.json({ type: "display.input.result", sequence: 2, outcome: "dispatched" });
     await Promise.resolve();
-    const afterDispatch = socket.messages("display.input");
-    expect(afterDispatch.length).toBeGreaterThan(3);
-    for (let seq = 3; seq < afterDispatch.length; seq++) {
+    let seq = 3;
+    while (seq < socket.messages("display.input").length) {
       socket.json({ type: "display.input.result", sequence: seq, outcome: "dispatched" });
+      seq += 1;
     }
+    expect(seq).toBeGreaterThan(4);
     await expect(okHuge).resolves.toBeUndefined();
 
     // Any over-large non-paste dependent group (>64 events) is still refused whole, never split.
@@ -1462,46 +1468,45 @@ describe("display editing receipt adapter", () => {
     }
 
     // Q1(b): 10 s timeout — sent paste resolves unknown with non-retry wording; sent cut too;
-    // copy still rejects with Try again; unsent paste rejects immediately.
-    {
+    // copy still rejects with Try again; queued unsent paste behind a timed-out batch is not sent.
+    for (const kind of ["paste", "batch-paste", "cut", "copy"] as const) {
       const { socket, editing } = await cutCapableFixture();
-      const sentPaste = editing.send({
-        kind: "paste",
-        items: [{ type: "text/plain", bytes: new TextEncoder().encode("slow") }],
-        contextId,
-      });
-      const sentBatchPaste = editing.sendBatch([
-        { kind: "edit", edit: { contextId, before: "x", after: "", text: "" } },
-        {
-          kind: "paste",
-          items: [{ type: "text/plain", bytes: new TextEncoder().encode("y") }],
-          contextId,
-          follows: true,
-        },
-      ]);
-      const sentCut = editing.send({ kind: "cut", contextId });
-      const sentCopy = editing.send({ kind: "copy", contextId });
-      expect(socket.messages("display.input")).toHaveLength(4);
-      const copyFailed = expect(sentCopy).rejects.toThrow("Try again.");
-
-      vi.advanceTimersByTime(10_000);
-      expect(await sentPaste).toEqual({ outcome: "unknown", items: [] });
-      expect(await sentBatchPaste).toEqual({ outcome: "unknown", items: [] });
-      expect(await sentCut).toEqual({ outcome: "unknown", items: [] });
-      await copyFailed;
-      // Separate check on receipt for a sent paste timing out alone:
-      const soloPaste = editing.send({
-        kind: "paste",
-        items: [{ type: "text/plain", bytes: new TextEncoder().encode("solo") }],
-        contextId,
-      });
-      vi.advanceTimersByTime(10_000);
-      expect(await soloPaste).toEqual({ outcome: "unknown", items: [] });
-      expect(editing.getSnapshot().receipt).toBe(
-        "May have been pasted: check before pasting again.",
-      );
-
+      const op =
+        kind === "paste"
+          ? editing.send({
+              kind: "paste",
+              items: [{ type: "text/plain", bytes: new TextEncoder().encode("slow") }],
+              contextId,
+            })
+          : kind === "batch-paste"
+            ? editing.sendBatch([
+                { kind: "edit", edit: { contextId, before: "x", after: "", text: "" } },
+                {
+                  kind: "paste",
+                  items: [{ type: "text/plain", bytes: new TextEncoder().encode("y") }],
+                  contextId,
+                  follows: true,
+                },
+              ])
+            : editing.send({ kind, contextId });
+      expect(socket.messages("display.input")).toHaveLength(1);
+      if (kind === "copy") {
+        const copyFailed = expect(op).rejects.toThrow("Try again.");
+        vi.advanceTimersByTime(10_000);
+        await copyFailed;
+      } else {
+        vi.advanceTimersByTime(10_000);
+        expect(await op).toEqual({ outcome: "unknown", items: [] });
+        if (kind === "paste")
+          expect(editing.getSnapshot().receipt).toBe(
+            "May have been pasted: check before pasting again.",
+          );
+      }
+      editing.dispose();
+    }
+    {
       // Paste NOT yet sent when input is refused before leaving client: rejects, not unknown.
+      const { socket, editing } = await cutCapableFixture();
       const beforeUnsent = socket.messages("display.input").length;
       socket.json({
         type: "display.state",
@@ -1527,47 +1532,50 @@ describe("display editing receipt adapter", () => {
     // Q1(c): resize / geometry change / dispose — sent paste & cut resolve unknown (never Try again);
     // paste & cut attempted after resize (NOT yet sent) reject with "The display changed. Try again.".
     for (const trigger of ["geometry", "generation", "dispose"] as const) {
-      const { socket, editing } = await cutCapableFixture();
-      const sentPaste = editing.send({
-        kind: "paste",
-        items: [{ type: "text/plain", bytes: new TextEncoder().encode("in-flight") }],
-        contextId,
-      });
-      const sentCut = editing.send({ kind: "cut", contextId });
-      const sentCopy = editing.send({ kind: "copy", contextId });
-      const copyRejected = expect(sentCopy).rejects.toThrow("The display changed. Try again.");
-      expect(socket.messages("display.input")).toHaveLength(3);
+      for (const kind of ["paste", "cut", "copy"] as const) {
+        const { socket, editing } = await cutCapableFixture();
+        const op =
+          kind === "paste"
+            ? editing.send({
+                kind: "paste",
+                items: [{ type: "text/plain", bytes: new TextEncoder().encode("in-flight") }],
+                contextId,
+              })
+            : editing.send({ kind, contextId });
+        const copyRejected =
+          kind === "copy" ? expect(op).rejects.toThrow("The display changed. Try again.") : null;
+        expect(socket.messages("display.input")).toHaveLength(1);
 
-      if (trigger === "geometry") editing.setGeometry(null);
-      else if (trigger === "dispose") editing.dispose();
-      else
-        socket.json({
-          type: "display.state",
-          state: "live",
-          generation: 2,
-          width: 800,
-          height: 1280,
-          editingVersion: 1,
-          displayCut: 1,
-          sharedInput: 1,
-        });
+        if (trigger === "geometry") editing.setGeometry(null);
+        else if (trigger === "dispose") editing.dispose();
+        else
+          socket.json({
+            type: "display.state",
+            state: "live",
+            generation: 2,
+            width: 800,
+            height: 1280,
+            editingVersion: 1,
+            displayCut: 1,
+            sharedInput: 1,
+          });
 
-      expect(await sentPaste).toEqual({ outcome: "unknown", items: [] });
-      expect(await sentCut).toEqual({ outcome: "unknown", items: [] });
-      await copyRejected;
-      if (trigger !== "dispose") {
-        expect(editing.getSnapshot().receipt).not.toContain("Try again");
-        // Now attempt a paste NOT yet sent after the resize: must reject with "Try again." and send nothing.
-        await expect(
-          editing.send({
-            kind: "paste",
-            items: [{ type: "text/plain", bytes: new TextEncoder().encode("after-resize") }],
-            contextId,
-          }),
-        ).rejects.toThrow("The display changed. Try again.");
-        expect(socket.messages("display.input")).toHaveLength(3);
+        if (copyRejected) await copyRejected;
+        else expect(await op).toEqual({ outcome: "unknown", items: [] });
+        if (trigger !== "dispose" && kind !== "copy") {
+          expect(editing.getSnapshot().receipt).not.toContain("Try again");
+          // Now attempt a paste NOT yet sent after the resize: must reject with "Try again." and send nothing.
+          await expect(
+            editing.send({
+              kind: "paste",
+              items: [{ type: "text/plain", bytes: new TextEncoder().encode("after-resize") }],
+              contextId,
+            }),
+          ).rejects.toThrow("The display changed. Try again.");
+          expect(socket.messages("display.input")).toHaveLength(1);
+        }
+        editing.dispose();
       }
-      editing.dispose();
     }
   });
   it("reports a socket error in a non-clipboard atomic group honestly instead of saying too large", async () => {
@@ -1652,6 +1660,278 @@ describe("display editing receipt adapter", () => {
       ]),
     ).rejects.toThrow("This edit is too large.");
     expect(editing.diagnostics.refusals["too-large"]).toBe(1);
+    editing.dispose();
+  });
+  it("delivers a 200-character burst whole and in order in few batches against a slow device", async () => {
+    const { socket, editing } = await editingFixture();
+    const text = Array.from({ length: 200 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
+    const delivered: string[] = [];
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const originalSend = socket.send.bind(socket);
+    socket.send = (data: string) => {
+      originalSend(data);
+      const message = JSON.parse(data) as {
+        type: string;
+        sequence?: number;
+        events?: { kind: string; action?: string; text?: string }[];
+      };
+      if (message.type !== "display.input") return;
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      setTimeout(() => {
+        for (const event of message.events ?? []) {
+          if (event.kind === "key" && event.action === "down" && event.text)
+            delivered.push(event.text);
+        }
+        inFlight -= 1;
+        socket.json({
+          type: "display.input.result",
+          sequence: message.sequence!,
+          outcome: "dispatched",
+        });
+      }, 50);
+    };
+    const calls: Promise<unknown>[] = [];
+    for (const ch of text) {
+      const code = `Key${ch.toUpperCase()}`;
+      calls.push(
+        editing.send({
+          kind: "key",
+          keystroke: {
+            action: "down",
+            key: ch,
+            code,
+            modifiers: [],
+            location: 0,
+            repeat: false,
+            text: ch,
+          },
+        }),
+      );
+      calls.push(
+        editing.send({
+          kind: "key",
+          keystroke: { action: "up", key: ch, code, modifiers: [], location: 0, repeat: false },
+        }),
+      );
+    }
+    await vi.runAllTimersAsync();
+    await Promise.all(calls);
+    expect(delivered.join("")).toBe(text);
+    expect(peakInFlight).toBe(1);
+    expect(socket.messages("display.input").length).toBeLessThanOrEqual(8);
+    expect(editing.diagnostics.refusals).toEqual({});
+    expect(editing.getSnapshot().receipt).toBeNull();
+    editing.dispose();
+  });
+  it("coalesces queued text edits into one batch and sends a 200-character paste in one batch", async () => {
+    const { socket, editing } = await editingFixture();
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    const text = Array.from({ length: 200 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
+    const editCalls = [...text].map((ch) =>
+      editing.send({ kind: "edit", edit: { contextId, text: ch, before: "", after: "" } }),
+    );
+    expect(socket.messages("display.input")).toHaveLength(1);
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+    expect(socket.messages("display.input")).toHaveLength(2);
+    expect(socket.messages("display.input")[1]?.events).toEqual([
+      { kind: "edit", edit: { contextId, text: text.slice(1), before: "", after: "" } },
+    ]);
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "dispatched" });
+    await Promise.all(editCalls);
+
+    const paste = editing.send({
+      kind: "paste",
+      items: [{ type: "text/plain", bytes: new TextEncoder().encode(text) }],
+      contextId,
+    });
+    expect(socket.messages("display.input")).toHaveLength(3);
+    expect(socket.messages("display.input")[2]?.events).toEqual([
+      { kind: "paste", text, contextId },
+    ]);
+    socket.json({ type: "display.input.result", sequence: 2, outcome: "dispatched" });
+    await paste;
+    editing.dispose();
+  });
+  it("stops on a lost answer mid-burst, reports how many characters arrived, and sends nothing again", async () => {
+    const { socket, editing } = await editingFixture();
+    const text = Array.from({ length: 200 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
+    const calls: Promise<unknown>[] = [];
+    for (const ch of text) {
+      const code = `Key${ch.toUpperCase()}`;
+      calls.push(
+        editing.send({
+          kind: "key",
+          keystroke: {
+            action: "down",
+            key: ch,
+            code,
+            modifiers: [],
+            location: 0,
+            repeat: false,
+            text: ch,
+          },
+        }),
+      );
+      calls.push(
+        editing.send({
+          kind: "key",
+          keystroke: { action: "up", key: ch, code, modifiers: [], location: 0, repeat: false },
+        }),
+      );
+    }
+    const settled = Promise.allSettled(calls);
+    // Answer batch 0 (1 char) and batch 1 (31 chars) -> 32 confirmed characters; drop batch 2's answer.
+    expect(socket.messages("display.input")).toHaveLength(1);
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+    expect(socket.messages("display.input")).toHaveLength(2);
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "dispatched" });
+    expect(socket.messages("display.input")).toHaveLength(3);
+    const batchCountAtLoss = socket.messages("display.input").length;
+    vi.advanceTimersByTime(10_000);
+    const results = await settled;
+    // Nothing resent and nothing from the queued tail ever leaves.
+    expect(socket.messages("display.input")).toHaveLength(batchCountAtLoss);
+    // A late answer for the timed-out batch must not resume sending.
+    socket.json({ type: "display.input.result", sequence: 2, outcome: "dispatched" });
+    expect(socket.messages("display.input")).toHaveLength(batchCountAtLoss);
+    const receipt = editing.getSnapshot().receipt;
+    expect(receipt).toContain("32 characters arrived");
+    expect(receipt).toContain("may have arrived");
+    expect(receipt).toContain("not sent");
+    expect(receipt).not.toContain("Try again");
+    const rejections = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(rejections.length).toBeGreaterThan(0);
+    expect(rejections[0]!.reason).toMatchObject({
+      name: "DisplayEditingStopped",
+      delivered: 32,
+      uncertain: 32,
+      unsent: 136,
+      settled: false,
+    });
+    editing.dispose();
+  });
+  it("stops on a device refusal mid-burst, reports exact delivered count, and sends nothing after it", async () => {
+    const { socket, editing } = await editingFixture();
+    const text = Array.from({ length: 100 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
+    const calls: Promise<unknown>[] = [];
+    for (const ch of text) {
+      const code = `Key${ch.toUpperCase()}`;
+      calls.push(
+        editing.send({
+          kind: "key",
+          keystroke: {
+            action: "down",
+            key: ch,
+            code,
+            modifiers: [],
+            location: 0,
+            repeat: false,
+            text: ch,
+          },
+        }),
+      );
+      calls.push(
+        editing.send({
+          kind: "key",
+          keystroke: { action: "up", key: ch, code, modifiers: [], location: 0, repeat: false },
+        }),
+      );
+    }
+    const settled = Promise.allSettled(calls);
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "stale", reason: "stale" });
+    const results = await settled;
+    expect(socket.messages("display.input")).toHaveLength(2);
+    expect(editing.getSnapshot().receipt).toBe(
+      "Stopped typing: 1 character arrived; the rest was not sent. The field changed. Try again.",
+    );
+    const rejections = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(rejections[0]!.reason).toMatchObject({
+      name: "DisplayEditingStopped",
+      delivered: 1,
+      uncertain: 0,
+      unsent: 99,
+      settled: true,
+    });
+    editing.dispose();
+  });
+  it("keeps non-text keys (Tab, Enter, arrows, shortcuts) in exact order among typed text", async () => {
+    const { socket, editing } = await editingFixture();
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    const key = (
+      action: "down" | "up",
+      name: string,
+      code: string,
+      extra: { text?: string; modifiers?: ("primary" | "shift")[] } = {},
+    ) =>
+      editing.send({
+        kind: "key",
+        keystroke: {
+          action,
+          key: name,
+          code,
+          modifiers: extra.modifiers ?? [],
+          location: 0,
+          repeat: false,
+          ...(extra.text !== undefined ? { text: extra.text } : {}),
+        },
+      });
+    const calls: Promise<unknown>[] = [];
+    for (const ch of "hi") {
+      calls.push(key("down", ch, `Key${ch.toUpperCase()}`, { text: ch }));
+      calls.push(key("up", ch, `Key${ch.toUpperCase()}`));
+    }
+    calls.push(key("down", "Tab", "Tab"), key("up", "Tab", "Tab"));
+    for (const ch of "ok") {
+      calls.push(key("down", ch, `Key${ch.toUpperCase()}`, { text: ch }));
+      calls.push(key("up", ch, `Key${ch.toUpperCase()}`));
+    }
+    calls.push(key("down", "Enter", "Enter"), key("up", "Enter", "Enter"));
+    calls.push(key("down", "ArrowLeft", "ArrowLeft"), key("up", "ArrowLeft", "ArrowLeft"));
+    calls.push(editing.send({ kind: "command", command: "selectAll", contextId }));
+    calls.push(key("down", "!", "Digit1", { text: "!", modifiers: ["shift"] }));
+    calls.push(key("up", "!", "Digit1", { modifiers: ["shift"] }));
+
+    expect(socket.messages("display.input")).toHaveLength(1);
+    let acked = 0;
+    while (acked < socket.messages("display.input").length) {
+      socket.json({ type: "display.input.result", sequence: acked, outcome: "dispatched" });
+      acked += 1;
+    }
+    await Promise.all(calls);
+    const batches = socket.messages("display.input");
+    expect(batches).toHaveLength(2);
+    const summary = batches.flatMap((batch) =>
+      (batch.events as { kind: string; action?: string; key?: string; command?: string }[]).map(
+        (event) =>
+          event.kind === "key" ? `${event.key}:${event.action}` : `${event.kind}:${event.command}`,
+      ),
+    );
+    expect(summary).toEqual([
+      "h:down",
+      "h:up",
+      "i:down",
+      "i:up",
+      "Tab:down",
+      "Tab:up",
+      "o:down",
+      "o:up",
+      "k:down",
+      "k:up",
+      "Enter:down",
+      "Enter:up",
+      "ArrowLeft:down",
+      "ArrowLeft:up",
+      "command:selectAll",
+      "!:down",
+      "!:up",
+    ]);
     editing.dispose();
   });
 });

@@ -606,6 +606,20 @@ function proxyInput(
 function remoteEvents() {
   return inputs().flatMap((message) => message.events as Record<string, unknown>[]);
 }
+function ackInputs() {
+  act(() => {
+    let acked = 0;
+    while (acked < inputs().length) {
+      const batch = inputs()[acked]!;
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: batch.sequence,
+        outcome: "dispatched",
+      });
+      acked += 1;
+    }
+  });
+}
 function hardware(field: HTMLElement, key: string, code: string, extra: KeyboardEventInit = {}) {
   act(() => {
     field.dispatchEvent(
@@ -636,6 +650,7 @@ describe("negotiated phone viewer wire", () => {
     hardware(field, "ArrowLeft", "ArrowLeft");
     hardware(field, "Backspace", "Backspace");
     hardware(field, "Backspace", "Backspace");
+    ackInputs();
     expect(remoteEvents()).toEqual([
       {
         kind: "key",
@@ -900,6 +915,13 @@ describe("negotiated phone viewer wire", () => {
     const field = await negotiatedPhone();
     trustedPaste(field, { "text/plain": "one\ntwo 🦊" });
     trustedPaste(field, { "text/plain": "rich", "text/html": "<b>rich</b>" });
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: inputs()[0]!.sequence,
+        outcome: "dispatched",
+      }),
+    );
     expect(remoteEvents()).toEqual([
       { kind: "paste", text: "one\ntwo 🦊", contextId: editingContext.contextId },
       { kind: "paste", text: "rich", contextId: editingContext.contextId },
@@ -1283,15 +1305,11 @@ describe("Mac owner viewer", () => {
       canvas().dispatchEvent(wheel);
     });
     expect(remoteEvents().some((event) => event.kind === "scroll")).toBe(false);
-    act(() => {
-      for (const batch of inputs())
-        sockets[0]!.deliver({
-          type: "display.input.result",
-          sequence: batch.sequence,
-          outcome: "dispatched",
-        });
+    ackInputs();
+    await until(() => {
+      ackInputs();
+      return remoteEvents().some((event) => event.kind === "scroll");
     });
-    await until(() => remoteEvents().some((event) => event.kind === "scroll"));
     expect(remoteEvents()).toEqual([
       { kind: "mouse", phase: "move", button: "none", modifiers: ["shift"], x: 0.25, y: 0.5 },
       {
@@ -1365,6 +1383,7 @@ describe("Mac owner viewer", () => {
         }),
       );
     });
+    ackInputs();
     act(() => root!.unmount());
     root = null;
     expect(remoteEvents()).toContainEqual(

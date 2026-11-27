@@ -1,5 +1,5 @@
 import { DeviceIdSchema } from "@opensteer/core";
-import { DisplayStreams } from "@opensteer/client/integrations";
+import { DisplayEditingSession, DisplayStreams } from "@opensteer/client/integrations";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { on, once } from "node:events";
 import { createConnection } from "node:net";
@@ -3154,6 +3154,95 @@ describe("Mac owner input over authenticated display sockets", () => {
         ),
       );
     }
+  });
+
+  it("delivers a 200-character burst through the Home against a slow device without hitting the 128-batch bound", async () => {
+    const f = await fixture(true, { mac: true });
+    const received: string[] = [];
+    let pendingAtDevice = 0;
+    let peakPendingAtDevice = 0;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const originalPeerSend = f.peer.send;
+    f.peer.send = async (message: HostIntegrationsOperation) => {
+      await originalPeerSend(message);
+      if (message.type !== "host.integrations.mac-owner.input") return;
+      pendingAtDevice += 1;
+      peakPendingAtDevice = Math.max(peakPendingAtDevice, pendingAtDevice);
+      const { sequence, events, streamId } = message;
+      timers.push(
+        setTimeout(() => {
+          for (const event of events) {
+            if (event.kind === "key" && event.action === "down" && event.text)
+              received.push(event.text);
+          }
+          pendingAtDevice -= 1;
+          void f.apps.handleMessage(f.peer, f.stream, {
+            ...f.fence,
+            type: "runner.integrations.mac-owner.event",
+            streamId,
+            source: f.macSource,
+            message: { type: "display.input.result", sequence, outcome: "dispatched" },
+          });
+        }, 5),
+      );
+    };
+    const sockets: WebSocket[] = [];
+    const streams = new DisplayStreams({
+      connect: () => {
+        const socket = new WebSocket(
+          `${f.base}/v1/computer-use/views/${f.macSource.viewId}/${f.macSource.generation}/display?sharedInput=1&editing=1`,
+          { headers: { authorization: "Bearer owner" } },
+        );
+        sockets.push(socket);
+        return socket as never;
+      },
+    });
+    const lease = streams.retain({ scope: "burst-home", source: f.macSource, editing: 1 });
+    const editing = new DisplayEditingSession(lease);
+    cleanups.push(async () => {
+      for (const timer of timers) clearTimeout(timer);
+      editing.dispose();
+      lease.release();
+      streams.dispose();
+      for (const socket of sockets) socket.terminate();
+    });
+    await until(() => f.sent.some((message) => message.type === "host.integrations.display.start"));
+    await f.state();
+    await until(() => lease.getSnapshot().input === "available");
+    editing.setGeometry(1);
+
+    const text = Array.from({ length: 200 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
+    const calls: Promise<unknown>[] = [];
+    for (const ch of text) {
+      const code = `Key${ch.toUpperCase()}`;
+      calls.push(
+        editing.send({
+          kind: "key",
+          keystroke: {
+            action: "down",
+            key: ch,
+            code,
+            modifiers: [],
+            location: 0,
+            repeat: false,
+            text: ch,
+          },
+        }),
+      );
+      calls.push(
+        editing.send({
+          kind: "key",
+          keystroke: { action: "up", key: ch, code, modifiers: [], location: 0, repeat: false },
+        }),
+      );
+    }
+    await Promise.all(calls);
+    expect(received.join("")).toBe(text);
+    expect(peakPendingAtDevice).toBe(1);
+    const inputBatches = f.sent.filter(
+      (message) => message.type === "host.integrations.mac-owner.input",
+    );
+    expect(inputBatches.length).toBeLessThanOrEqual(8);
   });
 });
 

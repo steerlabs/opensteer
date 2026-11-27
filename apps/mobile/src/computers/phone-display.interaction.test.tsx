@@ -684,6 +684,19 @@ async function press(label: string) {
 function input() {
   return socket.sent.filter((m) => m.type === "display.input");
 }
+async function ackInputs() {
+  await act(async () => {
+    let acked = 0;
+    while (acked < input().length) {
+      socket.json({
+        type: "display.input.result",
+        sequence: input()[acked]!.sequence,
+        outcome: "dispatched",
+      });
+      acked += 1;
+    }
+  });
+}
 it("reconnects a Mac window through the phone viewer while agent work stays stopped", async () => {
   vi.useFakeTimers();
   try {
@@ -737,6 +750,7 @@ it("accepts input without a button, maps touch, edits, reports receipts, copies 
       nativeEvent: { ...touch.nativeEvent, timestamp: 20, touches: [] },
     });
   });
+  await ackInputs();
   expect(input().map((m) => m.events)).toEqual([
     [{ kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 10 }],
     [{ kind: "pointer", phase: "up", x: 0.5, y: 0.5, t: 20 }],
@@ -921,6 +935,7 @@ it("uses shared bounded paste batches and handles every split-frame receipt", as
       items: [{ type: "text/plain", bytes: new TextEncoder().encode(text) }],
     }),
   );
+  await ackInputs();
   const batches = input();
   const pieces = batches.flatMap((batch) =>
     (batch.events as { text: string }[]).map((event) => event.text),
@@ -933,13 +948,6 @@ it("uses shared bounded paste batches and handles every split-frame receipt", as
   for (const batch of batches) {
     expect(new TextEncoder().encode(JSON.stringify(batch)).byteLength).toBeLessThanOrEqual(
       256 * 1024,
-    );
-    await act(async () =>
-      socket.json({
-        type: "display.input.result",
-        sequence: batch.sequence,
-        outcome: "dispatched",
-      }),
     );
   }
 });
@@ -980,6 +988,7 @@ it("cancels a held touch before the stage moves and refuses stale picture input"
   const touch = { nativeEvent: { locationX: 200, locationY: 200, timestamp: 10, touches: [{}] } };
   await act(async () => state.touch?.onTouchStart?.(touch));
   await act(async () => state.layout?.({ nativeEvent: { layout: { width: 300, height: 400 } } }));
+  await ackInputs();
   expect(input().at(-1)?.events).toEqual([
     { kind: "pointer", phase: "cancel", x: 0.5, y: 0.5, t: 10 },
   ]);
@@ -1236,6 +1245,7 @@ it("cancels a held display stroke when its pane moves without resizing", async (
   await act(async () => state.touch?.onTouchStart?.(touch));
   state.geometry = "tabletop:display@1";
   await render();
+  await ackInputs();
   expect(input().at(-1)?.events).toEqual([
     { kind: "pointer", phase: "cancel", x: 0.5, y: 0.5, t: 10 },
   ]);
@@ -1321,6 +1331,7 @@ it("coalesces moves while preserving the latest timestamp before lift and cancel
     state.touch?.onTouchMove?.(touch(12, 220));
     state.touch?.onTouchEnd?.(touch(13, 230));
   });
+  await ackInputs();
   expect(input().flatMap((m) => m.events)).toEqual([
     { kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 10 },
     { kind: "pointer", phase: "move", x: 0.5, y: 0.55, t: 12 },
