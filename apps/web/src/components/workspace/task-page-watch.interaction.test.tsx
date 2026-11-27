@@ -133,3 +133,56 @@ it("follows the task's work to its next tab while the person chooses nothing els
   await settle();
   expect(shownTab()).toBe(chosen);
 });
+
+/** A direct operation's id, as the Home names one. */
+const op = (n: number) => `aop_00000000-0000-4000-8000-00000000000${n}`;
+
+/*
+ * Watch reads one field: the tab the Home says the task's connected agent is working in now
+ * (`workingIn`). Its holder records and their times are only the fallback when it names none.
+ */
+it("lands Watch on the tab the Home says the agent works in, even one the task holds no record of", async () => {
+  // Run 16: a script kept its page handle and the task held no record of the tab it worked in.
+  await watch("two-tabs", undefined, (source) =>
+    source.mockAgentWorksIn(mockAgentWorkThreads.shopping, "mock-tab-0-1", op(1)),
+  );
+  expect(history.at(-1)?.path).toBe(`/tasks/${mockAgentWorkThreads.shopping}`);
+  expect(shownTab()).toBe("mock-tab-0-1");
+});
+
+it("lands Watch where the agent works when the Home says so after the click", async () => {
+  await watch("late-tab");
+  expect(shownTab()).toBeNull();
+  await act(async () =>
+    client.mockAgentWorksIn(mockAgentWorkThreads.shopping, "mock-tab-0-1", op(1)),
+  );
+  await vi.waitFor(() => expect(shownTab()).toBe("mock-tab-0-1"), { timeout: 4_000 });
+});
+
+it("follows workingIn from one tab to the next while the person chooses nothing else, and never after they do", async () => {
+  await watch("two-tabs", undefined, (source) =>
+    source.mockAgentWorksIn(mockAgentWorkThreads.shopping, "mock-tab-2-0", op(1)),
+  );
+  expect(shownTab()).toBe("mock-tab-2-0");
+  // A later call works on an earlier tab: the field moves, and so does the pane.
+  await act(async () =>
+    client.mockAgentWorksIn(mockAgentWorkThreads.shopping, "mock-tab-1-0", op(2)),
+  );
+  await vi.waitFor(() => expect(shownTab()).toBe("mock-tab-1-0"));
+  await click(element('.side-tab[data-place-key="mock-tab-0-1"] .side-tab__main'));
+  const chosen = shownTab();
+  expect(chosen).not.toBe("mock-tab-1-0");
+  await act(async () =>
+    client.mockAgentWorksIn(mockAgentWorkThreads.shopping, "mock-tab-2-0", op(3)),
+  );
+  await settle();
+  expect(shownTab()).toBe(chosen);
+});
+
+it("falls back to the page the task holds once the Home says the session's work has ended", async () => {
+  await watch("two-tabs", undefined, (source) => {
+    source.mockAgentWorksIn(mockAgentWorkThreads.shopping, "mock-tab-0-1", op(1));
+    source.mockAgentWorksIn(mockAgentWorkThreads.shopping, null);
+  });
+  expect(shownTab()).toBe("mock-tab-1-0");
+});

@@ -1,4 +1,4 @@
-import { threadAgentPage, type HostClient } from "@opensteer/client/host";
+import { watchPage, type HostClient } from "@opensteer/client/host";
 import type { WorkspaceNavigation } from "./navigation.js";
 
 /**
@@ -12,8 +12,9 @@ let following: (() => void) | null = null;
 /**
  * The person's Watch on a task whose agent works in browser pages: the click is an intent that
  * lasts. Not landed yet, it lands on the task's page when that arrives, within `watchArrivalMs`.
- * Landed, it moves to the page the task's work takes up next, only while the person has chosen no
- * other place and the task's conversation is still the one open; any choice of theirs ends it.
+ * Landed, it moves to the tab the Home says the task's agent works in next (`watchPage`), only
+ * while the person has chosen no other place and the task's conversation is still the one open;
+ * any choice of theirs ends it.
  * Nothing moves a place the person did not ask to watch.
  */
 export function followWatch(input: {
@@ -35,7 +36,7 @@ export function followWatch(input: {
   };
   const check = () => {
     if (!guard.standing()) return stop();
-    const page = threadAgentPage(input.client.getSnapshot(), input.threadId);
+    const page = watchPage(input.client.getSnapshot(), input.threadId);
     if (!page || page.tabId === shown) return;
     guard({ kind: "tab", tabId: page.tabId });
     shown = page.tabId;
