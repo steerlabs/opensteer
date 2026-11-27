@@ -9,6 +9,7 @@ import {
   AgentConnectionStore,
   beginAgentSession,
   TabStore,
+  withoutDatabaseOperationSignal,
   type DatabaseSchema,
 } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
@@ -58,11 +59,13 @@ class RuntimeConnection extends EventEmitter implements BrowserRuntimeConnection
     const message = JSON.parse(data) as { command?: { method: string } };
     if (message.command) this.commands.push(message.command.method);
     void this.attachment
-      .then((attachment) => attachment.handle(data))
-      .then(
-        () => callback(),
-        (error) => callback(error),
-      );
+      .then((attachment) => {
+        callback();
+        return attachment.handle(data);
+      })
+      .catch((error) => {
+        this.emit("error", error);
+      });
   }
   close(): void {
     if (this.readyState !== 1) return;
@@ -354,9 +357,9 @@ integration("page tab adapter", () => {
     expect(errors).toEqual([]);
   });
 
-  it("carries a connected agent session's holder on the very first tabs.state publish of a new page", async () => {
+  async function createConnectedTabFixture(label: string) {
     const fixture = await createStoreFixture(),
-      f = await fixture.startRunFixture("connected-holder-first-publish");
+      f = await fixture.startRunFixture(label);
     const root = await realpath(await mkdtemp(join(tmpdir(), "opensteer-tab-holder-")));
     const { database, store } = fixture;
     await database
@@ -368,7 +371,13 @@ integration("page tab adapter", () => {
       name: "Connected profile",
       ownerId: f.userId,
       homeRunnerId: f.runnerId,
-      idempotencyKey: "connected-holder-profile",
+      idempotencyKey: `${label}-profile`,
+    });
+    const personProfile = await store.createBrowserProfile({
+      name: "Person profile",
+      ownerId: f.userId,
+      homeRunnerId: f.runnerId,
+      idempotencyKey: `${label}-person-profile`,
     });
     const connections = new AgentConnectionStore(database as unknown as Kysely<DatabaseSchema>);
     const connection = await connections.create({
@@ -420,11 +429,24 @@ integration("page tab adapter", () => {
       }
     };
     const observations: Promise<void>[] = [];
+    const baseRepository = personalBrowserRepository(store);
+    const faults = { failOpenerVisibility: false, rejectAuthorize: false };
     const browser = new BrowserService({
       deploymentId: f.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
       personal: true,
-      repository: personalBrowserRepository(store),
+      repository: new Proxy(baseRepository, {
+        get: (target, property, receiver) => {
+          if (property === "authorizedPlaceThreadIds") {
+            return async (ownerId: typeof f.userId, threadIds: readonly string[]) => {
+              if (faults.failOpenerVisibility) throw new Error("opener visibility failed");
+              return (await target.authorizedPlaceThreadIds?.(ownerId, threadIds as never)) ?? [];
+            };
+          }
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
       localProfiles: new BrowserLocalProfiles({
         deploymentId: f.deploymentId,
         baseUrl: new URL("http://127.0.0.1"),
@@ -438,7 +460,7 @@ integration("page tab adapter", () => {
       }),
       onTabsChanged: (ownerId, ids) => {
         tabService?.changed(ownerId, ids);
-        observations.push(observePublish());
+        observations.push(withoutDatabaseOperationSignal(() => observePublish()));
       },
       onSessionsChanged: () => {},
       onError: (error) => errors.push(error),
@@ -499,7 +521,9 @@ integration("page tab adapter", () => {
       }),
       canRead: async () => true,
       canReadTask: async () => true,
-      authorize: async () => undefined,
+      authorize: async () => {
+        if (faults.rejectAuthorize) throw new Error("tab admission refused");
+      },
       authorizeMembership: async () => undefined,
       onError: (error) => errors.push(error),
     });
@@ -513,12 +537,45 @@ integration("page tab adapter", () => {
         await rm(root, { recursive: true, force: true });
       },
     }));
-
     const agentActor = {
       kind: "browser-binding" as const,
       authority: { ownerId: f.userId, agentBindingId: sessionBinding },
       threadId: session.threadId,
     };
+    return {
+      f,
+      profile,
+      personProfile,
+      session,
+      sessionBinding,
+      tabsStore,
+      launcher,
+      browser,
+      tabService,
+      agentActor,
+      computerId,
+      seenFirstUsedBy,
+      observations,
+      faults,
+      errors,
+    };
+  }
+
+  it("carries a connected agent session's holder on the very first tabs.state publish of a new page", async () => {
+    const {
+      f,
+      profile,
+      personProfile,
+      session,
+      sessionBinding,
+      browser,
+      tabService,
+      agentActor,
+      computerId,
+      seenFirstUsedBy,
+      observations,
+      errors,
+    } = await createConnectedTabFixture("connected-holder-first-publish");
 
     // Warm the person's tabs.state catalog before the connected agent opens anything.
     expect((await tabService.bootstrap(f.userId, 240 * 1024)).tabs).toEqual([]);
@@ -541,12 +598,6 @@ integration("page tab adapter", () => {
     ]);
 
     // 2) Reused person session: #flushTabDescriptors writes the tab row inside openTab; first publish still carries usedBy.
-    const personProfile = await store.createBrowserProfile({
-      name: "Person profile",
-      ownerId: f.userId,
-      homeRunnerId: f.runnerId,
-      idempotencyKey: "connected-holder-person-profile",
-    });
     const personOpened = await tabService.open(
       { kind: "person", ownerId: f.userId },
       { kind: "page", profileId: personProfile.id, url: "https://example.com/person-first" },
@@ -583,6 +634,174 @@ integration("page tab adapter", () => {
     expect(
       afterRelease.tabs.find((tab) => tab.tabId === openedInPersonSession.tab.tabId)?.usedBy,
     ).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  it("rolls back a connected agent's open hold when openTab rejects after writing the tab row or before admission", async () => {
+    const {
+      f,
+      profile,
+      personProfile,
+      session,
+      tabService,
+      agentActor,
+      observations,
+      faults,
+      errors,
+    } = await createConnectedTabFixture("connected-holder-rollback");
+
+    // Seed a live person browser and a held agent tab on another profile.
+    const personBase = await tabService.open(
+      { kind: "person", ownerId: f.userId },
+      { kind: "page", profileId: personProfile.id, url: "https://example.com/person-base" },
+      "person-base",
+    );
+    const heldTab = await tabService.open(
+      agentActor,
+      { kind: "page", profileId: profile.id, url: "https://example.com/existing-held" },
+      "existing-held",
+    );
+    await Promise.all(observations.splice(0));
+
+    // 1) Reused person browser: runtime reply + catalog write succeed, then opener-visibility read throws.
+    faults.failOpenerVisibility = true;
+    await expect(
+      tabService.open(
+        agentActor,
+        { kind: "page", profileId: personProfile.id, url: "https://example.com/rejected-open" },
+        "connected-rejected-open",
+      ),
+    ).rejects.toThrow("Opening did not confirm its outcome");
+    faults.failOpenerVisibility = false;
+    await Promise.all(observations.splice(0));
+    const afterRejectedOpen = await tabService.bootstrap(f.userId, 240 * 1024);
+    const rejectedTab = afterRejectedOpen.tabs.find(
+      (tab) => tab.tabId !== personBase.tab.tabId && tab.tabId !== heldTab.tab.tabId,
+    );
+    expect(rejectedTab).toBeDefined();
+    expect(rejectedTab?.usedBy).toEqual([]);
+
+    // 2) TabStore.open authorization refusal also rolls back only the hold that open installed.
+    faults.rejectAuthorize = true;
+    await expect(
+      tabService.open(
+        agentActor,
+        { kind: "page", profileId: personProfile.id, url: "https://example.com/unadmitted-open" },
+        "connected-unadmitted-open",
+      ),
+    ).rejects.toThrow("tab admission refused");
+    faults.rejectAuthorize = false;
+    await Promise.all(observations.splice(0));
+    const afterUnadmitted = await tabService.bootstrap(f.userId, 240 * 1024);
+    const unadmittedTab = afterUnadmitted.tabs.find(
+      (tab) =>
+        tab.tabId !== personBase.tab.tabId &&
+        tab.tabId !== heldTab.tab.tabId &&
+        tab.tabId !== rejectedTab!.tabId,
+    );
+    expect(unadmittedTab?.usedBy ?? []).toEqual([]);
+    expect(afterUnadmitted.tabs.find((tab) => tab.tabId === heldTab.tab.tabId)?.usedBy).toEqual([
+      { taskId: session.threadId, since: expect.any(String) },
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  it("carries a connected agent's holder on the first tabs.state publish of a script popup, and none on a person popup", async () => {
+    const {
+      f,
+      profile,
+      personProfile,
+      session,
+      sessionBinding,
+      tabsStore,
+      launcher,
+      browser,
+      tabService,
+      agentActor,
+      seenFirstUsedBy,
+      observations,
+      errors,
+    } = await createConnectedTabFixture("connected-holder-popups");
+
+    await tabService.open(
+      agentActor,
+      { kind: "page", profileId: profile.id, url: "https://example.com/agent-opener" },
+      "agent-opener",
+    );
+    await tabService.open(
+      { kind: "person", ownerId: f.userId },
+      { kind: "page", profileId: personProfile.id, url: "https://example.com/person-opener" },
+      "person-opener",
+    );
+    await Promise.all(observations.splice(0));
+    seenFirstUsedBy.clear();
+
+    const allContexts = [...launcher.browsersByPartition.values()].map(
+      (entry) => entry.context as FakeContext,
+    );
+    const agentContext = allContexts[0]!;
+    const agentOpener = agentContext.pages()[0] as FakePage;
+    agentContext.addPage(
+      new FakePage({
+        opener: agentOpener,
+        title: "Connected popup",
+        url: "https://example.com/connected-popup",
+      }),
+    );
+    await vi.waitFor(
+      async () => {
+        await browser.flushPendingTabDescriptors();
+        expect(
+          (await tabsStore.snapshot(f.userId)).rows.some(
+            (row) => row.url === "https://example.com/connected-popup",
+          ),
+        ).toBe(true);
+      },
+      { timeout: 3000 },
+    );
+    await Promise.all(observations.splice(0));
+    const afterAgentPopup = await tabService.bootstrap(f.userId, 240 * 1024);
+    const agentPopupTab = afterAgentPopup.tabs.find(
+      (tab) => tab.kind === "page" && tab.url === "https://example.com/connected-popup",
+    );
+    expect(agentPopupTab?.usedBy).toEqual([
+      { taskId: session.threadId, since: expect.any(String) },
+    ]);
+    expect(seenFirstUsedBy.get(agentPopupTab!.tabId)).toEqual([
+      { taskId: session.threadId, since: expect.any(String) },
+    ]);
+
+    const personContext = allContexts[1]!;
+    const personOpener = personContext.pages()[0] as FakePage;
+    personContext.addPage(
+      new FakePage({
+        opener: personOpener,
+        title: "Person popup",
+        url: "https://example.com/person-popup",
+      }),
+    );
+    await vi.waitFor(
+      async () => {
+        await browser.flushPendingTabDescriptors();
+        expect(
+          (await tabsStore.snapshot(f.userId)).rows.some(
+            (row) => row.url === "https://example.com/person-popup",
+          ),
+        ).toBe(true);
+      },
+      { timeout: 3000 },
+    );
+    await Promise.all(observations.splice(0));
+    const afterPersonPopup = await tabService.bootstrap(f.userId, 240 * 1024);
+    const personPopupTab = afterPersonPopup.tabs.find(
+      (tab) => tab.kind === "page" && tab.url === "https://example.com/person-popup",
+    );
+    expect(personPopupTab?.usedBy).toEqual([]);
+    expect(seenFirstUsedBy.get(personPopupTab!.tabId)).toEqual([]);
+
+    browser.releaseHolds(sessionBinding);
+    const afterRelease = await tabService.bootstrap(f.userId, 240 * 1024);
+    expect(afterRelease.tabs.find((tab) => tab.tabId === agentPopupTab!.tabId)?.usedBy).toEqual([]);
     expect(errors).toEqual([]);
   });
 });

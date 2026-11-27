@@ -71,9 +71,9 @@ export interface PageTabsPort {
     target: Extract<TabTarget, { kind: "page" }>,
     key: string,
     typed?: boolean,
+    onRollback?: (rollback: () => void) => void,
   ): Promise<TabWrite>;
   admitted?(row: TabWrite): Promise<void>;
-  unadmitted?(actor: TabActor, row: TabWrite): void;
   states?(ownerId: UserId, rows: TabRecord[]): Promise<Map<TabId, NativeTabTargetState>>;
   state(ownerId: UserId, row: TabRecord): Promise<NativeTabTargetState>;
   activate(
@@ -968,9 +968,18 @@ export class TabService implements TabServicePort {
       `tab_${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`,
     );
     let write: TabWrite;
+    let rollbackOpen: (() => void) | undefined;
     let appFence: { version: number; generation: number | null } | undefined;
     if (target.kind === "page")
-      write = await this.options.pages.open(actor, target, operationKey(actor, key), typed);
+      write = await this.options.pages.open(
+        actor,
+        target,
+        operationKey(actor, key),
+        typed,
+        (rollback) => {
+          rollbackOpen = rollback;
+        },
+      );
     else if (target.kind === "app") {
       const app = await this.options.apps.get(ownerId, target.appId);
       appFence = { version: app.version, generation: app.server?.generation ?? null };
@@ -1051,7 +1060,7 @@ export class TabService implements TabServicePort {
         initialRevision,
       );
     } catch (error) {
-      if (write.kind === "page") this.options.pages.unadmitted?.(actor, write);
+      rollbackOpen?.();
       throw error;
     }
     const meta = tabMutationMeta(result);
