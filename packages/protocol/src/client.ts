@@ -365,9 +365,9 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
       .max(100),
     type: z.literal("host.computer-presence"),
   }),
-  // Where a connected agent's session on a task is working now: sent when its tab changes, when
-  // an operation that worked in a tab ends, and when the session ends. In the Home's memory
-  // only, and only to the person who owns the Home; nothing of it reaches an agent.
+  // Where a connected agent's session on a task is working now: sent when its tab changes or is
+  // no longer its own, when the session ends, and for each named tab as the socket attaches. In
+  // the Home's memory only, and only to the person who owns the Home; no read carries it.
   z.object({
     ...clientMessageBase,
     ...AgentWorkingInSchema.shape,

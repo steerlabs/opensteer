@@ -68,6 +68,7 @@ import {
   AgentSessionService,
   connectionCleanupEnding,
 } from "../agent-sessions/agent-session-service.js";
+import { releaseUngrantedTabs } from "../agent-sessions/release-ungranted-tabs.js";
 import { createTranscriptFileServices } from "../threads/transcript-files.js";
 import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
 import {
@@ -651,6 +652,8 @@ export async function createHostRuntime(
     // Only the Host knows the origin its own web app answers on, so it is the
     // Host that teaches the store how to name a Thread in a channel message.
     let tabs: TabService | undefined;
+    /** The connected agents' sessions, once made: the tab service, made first, tells them of closes. */
+    let agentSessionsLate: AgentSessionService | undefined;
     let apps: AppService | undefined;
     const tabStore = new TabStore(database);
     const toolActivity = new AgentToolActivityStore(database);
@@ -1759,6 +1762,8 @@ export async function createHostRuntime(
       authorizeMembership: authorizeTabActor,
       deniedRows: deniedTabRows,
       onError: (error) => reportBrowserUsageError(error),
+      // A closed tab is no longer where any connected agent works (late: the sessions come later).
+      closed: (ownerId, tabId) => agentSessionsLate?.workingIn.forgetTab(ownerId, tabId),
     });
     // A connection gaining authority settles Requests targeting the hosting
     // computer and resumes their agents. The reaction is bound once the platform
@@ -3549,10 +3554,20 @@ export async function createHostRuntime(
         });
       },
       onError: (error) => reportAgentSessionError(error),
+      // After a narrowing, each tab a session holds is decided again by the one rule (rule 1):
+      // a tab its connection can no longer read is let go of. Holds are few, narrowings rare.
+      releaseUngrantedTabs: (bindingId) =>
+        releaseUngrantedTabs(
+          bindingId,
+          browser,
+          (ownerId, tabId) => tabStore.get(ownerId, tabId),
+          database,
+        ),
       // Where a session works now goes to the person who owns the Home, and to no one else.
       onWorkingIn: (ownerUserId, notice) =>
         realtime.sendToUsers([ownerUserId], { type: "host.agent-working-in", ...notice }),
     });
+    agentSessionsLate = agentSessions;
     onSessionRequestClosed = (requestId) => agentSessions.requestClosed(requestId);
     const triggerTools = new TriggerToolHandlers(triggers, store, {
       requests: () => commandRequestsForTools,

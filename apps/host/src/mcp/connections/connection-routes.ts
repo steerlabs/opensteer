@@ -1,5 +1,4 @@
 import type { AgentCommandActivity } from "@opensteer/core";
-import type { AgentWorkingInRegistry } from "../../agent-sessions/agent-working-in.js";
 import type { CommandActivityOf, CommandActivitySpan } from "../../commands/activity.js";
 import { agentOperationCursor, listAgentOperations } from "@opensteer/database";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -271,8 +270,6 @@ export function createConnectionRpcHandlers(
   commandActivityOf?: (
     input: { readonly userId: UserId } & CommandActivityOf & CommandActivitySpan,
   ) => Promise<readonly AgentCommandActivity[]>,
-  /** Where each session is working now, in the Home's memory: merged into what the owner reads. */
-  workingIn?: Pick<AgentWorkingInRegistry, "operationTab" | "ofTask">,
 ): Pick<
   HostApiHandlers,
   "connections.list" | "connections.authorization.get" | "connections.activity" | "threads.activity"
@@ -280,23 +277,12 @@ export function createConnectionRpcHandlers(
   // One page of operations, with the door's commands of the same span beside them.
   const page = async (userId: UserId, of: CommandActivityOf, before: string | undefined) => {
     const cursor = optionalBefore(before);
-    const listed = await listAgentOperations(oauth.store.database, {
+    const operations = await listAgentOperations(oauth.store.database, {
       userId,
       ...of,
       limit: 50,
       ...cursor,
     });
-    // An operation still running carries the tab its last command targeted, from memory.
-    const operations = workingIn
-      ? {
-          ...listed,
-          operations: listed.operations.map((operation) => {
-            const tab =
-              operation.outcome === null ? workingIn.operationTab(operation.id) : undefined;
-            return tab ? { ...operation, workingIn: tab } : operation;
-          }),
-        }
-      : listed;
     if (!commandActivityOf) return { ...operations, commands: [] };
     // A page that goes on stops at its oldest operation: older commands come with the next page.
     const oldest = operations.nextBefore ? operations.operations.at(-1)?.createdAt : undefined;
@@ -317,12 +303,10 @@ export function createConnectionRpcHandlers(
           input.before,
         ),
       ),
-    "threads.activity": async (input, context) => {
-      const userId = requireOwner(context).user.id;
-      const activity = await page(userId, { threadId: input.threadId }, input.before);
-      const now = workingIn?.ofTask(userId, input.threadId);
-      return rpcSuccess(now ? { ...activity, workingIn: now } : activity);
-    },
+    "threads.activity": async (input, context) =>
+      rpcSuccess(
+        await page(requireOwner(context).user.id, { threadId: input.threadId }, input.before),
+      ),
     "connections.list": async (input, context) => {
       const connections = (
         await oauth.store.list(requireOwner(context).user.id, { includeRevoked: true })

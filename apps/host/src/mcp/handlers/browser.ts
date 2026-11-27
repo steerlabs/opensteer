@@ -314,7 +314,13 @@ export class BrowserToolHandlers {
       execute: async (context) => {
         await context.recheck();
         await this.#checkTab(connection, target);
-        return browserEffect(() => this.#attach(context, target, pooled?.recheckTarget));
+        const issued = await browserEffect(() =>
+          this.#attach(context, target, pooled?.recheckTarget),
+        );
+        // As every reply: work the person stopped meanwhile ends with its receipt, no endpoint.
+        if (context.signal.aborted && context.signal.reason instanceof OpensteerError)
+          throw interrupted(context);
+        return issued;
       },
       summarize: (result) => ({ tabId: result.tabId, mode: result.mode }),
     });
@@ -473,8 +479,9 @@ export class BrowserToolHandlers {
       if (error instanceof BrowserCdpConnectionEnded) throw refused("conflict", error.message);
       throw error;
     }
-    // Its tab is where this work is now, before the agent's own client sends its first frame.
-    this.#ports.sessions?.workingIn.note(context.bindingId, tabId);
+    // A shared Chrome tab is the one tab its client can work in: it is where this work is now. A
+    // profile's client works in its whole context, so its frames name no tab.
+    if (target.profileId === null) this.#ports.sessions?.workingIn.note(context.bindingId, tabId);
     const origin = new URL(this.#ports.origin);
     origin.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
     return {

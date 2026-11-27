@@ -27,7 +27,6 @@ import {
   AgentGrantSchema,
   AgentCommandActivitySchema,
   AgentOperationViewSchema,
-  AgentWorkingInSchema,
   AgentSessionIdSchema,
   DeviceIdSchema,
   DeviceDriverGenerationSchema,
@@ -481,8 +480,6 @@ const AgentOperationPageSchema = z.object({
   nextBefore: z.string().max(200).nullable(),
   /** The commands sent through the door in the same span as this page's operations, newest first. */
   commands: z.array(AgentCommandActivitySchema).max(100),
-  /** A task's page only: where its connected agent's session is working now. */
-  workingIn: AgentWorkingInSchema.optional(),
 });
 const otherCommandInputSchema = z.discriminatedUnion("type", [
   IphoneScreenAttachCommandSchema,

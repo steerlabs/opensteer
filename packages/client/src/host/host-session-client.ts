@@ -3074,6 +3074,12 @@ export class HttpHostClient {
     }
   }
 
+  #dropWorkingIn(): void {
+    if (this.#snapshot.agentWorkingIn === undefined) return;
+    const { agentWorkingIn: _dropped, ...snapshot } = this.#snapshot;
+    this.#update(snapshot);
+  }
+
   /** Where a task's connected agent works now; a session's end removes only its own record. */
   #applyWorkingIn(notice: AgentWorkingIn): void {
     const current = this.#snapshot.agentWorkingIn ?? {};
@@ -3084,26 +3090,11 @@ export class HttpHostClient {
       this.#update({ ...this.#snapshot, agentWorkingIn: rest });
       return;
     }
-    if (
-      held?.sessionId === notice.sessionId &&
-      held.operationId === notice.operationId &&
-      held.tabId === notice.tabId
-    )
-      return;
+    if (held?.sessionId === notice.sessionId && held.tabId === notice.tabId) return;
     this.#update({
       ...this.#snapshot,
       agentWorkingIn: { ...current, [notice.threadId]: notice },
     });
-  }
-
-  /**
-   * What a task's activity read says its agent is working in, for a task this client has heard
-   * nothing about since it connected: a notice already held is never replaced by a read.
-   */
-  noteTaskActivity(threadId: string, workingIn: AgentWorkingIn | undefined): void {
-    if (!workingIn || workingIn.threadId !== threadId) return;
-    if (this.#snapshot.agentWorkingIn?.[threadId]) return;
-    this.#applyWorkingIn(workingIn);
   }
 
   /** Which apps an agent is acting in on the reader's Macs; patched in place. */
@@ -4810,6 +4801,8 @@ export class HttpHostClient {
         clearTimeout(waited);
         if (this.#socket !== socket) return;
         try {
+          // Where agents work is told again on this socket as it attaches: nothing older is kept.
+          this.#dropWorkingIn();
           this.#stream.attach((message) => socket.send(JSON.stringify(message)));
         } catch {
           this.#socketFailed();

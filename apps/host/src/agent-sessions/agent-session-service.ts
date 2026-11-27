@@ -356,6 +356,7 @@ export class AgentSessionService {
   readonly #decisions = new EventEmitter();
   /** Where each session is working now, for its owner's Watch; in memory only. */
   readonly workingIn: AgentWorkingInRegistry;
+  readonly #releaseUngrantedTabs: ((bindingId: string) => Promise<readonly string[]>) | undefined;
   readonly #holdMs: number;
   readonly #executionMs: number;
   readonly #sweeper: DeadlineDrain;
@@ -372,9 +373,15 @@ export class AgentSessionService {
     readonly executionMs?: number;
     /** Tells the person who owns the Home where a session is working now, when that changes. */
     readonly onWorkingIn?: (ownerUserId: UserId, notice: AgentWorkingIn) => void;
+    /**
+     * After a narrowing: lets go of each tab this binding holds that the rule no longer grants
+     * its connection, deciding tab by tab, and answers the tabs it let go of.
+     */
+    readonly releaseUngrantedTabs?: (bindingId: string) => Promise<readonly string[]>;
   }) {
     this.#store = options.store;
     this.workingIn = new AgentWorkingInRegistry(options.onWorkingIn ?? (() => {}));
+    this.#releaseUngrantedTabs = options.releaseUngrantedTabs;
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
     this.#executionMs = options.executionMs ?? defaultExecutionMs;
     this.#closeBinding = options.closeBinding ?? (() => {});
@@ -598,6 +605,16 @@ export class AgentSessionService {
             .execute()
         ).map(({ id }) => id);
     await Promise.all(ended.map((id) => this.#abort(id, ending)));
+    if (all || !this.#releaseUngrantedTabs) return;
+    // A session the narrowing left running keeps only the tabs the rule still grants it.
+    const release = this.#releaseUngrantedTabs;
+    await Promise.all(
+      live
+        .filter(([id]) => !ended.includes(id))
+        .map(async ([id]) => {
+          for (const tabId of await release(`session:${id}`)) this.workingIn.releaseTab(id, tabId);
+        }),
+    );
   }
 
   async endIdle(now = Date.now()): Promise<void> {
@@ -1099,60 +1116,58 @@ export class AgentSessionService {
       let scriptError: ReplFailure | undefined;
       try {
         if (pooled || closing) signal.throwIfAborted();
-        this.workingIn.begin(row.sessionId, row.id, taskId, operation.ownerUserId);
-        result = await operation
-          .execute({
-            sessionId: row.sessionId,
-            taskId,
-            operationId: row.id,
-            requestId: row.requestId,
-            grantRevision: row.grantRevision,
-            mode: row.mode,
-            bindingId,
-            ownerUserId: operation.ownerUserId,
-            signal,
-            deadline,
-            recheck,
-            ...(operation.tool === "computer_use"
-              ? {
-                  computerSubmitted: () => {
+        this.workingIn.begin(row.sessionId, taskId, operation.ownerUserId);
+        result = await operation.execute({
+          sessionId: row.sessionId,
+          taskId,
+          operationId: row.id,
+          requestId: row.requestId,
+          grantRevision: row.grantRevision,
+          mode: row.mode,
+          bindingId,
+          ownerUserId: operation.ownerUserId,
+          signal,
+          deadline,
+          recheck,
+          ...(operation.tool === "computer_use"
+            ? {
+                computerSubmitted: () => {
+                  submitted++;
+                },
+                computerStopped: () =>
+                  endAuthority(agentOperationEndingWords.stopped.message, "stopped"),
+              }
+            : {}),
+          ...(pooled
+            ? {
+                browserSend: {
+                  target: pooled.identity,
+                  recheck: async () => {
+                    await recheck();
+                    await pooled.pool.recheckTarget(submitted > 0);
+                    // Replaced before anything was sent, the runtime is a closed admission.
+                    if (canonicalJson(pooled.pool.identity()) !== canonicalJson(pooled.identity))
+                      throw submitted === 0
+                        ? new BrowserPoolAdmissionClosed(
+                            "The browser runtime changed before anything was sent.",
+                          )
+                        : new OperationOutcomeUnknown(
+                            "The browser runtime changed during this work.",
+                          );
+                    signal.throwIfAborted();
+                  },
+                  submitted: () => {
+                    outstanding++;
                     submitted++;
                   },
-                  computerStopped: () =>
-                    endAuthority(agentOperationEndingWords.stopped.message, "stopped"),
-                }
-              : {}),
-            ...(pooled
-              ? {
-                  browserSend: {
-                    target: pooled.identity,
-                    recheck: async () => {
-                      await recheck();
-                      await pooled.pool.recheckTarget(submitted > 0);
-                      // Replaced before anything was sent, the runtime is a closed admission.
-                      if (canonicalJson(pooled.pool.identity()) !== canonicalJson(pooled.identity))
-                        throw submitted === 0
-                          ? new BrowserPoolAdmissionClosed(
-                              "The browser runtime changed before anything was sent.",
-                            )
-                          : new OperationOutcomeUnknown(
-                              "The browser runtime changed during this work.",
-                            );
-                      signal.throwIfAborted();
-                    },
-                    submitted: () => {
-                      outstanding++;
-                      submitted++;
-                    },
-                    acknowledged: () => {
-                      outstanding--;
-                    },
-                    hasSubmitted: () => submitted > 0,
+                  acknowledged: () => {
+                    outstanding--;
                   },
-                }
-              : {}),
-          })
-          .finally(() => this.workingIn.end(row.sessionId, row.id));
+                  hasSubmitted: () => submitted > 0,
+                },
+              }
+            : {}),
+        });
         // The REPL can return normally even when a script caught a failed authority check.
         // A cut never releases buffered output, and an unsent refusal never becomes unknown.
         if (authorityEnded) throw authorityEnded;

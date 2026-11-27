@@ -851,8 +851,8 @@ export interface HostSnapshot {
   readonly appsRevision: number;
   readonly appVersions?: Readonly<Record<string, number>>;
   /**
-   * Where each task's connected agent is working now, by task id, as the Home that owns it says:
-   * `host.agent-working-in`, and a task's activity read. Absent from an older Home.
+   * Where each task's connected agent is working now, by task id: what the Home that owns it said
+   * on this socket (`host.agent-working-in`), dropped as each socket attaches.
    */
   readonly agentWorkingIn?: Readonly<Record<string, import("@opensteer/core").AgentWorkingIn>>;
   readonly savedViewReadiness?: SavedViewReadiness;
@@ -1142,11 +1142,6 @@ export interface WaitingMessageEditor {
 }
 
 export interface HostClient extends TabsClient {
-  /** A task's activity read named where its agent works now; kept only when nothing is held. */
-  noteTaskActivity?(
-    threadId: string,
-    workingIn: import("@opensteer/core").AgentWorkingIn | undefined,
-  ): void;
   readonly connection: import("../connections/connection-controller.js").ClientConnection;
   openConnection(
     attempt: import("../connections/connection-controller.js").ConnectionAttempt,

@@ -39,6 +39,10 @@ export function attachPersonalSocket(options: {
   resources: PersonalResources;
   refreshOwner: () => void;
   probeMachines: () => void;
+  /** What this person is told on this socket alone as it attaches: current in-memory facts. */
+  attachedNotices?: (
+    userId: AuthenticatedHostSession["session"]["user"]["id"],
+  ) => readonly HostToClientMessage[];
   liveText?: import("../runtime/personal-live-text.js").PersonalLiveText;
   /**
    * Authenticates the upgrade's credential again, or answers null. Use renews a
@@ -231,6 +235,8 @@ export function attachPersonalSocket(options: {
             ...(message.selected ? { selected: { ...message.selected, cursor: undefined } } : {}),
           });
         } else sync.attach(message);
+        for (const notice of options.attachedNotices?.(session.user.id) ?? [])
+          void sink.send(notice).catch(() => undefined);
         return;
       }
       if (!attached) throw new Error("Attach before subscribing");

@@ -12,6 +12,9 @@ import { TabService } from "../apps/host/src/tabs/tab-service.js";
 import { operationRow } from "../packages/client/src/host/agent-work.js";
 import { threadAgentPage, watchPage } from "../packages/client/src/host/agent-place-links.js";
 import { createConnectionRpcHandlers } from "../apps/host/src/mcp/connections/connection-routes.js";
+import { CommandTools } from "../apps/host/src/mcp/handlers/commands.js";
+import { releaseUngrantedTabs } from "../apps/host/src/agent-sessions/release-ungranted-tabs.js";
+import { stateAreas } from "../packages/agent-tools/src/tools/commands.js";
 import { listAgentOperations } from "../packages/database/src/agent-session-store.js";
 import { tabReadAuthority } from "../apps/host/src/tabs/tab-authority.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
@@ -73,6 +76,8 @@ async function directWork(
       { readonly bindingId: string; readonly threadId: string } | undefined;
     /** Each command a script sends, after its recheck, with the tab it goes to. */
     readonly onScriptCommand?: (tabId: string) => void;
+    /** Runs once a browser_connect ticket was issued, before its reply. */
+    readonly afterTicket?: () => Promise<void>;
   } = {},
 ) {
   let tabChange: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined;
@@ -129,6 +134,14 @@ async function directWork(
     store: j.store,
     holdMs: 0,
     onWorkingIn: (ownerUserId, notice) => workingIn.push({ ownerUserId, notice }),
+    // As the Home's runtime wires it: after a narrowing, each held tab decided by the rule.
+    releaseUngrantedTabs: (bindingId) =>
+      releaseUngrantedTabs(
+        bindingId,
+        home().service,
+        (ownerId, tabId) => j.tabs.get(ownerId, tabId),
+        j.database,
+      ),
     ...(options.executionMs ? { executionMs: options.executionMs } : {}),
     ...(options.endsBrowserWork
       ? { closeBinding: (bindingId: string, reason: string) => endBrowserWork(bindingId, reason) }
@@ -182,13 +195,31 @@ async function directWork(
     confinement,
     profiles: (owner) => home().service.listProfiles(owner),
     requireDevice: (runnerId) => j.store.requireSelfDeviceId(runnerId),
-    issueTicket: (input) => home().service.issueStandardCdpTicket(input),
+    issueTicket: async (input) => {
+      const issued = await home().service.issueStandardCdpTicket(input);
+      await options.afterTicket?.();
+      return issued;
+    },
     pooledBrowser: (runnerId) => home().service.pooledDirectBrowser(runnerId),
     // As the Home wires it: the connection's own read of the tab row.
     pooledTab: async (_actor: never, tabId: string) => tabRow(tabId),
     origin: new URL("https://home.example.test"),
   });
-  const url = await serveMcp(j.fixture, { browser: handlers });
+  // The Home's command tools too, reading as the Home registers its reads (opensteer_state).
+  const reads = createConnectionRpcHandlers({
+    store: new AgentConnectionStore(j.database),
+  } as never);
+  const url = await serveMcp(j.fixture, {
+    browser: handlers,
+    commands: new CommandTools({
+      database: j.database,
+      registry: {} as never,
+      administration: {} as never,
+      requests: () => undefined,
+      secretDigestKey: Buffer.alloc(32),
+      reads: () => reads,
+    }),
+  });
   const agent = await connection(j.store, url, {
     userId: ownerId,
     accessMode: "full-access",
@@ -252,10 +283,14 @@ async function directWork(
         }),
     });
   };
+  /** Another connection of the same person, with this grant. */
+  const connectAs = (grant: AgentGrant) =>
+    connection(j.store, url, { userId: ownerId, accessMode: "full-access", grant });
   return {
     sessions,
     scripts,
     workingIn,
+    connectAs,
     agent,
     use,
     resume,
@@ -2302,7 +2337,11 @@ it("tells the agent and the person that the person closed the tab a call was usi
 });
 
 /** The person's own close and reopen, by the routes the web app calls. */
-function personTabs(j: Journey, home: Home) {
+function personTabs(
+  j: Journey,
+  home: Home,
+  closed?: (ownerId: TabRecord["ownerId"], tabId: TabRecord["id"]) => void,
+) {
   return new TabService({
     store: j.tabs,
     pages: home.service.pageTabs,
@@ -2311,6 +2350,7 @@ function personTabs(j: Journey, home: Home) {
     onError: (error: unknown) => {
       throw error;
     },
+    ...(closed ? { closed } : {}),
   } as never);
 }
 
@@ -3333,7 +3373,6 @@ it("tells the person where a kept page handle works, with no holder record of th
         }
         const last = work.workingIn.at(-1)!;
         expect(last.notice).toMatchObject({ threadId, tabId: first });
-        expect(last.notice.operationId).not.toBeNull();
         expect(await watchLands(j, home, threadId, work.workingIn)).toBe(first);
       },
       { timeout: 4_000 },
@@ -3387,26 +3426,15 @@ it("tells the person where a script works once it opens a page, before any comma
   }
 });
 
-it("publishes workingIn within one notice of an operation's first command and none on it after it ends, in what the person's activity read returns", async () => {
+it("tells only the owner, within one notice of the first command, and no read an agent makes carries it", async () => {
+  // The narrow look, finding 1: opensteer_state's activity forwarded the owner's activity rows,
+  // the in-flight operation's tab included, to the connection (and to a Selected grant with no
+  // resources). The value now rides one notice, to the owner, and nothing else.
   const { site, origin } = await pagesSite();
-  const j = await journey("direct-working-in-publish", { profile: true });
+  const j = await journey("direct-working-in-owner-only", { profile: true });
   try {
     const home = await j.startHome();
     const work = await directWork(j, () => home);
-    const reads = createConnectionRpcHandlers(
-      { store: new AgentConnectionStore(j.store.database) } as never,
-      undefined,
-      undefined,
-      work.sessions.workingIn,
-    );
-    const owner = {
-      session: { id: "session", user: { id: j.task.userId, disabledAt: null } },
-    } as never;
-    const activity = async (threadId: string) => {
-      const page = await reads["threads.activity"]({ threadId: threadId as ThreadId }, owner);
-      if (!page.ok) throw new Error("The owner's activity read failed.");
-      return page.data;
-    };
     let done = false;
     const working = work
       .use(
@@ -3415,43 +3443,35 @@ it("publishes workingIn within one notice of an operation's first command and no
       .finally(() => {
         done = true;
       });
-    const { threadId } = await sessionOf(j);
-    const during = await vi.waitFor(
-      async () => {
-        expect(done).toBe(false);
-        expect(work.workingIn.length).toBeGreaterThan(0);
-        const page = await activity(threadId);
-        const running = page.operations.find(({ outcome }) => outcome === null);
-        expect(running?.workingIn).toBeDefined();
-        return { page, running: running! };
-      },
-      { timeout: 3_000 },
-    );
+    const { threadId, id: sessionId } = await sessionOf(j);
+    await vi.waitFor(() => expect(work.workingIn.length).toBeGreaterThan(0), { timeout: 3_000 });
+    const tab = work.workingIn[0]!.notice.tabId!;
     // One notice for the page it opened and every command on it: the tab did not change.
     expect(work.workingIn).toEqual([
-      {
-        ownerUserId: j.task.userId,
-        notice: {
-          threadId,
-          sessionId: expect.any(String),
-          operationId: during.running.id,
-          tabId: during.running.workingIn,
-        },
-      },
+      { ownerUserId: j.task.userId, notice: { threadId, sessionId, tabId: tab } },
     ]);
-    expect(during.page.workingIn).toEqual(work.workingIn[0]!.notice);
+    // The owner's socket, attaching now, is told the same.
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([work.workingIn[0]!.notice]);
+    // While it works there: every area this connection reads, and a Selected connection with no
+    // resources, name no tab of it.
+    const empty = await work.connectAs({ scope: "selected", tasks: false, resources: [] });
+    const readers = [work.agent, empty];
+    for (const reader of readers)
+      for (const area of stateAreas) {
+        const read = JSON.stringify(
+          await reader.client
+            .callTool({ name: "opensteer_state", arguments: { area } })
+            .catch((error: unknown) => String(error)),
+        );
+        expect(done, area).toBe(false);
+        expect(read, area).not.toContain(tab);
+        expect(read, area).not.toContain("workingIn");
+      }
     const result = await working;
     expect(result.isError, text(result)).not.toBe(true);
-    expect(tabOf(result)).toBe(during.running.workingIn);
-    // Ended: its operation carries no tab; the session keeps its last one, in flight nowhere.
-    const after = await activity(threadId);
-    expect(after.operations.find(({ id }) => id === during.running.id)).not.toHaveProperty(
-      "workingIn",
-    );
-    expect(after.operations.some((operation) => "workingIn" in operation)).toBe(false);
-    expect(after.workingIn).toEqual({ ...during.page.workingIn, operationId: null });
-    expect(work.workingIn.at(-1)!.notice).toEqual(after.workingIn);
-    expect(work.workingIn).toHaveLength(2);
+    expect(tabOf(result)).toBe(tab);
+    // Its end changes nothing the owner is told: the session's one value stays its last tab.
+    expect(work.workingIn).toHaveLength(1);
   } finally {
     await j.close();
     site.close();
@@ -3508,7 +3528,9 @@ it("keeps each connection's workingIn to its own task, and starts over after the
   }
 });
 
-it("tells the person where a browser_connect client works: its tab at the attach, and again at its next frame after a script worked elsewhere", async () => {
+it("names no tab for a whole-context browser_connect client: neither at its attach nor at its frames", async () => {
+  // The narrow look, finding 2: a whole-context client may work in any page of its context; the
+  // ticket's own tab is not where its frames go.
   const { site, origin } = await pagesSite();
   const j = await journey("direct-working-in-connect", { profile: true });
   let endpoint: Awaited<ReturnType<typeof standardCdpEndpoint>> | undefined;
@@ -3517,26 +3539,169 @@ it("tells the person where a browser_connect client works: its tab at the attach
     const work = await directWork(j, () => home);
     endpoint = await standardCdpEndpoint(() => home.service, work.sessions.workingIn);
     const first = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+    const second = tabOf(await work.use(`return (await newPage("${origin}/two")).tabId;`));
     const { threadId } = await sessionOf(j);
+    expect(work.workingIn.at(-1)?.notice).toMatchObject({ threadId, tabId: second });
+    const told = work.workingIn.length;
     const issued = await work.connectTab(first);
     expect(issued.isError, text(issued)).not.toBe(true);
-    expect(work.workingIn.at(-1)?.notice).toMatchObject({ threadId, tabId: first });
-    const second = tabOf(await work.use(`return (await newPage("${origin}/two")).tabId;`));
-    expect(work.workingIn.at(-1)?.notice).toMatchObject({ threadId, tabId: second });
     const cdp = await endpoint.open((issued.structuredContent as { endpoint: string }).endpoint);
-    await cdp.send("Target.getTargets");
-    expect(work.workingIn.at(-1)?.notice).toMatchObject({
-      threadId,
-      operationId: null,
-      tabId: first,
-    });
-    expect(await watchLands(j, home, threadId, work.workingIn)).toBe(first);
+    const targets = (await cdp.send("Target.getTargets")) as {
+      result: { targetInfos: { targetId: string; type: string }[] };
+    };
+    for (const target of targets.result.targetInfos.filter(({ type }) => type === "page")) {
+      const attached = (await cdp.send("Target.attachToTarget", {
+        targetId: target.targetId,
+        flatten: true,
+      })) as { result: { sessionId: string } };
+      await cdp.send("Runtime.evaluate", { expression: "1" }, attached.result.sessionId);
+    }
+    // Nothing new was said: the session's value is still the tab its script worked in last.
+    expect(work.workingIn).toHaveLength(told);
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
+      expect.objectContaining({ threadId, tabId: second }),
+    ]);
   } finally {
     await endpoint?.close();
     await j.close();
     site.close();
   }
 });
+
+it("clears where an agent works when the person closes that tab, and tells the owner", async () => {
+  // The narrow look, finding 4.
+  const { site, origin } = await pagesSite();
+  const j = await journey("direct-working-in-closed", { profile: true });
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home);
+    const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+    const { threadId, id: sessionId } = await sessionOf(j);
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
+      { threadId, sessionId, tabId: tab },
+    ]);
+    await personTabs(j, home, (ownerId, tabId) =>
+      work.sessions.workingIn.forgetTab(ownerId, tabId),
+    ).close({ kind: "person", ownerId: j.task.userId }, [tab as TabRecord["id"]], "person-close");
+    expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("lets go of a held person's tab that a narrowing withdrew, while a covered profile keeps its session", async () => {
+  // The narrow look, finding 6: Everything narrowed to the same browser profile after a
+  // profile-scoped script used a person's tab. The session stays (its profile is still lent);
+  // the person's tab is no longer the connection's to hold.
+  const j = await journey("direct-holder-narrowed", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [own] = await home.service.savedPages(j.task.userId, session.id);
+    if (!own?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    expect(own.openedBy).toBe("person");
+    await j.draft();
+    const work = await directWork(j, () => home, { grant: { scope: "everything" } });
+    const read = await work.use(
+      `const page = await openPage(${JSON.stringify(own.id)}); return await page.title();`,
+    );
+    expect(read.isError, text(read)).not.toBe(true);
+    const { threadId, id: sessionId } = await sessionOf(j);
+    const holds = async () =>
+      (await home.service.pageTabs.state!(j.task.userId, await row(j, own.id))).usedBy.some(
+        ({ taskId }) => taskId === threadId,
+      );
+    expect(await holds()).toBe(true);
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
+      { threadId, sessionId, tabId: own.id },
+    ]);
+    const connection = commands(j.fixture, j.task.userId, {
+      afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
+    });
+    await connection.update(work.agent.id, {
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
+      },
+    });
+    await j.store.driveConnectionCleanups();
+    // The session lives on under the profile it still holds.
+    expect(
+      (
+        await j.database
+          .selectFrom("agentSessions")
+          .select("status")
+          .where("id", "=", sessionId as never)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("active");
+    await vi.waitFor(async () => expect(await holds()).toBe(false), { timeout: 3_000 });
+    expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
+  } finally {
+    await j.close();
+  }
+});
+
+it.each([
+  ["the person's Stop of its task", "session"],
+  ["a stop of the operation alone, as the Disconnect worker sends it", "operation"],
+] as const)(
+  "ends browser_connect with the stop's receipt and no endpoint when %s comes between the ticket and the reply",
+  async (_, stop) => {
+    // The narrow look, finding 7.
+    const { site, origin } = await pagesSite();
+    const ticketed = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let pause = false;
+    const j = await journey(`direct-connect-stopped-${stop}`, { profile: true });
+    try {
+      const home = await j.startHome();
+      const work = await directWork(j, () => home, {
+        endsBrowserWork: true,
+        afterTicket: async () => {
+          if (!pause) return;
+          ticketed.resolve();
+          await release.promise;
+        },
+      });
+      const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+      const { threadId, id: sessionId } = await sessionOf(j);
+      pause = true;
+      const connecting = work.connectTab(tab);
+      await ticketed.promise;
+      if (stop === "session")
+        await work.sessions.stopSession({
+          ownerUserId: j.task.userId,
+          threadId: threadId as ThreadId,
+          sessionId,
+        });
+      else {
+        const { id } = await j.database
+          .selectFrom("agentOperations")
+          .select("id")
+          .where("sessionId", "=", sessionId as never)
+          .where("tool", "=", "browser_connect")
+          .executeTakeFirstOrThrow();
+        await work.sessions.stopDirectOperation(id, "stopped");
+      }
+      release.resolve();
+      const reply = await connecting;
+      expect(text(reply)).not.toContain("endpoint");
+      expect(reply.structuredContent).not.toMatchObject({ status: "completed" });
+    } finally {
+      release.resolve();
+      await j.close();
+      site.close();
+    }
+  },
+);
 
 it.each([
   ["Disconnect", "revoke"],
@@ -3558,7 +3723,9 @@ it.each([
           ({ taskId }) => taskId === threadId,
         );
       expect(await holds()).toBe(true);
-      expect(work.sessions.workingIn.ofTask(j.task.userId, threadId as ThreadId)).toBeDefined();
+      expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
+        { threadId, sessionId, tabId: tab },
+      ]);
       const connection = commands(j.fixture, j.task.userId, {
         afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
       });
@@ -3569,13 +3736,8 @@ it.each([
         });
       await j.store.driveConnectionCleanups();
       await vi.waitFor(async () => expect(await holds()).toBe(false), { timeout: 3_000 });
-      expect(work.sessions.workingIn.ofTask(j.task.userId, threadId as ThreadId)).toBeUndefined();
-      expect(work.workingIn.at(-1)?.notice).toEqual({
-        threadId,
-        sessionId,
-        operationId: null,
-        tabId: null,
-      });
+      expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
+      expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
     } finally {
       await j.close();
       site.close();

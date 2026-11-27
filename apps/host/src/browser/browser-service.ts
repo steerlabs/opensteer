@@ -8262,6 +8262,30 @@ export class BrowserService {
     }
   }
 
+  /** The tabs a binding holds for its task now: what a narrowing decides again, tab by tab. */
+  heldTabs(agentBindingId: string) {
+    const held: { readonly tabId: TabId; readonly ownerId: UserId; readonly threadId: ThreadId }[] =
+      [];
+    for (const tabs of this.#boundTabs.values())
+      for (const [surfaceId, bindings] of tabs) {
+        const holder = bindings.get(agentBindingId);
+        if (holder) held.push({ tabId: surfaceId, ...holder });
+      }
+    return held;
+  }
+
+  /** The binding no longer holds this tab (its grant no longer reaches it): the person is told. */
+  releaseHeldTab(agentBindingId: string, tabId: TabId): void {
+    for (const [sessionId, tabs] of this.#boundTabs) {
+      const bindings = tabs.get(tabId);
+      if (!bindings?.delete(agentBindingId)) continue;
+      if (!bindings.size) tabs.delete(tabId);
+      if (!tabs.size) this.#boundTabs.delete(sessionId);
+      this.#brokers.get(sessionId)?.refreshSessionState();
+      this.#onTabsChanged(undefined, [tabId]);
+    }
+  }
+
   /** The tasks live bindings were bound for in this tab, as the person `ownerId` reads them. */
   #boundHolders(
     ownerId: UserId,

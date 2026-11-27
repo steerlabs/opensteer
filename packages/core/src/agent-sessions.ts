@@ -138,23 +138,17 @@ export const AgentOperationViewSchema = z.object({
   createdAt: z.iso.datetime({ offset: true }),
   handedOffAt: z.iso.datetime({ offset: true }).nullable(),
   completedAt: z.iso.datetime({ offset: true }).nullable(),
-  /**
-   * While it runs: the tab its last command targeted, as the Home holds it in memory. Absent on
-   * an operation that has ended, one that has sent nothing to a tab, and from an older Home.
-   */
-  workingIn: TabIdSchema.optional(),
 });
 export type AgentOperationView = z.infer<typeof AgentOperationViewSchema>;
 
 /**
  * Where a connected agent's session on a task is working now, for the person who owns the Home
- * only: the operation in flight and the tab its last command targeted, or, with none in flight,
- * the session's last tab. A null tab: the session ended, or it has worked in no tab.
+ * only: the tab its last command targeted. A null tab: the session ended, the tab closed, or the
+ * session no longer holds it.
  */
 export const AgentWorkingInSchema = z.object({
   threadId: ThreadIdSchema,
   sessionId: AgentSessionIdSchema,
-  operationId: AgentOperationIdSchema.nullable(),
   tabId: TabIdSchema.nullable(),
 });
 export type AgentWorkingIn = z.infer<typeof AgentWorkingInSchema>;

@@ -133,8 +133,13 @@ function relayStandardCdp(
   workingIn?: Pick<AgentWorkingInRegistry, "note">,
 ): void {
   const stopping = new AbortController();
-  // The one tab this ticket was issued for: the shared Chrome tab, or the page it attached to.
-  const tabId = claims.sharedChromeTab?.tabId ?? claims.facts.seed?.surfaceId;
+  // Where its frames work, when the ticket reaches one tab only (a shared Chrome tab, a session
+  // ticket). A whole-context client may address any page of its context, and this route does not
+  // know which tab a frame's target is: it names none.
+  const tabId =
+    claims.mode === "session"
+      ? (claims.sharedChromeTab?.tabId ?? claims.facts.seed?.surfaceId)
+      : undefined;
   // Settled when the ticket was issued, from the one authority rule's resolution of its binding.
   const connectionWork = claims.facts.agentConnectionId !== null;
   const pending = new Map<string, number>();
