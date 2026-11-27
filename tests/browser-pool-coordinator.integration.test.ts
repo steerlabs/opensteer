@@ -3032,110 +3032,156 @@ it("clears a prior refusal when a follow-up wake goes unanswered instead of repe
   }
 });
 
+/**
+ * A parked browser whose host stops answering (an outage), then refuses the wake
+ * (egress-required), while the refusal's announce (its statement) is held: the waiting caller
+ * and the announce are then told apart by order, not by time. `changeDuringRefusedTurn`: the
+ * loop is asked again inside the turn that is refused, as a waiting caller's own demand can.
+ * Otherwise the refusal comes on a turn begun after the caller asked the loop (the gate's own
+ * change): the host answers from the loop's next pause between unanswered turns on.
+ */
+async function refusalAfterOutage(
+  f: Awaited<ReturnType<typeof poolFixture>>,
+  changeDuringRefusedTurn: boolean,
+) {
+  let mode: "normal" | "silent" | "refuse" = "normal";
+  let caller = false;
+  let callerAsked = false;
+  let refusalReturned = false;
+  let announceWanted = true;
+  const release = Promise.withResolvers<void>();
+  const announceHeld = Promise.withResolvers<void>();
+  const rawConnection = f.database.connection.bind(f.database);
+  vi.spyOn(f.database, "connection").mockImplementation(() => {
+    const builder = rawConnection();
+    const rawExecute = builder.execute.bind(builder);
+    builder.execute = async (...args) => {
+      // The refusal's announce (its statement, by the function that sends it), stalled.
+      if (refusalReturned && announceWanted && new Error().stack?.includes("announceBrowserPool")) {
+        announceWanted = false;
+        announceHeld.resolve();
+        await release.promise;
+      }
+      return rawExecute(...args);
+    };
+    return builder;
+  });
+  const refused = () => Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+  const port: BrowserPoolPhysicalController = {
+    status: (slot, term) =>
+      mode === "silent" ? Promise.reject(refused()) : f.controller.status(slot, term),
+    result: (slot, term, id) =>
+      mode === "silent" ? Promise.reject(refused()) : f.controller.result(slot, term, id),
+    apply: async (call) => {
+      if (mode === "silent") throw refused();
+      if (mode === "refuse" && (call.kind === "resume" || call.kind === "start")) {
+        refusalReturned = true;
+        if (changeDuringRefusedTurn) home.stopped();
+        return {
+          id: call.id,
+          applied: false,
+          reason: "egress-required",
+          status: await f.controller.status(call.slotId, call.term),
+        };
+      }
+      return f.controller.apply(call);
+    },
+  };
+  const home = f.home(undefined, port, {
+    unreachableAfterMs: 20,
+    unansweredRetryMaxMs: 20,
+    refusedRetryMs: 10_000,
+    // The loop's own pause between two unanswered turns: once the waiting caller has asked the
+    // loop, the host answers from the next turn on.
+    aroundWait: (kind, wait) => {
+      if (kind === "unknown" && callerAsked && mode === "silent") mode = "refuse";
+      return wait();
+    },
+  });
+  const ask = home.gate.onChange;
+  home.gate.onChange = () => {
+    ask();
+    if (caller) callerAsked = true;
+  };
+  await home.recover();
+  await f.openSession(home);
+  expect(await home.tryPark()).toBe("parked");
+  // The outage: the coordinator says the browser cannot be reached.
+  mode = "silent";
+  await expect(
+    home.gate.reserve(AbortSignal.timeout(120), { failOnRefusal: true }),
+  ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+  await vi.waitFor(() => expect(home.report()?.unreachable).toBe(true), { timeout: 2_000 });
+  // The caller waits with no deadline of its own; the host then answers with a refusal.
+  caller = true;
+  let delivered: unknown;
+  const waiting = home.gate.reserve(new AbortController().signal, { failOnRefusal: true }).then(
+    (reservation) => {
+      reservation.release();
+      delivered = "admitted";
+    },
+    (error: unknown) => {
+      delivered = error;
+    },
+  );
+  return {
+    home,
+    delivered: () => delivered,
+    /** Each wait is a bounded step that names what did not happen, never a hang. */
+    announced: () =>
+      withTimeout(announceHeld.promise, 10_000, {
+        timeoutError: () => new Error("The refusal was never announced."),
+      }),
+    release: () => release.resolve(),
+    heard: () =>
+      withTimeout(waiting, 10_000, {
+        timeoutError: () => new Error("The waiting caller never heard the refusal."),
+      }),
+  };
+}
+
 it("delivers a refusal after an outage without waiting for the database announce bound", async () => {
   const f = await poolFixture("outage-then-refusal");
   try {
-    let mode: "normal" | "silent" | "refuse" = "normal";
-    let refusalReturned = false;
-    let releaseAnnounce: (() => void) | undefined;
-    let holdNextAnnounce = false;
-    const announceHeld = Promise.withResolvers<void>();
-    const rawConnection = f.database.connection.bind(f.database);
-    vi.spyOn(f.database, "connection").mockImplementation(() => {
-      const builder = rawConnection();
-      const rawExecute = builder.execute.bind(builder);
-      builder.execute = async (...args) => {
-        if (holdNextAnnounce) {
-          holdNextAnnounce = false;
-          const held = new Promise<void>((resolve) => {
-            releaseAnnounce = resolve;
-          });
-          announceHeld.resolve();
-          await held;
-        }
-        return rawExecute(...args);
-      };
-      return builder;
-    });
-    const port: BrowserPoolPhysicalController = {
-      status: (slot, term) =>
-        mode === "silent"
-          ? Promise.reject(
-              Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
-            )
-          : f.controller.status(slot, term),
-      result: (slot, term, id) =>
-        mode === "silent"
-          ? Promise.reject(
-              Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
-            )
-          : f.controller.result(slot, term, id),
-      apply: async (call) => {
-        if (mode === "silent") {
-          throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
-        }
-        if (mode === "refuse" && (call.kind === "resume" || call.kind === "start")) {
-          refusalReturned = true;
-          return {
-            id: call.id,
-            applied: false,
-            reason: "egress-required",
-            status: await f.controller.status(call.slotId, call.term),
-          };
-        }
-        return f.controller.apply(call);
-      },
-    };
-    const home = f.home(undefined, port, {
-      unreachableAfterMs: 20,
-      unansweredRetryMaxMs: 20,
-      refusedRetryMs: 10_000,
-      onStateChanged: () => {
-        if (refusalReturned) {
-          refusalReturned = false;
-          holdNextAnnounce = true;
-        }
-      },
-    });
-    await home.recover();
-    await f.openSession(home);
-    expect(await home.tryPark()).toBe("parked");
-
-    // Put the coordinator into unreachable state first.
-    mode = "silent";
-    await expect(
-      home.gate.reserve(AbortSignal.timeout(120), { failOnRefusal: true }),
-    ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
-    await vi.waitFor(() => expect(home.report()?.unreachable).toBe(true), { timeout: 2_000 });
-
-    // Now the host answers with a refusal while the DB announce is stalled: the waiting caller
-    // receives BrowserPoolAttemptRefused when the refusal is delivered, not once #announce ends
-    // (by its statement or its own bound). Said as order, not time: the caller has no deadline,
-    // and it has the refusal by the time the held announce began and what was queued then ran.
-    mode = "refuse";
-    let delivered: unknown;
-    const waiting = home.gate.reserve(new AbortController().signal, { failOnRefusal: true }).then(
-      (reservation) => {
-        reservation.release();
-        delivered = "admitted";
-      },
-      (error: unknown) => {
-        delivered = error;
-      },
-    );
+    const r = await refusalAfterOutage(f, false);
+    // The refusal reaches the waiting caller when it is delivered, not once #announce ends (by
+    // its statement or its own bound): by the time the held announce began and what was queued
+    // then ran, the caller has it.
     try {
-      await announceHeld.promise;
+      await r.announced();
       await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(delivered).toMatchObject({
+      expect(r.delivered()).toMatchObject({
         name: "BrowserPoolAttemptRefused",
         refusedReason: "egress-required",
       });
-      expect(home.report()?.unreachable).toBeUndefined();
-      expect(home.report()?.refused).toBe("egress-required");
+      expect(r.home.report()?.unreachable).toBeUndefined();
+      expect(r.home.report()?.refused).toBe("egress-required");
     } finally {
-      releaseAnnounce?.();
-      await waiting;
+      r.release();
     }
+    await r.heard();
+  } finally {
+    await f.close();
+  }
+});
+
+it("announces a refusal even when something changed during the turn that was refused", async () => {
+  const f = await poolFixture("refusal-announced-after-change");
+  try {
+    const r = await refusalAfterOutage(f, true);
+    // Clients are told of the refusal although the loop was asked again during its turn (a
+    // refusal not announced then would not be announced again), and the caller has it.
+    try {
+      await r.announced();
+    } finally {
+      r.release();
+    }
+    await r.heard();
+    expect(r.delivered()).toMatchObject({
+      name: "BrowserPoolAttemptRefused",
+      refusedReason: "egress-required",
+    });
+    expect(r.home.report()?.refused).toBe("egress-required");
   } finally {
     await f.close();
   }
