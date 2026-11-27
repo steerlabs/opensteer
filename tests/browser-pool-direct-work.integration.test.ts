@@ -3577,3 +3577,55 @@ it.each([
     }
   },
 );
+
+it("names the task as the holder of the tab it works in while the person's viewers watch it: one before the call, a second during it", async () => {
+  // The owner's setup, run 16: the Mac app and a web app both had the task's tab open. The
+  // holder must be found by the tab itself, whatever session its page is bound to now.
+  const j = await journey("direct-holder-viewers", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    await j.draft();
+    const work = await directWork(j, () => home);
+    const first = j.viewer(home, session.id, "watch");
+    await first.attaching;
+    const bound = (await row(j, tab.id)).pageBinding?.sessionId;
+    let done = false;
+    const working = work
+      .useTab(
+        `const page = await openPage(${JSON.stringify(tab.id)}); await page.title(); await page.waitForTimeout(4000); await page.title(); return 1;`,
+        tab.id,
+      )
+      .finally(() => {
+        done = true;
+      });
+    const { threadId } = await sessionOf(j);
+    const holds = async () =>
+      (await home.service.pageTabs.state!(j.task.userId, await row(j, tab.id))).usedBy.some(
+        ({ taskId }) => taskId === threadId,
+      );
+    await vi.waitFor(async () => expect(await holds()).toBe(true), { timeout: 3_000 });
+    // A second viewer of the same tab, while the call works in it.
+    const second = j.viewer(home, (await row(j, tab.id)).pageBinding!.sessionId, "control");
+    await second.attaching;
+    const seen: boolean[] = [];
+    while (!done) {
+      seen.push(await holds());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    const result = await working;
+    expect(result.isError, text(result)).not.toBe(true);
+    // Whether the person's viewing moved the tab's page to another session, it named the task.
+    const now = (await row(j, tab.id)).pageBinding?.sessionId;
+    console.info(`holder viewers: bound ${bound} -> ${now}; held ${seen.join(",")}`);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every(Boolean)).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
