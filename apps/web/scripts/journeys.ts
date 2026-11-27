@@ -8,32 +8,33 @@
 export interface WebJourney {
   /** `scripts/<name>-journey.ts`, run by the package script `test:<name>`. */
   readonly name: string;
-  /** Measured wall time, build included; shards are balanced by it. */
+  /** Wall time on a Mac, build included (task-done and task-marks without their removed-feature
+   * steps); shards are balanced by it. */
   readonly seconds: number;
 }
 
 export const webJourneys: readonly WebJourney[] = [
   { name: "agent-cursors", seconds: 5 },
   { name: "browser-downloads", seconds: 12 },
-  { name: "browser-navigation", seconds: 1 },
-  { name: "browser-sleep", seconds: 64 },
-  { name: "computer-windows", seconds: 3 },
+  { name: "browser-navigation", seconds: 2 },
+  { name: "browser-sleep", seconds: 65 },
+  { name: "computer-windows", seconds: 2 },
   { name: "connected-agents-now", seconds: 14 },
   { name: "connection-consent-scroll", seconds: 8 },
   { name: "large-transcript", seconds: 5 },
   { name: "long-thread", seconds: 52 },
   { name: "model-picker", seconds: 9 },
-  { name: "omnibox", seconds: 32 },
-  { name: "sidebar-search", seconds: 15 },
-  { name: "sidebar-split", seconds: 81 },
-  { name: "start-page-computers", seconds: 4 },
-  { name: "tab-activation", seconds: 32 },
-  { name: "tab-drag", seconds: 95 },
+  { name: "omnibox", seconds: 34 },
+  { name: "sidebar-search", seconds: 20 },
+  { name: "sidebar-split", seconds: 63 },
+  { name: "start-page-computers", seconds: 5 },
+  { name: "tab-activation", seconds: 2 },
+  { name: "tab-drag", seconds: 89 },
   { name: "tab-groups", seconds: 4 },
-  { name: "tab-profile-filter", seconds: 6 },
+  { name: "tab-profile-filter", seconds: 9 },
   { name: "tab-reopen", seconds: 2 },
-  { name: "task-done", seconds: 33 },
-  { name: "task-marks", seconds: 62 },
+  { name: "task-done", seconds: 5 },
+  { name: "task-marks", seconds: 6 },
   { name: "transcript-links", seconds: 11 },
   { name: "transcript-presentation", seconds: 10 },
 ];
