@@ -9,6 +9,7 @@ import {
   refused,
   requestOperationCallsMaxLength,
   ThreadIdSchema,
+  ToolBlockedError,
   type Request,
   type DeviceId,
   type RunId,
@@ -135,6 +136,8 @@ export class DeviceToolHandlers {
       computerId,
       app,
     );
+    // The device's own refusal first, as a read hears it: no operation, so no Request to answer.
+    if (named.blocked) throw new ToolBlockedError(named.blocked);
     if (!readOnly && named.access === "read")
       throw refused("forbidden", "This target allows observation only. Use readOnly: true.");
     return sessionScriptOutput(

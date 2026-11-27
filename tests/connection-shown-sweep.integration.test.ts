@@ -1164,4 +1164,46 @@ integration("what a connection is shown", () => {
       expect(await w.waitingRequests()).toEqual([]);
     },
   );
+
+  it.each(macStates)(
+    "refuses a Supervised write to a Mac app the device refuses (%s) with the device's reason, opening no Request",
+    async (_, change) => {
+      const w = await world();
+      const agent = keep(
+        await connectAgent(
+          w.host,
+          {
+            scope: "selected",
+            tasks: false,
+            resources: [
+              {
+                kind: "computer-app",
+                approvalId: w.notes,
+                deviceId: w.mac,
+                app: { kind: "mac-app", bundleId: notesBundle, teamId: null },
+              },
+            ],
+          } as AgentGrant,
+          "approval-required",
+        ),
+      );
+      await change(w);
+      const call = (readOnly: boolean) =>
+        agent.call("computer_use", {
+          computerId: w.mac,
+          app: notesBundle,
+          code: "const app = await target; print(app.name);",
+          readOnly,
+        });
+      const read = callError(await call(true)) as { code: string; message: string; next: string };
+      // A write the person would be asked about: the device's refusal comes first, as for a read.
+      const written = callError(await call(false)) as {
+        code: string;
+        message: string;
+        next: string;
+      };
+      expect(written).toMatchObject({ code: read.code, message: read.message, next: read.next });
+      expect(await w.waitingRequests()).toEqual([]);
+    },
+  );
 });
