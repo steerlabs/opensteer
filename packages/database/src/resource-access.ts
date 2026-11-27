@@ -1649,10 +1649,11 @@ async function commandReach(
       .selectFrom("browserProfiles")
       .select("ownerId")
       .where("id", "=", profileId as never)
+      .where("archivedAt", "is", null)
       .executeTakeFirst();
     return row?.ownerId === owner && granted({ kind: "browser-profile", profileId });
   };
-  /** Tabs by id: every one the owner's, and under a selected grant in a profile it holds. */
+  /** Tabs by id: every one the owner's, and under a selected grant in an active profile it holds. */
   const tabsReach = async (ids: readonly string[]): Promise<CommandReach> => {
     const tabs = await database
       .selectFrom("personalTabs")
@@ -1661,15 +1662,30 @@ async function commandReach(
       .execute();
     if (tabs.length !== new Set(ids).size || tabs.some((tab) => tab.ownerId !== owner))
       return outOfReach;
-    if (
-      tabs.some(
-        (tab) =>
-          !granted(
-            tab.profileId === null ? null : { kind: "browser-profile", profileId: tab.profileId },
-          ),
+    if (selected) {
+      const profileIds = [
+        ...new Set(tabs.flatMap((tab) => (tab.profileId ? [tab.profileId] : []))),
+      ];
+      if (
+        tabs.some(
+          (tab) =>
+            !granted(
+              tab.profileId === null ? null : { kind: "browser-profile", profileId: tab.profileId },
+            ),
+        )
       )
-    )
-      return outOfReach;
+        return outOfReach;
+      if (profileIds.length) {
+        const active = await database
+          .selectFrom("browserProfiles")
+          .select("id")
+          .where("ownerId", "=", owner)
+          .where("archivedAt", "is", null)
+          .where("id", "in", profileIds as never)
+          .execute();
+        if (active.length !== profileIds.length) return outOfReach;
+      }
+    }
     // Its own work is what its own task opened; the person's tabs, and anything that records
     // no opener, are not.
     const opened = (tab: (typeof tabs)[number]) => {
@@ -1779,8 +1795,11 @@ async function commandReach(
                     member(tab_id)
                   where not exists (
                     select 1 from personal_tabs tab
+                    join browser_profiles profile on profile.id = tab.profile_id
                     where tab.id = member.tab_id
                       and tab.owner_id = ${owner}
+                      and profile.owner_id = ${owner}
+                      and profile.archived_at is null
                       and tab.profile_id = any(${grantedProfiles}::text[])))))
         ) as reach
       `.execute(database);
@@ -1794,13 +1813,7 @@ async function commandReach(
         .where("id", "=", resource.id as never)
         .executeTakeFirst();
       if (!session) return outOfReach;
-      if (
-        !granted(
-          session.profileId === null
-            ? null
-            : { kind: "browser-profile", profileId: session.profileId },
-        )
-      )
+      if (selected && (session.profileId === null || !(await profile(session.profileId))))
         return outOfReach;
       const used =
         ownTask !== null &&

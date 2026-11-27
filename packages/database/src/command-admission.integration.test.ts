@@ -1633,4 +1633,72 @@ describeStore("one admission for Home commands", (it) => {
     });
     expect(ownRun.answer).toBe("now");
   });
+
+  it("refuses commands naming an archived browser profile or its tabs for a selected grant, as for a missing profile", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const { profile, tab, browserSession } = await browserFixtures(storeFixture, f);
+    const tabId = await tab("person");
+    const sessionId = await browserSession(null);
+    const groupId = `tgr_${randomUUID()}`;
+    await database
+      .insertInto("tabLayouts")
+      .values({
+        ownerId: f.userId,
+        revision: 1,
+        items: JSON.stringify([
+          { kind: "group", group: { groupId, name: "Work", color: "blue", tabIds: [tabId] } },
+        ]) as never,
+      })
+      .onConflict((oc) =>
+        oc.column("ownerId").doUpdateSet({
+          revision: 1,
+          items: JSON.stringify([
+            { kind: "group", group: { groupId, name: "Work", color: "blue", tabIds: [tabId] } },
+          ]) as never,
+        }),
+      )
+      .execute();
+    const selected = await connect({
+      scope: "selected",
+      tasks: false,
+      resources: [{ kind: "browser-profile", profileId: profile.id }],
+    });
+    const everything = await connect({ scope: "everything" });
+    const admit = async (callerKey: string, command: Record<string, unknown>) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(callerKey),
+          command: { idempotencyKey: randomUUID(), ...command } as never,
+        })
+      ).answer;
+    const rename = { type: "browser.profile.rename", profileId: profile.id, name: "Renamed" };
+    const open = {
+      type: "tab.open",
+      target: { kind: "page", url: "https://bank.example", profileId: profile.id },
+    };
+    const closeTab = { type: "tab.close", tabIds: [tabId] };
+    const closeGroup = { type: "tab.group.close", groupId };
+    const closeSession = { type: "browser.session.close", sessionId };
+    // Before archiving: reachable.
+    expect(await admit(`connection:${selected.id}`, rename)).not.toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, open)).not.toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeTab)).not.toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeGroup)).not.toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeSession)).not.toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, rename)).not.toBe("not_found");
+    expect(await admit(`run:${f.run.id}`, open)).not.toBe("not_found");
+    await storeFixture.store.deleteBrowserProfile({ ownerId: f.userId, profileId: profile.id });
+    // After archiving: not_found for profile commands across every agent, and for selected-grant
+    // tabs, tab groups and browser sessions of that profile.
+    expect(await admit(`connection:${selected.id}`, rename)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, open)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeTab)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeGroup)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeSession)).toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, rename)).toBe("not_found");
+    expect(await admit(`run:${f.run.id}`, open)).toBe("not_found");
+  });
 });
