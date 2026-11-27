@@ -199,6 +199,9 @@ try {
           releaseOverlay: async ({ overlayId }: { overlayId: string }) => {
             events.push({ action: "release", overlayId });
           },
+          // The desktop bridge always has onEvent (packages/protocol/src/desktop.ts); the page
+          // subscribes to it when the overlay opens.
+          onEvent: () => () => undefined,
         });
       });
       await button(page).focus();
@@ -292,6 +295,9 @@ try {
         entry("old-failed", "failed"),
         entry("slow", "progressing"),
       ];
+      // A reload returns to the tab the person left (e36d9334d); this check is about a fresh
+      // window with no browser tab open, so it forgets the remembered tab first.
+      await page.evaluate(() => localStorage.clear());
       await page.goto(
         `${web.origin}/?mock-downloads=${encodeURIComponent(JSON.stringify(initial))}`,
       );
