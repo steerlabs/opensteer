@@ -269,8 +269,26 @@ try {
   await check(
     "typing renders no row of the lists, nor the sidebar, and changes nothing on the Host",
     async () => {
+      await page.evaluate(() => (Reflect.get(globalThis, "__holdHost") as () => void)());
+      // Holding the Host stops its updates, not what earlier ones set in motion: a task's
+      // working ring settles 2 s after its agent stops acting there (OccupantMark), which on a
+      // slow machine lands while the keys are typed. Until the page has rendered nothing of its
+      // own for longer than that, a render could be the Host's; once it has, every render is
+      // the typing's, and the count starts with the first key.
+      const renders = () =>
+        page.evaluate(
+          () =>
+            (Reflect.get(globalThis, "__listRenders") as number) +
+            (Reflect.get(globalThis, "__sidebarRenders") as number),
+        );
+      let still = false;
+      for (let attempt = 0; attempt < 6 && !still; attempt++) {
+        const before = await renders();
+        await page.waitForTimeout(2_500);
+        still = (await renders()) === before;
+      }
+      expectThat({ still }, still, "the lists kept rendering with the Host held and nothing typed");
       await page.evaluate(() => {
-        (Reflect.get(globalThis, "__holdHost") as () => void)();
         Reflect.set(globalThis, "__listRenders", 0);
         Reflect.set(globalThis, "__sidebarRenders", 0);
         Reflect.set(globalThis, "__calls", []);
