@@ -274,13 +274,16 @@ if (values.setup) {
       else if (variant === "missing")
         mutate("packages/database/src/lock-order-global-setup.test-support.ts", (text) =>
           text.replace(
-            'writeFileSync(trace + ".graph.json",',
-            'writeFileSync(trace + ".missing-graph.json",',
+            'writeGraph(trace + ".graph.json",',
+            'writeGraph(trace + ".missing-graph.json",',
           ),
         );
       else if (variant === "corrupt")
         mutate("packages/database/src/lock-order-global-setup.test-support.ts", (text) =>
-          text.replace("JSON.stringify(summary, null, 2)", "JSON.stringify({corrupt:true})"),
+          text.replace(
+            'writeGraph(trace + ".graph.json", summary);',
+            'writeGraph(trace + ".graph.json", { corrupt: true });',
+          ),
         );
       else
         mutate("packages/database/src/lock-order-global-setup.test-support.ts", (text) =>
