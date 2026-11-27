@@ -57,6 +57,74 @@ type Tx = Transaction<DatabaseSchema>;
 export type AgentSessionRow = Selectable<AgentSessionTable>;
 export type AgentOperationRow = Selectable<AgentOperationTable>;
 
+/** Reserve the exact device hold before its first frame, under the Disconnect and Stop fences. */
+export function reserveAgentSessionDeviceHold(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly id: string;
+    readonly sessionId: AgentSessionId;
+    readonly deviceName: string;
+    readonly homeProcessId: string;
+  },
+): Promise<void> {
+  return commitPersonalMutation(database, async (tx) => {
+    const session = await tx
+      .selectFrom("agentSessions")
+      .select(["connectionId", "userId"])
+      .where("id", "=", input.sessionId)
+      .executeTakeFirstOrThrow();
+    await lockLiveConnection(tx, session.userId, session.connectionId);
+    const active = await tx
+      .selectFrom("agentSessions")
+      .select("id")
+      .where("id", "=", input.sessionId)
+      .where("status", "=", "active")
+      .forShare()
+      .executeTakeFirst();
+    if (!active) throw refused(sessionStoppedMessage);
+    await tx
+      .insertInto("agentSessionDeviceHolds")
+      .values({ ...input, unconfirmedAt: null })
+      .execute();
+  });
+}
+
+export async function settleAgentSessionDeviceHold(
+  database: Kysely<DatabaseSchema>,
+  id: string,
+  outcome: "ended" | "unknown",
+): Promise<void> {
+  if (outcome === "ended") {
+    await database
+      .deleteFrom("agentSessionDeviceHolds")
+      .where("id", "=", id)
+      .where("unconfirmedAt", "is", null)
+      .execute();
+  } else {
+    await database
+      .updateTable("agentSessionDeviceHolds")
+      .set({ unconfirmedAt: new Date() })
+      .where("id", "=", id)
+      .where("unconfirmedAt", "is", null)
+      .execute();
+  }
+}
+
+/** Only the Home process that opened a hold can still reach its exact route. */
+export async function settleOrphanedAgentSessionDeviceHolds(
+  database: Kysely<DatabaseSchema>,
+  sessionId: AgentSessionId,
+  homeProcessId: string,
+): Promise<void> {
+  await database
+    .updateTable("agentSessionDeviceHolds")
+    .set({ unconfirmedAt: new Date() })
+    .where("sessionId", "=", sessionId)
+    .where("homeProcessId", "!=", homeProcessId)
+    .where("unconfirmedAt", "is", null)
+    .execute();
+}
+
 /** The reserved, never-enabled engine a session task is placed on; no Run can start on it. */
 export const externalAgentDriverKind = "external-agent";
 const externalAgentModel: ModelSelection = {

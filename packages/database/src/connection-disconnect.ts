@@ -71,6 +71,7 @@ export type LineageAttempt =
   | ConnectionAttempt<"steer", CommandId>
   | ConnectionAttempt<"trigger", TriggerId>
   | ConnectionAttempt<"session", AgentSessionId>
+  | ConnectionAttempt<"computer-use">
   | ConnectionAttempt<"operation", AgentOperationId>
   | (ConnectionAttempt<"standard-cdp"> & {
       readonly standardCdpRecovery?: StandardCdpAttemptReconciliation;
@@ -331,13 +332,23 @@ export async function connectionAttempts(
       where (m.terminal_evidence_at is null or m.contact_lost_at is not null)
         and ${belowFloor("m.admitted_grant_revision", "m.admitted_access_mode")}
       union all
-      -- A computer-use session can still hold a device after its last operation settled.
+      -- A device hold can survive both its last operation and a Stop on the task.
       select 'session', s.id, null, s.thread_id, null, null, null, exists (
         select 1 from agent_operations o
         where o.session_id = s.id and o.tool = 'computer_use' and o.handed_off_at is not null
       ), null, null, null
       from agent_sessions s join floor f on f.id = s.connection_id
-      where s.status = 'active' and (f.disconnected or f.cleanup_reason = 'narrowed')
+      where (s.status = 'active' and (f.disconnected or f.cleanup_reason = 'narrowed'))
+        or (f.disconnected and exists (
+          select 1 from agent_session_device_holds h
+          where h.session_id = s.id and h.unconfirmed_at is null
+        ))
+      union all
+      select 'computer-use', h.id, null, s.thread_id, null, null, null, true,
+        h.unconfirmed_at, h.unconfirmed_at, null
+      from agent_session_device_holds h join agent_sessions s on s.id = h.session_id
+      join floor f on f.id = s.connection_id
+      where f.disconnected and h.unconfirmed_at is not null
       union all
       select 'operation', o.id, o.grant_revision, s.thread_id, null, null, null,
         o.handed_off_at is not null, o.terminal_evidence_at, o.contact_lost_at, null
@@ -756,6 +767,14 @@ export async function latestConnectionUncertainty(
           .executeTakeFirst()
       : undefined;
   const ending = operation?.ending ?? null;
+  const deviceHold =
+    latest.kind === "computer-use"
+      ? await database
+          .selectFrom("agentSessionDeviceHolds")
+          .select("deviceName")
+          .where("id", "=", latest.id)
+          .executeTakeFirst()
+      : undefined;
   return {
     lastActionUncertainAt: at,
     lastActionUncertain: {
@@ -767,9 +786,11 @@ export async function latestConnectionUncertainty(
           ? "Contact with this device was lost before it confirmed that the connected agent's shell there had closed."
           : latest.kind === "notification"
             ? "A phone alert about this connected agent's work may have been sent; your Opensteer account did not confirm it."
-            : ending && ending !== "contact-lost"
-              ? null
-              : "Contact was lost before this action confirmed it had ended.",
+            : deviceHold
+              ? "The device has not confirmed that its computer use ended."
+              : ending && ending !== "contact-lost"
+                ? null
+                : "Contact was lost before this action confirmed it had ended.",
       ...(latest.runnerId
         ? {
             device:
@@ -790,6 +811,7 @@ export async function latestConnectionUncertainty(
             ...(ending ? { ending } : {}),
           }
         : {}),
+      ...(deviceHold ? { device: deviceHold.deviceName } : {}),
     },
   };
 }

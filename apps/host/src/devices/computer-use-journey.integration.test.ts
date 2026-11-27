@@ -5213,6 +5213,7 @@ async function createWorld(
   });
   computerUse = new ComputerUseService({
     deploymentId: owner.deploymentId,
+    agentSessionDatabase: database,
     hub,
     ...(options.passwords
       ? {
@@ -7607,65 +7608,89 @@ integration.sequential("Computer use for a connected agent, through its session"
     });
   }
 
-  it("keeps Disconnect pending when the Mac refused a preceding task Stop", async () => {
-    const s = await connectedAgent("full-access", { target: "mac" });
-    const mac = s.world.fakeMac;
-    try {
-      const opened = await s.call(
-        { code: 'await (await (await app("Notes")).window()).observe();' },
-        "retained-mac-hold",
-      );
-      expect(opened.status).toBe("completed");
-      const holds = mac.openSessions();
-      expect(holds).toHaveLength(1);
-      const { sessionId } = await s.operation("retained-mac-hold");
-      mac.closeFailureCode = "failed";
-      expect(
-        await s.sessions.stopSession({
-          ownerUserId: s.world.owner.userId,
-          threadId: opened.taskId,
-          sessionId,
-        }),
-      ).toEqual({ ended: true });
-      await vi.waitFor(() => expect(mac.closeCompletedCount).toBe(1));
-      expect(mac.openSessions()).toEqual(holds);
-      expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
-
-      const driveCleanup = () =>
-        s.world.store.driveConnectionCleanups({
-          stopper: {
-            stop: async () => {},
-            stopAgentSession: (attempt, change, settle) =>
-              s.sessions.stopAgentSession(
-                attempt.id,
-                connectionCleanupEnding(change.reason),
-                settle,
-              ),
-          },
-          onCleanup: (change) =>
-            s.sessions.closeConnection(
-              change.connectionId,
-              false,
-              connectionCleanupEnding(change.reason),
-            ),
-        });
-      const receipt = async () =>
-        (await s.agents.list(s.world.owner.userId, { includeRevoked: true })).find(
-          ({ id }) => id === s.record.id,
+  it.each(["failed", "outcome-unknown", "lost"] as const)(
+    "accounts for a preceding task Stop when the Mac close is %s",
+    async (failure) => {
+      const s = await connectedAgent("full-access", { target: "mac" });
+      const fakeMac = s.world.fakeMac;
+      const closeAck = Promise.withResolvers<void>();
+      try {
+        const opened = await s.call(
+          { code: 'await (await (await app("Notes")).window()).observe();' },
+          "retained-mac-hold",
         );
-      await s.agents.revoke(s.world.owner.userId, s.record.id);
-      await driveCleanup();
-      expect(mac.openSessions()).toEqual(holds);
-      expect(await receipt()).toMatchObject({ state: "stopping", lastActionUncertain: false });
+        expect(opened.status).toBe("completed");
+        const holds = fakeMac.openSessions();
+        expect(holds).toHaveLength(1);
+        const { sessionId } = await s.operation("retained-mac-hold");
+        if (failure === "lost") fakeMac.closeGate = closeAck.promise;
+        else fakeMac.closeFailureCode = failure;
+        expect(
+          await s.sessions.stopSession({
+            ownerUserId: s.world.owner.userId,
+            threadId: opened.taskId,
+            sessionId,
+          }),
+        ).toEqual({ ended: true });
+        if (failure === "lost") {
+          await fakeMac.reached("close");
+          fakeMac.detach();
+        } else await vi.waitFor(() => expect(fakeMac.closeCompletedCount).toBe(1));
+        expect(fakeMac.openSessions()).toEqual(holds);
+        expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
 
-      mac.closeFailureCode = null;
-      await driveCleanup();
-      expect(mac.openSessions()).toEqual([]);
-      expect(await receipt()).toMatchObject({ state: "stopped", lastActionUncertain: false });
-    } finally {
-      await s.world.close();
-    }
-  });
+        const driveCleanup = () =>
+          s.world.store.driveConnectionCleanups({
+            stopper: {
+              stop: async () => {},
+              stopAgentSession: (attempt, change, settle) =>
+                s.sessions.stopAgentSession(
+                  attempt.id,
+                  connectionCleanupEnding(change.reason),
+                  settle,
+                ),
+            },
+            onCleanup: (change) =>
+              s.sessions.closeConnection(
+                change.connectionId,
+                false,
+                connectionCleanupEnding(change.reason),
+              ),
+          });
+        const receipt = async () =>
+          (await s.agents.list(s.world.owner.userId, { includeRevoked: true })).find(
+            ({ id }) => id === s.record.id,
+          );
+        await s.agents.revoke(s.world.owner.userId, s.record.id);
+        await driveCleanup();
+        expect(fakeMac.openSessions()).toEqual(holds);
+        if (failure !== "failed") {
+          expect(await receipt()).toMatchObject({
+            state: "stopped",
+            lastActionUncertain: true,
+            lastActionUncertainDetail: {
+              device: mac,
+              reason: "The device has not confirmed that its computer use ended.",
+            },
+          });
+          s.world.computerUse.sweep();
+          await driveCleanup();
+          expect(fakeMac.closeReceivedCount).toBe(1);
+          expect(fakeMac.openSessions()).toEqual(holds);
+          return;
+        }
+        expect(await receipt()).toMatchObject({ state: "stopping", lastActionUncertain: false });
+
+        fakeMac.closeFailureCode = null;
+        await driveCleanup();
+        expect(fakeMac.openSessions()).toEqual([]);
+        expect(await receipt()).toMatchObject({ state: "stopped", lastActionUncertain: false });
+      } finally {
+        closeAck.resolve();
+        await s.world.close();
+      }
+    },
+  );
 
   for (const ending of ["Stop on the task", "Disconnect"] as const) {
     it(`ends the script in flight on ${ending}, closes the phone's session, and refuses the next call`, async () => {

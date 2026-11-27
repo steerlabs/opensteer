@@ -1303,7 +1303,9 @@ export function computerUseRequestMayHaveEffect(method: string, params: unknown)
     method === "display.input" ||
     method === "display.input-reset" ||
     method === "session.act" ||
+    method === "session.close" ||
     method === "iphone.perform" ||
+    method === "iphone.session.close" ||
     method === "imessage.send" ||
     method === "view.open" ||
     method === "view.activate"
