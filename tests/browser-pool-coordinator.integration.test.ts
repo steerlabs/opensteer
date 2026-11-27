@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
-import { describe, expect, it, vi } from "vitest";
+import { TestRunner, describe, expect, it, vi } from "vitest";
 import {
   BrowserPoolCoordinator,
   type BrowserPoolAdopter,
@@ -91,6 +91,42 @@ async function poolFixture(
   const fixture = await createStoreFixture();
   const task = await fixture.createRunFixture(key);
   const { database } = fixture;
+  // What a wait re-checks on: each call a coordinator makes settling (to the controller, the
+  // runtime and the adopter), and each change it publishes. The product's own events, not a clock.
+  let change = Promise.withResolvers<void>();
+  const changed = () => {
+    const previous = change;
+    change = Promise.withResolvers<void>();
+    previous.resolve();
+  };
+  const settles = <T>(work: Promise<T>): Promise<T> => {
+    void work.then(changed, changed);
+    return work;
+  };
+  /**
+   * Waits until `check` passes, checking it again after each of those events. The test's own
+   * end (its timeout) ends the wait with the check's last failure.
+   */
+  const until = async (check: () => unknown): Promise<void> => {
+    const signal = TestRunner.getCurrentTest()?.context.signal;
+    for (;;) {
+      const next = change.promise;
+      try {
+        await check();
+        return;
+      } catch (error) {
+        if (!signal || signal.aborted) throw error;
+        const ended = Promise.withResolvers<never>();
+        const abort = () => ended.reject(error);
+        signal.addEventListener("abort", abort, { once: true });
+        try {
+          await Promise.race([next, ended.promise]);
+        } finally {
+          signal.removeEventListener("abort", abort);
+        }
+      }
+    }
+  };
   // The agent cannot see a loopback runtime that outlives a start: against it every start is a
   // new guest with an empty runtime, as on a real host.
   if (poolControllerKind() === "agent") options = { ...options, freshGuests: true };
@@ -216,23 +252,26 @@ async function poolFixture(
     extra: Partial<ConstructorParameters<typeof BrowserPoolCoordinator>[0]> = {},
   ) => {
     const channel: BrowserPoolRuntimeChannel = {
-      poolState: async () => {
-        // As a remote runtime behind a relay: slow, and with no guest running there is no
-        // runtime to ask.
-        if (options.remote) {
-          for (let turn = 0; turn < 5; turn++)
-            await new Promise<void>((resolve) => setImmediate(resolve));
-          const status = await controller.status(`slot-${key}`, 1);
-          if (status.phase !== "running") return null;
-        }
-        return runtime.poolState() ?? null;
-      },
+      poolState: () => settles(poolState()),
       controlPool: (control, signature) =>
-        crash
-          ? crash.pass(`runtime:${control.kind}`, () => runtime.controlPool(control, signature))
-          : runtime.controlPool(control, signature),
-      endSession: (ticket) => runtime.endPoolSession(ticket),
+        settles(
+          crash
+            ? crash.pass(`runtime:${control.kind}`, () => runtime.controlPool(control, signature))
+            : runtime.controlPool(control, signature),
+        ),
+      endSession: (ticket) => settles(runtime.endPoolSession(ticket)),
     };
+    async function poolState() {
+      // As a remote runtime behind a relay: slow, and with no guest running there is no
+      // runtime to ask.
+      if (options.remote) {
+        for (let turn = 0; turn < 5; turn++)
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        const status = await controller.status(`slot-${key}`, 1);
+        if (status.phase !== "running") return null;
+      }
+      return runtime.poolState() ?? null;
+    }
     const port: BrowserPoolPhysicalController = crash
       ? {
           status: (slot, term) => crash.pass("status", () => physical.status(slot, term)),
@@ -243,6 +282,11 @@ async function poolFixture(
             ),
         }
       : physical;
+    const watched: BrowserPoolPhysicalController = {
+      status: (slot, term) => settles(port.status(slot, term)),
+      result: (slot, term, id) => settles(port.result(slot, term, id)),
+      apply: (call) => settles(port.apply(call)),
+    };
     const coordinator = new BrowserPoolCoordinator({
       database,
       runnerId: task.runnerId,
@@ -250,15 +294,24 @@ async function poolFixture(
       slotId: `slot-${key}`,
       term: 1,
       runtime: channel,
-      controller: port,
+      controller: watched,
       retryMs: 5,
       ...extra,
+      onStateChanged: () => {
+        extra.onStateChanged?.();
+        changed();
+      },
       runtimeFault: (kind) => {
         const index = runtimeFaults.findIndex((entry) => entry.kind === kind);
         return index < 0 ? undefined : runtimeFaults.splice(index, 1)[0]!.fault;
       },
     });
-    coordinator.setAdopter(adopter);
+    coordinator.setAdopter({
+      ...adopter,
+      withoutChannel: (target) => settles(adopter.withoutChannel(target)),
+      quiesce: () => settles(adopter.quiesce()),
+      reattach: (request) => settles(adopter.reattach(request)),
+    });
     homes.push(coordinator);
     return coordinator;
   };
@@ -364,6 +417,8 @@ async function poolFixture(
     stallReattach: (until: Promise<void> | undefined) => {
       stalled = until;
     },
+    /** Waits for a check on the coordinator's own events, not a clock. */
+    until,
     /** The Runner's channel drops: the guest keeps the session detached. */
     loseChannel: async (id: BrowserSessionId = sessionId) => {
       await sinks.get(id)?.close(false, false, true);
@@ -583,7 +638,7 @@ it("keeps a channel lost again while its attach is being finished as a new loss,
     home.channelLost(f.sessionId);
     await vi.waitFor(() => expect(attempts).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
     expect(second).toEqual({ document: "document-now", admits: false });
-    await vi.waitFor(() => expect(home.gate.phase).toBe("open"));
+    await f.until(() => expect(home.gate.phase).toBe("open"));
     expect(home.reattaching(f.sessionId)).toBe(false);
     expect((await f.row())?.state).toBe("ready");
   } finally {
@@ -995,7 +1050,7 @@ it("keeps a repair decided for one instance off the fresh guest that replaced it
     // A command in flight holds the guest, so the repair decided for its instance waits.
     const command = await home.gate.reserve(AbortSignal.timeout(10_000));
     f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    await f.until(() => expect(home.report()).toMatchObject({ phase: "waking" }));
     // The person restarts the browser: a fresh guest, whose proxy serves.
     const restarting = home.restart();
     command.release();
@@ -1003,7 +1058,7 @@ it("keeps a repair decided for one instance off the fresh guest that replaced it
     expect(f.controller.effects).toEqual(["start", "stop", "start"]);
     // Read after read, the fresh guest is never parked for the old instance's repair.
     const before = reads;
-    await vi.waitFor(() => expect(reads).toBeGreaterThan(before + 5));
+    await f.until(() => expect(reads).toBeGreaterThan(before + 5));
     expect(f.controller.effects).toEqual(["start", "stop", "start"]);
     expect(home.report()).toBeUndefined();
   } finally {
@@ -1042,7 +1097,7 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
     });
     f.controller.observe({ proxy: "down" });
     // While the repair runs the person is shown it waking, never "paused" first (W10).
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    await f.until(() => expect(home.report()).toMatchObject({ phase: "waking" }));
     expect(home.report()?.proxyDown).toBeUndefined();
     // Nothing holds it: the Home parks it and wakes it again by itself, which is what brings a
     // proxy back. (It used to park and wait for demand to wake: a person watching would have
@@ -1057,9 +1112,9 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
     // Down again after that wake (a real agent's wake brings it back once): shown paused, and
     // the repair is not made again for this instance, read after read.
     f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
+    await f.until(() => expect(home.report()).toMatchObject({ proxyDown: true }));
     const reads = counted.reads;
-    await vi.waitFor(() => expect(counted.reads).toBeGreaterThan(reads + 5));
+    await f.until(() => expect(counted.reads).toBeGreaterThan(reads + 5));
     expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
     expect(await f.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
     // A park that is not a repair, and its wake, are a fresh chance: still down after them, the
@@ -1067,7 +1122,7 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
     expect(await home.tryPark()).toBe("parked");
     (await home.gate.reserve(AbortSignal.timeout(10_000))).release();
     f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() =>
+    await f.until(() =>
       expect(f.controller.effects).toEqual([
         "start",
         "pause",
@@ -1079,10 +1134,10 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
       ]),
     );
     const again = counted.reads;
-    await vi.waitFor(() => expect(counted.reads).toBeGreaterThan(again + 5));
+    await f.until(() => expect(counted.reads).toBeGreaterThan(again + 5));
     expect(f.controller.effects).toHaveLength(7);
     f.controller.observe({ proxy: "up" as never });
-    await vi.waitFor(() => expect(home.report()).toBeUndefined());
+    await f.until(() => expect(home.report()).toBeUndefined());
   } finally {
     await f.close();
   }
@@ -1097,9 +1152,9 @@ it("waits for a command in flight before it repairs a guest whose egress proxy i
     // A command in flight: a reservation taken with demand, ended by its own bound.
     const command = await home.gate.reserve(AbortSignal.timeout(10_000));
     f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    await f.until(() => expect(home.report()).toMatchObject({ phase: "waking" }));
     const reads = counted.reads;
-    await vi.waitFor(() => expect(counted.reads).toBeGreaterThan(reads + 5));
+    await f.until(() => expect(counted.reads).toBeGreaterThan(reads + 5));
     // Turn after turn, nothing was paused under it.
     expect(f.controller.effects).toEqual(["start"]);
     expect(home.gate.phase).toBe("open");
@@ -2703,7 +2758,7 @@ for (const fault of ["status-fails", "stop-throws", "stop-not-applied"] as const
       expect(removing.gate.phase).toBe("released");
       // The driver keeps asking; however often it is refused, the row stays.
       const before = refused;
-      await vi.waitFor(() => expect(refused).toBeGreaterThanOrEqual(before + 3));
+      await f.until(() => expect(refused).toBeGreaterThanOrEqual(before + 3));
       expect(await f.slot()).toMatchObject({ phase: "releasing" });
       expect(f.controller.effects).toEqual(["start"]);
       // A Home restart resumes the stop; once it is known, the slot goes with its journal.
