@@ -260,7 +260,7 @@ export const unknownNext = agentOperationEndingSentence("contact-lost");
 export const scriptFailedNext =
   "Earlier steps may have taken effect. Check the current state before trying again.";
 
-function failedScriptNext(
+export function failedScriptNext(
   summary: Readonly<Record<string, unknown>> | null,
   error: ReplFailure,
 ): string {
