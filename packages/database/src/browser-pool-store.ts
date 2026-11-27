@@ -9,7 +9,11 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable } from "kysely";
 import { randomUUID } from "node:crypto";
-import { ownedBrowserSession, transitionBrowserSession } from "./browser-session-store.js";
+import {
+  ownedBrowserSession,
+  transitionBrowserSession,
+  type BrowserSessionRecord,
+} from "./browser-session-store.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 import { activePersonalMutation, commitPersonalMutation } from "./personal-mutation.js";
 import {
@@ -1091,6 +1095,89 @@ export async function listBrowserPoolReadySessions(
  * The sessions of this runtime a Stop is ending: closing until the runtime answers that each is
  * gone, whatever the Home's clock says.
  */
+/**
+ * Internal teardown lookup for pooled sessions (`endTicket`, `ended`, pooled `closed` reads):
+ * checks the owner and exact pool target (`runnerId`, optional `runtimeId`, and `slotId`/`term`
+ * ownership) while accepting an archived profile so deleting a profile never strands its closing
+ * pooled session.
+ */
+export async function getBrowserPoolSessionForTeardown(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly sessionId: BrowserSessionId;
+    readonly ownerId: UserId;
+    readonly runnerId?: RunnerId;
+    readonly runtimeId?: string;
+    readonly target: BrowserPoolSessionTarget;
+  },
+): Promise<(BrowserSessionRecord & { readonly profileArchived: boolean }) | null> {
+  const row = await database
+    .selectFrom("browserSessions")
+    .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+    .select([
+      "browserSessions.createdAt",
+      "browserSessions.runnerId",
+      "browserSessions.id",
+      "browserSessions.origin",
+      "browserSessions.opener",
+      "browserSessions.placementKey",
+      "browserSessions.profileId",
+      "browserSessions.runtimeId",
+      "browserSessions.state",
+      "browserSessions.updatedAt",
+      "browserProfiles.archivedAt as profileArchivedAt",
+    ])
+    .where("browserSessions.id", "=", input.sessionId)
+    .where(ownedBy(input.target))
+    .$if(input.runnerId !== undefined, (q) =>
+      q.where("browserSessions.runnerId", "=", input.runnerId!),
+    )
+    .$if(input.runtimeId !== undefined, (q) =>
+      q.where("browserSessions.runtimeId", "=", input.runtimeId!),
+    )
+    .where((eb) =>
+      eb.and([
+        eb.exists(
+          eb
+            .selectFrom("personalSettings")
+            .innerJoin("users", "users.id", "personalSettings.ownerId")
+            .select("personalSettings.ownerId")
+            .where("personalSettings.ownerId", "=", input.ownerId)
+            .where("users.disabledAt", "is", null),
+        ),
+        eb.or([
+          eb("browserProfiles.ownerId", "=", input.ownerId),
+          eb("browserSessions.profileId", "is", null),
+        ]),
+      ]),
+    )
+    .where((eb) =>
+      eb.exists(
+        eb
+          .selectFrom("runners")
+          .select("runners.id")
+          .whereRef("runners.id", "=", "browserSessions.runnerId")
+          .where("runners.revokedAt", "is", null)
+          .where((owner) =>
+            owner.or([
+              owner.and([
+                owner("runners.ownerKind", "=", "user"),
+                owner("runners.ownerUserId", "=", input.ownerId),
+              ]),
+              owner.and([
+                owner("runners.ownerKind", "=", "deployment"),
+                owner("runners.kind", "=", "main"),
+              ]),
+            ]),
+          ),
+      ),
+    )
+    .executeTakeFirst(databaseOperationOptions());
+  if (!row) return null;
+  const { profileArchivedAt, ...session } = row;
+  return { ...session, profileArchived: profileArchivedAt !== null };
+}
+
 export async function listBrowserPoolClosingSessions(
   database: Kysely<DatabaseSchema>,
   target: BrowserPoolTargetSessions,

@@ -19,6 +19,7 @@ import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { randomUUID } from "node:crypto";
 import {
   deleteBrowserProfileInTransaction,
+  markPooledProfileSessionsClosing,
   type BrowserSessionRecord,
 } from "./browser-session-store.js";
 import { removeProfileTabs } from "./tab-store.js";
@@ -256,8 +257,9 @@ export async function reconcileBrowserProfileInventory(
         "This computer holds an unknown browser profile. Restore its Host ownership records before opening it.",
       );
     if (claim.phase === "deleted") {
-      // Lock order: retire tabs (tab_layouts 124 -> personal_tabs 125) before validateBindingOwner
-      // locks runners (136), keeping binding validation in this transaction before the profile update.
+      // Lock order: mark pooled sessions closing (browser_sessions 123), then retire tabs
+      // (tab_layouts 125 -> personal_tabs 126) before validateBindingOwner locks runners (137).
+      await markPooledProfileSessionsClosing(transaction, row.id);
       const retiredTabIds = await removeProfileTabs(transaction, row.ownerId, row.id);
       await validateBindingOwner(transaction, claim.binding, row.ownerId);
       const storage = profileStorage(row);
@@ -272,6 +274,7 @@ export async function reconcileBrowserProfileInventory(
         deletionId: claim.deletionId,
         binding: claim.binding,
         retiredTabIds,
+        pooledSessionsMarkedClosing: true,
       });
       const deletion = await transaction
         .selectFrom("browserProfileDeletions")

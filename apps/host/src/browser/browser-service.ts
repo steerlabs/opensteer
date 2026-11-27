@@ -40,6 +40,7 @@ import {
   storablePageUrl,
   acquireBrowserStandardCdpLease,
   admitExecution,
+  getBrowserPoolSessionForTeardown,
   listBrowserStandardCdpLeases,
   releaseBrowserStandardCdpLease,
   executionAccess,
@@ -1715,7 +1716,13 @@ export class BrowserService {
         if (this.#closed || !(this.#repository instanceof OpensteerStore)) return undefined;
         const owner = await readBrowserPoolOwner(this.#repository.database);
         const record = owner
-          ? await this.#repository.getBrowserSessionForOwner(sessionId, owner)
+          ? await getBrowserPoolSessionForTeardown(this.#repository.database, {
+              sessionId,
+              ownerId: owner,
+              runnerId,
+              runtimeId,
+              target: { slotId: fence.slot, term: fence.term },
+            })
           : null;
         signal?.throwIfAborted();
         // A row another path already ended has nothing left to end.
@@ -1743,12 +1750,15 @@ export class BrowserService {
       },
       ended: async (sessionId, target, evidence = { kind: "runtime-ended" }) => {
         // Only a row still closing: another path that ended it has its own evidence.
-        const owner =
-          this.#repository instanceof OpensteerStore
-            ? await readBrowserPoolOwner(this.#repository.database)
-            : undefined;
+        if (!(this.#repository instanceof OpensteerStore)) return;
+        const owner = await readBrowserPoolOwner(this.#repository.database);
         const row = owner
-          ? await this.#repository.getBrowserSessionForOwner(sessionId, owner)
+          ? await getBrowserPoolSessionForTeardown(this.#repository.database, {
+              sessionId,
+              ownerId: owner,
+              runnerId,
+              target,
+            })
           : null;
         if (row?.state !== "closing") return;
         await this.#transitionBrowserSession({
@@ -10448,10 +10458,17 @@ export class BrowserService {
       );
       const owner = await readBrowserPoolOwner(database);
       const row = owner
-        ? await this.#repository.getBrowserSessionForOwner(input.sessionId, owner)
+        ? await getBrowserPoolSessionForTeardown(database, {
+            sessionId: input.sessionId,
+            ownerId: owner,
+            target: input.target,
+          })
         : null;
       if (!row) throw new Error("The pooled browser session is gone.");
-      this.#onSessionsChanged([row.id], notifyTabs ? undefined : { tabs: false });
+      this.#onSessionsChanged(
+        [row.id],
+        notifyTabs && !row.profileArchived ? undefined : { tabs: false },
+      );
       return row;
     }
     const { from, sessionId } = input;

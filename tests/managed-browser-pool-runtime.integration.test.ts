@@ -4784,3 +4784,302 @@ describe("Today: a connected agent's call that waits while no ready target exist
     }
   }, 180_000);
 });
+
+describe("Profile deletion on pooled browser sessions", () => {
+  it("deletes a profile with a live pooled session and closes the session via its end ticket", async () => {
+    const database = await cloneTestDatabase("host");
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-profile-delete-"));
+    const config = managedConfig(database.url, directory, await freePort(), { browserPool: false });
+    let host: PersonalHostRuntime | undefined;
+    let poolHost: LoopbackPoolHost | undefined;
+    try {
+      const started = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config, { personalAccountGrantFetch: jwksFetch() });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host = started.host;
+      const { ownerId } = await claimHome(host);
+      const runnerId = await enrollMainRunner(host, config);
+      const keys = await loadOrCreateManagedBrowserPoolKeys(join(directory, "host"));
+      poolHost = await startLoopbackPoolHost({
+        directory,
+        slotId: `bps_${randomUUID()}`,
+        term: 1,
+        registered: managedBrowserPoolRegistration(keys),
+      });
+      const parts = managedBrowserPool(poolHost.target, keys);
+      const endSpy = vi.spyOn(parts.runtime, "endSession");
+      const coordinator = new BrowserPoolCoordinator({
+        database: host.store.database,
+        runnerId,
+        runtimeId: pooledBrowserRuntimeId,
+        slotId: poolHost.slotId,
+        term: poolHost.term,
+        runtime: parts.runtime,
+        controller: parts.controller,
+        idleParkMs: null,
+        retryMs: 25,
+        unansweredRetryMaxMs: 50,
+        statusEveryMs: 100,
+        onError: () => {},
+      });
+      try {
+        host.browser.setPoolSigner(
+          new BrowserAttachTicketSigner({
+            keyId: keys.ticketKey.keyId,
+            privateKey: keys.ticketKey.key,
+          }),
+        );
+        await host.browser.adoptPool(runnerId, coordinator);
+        await vi.waitFor(
+          async () => {
+            const st = await poolHost!.agent.agent.status(poolHost!.slotId, poolHost!.term);
+            expect(st.phase).toBe("running");
+          },
+          { timeout: 10_000 },
+        );
+        const profile = await host.store.createBrowserProfile({
+          ownerId,
+          name: "Pooled Work",
+          homeRunnerId: runnerId,
+          idempotencyKey: "pooled-delete-profile",
+        });
+        const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+        await host.store.database
+          .insertInto("browserSessions")
+          .values({
+            id: sessionId,
+            tabGroupId: sessionId,
+            origin: "person",
+            profileId: profile.id,
+            placementKey: `runner:${runnerId}`,
+            runnerId,
+            runtimeId: pooledBrowserRuntimeId,
+            state: "ready",
+            opener: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            closedAt: null,
+          })
+          .execute();
+        await host.store.database
+          .insertInto("browserPoolSessions")
+          .values({
+            sessionId,
+            runnerId,
+            slotId: poolHost.slotId,
+            term: poolHost.term,
+          })
+          .execute();
+        await host.store.database
+          .insertInto("browserSessionAttachments")
+          .values({
+            sessionId,
+            ownerId,
+            agentBindingId: `person:${ownerId}`,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .execute();
+
+        await host.browser.deleteProfile({ ownerId, profileId: profile.id });
+
+        await vi.waitFor(
+          async () => {
+            const row = await host!.store.database
+              .selectFrom("browserSessions")
+              .select("state")
+              .where("id", "=", sessionId)
+              .executeTakeFirstOrThrow();
+            expect(row.state).toBe("closed");
+          },
+          { timeout: 5_000 },
+        );
+        expect(endSpy).toHaveBeenCalledWith(expect.any(String), expect.anything());
+      } finally {
+        coordinator.close();
+      }
+    } finally {
+      await host?.close();
+      await poolHost?.close();
+      await database.drop();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("closes a deleted profile's pooled session after a crash between archive commit and Stop", async () => {
+    const database = await cloneTestDatabase("host");
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-profile-crash-"));
+    const config = managedConfig(database.url, directory, await freePort(), { browserPool: false });
+    let host: PersonalHostRuntime | undefined;
+    let restarted: PersonalHostRuntime | undefined;
+    let poolHost: LoopbackPoolHost | undefined;
+    try {
+      const started = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config, { personalAccountGrantFetch: jwksFetch() });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host = started.host;
+      const { ownerId } = await claimHome(host);
+      const runnerId = await enrollMainRunner(host, config);
+      const keys = await loadOrCreateManagedBrowserPoolKeys(join(directory, "host"));
+      poolHost = await startLoopbackPoolHost({
+        directory,
+        slotId: `bps_${randomUUID()}`,
+        term: 1,
+        registered: managedBrowserPoolRegistration(keys),
+      });
+      const parts1 = managedBrowserPool(poolHost.target, keys);
+      const coordinator1 = new BrowserPoolCoordinator({
+        database: host.store.database,
+        runnerId,
+        runtimeId: pooledBrowserRuntimeId,
+        slotId: poolHost.slotId,
+        term: poolHost.term,
+        runtime: parts1.runtime,
+        controller: parts1.controller,
+        idleParkMs: null,
+        retryMs: 25,
+        unansweredRetryMaxMs: 50,
+        statusEveryMs: 100,
+        onError: () => {},
+      });
+      let sessionId: ReturnType<typeof BrowserSessionIdSchema.parse>;
+      try {
+        host.browser.setPoolSigner(
+          new BrowserAttachTicketSigner({
+            keyId: keys.ticketKey.keyId,
+            privateKey: keys.ticketKey.key,
+          }),
+        );
+        await host.browser.adoptPool(runnerId, coordinator1);
+        await vi.waitFor(
+          async () => {
+            const st = await poolHost!.agent.agent.status(poolHost!.slotId, poolHost!.term);
+            expect(st.phase).toBe("running");
+          },
+          { timeout: 10_000 },
+        );
+        const profile = await host.store.createBrowserProfile({
+          ownerId,
+          name: "Crash Before Stop",
+          homeRunnerId: runnerId,
+          idempotencyKey: "pooled-crash-profile",
+        });
+        sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+        await host.store.database
+          .insertInto("browserSessions")
+          .values({
+            id: sessionId,
+            tabGroupId: sessionId,
+            origin: "person",
+            profileId: profile.id,
+            placementKey: `runner:${runnerId}`,
+            runnerId,
+            runtimeId: pooledBrowserRuntimeId,
+            state: "ready",
+            opener: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            closedAt: null,
+          })
+          .execute();
+        await host.store.database
+          .insertInto("browserPoolSessions")
+          .values({
+            sessionId,
+            runnerId,
+            slotId: poolHost.slotId,
+            term: poolHost.term,
+          })
+          .execute();
+
+        // Simulate a crash immediately after the archive transaction commits and before Stop runs.
+        await host.store.deleteBrowserProfile({ ownerId, profileId: profile.id });
+        // The Stop intent is already durable as `closing` (never `closed` without evidence).
+        expect(
+          (
+            await host.store.database
+              .selectFrom("browserSessions")
+              .select("state")
+              .where("id", "=", sessionId)
+              .executeTakeFirstOrThrow()
+          ).state,
+        ).toBe("closing");
+      } finally {
+        coordinator1.close();
+        await host.close();
+        host = undefined;
+      }
+
+      // Restart the Home against the same DB and running guest with browserPool enabled so real
+      // startup (`failActiveBrowserSessions(db, undefined, pooledRunner)`) runs and preserves
+      // the pooled `closing` row without failing it.
+      let targetResponse: ManagedBrowserPoolTargetResponse = { status: "preparing" };
+      const registeredKeys = managedBrowserPoolRegistration(keys);
+      const accountControlFetch: typeof globalThis.fetch = async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === managedBrowserPoolRegistrationPath && init?.method === "PUT") {
+          return Response.json(targetResponse);
+        }
+        if (url.pathname === managedBrowserPoolTargetPath) {
+          return Response.json(registeredKeys ? targetResponse : { status: "unregistered" });
+        }
+        return new Response("not found", { status: 404 });
+      };
+      const config2 = managedConfig(database.url, directory, await freePort(), {
+        browserPool: true,
+      });
+      const restartedEntry = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config2, {
+          personalAccountGrantFetch: jwksFetch(),
+          accountControlFetch,
+          managedBrowserPoolTiming: {
+            firstDelayMs: 50,
+            maxDelayMs: 150,
+            idleParkMs: 60_000,
+            statusEveryMs: 100,
+          },
+        });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        return { host: runtime, close: () => runtime.close() };
+      });
+      restarted = restartedEntry.host;
+      // Real startup preserved the pooled closing row (never failed it without evidence).
+      expect(
+        (
+          await restarted.store.database
+            .selectFrom("browserSessions")
+            .select("state")
+            .where("id", "=", sessionId!)
+            .executeTakeFirstOrThrow()
+        ).state,
+      ).toBe("closing");
+
+      const claimsBefore = poolHost.verifiedClaims.length;
+      targetResponse = { status: "ready", target: poolHost.target };
+      await vi.waitFor(
+        async () => {
+          const row = await restarted!.store.database
+            .selectFrom("browserSessions")
+            .select("state")
+            .where("id", "=", sessionId!)
+            .executeTakeFirstOrThrow();
+          expect(row.state).toBe("closed");
+        },
+        { timeout: 10_000 },
+      );
+      expect(
+        poolHost.verifiedClaims.slice(claimsBefore).some((claim) => claim.sessionId === sessionId),
+      ).toBe(true);
+    } finally {
+      await host?.close();
+      await restarted?.close();
+      await poolHost?.close();
+      await database.drop();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});

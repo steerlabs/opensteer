@@ -365,6 +365,47 @@ export async function deleteBrowserProfile(
   });
 }
 
+/**
+ * Marks live pooled sessions of `profileId` as `closing` inside the profile-deletion
+ * transaction so Stop intent cannot be lost across a crash before Stop runs (never `closed`
+ * without evidence, rule 3). Locks `browser_sessions` (rank 123) before `tab_layouts` (125)
+ * and `browser_profiles` (159).
+ */
+export async function markPooledProfileSessionsClosing(
+  transaction: Transaction<DatabaseSchema>,
+  profileId: BrowserProfileId,
+): Promise<void> {
+  const candidates = await transaction
+    .selectFrom("browserSessions")
+    .select("id")
+    .where("profileId", "=", profileId)
+    .where("state", "in", ["starting", "ready"])
+    .where(
+      sql<boolean>`(
+        exists (
+          select 1 from browser_pool_sessions own where own.session_id = browser_sessions.id
+        ) or exists (
+          select 1 from browser_pool_slots slot where slot.runner_id = browser_sessions.runner_id
+        )
+      )`,
+    )
+    .orderBy("id", "asc")
+    .forNoKeyUpdate()
+    .execute(databaseOperationOptions());
+  if (!candidates.length) return;
+  const now = new Date();
+  await transaction
+    .updateTable("browserSessions")
+    .set({ state: "closing", updatedAt: now })
+    .where(
+      "id",
+      "in",
+      candidates.map(({ id }) => id),
+    )
+    .where("state", "in", ["starting", "ready"])
+    .execute(databaseOperationOptions());
+}
+
 export async function deleteBrowserProfileInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -374,6 +415,8 @@ export async function deleteBrowserProfileInTransaction(
     readonly binding?: LocalProfileBinding;
     /** Pre-retired tab IDs when the caller already ran `removeProfileTabs` earlier in this transaction. */
     readonly retiredTabIds?: readonly TabId[];
+    /** True when the caller already ran `markPooledProfileSessionsClosing` earlier in this transaction. */
+    readonly pooledSessionsMarkedClosing?: boolean;
   },
 ): Promise<NativeProfileDeletionResult> {
   await assertPersonalOwner(transaction, input.ownerId);
@@ -390,6 +433,11 @@ export async function deleteBrowserProfileInTransaction(
   if (!owned) {
     throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
   }
+  // Persist Stop intent for pooled sessions before locking tab_layouts (125) and browser_profiles
+  // (159): lock order is browser_sessions (123) -> tab_layouts (125) -> personal_tabs (126) ->
+  // browser_profiles (159). Rows stay `closing` until the pool confirms their end with evidence.
+  if (!input.pooledSessionsMarkedClosing)
+    await markPooledProfileSessionsClosing(transaction, input.profileId);
   const live = await transaction
     .selectFrom("browserSessions")
     .select([
