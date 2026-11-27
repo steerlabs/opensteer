@@ -1,6 +1,7 @@
 import { DeviceAccessRefusal } from "../../administration/device-access.js";
 import { deviceRefusalSentence } from "../../devices/target-blocked.js";
 import { agentOperationEndingOf, utf8Prefix, OpensteerError } from "@opensteer/core";
+import { computerUseRequestMayHaveEffect } from "@opensteer/protocol";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { delay } from "@opensteer/shared/delay";
 import type { z } from "zod";
@@ -372,13 +373,19 @@ export class ReplService<Request extends AnyReplRequest> {
     }
     if (this.#events) return;
     const request = this.#request.parse(message.request);
-    const mutation =
-      ["click", "type", "key", "setValue", "scroll", "act"].includes(request.operation) ||
-      (call.context.connectedAgent &&
-        !call.context.readOnly &&
-        ["bind", "windows", "release"].includes(request.operation));
+    const windowOperation = request.operation === "bind" || request.operation === "windows";
+    const mutation = windowOperation
+      ? call.context.connectedAgent &&
+        computerUseRequestMayHaveEffect(
+          request.operation,
+          call.context.readOnly ? { noLaunch: true } : request.args,
+        )
+      : computerUseRequestMayHaveEffect(request.operation, request.args) ||
+        (call.context.connectedAgent && !call.context.readOnly && request.operation === "release");
     const markSubmitted =
-      mutation && call.context.tracksScriptSends && request.operation !== "release"
+      call.context.tracksScriptSends &&
+      request.operation !== "release" &&
+      (mutation || request.operation === "observe" || request.operation === "bind")
         ? () => call.mutationsInFlight.set(message.id, request.operation)
         : undefined;
     if (mutation && !markSubmitted) call.mutationsInFlight.set(message.id, request.operation);
@@ -396,7 +403,11 @@ export class ReplService<Request extends AnyReplRequest> {
               }),
             );
       if (this.#contexts.get(call.key)?.call !== call) return;
-      if (mutation && call.mutationsInFlight.delete(message.id) && call.context.connectedAgent) {
+      if (
+        (mutation || markSubmitted) &&
+        call.mutationsInFlight.delete(message.id) &&
+        call.context.connectedAgent
+      ) {
         // A release answers whether the Home relinquished a hold. Its device cleanup settles
         // separately, and an answer of false means there was no hold to relinquish.
         if (
@@ -476,7 +487,7 @@ export class ReplService<Request extends AnyReplRequest> {
         ...(value?.success ? { value: value.data } : {}),
       });
     } finally {
-      if (mutation) call.mutationsInFlight.delete(message.id);
+      if (mutation || markSubmitted) call.mutationsInFlight.delete(message.id);
     }
   }
   async #browserRequest(call: Call<Request>, message: { id: number; json: string }): Promise<void> {

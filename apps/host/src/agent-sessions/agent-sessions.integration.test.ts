@@ -697,12 +697,45 @@ describeStore("an external agent's direct work through sessions", (it) => {
     });
 
   it.for([
-    { method: "Accessibility.queryAXTree", sent: true, status: "failed", code: "deadline" },
-    { method: "Input.insertText", sent: false, status: "failed", code: "deadline" },
-    { method: "Input.insertText", sent: true, status: "unknown", code: "outcome-unknown" },
+    {
+      method: null,
+      sent: false,
+      completed: false,
+      status: "failed",
+      detail: "It changed nothing. It is safe to try again.",
+    },
+    {
+      method: "Accessibility.queryAXTree",
+      sent: true,
+      completed: false,
+      status: "failed",
+      detail: "1 action completed. The last was browser.open.",
+    },
+    {
+      method: "Input.insertText",
+      sent: false,
+      completed: false,
+      status: "failed",
+      detail: "1 action completed. The last was browser.open.",
+    },
+    {
+      method: "Accessibility.queryAXTree",
+      sent: true,
+      completed: true,
+      status: "failed",
+      detail: "2 actions completed. The last was Page.navigate. An action failed.",
+    },
+    {
+      method: "Input.insertText",
+      sent: true,
+      completed: false,
+      status: "unknown",
+      detail:
+        "A dispatched action may already have happened; observe before deciding what to do next.",
+    },
   ] as const)(
-    "records a script deadline with $method (sent: $sent) as $status",
-    async ({ method, sent, status, code }, { storeFixture }) => {
+    "records a script deadline with $method (sent: $sent, earlier input: $completed) as $status",
+    async ({ method, sent, completed, status, detail }, { storeFixture }) => {
       const f = await storeFixture.startRunFixture("pool-script-deadline");
       const identity = {
         runnerId: f.runnerId,
@@ -730,10 +763,24 @@ describeStore("an external agent's direct work through sessions", (it) => {
       const repl = new BrowserReplService({
         clock: { now: Date.now, schedule },
         port: {
-          listPages: async () => [],
-          openPage: async () => target,
+          listPages: async () => {
+            entered.resolve();
+            await reply.promise;
+            return [];
+          },
+          openPage: async (_tabId, call) => {
+            call.browserSend!.submitted();
+            call.browserSend!.acknowledged();
+            return target;
+          },
           newPage: async () => target,
-          command: async (_target, _method, _params, _session, call) => {
+          command: async (_target, command, _params, _session, call) => {
+            if (command === "Page.navigate" || command === "Input.dispatchKeyEvent") {
+              call.browserSend!.submitted();
+              call.browserSend!.acknowledged();
+              if (command === "Input.dispatchKeyEvent") throw new Error("Rejected input");
+              return "{}";
+            }
             if (sent) call.browserSend!.submitted();
             entered.resolve();
             return reply.promise;
@@ -745,18 +792,33 @@ describeStore("an external agent's direct work through sessions", (it) => {
         s.runBrowserScript.mockImplementation(({ code, signal, recheck, browserSend }) =>
           repl.execute("deadline", code, signal, undefined, recheck, browserSend),
         );
-        const running = s.call("browser_use", {
+        const args = {
           ...script,
-          code: `const page = await openPage("tab"); await page.cdp(${JSON.stringify(method)});`,
-        });
+          code: method
+            ? `const page = await openPage("tab");
+               ${completed ? 'await page.cdp("Page.navigate"); try { await page.cdp("Input.dispatchKeyEvent"); } catch {}' : ""}
+               await page.cdp(${JSON.stringify(method)});`
+            : "await pages();",
+        };
+        const running = s.call("browser_use", args);
         await entered.promise;
         schedule.mock.calls.at(-1)![0]();
-        expect(await running).toMatchObject({
+        const response = await running;
+        expect(response).toMatchObject({
           isError: true,
           structuredContent: {
             status,
-            error: { code },
-            ...(status === "failed" ? { next: "It is safe to try again." } : {}),
+            error: {
+              code: status === "failed" ? "deadline" : "outcome-unknown",
+              message: `Browser code reached its 100 second deadline. ${detail}`,
+            },
+            ...(status === "failed"
+              ? {
+                  next: method
+                    ? "Check the current state before trying again."
+                    : "It is safe to try again.",
+                }
+              : {}),
           },
         });
         expect(
@@ -766,6 +828,12 @@ describeStore("an external agent's direct work through sessions", (it) => {
             .where("tool", "=", "browser_use")
             .executeTakeFirstOrThrow(),
         ).toMatchObject({ state: status, outcome: status });
+        if (status === "failed") {
+          const receipt = response.structuredContent as Record<string, unknown>;
+          const replay = await s.call("browser_use", { ...args, operationId: receipt.operationId });
+          expect(replay).toMatchObject({ isError: true, structuredContent: receipt });
+          expect(s.runBrowserScript).toHaveBeenCalledTimes(1);
+        }
       } finally {
         reply.resolve("{}");
         await repl.close();

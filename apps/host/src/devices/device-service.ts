@@ -223,7 +223,7 @@ export interface ComputerSessionCaller {
   readonly readOnly: boolean;
   /** Re-admits the operation's session and target; called before every command. */
   readonly recheck: () => Promise<void>;
-  readonly submitted?: () => void;
+  readonly submitted?: (mayHaveEffect?: boolean) => void;
   readonly stopped?: () => never;
 }
 
@@ -2212,9 +2212,9 @@ export class DeviceService {
                     ...caller,
                     session: {
                       ...session,
-                      submitted: () => {
+                      submitted: (mayHaveEffect) => {
                         session.submitted?.();
-                        submitted();
+                        if (mayHaveEffect) submitted();
                       },
                     },
                   }
