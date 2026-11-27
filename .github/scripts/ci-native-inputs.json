@@ -605,6 +605,7 @@
     "packages/integration-core",
     "packages/messaging-module",
     "packages/orchestration",
+    "packages/plugin-engine",
     "packages/protocol",
     "packages/runner-auth",
     "packages/runner-client",
