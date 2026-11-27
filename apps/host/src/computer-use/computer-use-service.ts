@@ -1436,17 +1436,20 @@ export class ComputerUseService {
       submitted?: (() => void) | undefined;
     },
   ): Promise<void> {
+    const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
+    const current = this.#sessions.get(key) === session;
+    if (current) {
+      this.#sessions.delete(key);
+      session.cancellation.abort();
+    }
     if (options?.outcome && session.agentHold && !this.#closingSessions.has(session))
       session.agentHold.outcome ??= session.dispatched ? options.outcome : "ended";
     const closing =
       session.agentHold || (options?.close && session.dispatched)
         ? this.#deliverClose(session, options?.submitted)
         : Promise.resolve();
-    const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
-    if (this.#sessions.get(key) !== session) return closing;
-    this.#sessions.delete(key);
+    if (!current) return closing;
     this.#scheduleSweep();
-    session.cancellation.abort();
     this.#onSessionEnded(session.sessionId);
     for (const app of session.apps)
       this.#publishPlaceActivity(session, computerAppIdentityKey(app), true);
@@ -1711,11 +1714,9 @@ export class ComputerUseService {
   }
 
   /**
-   * Tells the Mac a forgotten session is over, and keeps telling it on the
-   * minute sweep until it answers. A close that is lost would otherwise leave
-   * the Mac's session, and the outline the person sees, up until its idle
-   * lease ends. A Mac that went offline ended its sessions with its
-   * connection, so there is nothing left to tell it.
+   * Shares the pending close with Stop, Disconnect and the minute sweep.
+   * For a tracked hold, a refusal can be retried but an unknown outcome
+   * only needs its evidence saved.
    */
   #deliverClose(session: Session, submitted?: () => void): Promise<void> {
     const existing = this.#closingSessions.get(session);
