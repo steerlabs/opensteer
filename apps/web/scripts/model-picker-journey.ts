@@ -21,7 +21,7 @@ try {
     page.setDefaultTimeout(10000);
     await check(`${width}: menu and settings`, async () => {
       await page.goto(`${web.origin}/composer-visual.html`);
-      const button = page.getByRole("button", { name: /^Engine and model:/ });
+      const button = page.getByRole("button", { name: /^Agent and model:/ });
       await button.waitFor();
       await page.screenshot({ path: path.join(directory, `${width}-rest.png`) });
       const footer = await page.locator(".composer__footer").evaluate((element) => {
@@ -38,7 +38,7 @@ try {
       });
       expectThat({ footer }, !footer.overlaps, "Footer controls overlap");
       await button.click();
-      const menu = page.getByRole("dialog", { name: "Choose an engine and model" });
+      const menu = page.getByRole("dialog", { name: "Choose an agent and model" });
       await menu.waitFor();
       await page.screenshot({ path: path.join(directory, `${width}-menu.png`) });
       await page.screenshot({ path: path.join(directory, `${width}-sheet.png`) });
@@ -146,7 +146,8 @@ try {
       const draft = page.getByRole("textbox", { name: "Message", exact: true });
       await draft.fill("Keep this draft");
       await notice.getByRole("button", { name: "Dismiss usage notice", exact: true }).click();
-      expectThat({}, (await draft.inputValue()) === "Keep this draft", "Dismissal lost the draft");
+      // The composer's field is a contenteditable editor (8dfd39a3c): its text is the draft.
+      expectThat({}, (await draft.textContent()) === "Keep this draft", "Dismissal lost the draft");
       expectThat(
         {},
         await draft.evaluate((element) => element === document.activeElement),
@@ -154,7 +155,7 @@ try {
       );
       await notice.waitFor({ state: "hidden" });
       await page.reload();
-      await page.getByRole("button", { name: /^Engine and model:/ }).waitFor();
+      await page.getByRole("button", { name: /^Agent and model:/ }).waitFor();
       expectThat({}, (await notice.count()) === 0, "Dismissal was not kept after reload");
       return { width };
     });
@@ -163,11 +164,11 @@ try {
         `${web.origin}/composer-visual.html?variant=conversation&voice&running${width >= 768 ? "&pane" : ""}`,
       );
       const field = page.getByRole("textbox", { name: "Message", exact: true });
-      await page.getByRole("button", { name: /^Engine and model:/ }).waitFor();
+      await page.getByRole("button", { name: /^Agent and model:/ }).waitFor();
       const layout = () =>
         page.locator(".composer").evaluate((composer) => {
-          const input = composer.querySelector<HTMLTextAreaElement>("textarea")!;
-          const entry = input.parentElement!;
+          const input = composer.querySelector<HTMLElement>(".composer__input")!;
+          const entry = composer.querySelector<HTMLElement>(".composer__entry")!;
           const css = getComputedStyle(input);
           const available =
             entry.clientWidth -
@@ -236,18 +237,15 @@ try {
       return { empty, written, cleared };
     });
     if (width < 600) {
-      // Who does the task folds to its mark before the model's name goes:
-      // the placeholder already names them.
-      await check(`${width}: model name outranks the assignee`, async () => {
+      // A narrow new task still names its model. (The assignee chip this once outranked was
+      // removed with one person, one agent: 97dcf9dde; the folder chip with task folders:
+      // ef2d57efc.)
+      await check(`${width}: the model's name stays on a narrow new task`, async () => {
         await page.goto(`${web.origin}/new`);
-        await page.getByRole("button", { name: /^Engine and model:/ }).waitFor();
+        await page.getByRole("button", { name: /^Agent and model:/ }).waitFor();
         const fold = await page.evaluate(() =>
           Object.fromEntries(
-            [
-              ["chip", ".assignee__button"],
-              ["assigneeShown", ".assignee__name"],
-              ["modelShown", ".exec-pill__label"],
-            ].map(([key, selector]) => {
+            [["modelShown", ".exec-pill__label"]].map(([key, selector]) => {
               const element = document.querySelector<HTMLElement>(selector!);
               return [
                 key,
@@ -256,7 +254,7 @@ try {
             }),
           ),
         );
-        expectThat(fold, fold.chip && fold.modelShown, "The model's name gave way first");
+        expectThat(fold, fold.modelShown, "The model's name is not shown");
         await page.screenshot({ path: path.join(directory, `${width}-new-task.png`) });
         return fold;
       });
@@ -266,8 +264,8 @@ try {
       // task, so a menu that looks right but never reaches the Host fails here.
       await check(`${width}: real task carries the chosen settings`, async () => {
         await page.goto(`${web.origin}/new`);
-        const button = page.getByRole("button", { name: /^Engine and model:/ });
-        const menu = page.getByRole("dialog", { name: "Choose an engine and model" });
+        const button = page.getByRole("button", { name: /^Agent and model:/ });
+        const menu = page.getByRole("dialog", { name: "Choose an agent and model" });
         await button.click();
         await menu.getByRole("button", { name: /Full access ·/ }).click();
         await menu.getByRole("radio", { name: /alex@opensteer\.test/ }).click();
