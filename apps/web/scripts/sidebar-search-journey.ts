@@ -517,11 +517,14 @@ try {
       await page.waitForTimeout(600);
       const row = page.locator(".sidebar__lists .side-tab__main").first();
       await row.focus();
-      const before = await page.evaluate(() =>
-        [...document.querySelectorAll<HTMLElement>(".sidebar__lists .side-list")].map(
+      // Focus scrolls the row into view, and the Tabs list, which draws only the rows in view,
+      // measures them again in the next frame: where the lists stand is where they rest after.
+      const before = await page.evaluate(async () => {
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return [...document.querySelectorAll<HTMLElement>(".sidebar__lists .side-list")].map(
           (list) => list.scrollTop,
-        ),
-      );
+        );
+      });
       const opener = await focused(page);
       await search(page, "a");
       await shot(page, "06-searching.png");
@@ -603,7 +606,7 @@ try {
     return { empty: found.empty };
   });
 
-  await check("Tabs runs to the footer's line at every height, the one line there", async () => {
+  await check("Tabs runs to the footer's line at every height; Tasks scrolls freely", async () => {
     const observed: Record<string, unknown> = {};
     for (const height of [1000, 800, 640]) {
       await page.setViewportSize({ width: 1440, height });
@@ -613,23 +616,12 @@ try {
         const tasks = document.querySelector<HTMLElement>(".side-section--tasks .side-list")!;
         const footer = document.querySelector<HTMLElement>(".sidebar__footer")!;
         const box = list.getBoundingClientRect();
-        const tasksBox = tasks.getBoundingClientRect();
-        const style = getComputedStyle(tasks);
-        const tasksTop = tasksBox.top + parseFloat(style.borderTopWidth);
-        const tasksBottom = tasksBox.bottom - parseFloat(style.borderBottomWidth);
-        const tasksParts = [...tasks.children].filter((row) => {
-          const r = row.getBoundingClientRect();
-          const seen = Math.min(r.bottom, tasksBottom) - Math.max(r.top, tasksTop);
-          return (
-            r.height >= 2 && seen > 0.5 && (r.top < tasksTop - 0.5 || r.bottom > tasksBottom + 0.5)
-          );
-        }).length;
         return {
           overflows: list.scrollHeight > list.clientHeight + 0.5,
           band: footer.getBoundingClientRect().top - box.bottom,
           listLine: getComputedStyle(list).borderBottomWidth,
           footerLine: getComputedStyle(footer).borderTopWidth,
-          tasksParts,
+          tasksSnap: getComputedStyle(tasks).scrollSnapType,
         };
       });
       // Scrolled to its end, its last row stands whole on the footer's line.
@@ -661,10 +653,43 @@ try {
           edge.footerLine === "1px",
         `at ${height}px Tabs stops short of the footer's line, or draws its own`,
       );
+      // Tasks' rows differ in height, so no snap could land on them without moving the list
+      // after the person lets go: Tasks scrolls freely, a row may show in part at its edges,
+      // and it stays where a scroll stops.
+      const tasks = page.locator(".side-section--tasks .side-list");
+      const toTop = () =>
+        tasks.evaluate(
+          (node) =>
+            new Promise<void>((resolve) => {
+              if (node.scrollTop === 0) return resolve();
+              node.addEventListener("scrollend", () => resolve(), { once: true });
+              setTimeout(resolve, 2000);
+              node.scrollTop = 0;
+            }),
+        );
+      await toTop();
+      const tasksBox = (await tasks.boundingBox())!;
+      await page.mouse.move(tasksBox.x + tasksBox.width / 2, tasksBox.y + tasksBox.height / 2);
+      const ended = tasks.evaluate(
+        (node) =>
+          new Promise<boolean>((resolve) => {
+            node.addEventListener("scrollend", () => resolve(true), { once: true });
+            setTimeout(() => resolve(false), 2000);
+          }),
+      );
+      // Part of a row's pitch, so the scroll stops between rows.
+      await page.mouse.wheel(0, 50);
+      const scrollEnded = await ended;
+      const stopped = await tasks.evaluate((node) => node.scrollTop);
+      // Well past any settling a script could do once the scroll is still.
+      await page.waitForTimeout(500);
+      const later = await tasks.evaluate((node) => node.scrollTop);
+      await toTop();
+      observed[height] = { ...edge, end, tasksScroll: { scrollEnded, stopped, later } };
       expectThat(
-        { height, edge },
-        edge.tasksParts === 0,
-        `at ${height}px Tasks shows a row in part`,
+        { height, tasksSnap: edge.tasksSnap, scrollEnded, stopped, later },
+        edge.tasksSnap === "none" && scrollEnded && stopped > 0 && Math.abs(later - stopped) < 0.5,
+        `at ${height}px Tasks snaps, or moves after its scroll stopped`,
       );
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
