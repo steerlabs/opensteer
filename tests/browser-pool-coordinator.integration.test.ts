@@ -3034,6 +3034,7 @@ it("delivers a refusal after an outage without waiting for the database announce
     let refusalReturned = false;
     let releaseAnnounce: (() => void) | undefined;
     let holdNextAnnounce = false;
+    const announceHeld = Promise.withResolvers<void>();
     const rawConnection = f.database.connection.bind(f.database);
     vi.spyOn(f.database, "connection").mockImplementation(() => {
       const builder = rawConnection();
@@ -3041,9 +3042,11 @@ it("delivers a refusal after an outage without waiting for the database announce
       builder.execute = async (...args) => {
         if (holdNextAnnounce) {
           holdNextAnnounce = false;
-          await new Promise<void>((resolve) => {
+          const held = new Promise<void>((resolve) => {
             releaseAnnounce = resolve;
           });
+          announceHeld.resolve();
+          await held;
         }
         return rawExecute(...args);
       };
@@ -3101,12 +3104,24 @@ it("delivers a refusal after an outage without waiting for the database announce
     await vi.waitFor(() => expect(home.report()?.unreachable).toBe(true), { timeout: 2_000 });
 
     // Now the host answers with a refusal while the DB announce is stalled: the waiting caller
-    // must receive BrowserPoolAttemptRefused immediately, not miss its deadline waiting on #announce.
+    // receives BrowserPoolAttemptRefused when the refusal is delivered, not once #announce ends
+    // (by its statement or its own bound). Said as order, not time: the caller has no deadline,
+    // and it has the refusal by the time the held announce began and what was queued then ran.
     mode = "refuse";
+    let delivered: unknown;
+    const waiting = home.gate.reserve(new AbortController().signal, { failOnRefusal: true }).then(
+      (reservation) => {
+        reservation.release();
+        delivered = "admitted";
+      },
+      (error: unknown) => {
+        delivered = error;
+      },
+    );
     try {
-      await expect(
-        home.gate.reserve(AbortSignal.timeout(250), { failOnRefusal: true }),
-      ).rejects.toMatchObject({
+      await announceHeld.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(delivered).toMatchObject({
         name: "BrowserPoolAttemptRefused",
         refusedReason: "egress-required",
       });
@@ -3114,6 +3129,7 @@ it("delivers a refusal after an outage without waiting for the database announce
       expect(home.report()?.refused).toBe("egress-required");
     } finally {
       releaseAnnounce?.();
+      await waiting;
     }
   } finally {
     await f.close();
