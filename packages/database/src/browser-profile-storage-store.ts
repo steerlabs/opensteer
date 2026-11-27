@@ -1,6 +1,12 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
-import { OpensteerError, type BrowserProfileId, type RunnerId, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  type BrowserProfileId,
+  type RunnerId,
+  type TabId,
+  type UserId,
+} from "@opensteer/core";
 import {
   BrowserProfileStorageSchema,
   type BrowserProfileStorage,
@@ -11,13 +17,18 @@ import {
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { randomUUID } from "node:crypto";
-import { deleteBrowserProfileInTransaction } from "./browser-session-store.js";
+import {
+  deleteBrowserProfileInTransaction,
+  type BrowserSessionRecord,
+} from "./browser-session-store.js";
 
 import { databaseOperationOptions } from "./operation-budget.js";
 import type { BrowserProfileDeletionTable, BrowserProfileTable, DatabaseSchema } from "./schema.js";
 
 export interface NativeProfileDeletionResult {
   readonly sessionIds: readonly BrowserSessionId[];
+  readonly sessions?: readonly BrowserSessionRecord[];
+  readonly retiredTabIds?: readonly TabId[];
   readonly deletion?: PendingBrowserProfileDeletion;
 }
 

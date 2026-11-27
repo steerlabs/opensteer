@@ -94,6 +94,7 @@ it("archives a profile's saved tabs and history while retaining its exact native
     ).rejects.toThrow();
     const removed = await deleteBrowserProfile(database, { ownerId: p.userId, profileId });
     expect(removed.sessionIds).toEqual([sessionId]);
+    expect(removed.retiredTabIds).toEqual([tabId]);
     expect(removed.deletion).toEqual({
       profileId,
       computerId: p.runnerId,
@@ -103,14 +104,13 @@ it("archives a profile's saved tabs and history while retaining its exact native
     expect(await database.selectFrom("browserHistoryEntries").selectAll().execute()).toEqual([]);
     expect(await database.selectFrom("browserHistoryIcons").selectAll().execute()).toEqual([]);
     expect(
-      (
-        await database
-          .selectFrom("personalTabs")
-          .select("closedAt")
-          .where("id", "=", tabId)
-          .executeTakeFirstOrThrow()
-      ).closedAt,
-    ).toBeNull();
+      await database
+        .selectFrom("personalTabs")
+        .select("id")
+        .where("id", "=", tabId)
+        .executeTakeFirst(),
+    ).toBeUndefined();
+    expect((await new TabStore(database).snapshot(p.userId)).layout.items).toEqual([]);
     expect(await listBrowserProfileErasureJobs(database, p.runnerId)).toMatchObject([{ binding }]);
     await database.transaction().execute(async (tx) => {
       const now = new Date();

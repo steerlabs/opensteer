@@ -359,10 +359,16 @@ integration("production tab authority", () => {
         .execute();
       const person = { kind: "person", ownerId: t.run.userId } as const;
       const row = async () => (await t.store.get(t.run.userId, id))!;
-      // Before deletion the Run reaches the tab.
+      // Before archiving the Run reaches the tab.
       expect(await canReadTab(t.actor, await row(), t.f.database)).toBe(true);
       await authorizeTabTarget(t.actor, await row(), t.f.database);
-      await t.f.store.deleteBrowserProfile({ ownerId: t.run.userId, profileId: profile.id });
+      // Archive the profile row directly to verify tab authority still refuses any stale tab row
+      // belonging to an archived profile.
+      await t.f.database
+        .updateTable("browserProfiles")
+        .set({ archivedAt: new Date() })
+        .where("id", "=", profile.id)
+        .execute();
       expect(
         (await t.f.database
           .selectFrom("browserProfiles")
