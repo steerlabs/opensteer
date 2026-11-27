@@ -1694,9 +1694,36 @@ async function commandReach(
   });
   const granted = (target: AgentGrantTarget | null) =>
     !selected || (target !== null && authorizeTarget(execution, target) !== null);
-  const profile = async (profileId: string): Promise<boolean> =>
-    granted({ kind: "browser-profile", profileId }) &&
-    (await activeOwnedBrowserProfile(database, owner, profileId));
+  const profile = async (profileId: string): Promise<boolean> => {
+    if (!granted({ kind: "browser-profile", profileId })) return false;
+    const idempotencyKey =
+      "idempotencyKey" in command && typeof command.idempotencyKey === "string"
+        ? command.idempotencyKey
+        : null;
+    if (idempotencyKey === null) return activeOwnedBrowserProfile(database, owner, profileId);
+    // An active owned profile is in reach; an archived owned profile is reached only by a retry
+    // carrying the idempotency key that deleted it (for idempotent replay or key-reuse conflict).
+    const row = await database
+      .selectNoFrom(
+        sql<boolean>`exists (
+          select 1 from browser_profiles
+          where id = ${profileId}
+            and owner_id = ${owner}
+            and (
+              archived_at is null
+              or exists (
+                select 1 from commands
+                where requested_by = ${owner}
+                  and idempotency_key = ${idempotencyKey}
+                  and type = 'browser.profile.delete'
+                  and payload->'request'->>'profileId' = ${profileId}
+              )
+            )
+        )`.as("active"),
+      )
+      .executeTakeFirst();
+    return row?.active === true;
+  };
   /** Tabs by id: every one the owner's in an active profile (or Guest), and under a selected grant in a profile it holds. */
   const tabsReach = async (ids: readonly string[]): Promise<CommandReach> => {
     const tabs = await database
