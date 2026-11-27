@@ -207,6 +207,8 @@ try {
 
   await check("the filter menu fits in the narrow sidebar drawer", async () => {
     await page.setViewportSize({ width: 390, height: 844 });
+    // ⌘K opens the drawer's search only once the narrow layout has taken effect.
+    await page.getByRole("button", { name: /^Open sidebar/ }).waitFor();
     await page.keyboard.press("Meta+k");
     await page.getByRole("combobox", { name: "Search tasks and tabs" }).waitFor();
     await page.keyboard.press("Escape");
@@ -329,18 +331,35 @@ try {
                 clear: rect(".side-tab-filter__clear"),
                 newTab: rect('[aria-label="New tab"]'),
                 list: rect(".side-list"),
+                // The rows the person sees. The list's scroll box reaches into the section's
+                // padding for its gutter, and past the 2px padding Tabs has had since
+                // 4aa249227, but nothing is drawn there.
+                rows: (() => {
+                  const rows = [...section.querySelectorAll<HTMLElement>(".side-list > li")].map(
+                    (row) => row.getBoundingClientRect(),
+                  );
+                  return {
+                    count: rows.length,
+                    left: Math.min(...rows.map((row) => row.left)),
+                    right: Math.max(...rows.map((row) => row.right)),
+                  };
+                })(),
+                rim: parseFloat(getComputedStyle(section).borderRightWidth),
                 label: { width: label.clientWidth, scrollWidth: label.scrollWidth },
               };
             });
             const entry = { name, layout, ...bounds };
             observed.push(entry);
-            const { section, heading, title, filter, clear, newTab, list, label } = bounds;
+            const { section, heading, title, filter, clear, newTab, list, rows, rim, label } =
+              bounds;
             expectThat(
               entry,
               heading.left >= section.left &&
                 heading.right <= section.right &&
                 list.left >= section.left &&
-                list.right <= section.right &&
+                rows.count > 0 &&
+                rows.left >= section.left + rim &&
+                rows.right <= section.right - rim &&
                 title.width > 0 &&
                 title.right <= filter.left &&
                 filter.right <= clear.left &&
@@ -365,6 +384,8 @@ try {
           );
           await measure("minimum");
           await sample.setViewportSize({ width: 390, height: 844 });
+          // ⌘K opens the drawer's search only once the narrow layout has taken effect.
+          await sample.getByRole("button", { name: /^Open sidebar/ }).waitFor();
           await sample.keyboard.press("Meta+k");
           await sample.getByRole("combobox", { name: "Search tasks and tabs" }).waitFor();
           await sample.keyboard.press("Escape");
