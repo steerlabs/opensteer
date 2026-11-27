@@ -1863,10 +1863,11 @@ async function commandReach(
       return tabsReach(ids);
     }
     case "tab-group": {
-      // A group is reached only when every tab in it is (in an active owned profile or Guest, and
-      // under a selected grant through the profiles it holds; never an empty one for selected),
-      // decided in one statement whatever the group is: a hidden group does the same work as a
-      // missing one and answers the same (A6, rule 5).
+      // A group is reached only when every tab in it is: none of its tabs is in an archived
+      // profile, and under a selected grant every one is a tab in a profile it holds (never an
+      // empty group). A member with no tab row hides the group from a selected grant only, as
+      // before. Decided in one statement whatever the group is: a hidden group does the same work
+      // as a missing one and answers the same (A6, rule 5).
       const grantedProfiles = selected
         ? (connection?.grant.scope === "selected" ? connection.grant.resources : [])
             .flatMap((entry) => (entry.kind === "browser-profile" ? [entry.profileId] : []))
@@ -1892,8 +1893,7 @@ async function commandReach(
                 on profile.id = tab.profile_id
                   and profile.owner_id = ${owner}
                   and profile.archived_at is null
-              where tab.id is null
-                or (tab.profile_id is not null and profile.id is null)
+              where (tab.profile_id is not null and profile.id is null)
                 or (${selected}
                   and (tab.profile_id is null or not (tab.profile_id = any(${grantedProfiles}::text[])))))
         ) as reach
