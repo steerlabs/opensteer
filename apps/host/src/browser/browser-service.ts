@@ -601,17 +601,17 @@ export interface BrowserSessionRepository {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
     readonly state: Exclude<HostedBrowserSessionState, "closed">;
-    readonly notifyTabs?: boolean;
   }): Promise<{
     readonly session: BrowserSessionRecord;
+    readonly profileArchived?: boolean;
   }>;
   /** A session that is not pooled; a pooled one is refused by the store's own statement. */
   closeUnpooledBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
-    readonly notifyTabs?: boolean;
   }): Promise<{
     readonly session: BrowserSessionRecord;
+    readonly profileArchived?: boolean;
   }>;
 }
 
@@ -1060,7 +1060,6 @@ export class BrowserService {
     options?: { readonly tabs?: boolean },
   ) => void;
   /** Sessions being stopped after their profile's archive already retired and announced their tabs. */
-  readonly #retiredProfileSessions = new Set<BrowserSessionId>();
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
   readonly #onProfileArchived: NonNullable<BrowserServiceOptions["onProfileArchived"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
@@ -2252,20 +2251,15 @@ export class BrowserService {
     this.invalidatePlaceAuthority();
     // Stop the sessions that were live when the archive committed directly from their records:
     // `stop()` looks up `getBrowserSessionForOwner`, which filters out archived profiles.
-    // The archive commit already retired and announced their tabs; suppress duplicate tab notices
-    // while keeping session `browser-placement` and `browser-availability` notices.
-    const retiredSessionIds = sessions ? sessions.map((session) => session.id) : sessionIds;
-    for (const id of retiredSessionIds) this.#retiredProfileSessions.add(id);
-    let stops: PromiseSettledResult<void>[];
-    try {
-      stops = await Promise.allSettled(
-        sessions
-          ? sessions.map((session) => this.#stopDeletedProfileSession(session))
-          : sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
-      );
-    } finally {
-      for (const id of retiredSessionIds) this.#retiredProfileSessions.delete(id);
-    }
+    // The archive commit already retired and announced their tabs; durable archive state
+    // (`browser_profiles.archived_at is not null`) suppresses duplicate tab notices across
+    // synchronous teardown, async pool endings, and Home restarts while keeping session
+    // `browser-placement` and `browser-availability` notices.
+    const stops = await Promise.allSettled(
+      sessions
+        ? sessions.map((session) => this.#stopDeletedProfileSession(session))
+        : sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
+    );
     for (const stop of stops) if (stop.status === "rejected") this.#onError(stop.reason);
     if (retiredTabIds?.length) {
       this.#onHoldsDropped(input.ownerId, retiredTabIds);
@@ -10374,7 +10368,6 @@ export class BrowserService {
     const pooled =
       (pool !== undefined && record.runtimeId === pool.runtimeId) ||
       (this.#pooledRunner !== undefined && record.runnerId === this.#pooledRunner);
-    const notifyTabs = !this.#retiredProfileSessions.has(record.id);
     if (pooled && this.#repository instanceof OpensteerStore) {
       // "The person asked to stop" is durable before the Stop returns, whatever a broker of it
       // is doing (one already finishing a lost channel included, W2): under the slot's lock,
@@ -10384,13 +10377,13 @@ export class BrowserService {
         : await stopBrowserPoolSession(this.#repository.database, {
             sessionId: record.id,
             runnerId: record.runnerId,
-            ...(notifyTabs ? {} : { notifyTabs: false }),
           });
-      if (written) this.#onSessionsChanged([record.id], notifyTabs ? undefined : { tabs: false });
+      if (written)
+        this.#onSessionsChanged([record.id], written.profileArchived ? { tabs: false } : undefined);
       // Its channel, if it has one, is closed as a Stop closes it; the runtime's own `closed`,
       // or the end step's answer, ends the row.
       if (broker) await (broker.pooled ? broker.stopWithReceipt(5_000) : broker.stop());
-      if (written === "closing" || broker?.pooled) pool?.stopped();
+      if (written?.state === "closing" || broker?.pooled) pool?.stopped();
       return;
     }
     if (broker) {
@@ -10446,16 +10439,9 @@ export class BrowserService {
           readonly evidence: "not-pooled";
         },
   ): Promise<BrowserSessionRecord> {
-    const notifyTabs = !this.#retiredProfileSessions.has(input.sessionId);
     if (input.state === "closed" && input.evidence !== "not-pooled") {
       const database = (this.#repository as OpensteerStore).database;
-      await closeBrowserPoolSessions(
-        database,
-        input.target,
-        [input.sessionId],
-        input.evidence,
-        notifyTabs,
-      );
+      await closeBrowserPoolSessions(database, input.target, [input.sessionId], input.evidence);
       const owner = await readBrowserPoolOwner(database);
       const row = owner
         ? await getBrowserPoolSessionForTeardown(database, {
@@ -10465,10 +10451,7 @@ export class BrowserService {
           })
         : null;
       if (!row) throw new Error("The pooled browser session is gone.");
-      this.#onSessionsChanged(
-        [row.id],
-        notifyTabs && !row.profileArchived ? undefined : { tabs: false },
-      );
+      this.#onSessionsChanged([row.id], row.profileArchived ? { tabs: false } : undefined);
       return row;
     }
     const { from, sessionId } = input;
@@ -10479,15 +10462,16 @@ export class BrowserService {
         ? await this.#repository.closeUnpooledBrowserSession({
             ...(from ? { from } : {}),
             sessionId,
-            ...(notifyTabs ? {} : { notifyTabs: false }),
           })
         : await this.#repository.transitionBrowserSession({
             ...(from ? { from } : {}),
             sessionId,
             state: input.state,
-            ...(notifyTabs ? {} : { notifyTabs: false }),
           });
-    this.#onSessionsChanged([transitioned.session.id], notifyTabs ? undefined : { tabs: false });
+    this.#onSessionsChanged(
+      [transitioned.session.id],
+      transitioned.profileArchived ? { tabs: false } : undefined,
+    );
     return transitioned.session;
   }
 

@@ -2022,14 +2022,20 @@ export async function failActiveBrowserSessions(
   }
   let sessionIds: BrowserSessionId[] = [];
   return commitPersonalMutation(database, async (transaction, mutation) => {
-    sessionIds = (
-      await transaction
-        .selectFrom("browserSessions")
-        .select("id")
-        .where("state", "in", ["starting", "ready", "closing"])
-        .$if(placementKey !== undefined, (query) => query.where("placementKey", "=", placementKey!))
-        .$if(pooledRunner !== undefined, (query) =>
-          query.where(sql<boolean>`
+    const locked = await transaction
+      .selectFrom("browserSessions")
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.id",
+        "browserSessions.profileId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
+      .where("browserSessions.state", "in", ["starting", "ready", "closing"])
+      .$if(placementKey !== undefined, (query) =>
+        query.where("browserSessions.placementKey", "=", placementKey!),
+      )
+      .$if(pooledRunner !== undefined, (query) =>
+        query.where(sql<boolean>`
           not (
             -- A pooled session a Stop left closing ends only with evidence about its own target
             -- (W14): known by its own binding, whether or not a slot row exists today (mid-swap,
@@ -2054,11 +2060,12 @@ export async function failActiveBrowserSessions(
               )
           )
         `),
-        )
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
-        .execute(databaseOperationOptions())
-    ).map(({ id }) => id);
+      )
+      .orderBy("browserSessions.id", "asc")
+      .forNoKeyUpdate("browserSessions")
+      .execute(databaseOperationOptions());
+    sessionIds = locked.map(({ id }) => id);
+    const lockedById = new Map(locked.map((row) => [row.id, row]));
     if (sessionIds.length === 0) return { failed: 0 };
     let transactionalUpdate = transaction
       .updateTable("browserSessions")
@@ -2130,7 +2137,11 @@ export async function failActiveBrowserSessions(
     if (failed.length) {
       mutation.bumpResource("browser-placement");
       mutation.bumpResource("browser-availability");
-      mutation.bumpResource("tab");
+      const notifyTabs = failed.some(({ id }) => {
+        const row = lockedById.get(id);
+        return !row || row.profileId === null || row.profileArchivedAt === null;
+      });
+      if (notifyTabs) mutation.bumpResource("tab");
     }
     return { failed: failed.length };
   });
@@ -2147,10 +2158,10 @@ export async function transitionBrowserSession(
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
     readonly state: Exclude<HostedBrowserSessionState, "closed">;
-    readonly notifyTabs?: boolean;
   },
 ): Promise<{
   readonly session: BrowserSessionRecord;
+  readonly profileArchived: boolean;
 }> {
   return writeBrowserSessionState(database, input, false);
 }
@@ -2165,10 +2176,10 @@ export async function closeUnpooledBrowserSession(
   input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
-    readonly notifyTabs?: boolean;
   },
 ): Promise<{
   readonly session: BrowserSessionRecord;
+  readonly profileArchived: boolean;
 }> {
   return writeBrowserSessionState(database, { ...input, state: "closed" }, true);
 }
@@ -2179,19 +2190,26 @@ async function writeBrowserSessionState(
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
     readonly state: HostedBrowserSessionState;
-    readonly notifyTabs?: boolean;
   },
   unpooledOnly: boolean,
 ): Promise<{
   readonly session: BrowserSessionRecord;
+  readonly profileArchived: boolean;
 }> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
-    await transaction
+    const locked = await transaction
       .selectFrom("browserSessions")
-      .select("id")
-      .where("id", "=", input.sessionId)
-      .forNoKeyUpdate()
-      .execute(databaseOperationOptions());
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.id",
+        "browserSessions.profileId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
+      .where("browserSessions.id", "=", input.sessionId)
+      .forNoKeyUpdate("browserSessions")
+      .executeTakeFirst(databaseOperationOptions());
+    const profileArchived =
+      locked !== undefined && locked.profileId !== null && locked.profileArchivedAt !== null;
 
     const now = new Date();
     let update = transaction
@@ -2245,8 +2263,8 @@ async function writeBrowserSessionState(
       }
       mutation.bumpResource("browser-placement");
       mutation.bumpResource("browser-availability");
-      if (input.notifyTabs !== false) mutation.bumpResource("tab");
-      return { session: row };
+      if (!profileArchived) mutation.bumpResource("tab");
+      return { session: row, profileArchived };
     }
     const existing = await transaction
       .selectFrom("browserSessions")
@@ -2268,10 +2286,10 @@ async function writeBrowserSessionState(
       throw new OpensteerError({ code: "not_found", message: "Browser session not found" });
     }
     if (existing.state === "closed" || existing.state === "failed") {
-      return { session: existing };
+      return { session: existing, profileArchived };
     }
     if (existing.state === input.state) {
-      return { session: existing };
+      return { session: existing, profileArchived };
     }
     throw new OpensteerError({
       code: "conflict",

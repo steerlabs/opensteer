@@ -408,9 +408,10 @@ export async function stopBrowserPoolSession(
   input: {
     readonly sessionId: BrowserSessionId;
     readonly runnerId: RunnerId;
-    readonly notifyTabs?: boolean;
   },
-): Promise<"closing" | "closed" | undefined> {
+): Promise<
+  { readonly state: "closing" | "closed"; readonly profileArchived: boolean } | undefined
+> {
   return commitPersonalMutation(
     database,
     async (tx) => {
@@ -423,37 +424,39 @@ export async function stopBrowserPoolSession(
         .executeTakeFirst(databaseOperationOptions());
       const row = await tx
         .selectFrom("browserSessions")
-        .select(["state", ownedBy(slot ?? { slotId: "", term: 1 }).as("own")])
-        .where("id", "=", input.sessionId)
+        .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+        .select([
+          "browserSessions.state",
+          "browserSessions.profileId",
+          "browserProfiles.archivedAt as profileArchivedAt",
+          ownedBy(slot ?? { slotId: "", term: 1 }).as("own"),
+        ])
+        .where("browserSessions.id", "=", input.sessionId)
         .executeTakeFirst(databaseOperationOptions());
       // Closed on a parked guest only when the session is that guest's (W1); a session of an
       // earlier target, or one with no slot here, is closing until its own evidence.
       const state =
         slot?.phase === "parked" && row?.own ? ("closed" as const) : ("closing" as const);
       if (!row || row.state === "closed" || row.state === "failed") return undefined;
-      if (row.state === state) return state;
+      const profileArchived = row.profileId !== null && row.profileArchivedAt !== null;
+      if (row.state === state) return { state, profileArchived };
       // On a parked guest the Stop is answered by the pause itself: the next wake ends the
       // session in the guest before it serves anyone (V2).
       if (state === "closed")
-        await endBrowserPoolSessions(
-          tx,
-          [
-            {
-              id: input.sessionId,
-              from: ["starting", "ready", "closing"],
-              end: { state: "closed", evidence: { kind: "guest-paused" }, target: slot! },
-            },
-          ],
-          input.notifyTabs,
-        );
+        await endBrowserPoolSessions(tx, [
+          {
+            id: input.sessionId,
+            from: ["starting", "ready", "closing"],
+            end: { state: "closed", evidence: { kind: "guest-paused" }, target: slot! },
+          },
+        ]);
       else
         await transitionBrowserSession(tx, {
           from: ["starting", "ready", "closing"],
           sessionId: input.sessionId,
           state,
-          ...(input.notifyTabs === undefined ? {} : { notifyTabs: input.notifyTabs }),
         });
-      return state;
+      return { state, profileArchived };
     },
     undefined,
     "once-bounded",
@@ -558,7 +561,6 @@ export async function closeBrowserPoolSessions(
   target: BrowserPoolSessionTarget,
   sessionIds: readonly BrowserSessionId[],
   evidence: BrowserPoolCloseEvidence,
-  notifyTabs = true,
 ): Promise<void> {
   if (!sessionIds.length) return;
   await commitPersonalMutation(
@@ -571,7 +573,6 @@ export async function closeBrowserPoolSessions(
           from: ["starting", "ready", "closing"],
           end: { state: "closed", evidence, target },
         })),
-        notifyTabs,
       ),
     undefined,
     "once-bounded",
@@ -597,22 +598,27 @@ async function endBrowserPoolSessions(
           readonly target: BrowserPoolSessionTarget;
         };
   }[],
-  notifyTabs = true,
 ): Promise<void> {
   if (!ends.length) return;
   const ordered = [...ends].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   await commitPersonalMutation(tx, async (transaction, mutation) => {
-    await transaction
+    const locked = await transaction
       .selectFrom("browserSessions")
-      .select("id")
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.id",
+        "browserSessions.profileId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
       .where(
-        "id",
+        "browserSessions.id",
         "in",
         ordered.map(({ id }) => id),
       )
-      .orderBy("id")
-      .forNoKeyUpdate()
+      .orderBy("browserSessions.id")
+      .forNoKeyUpdate("browserSessions")
       .execute(databaseOperationOptions());
+    const lockedById = new Map(locked.map((row) => [row.id, row]));
     const now = new Date();
     const ended: BrowserSessionId[] = [];
     for (const end of ordered) {
@@ -643,6 +649,12 @@ async function endBrowserPoolSessions(
       .execute(databaseOperationOptions());
     mutation.bumpResource("browser-placement");
     mutation.bumpResource("browser-availability");
+    // Suppress duplicate durable `tab` bumps when every ended session belongs to an archived
+    // profile whose tabs were already retired on archive (survives async close and restart).
+    const notifyTabs = ended.some((id) => {
+      const row = lockedById.get(id);
+      return !row || row.profileId === null || row.profileArchivedAt === null;
+    });
     if (notifyTabs) mutation.bumpResource("tab");
   });
 }

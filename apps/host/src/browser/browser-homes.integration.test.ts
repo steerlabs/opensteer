@@ -7,7 +7,12 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { TabStore } from "@opensteer/database";
+import {
+  TabStore,
+  advanceBrowserPoolSlot,
+  closeBrowserPoolSessions,
+  installBrowserPoolSlot,
+} from "@opensteer/database";
 import {
   describeStore,
   enrollTestRunner,
@@ -1034,6 +1039,127 @@ describeStore("Host browser homes", (it) => {
       removeHooks();
       tabs.dispose();
       await browser.close();
+    }
+  });
+
+  it("suppresses durable tab bumps when a pooled session of an archived profile closes asynchronously via advanceBrowserPoolSlot or closeBrowserPoolSessions", async ({
+    storeFixture: fixture,
+  }) => {
+    const run = await setup(fixture);
+    const archivedProfile = await fixture.store.createBrowserProfile({
+      ownerId: run.userId,
+      name: "Archived Pooled",
+      homeRunnerId: run.runnerId,
+      idempotencyKey: "archived-pooled-late-stop",
+    });
+    const activeProfile = await fixture.store.createBrowserProfile({
+      ownerId: run.userId,
+      name: "Active Pooled",
+      homeRunnerId: run.runnerId,
+      idempotencyKey: "active-pooled-late-stop",
+    });
+    const slotId = `bps_${randomUUID()}`;
+    const runtimeId = "pool-runtime";
+    const slot = await installBrowserPoolSlot(fixture.database, {
+      runnerId: run.runnerId,
+      slotId,
+      term: 1,
+      runtimeId,
+      instanceId: randomUUID(),
+      epoch: 1,
+    });
+    const archivedParkSession = createBrowserSessionId();
+    const archivedEndSession = createBrowserSessionId();
+    const activeSession = createBrowserSessionId();
+    const guestSession = createBrowserSessionId();
+    const insertClosingPoolSession = async (
+      sessionId: ReturnType<typeof createBrowserSessionId>,
+      profileId: typeof archivedProfile.id | null,
+    ) => {
+      await fixture.database
+        .insertInto("browserSessions")
+        .values({
+          id: sessionId,
+          tabGroupId: sessionId,
+          origin: "person",
+          profileId,
+          placementKey: `runner:${run.runnerId}`,
+          runnerId: run.runnerId,
+          runtimeId,
+          state: "closing",
+          opener: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          closedAt: null,
+        })
+        .execute();
+      await fixture.database
+        .insertInto("browserPoolSessions")
+        .values({
+          sessionId,
+          runnerId: run.runnerId,
+          slotId,
+          term: 1,
+        })
+        .execute();
+    };
+    await insertClosingPoolSession(archivedParkSession, archivedProfile.id);
+    await fixture.database
+      .updateTable("browserProfiles")
+      .set({ archivedAt: new Date() })
+      .where("id", "=", archivedProfile.id)
+      .execute();
+
+    const bumped: string[] = [];
+    const unhook = fixture.observePersonalReactions({
+      notice: (notice) => {
+        for (const kind of notice.resourceKinds) bumped.push(kind);
+      },
+      reaction: () => undefined,
+    });
+    try {
+      // 1. A late park closing an archived profile's closing session via advanceBrowserPoolSlot
+      // must suppress `tab` from durable archive state while keeping placement & availability.
+      await advanceBrowserPoolSlot(
+        fixture.database,
+        slot,
+        { phase: "parked" },
+        {
+          losses: [{ sessionId: archivedParkSession, reason: "paused", surfaces: [] }],
+          closing: { kind: "guest-paused" },
+        },
+      );
+      expect(bumped).not.toContain("tab");
+      expect(bumped).toContain("browser-placement");
+      expect(bumped).toContain("browser-availability");
+
+      // 2. Direct closeBrowserPoolSessions (without any caller flag) on an archived profile's
+      // session also suppresses `tab` from durable archive state.
+      await insertClosingPoolSession(archivedEndSession, archivedProfile.id);
+      bumped.length = 0;
+      await closeBrowserPoolSessions(fixture.database, slot, [archivedEndSession], {
+        kind: "runtime-ended",
+      });
+      expect(bumped).not.toContain("tab");
+      expect(bumped).toContain("browser-placement");
+      expect(bumped).toContain("browser-availability");
+
+      // 3. Active profile and Guest sessions still bump `tab` on close.
+      await insertClosingPoolSession(activeSession, activeProfile.id);
+      bumped.length = 0;
+      await closeBrowserPoolSessions(fixture.database, slot, [activeSession], {
+        kind: "runtime-ended",
+      });
+      expect(bumped).toContain("tab");
+
+      await insertClosingPoolSession(guestSession, null);
+      bumped.length = 0;
+      await closeBrowserPoolSessions(fixture.database, slot, [guestSession], {
+        kind: "runtime-ended",
+      });
+      expect(bumped).toContain("tab");
+    } finally {
+      unhook();
     }
   });
 });
