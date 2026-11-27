@@ -756,6 +756,19 @@ public enum ActionRunner {
       deliver: { proceed in try await deliver(keyTarget, proceed) })
   }
 
+  /// An Accessibility change to the app — a focus, typed text, a value — can bring it forward
+  /// as a press can, so it is made inside the act's guard: while the person has another app in
+  /// front, that app is put back after it (`FocusEnforcer.guarded`). Nothing is prepared and no
+  /// key goes out; the change itself is the input.
+  static func accessibilityChange<Result>(
+    binding: Binding, _ context: Context, restarted: String, _ change: () throws -> Result
+  ) async throws -> Result {
+    try await guarded(
+      EventTarget(processIdentifier: binding.processIdentifier, windowID: binding.keyWindow.windowID),
+      prepare: false, binding: binding, context, restarted: restarted
+    ) { _, _ in try change() }
+  }
+
   /// Codex's rule for which background clicks need the app to believe it is
   /// active first: a click into web content, or into text a click may select.
   /// Any other click lands the same either way.
@@ -864,8 +877,11 @@ public enum ActionRunner {
       try await gate()
       context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
       if focusFirst {
+        let focusing = try await accessibilityChange(binding: binding, context, restarted: restarted) {
+          calls.setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
+        }
         if let error = axMutationOutcome(
-          calls.setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue),
+          focusing,
           whatMayHaveHappened: "the element took the focus",
           failure: "This element did not take the keyboard focus; click it first.")
         {
@@ -874,8 +890,11 @@ public enum ActionRunner {
         try await gate()
       }
       if let attribute {
+        let writing = try await accessibilityChange(binding: binding, context, restarted: restarted) {
+          calls.setAttribute(element, attribute, text as CFTypeRef)
+        }
         if let error = axMutationOutcome(
-          calls.setAttribute(element, attribute, text as CFTypeRef),
+          writing,
           whatMayHaveHappened: "the text was typed", failure: "This element did not accept the text.")
         {
           throw error
@@ -974,7 +993,9 @@ public enum ActionRunner {
         try requirePersonWindow(binding)
         try context.validateElement(element, binding, restarted: restarted)
         try context.deliveryGate(binding, restarted: restarted)()
-        let status = calls.setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
+        let status = try await accessibilityChange(binding: binding, context, restarted: restarted) {
+          calls.setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
+        }
         if let error = axMutationOutcome(
           status, whatMayHaveHappened: "the element took the focus",
           failure: "This element did not take the keyboard focus; click it first.")
@@ -1065,8 +1086,11 @@ public enum ActionRunner {
         try context.validateElement(receiver, binding, restarted: restarted)
         try context.deliveryGate(binding, restarted: restarted)()
         context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
+        let typed = try await accessibilityChange(binding: binding, context, restarted: restarted) {
+          calls.setAttribute(receiver, kAXSelectedTextAttribute, text as CFTypeRef)
+        }
         if let error = axMutationOutcome(
-          calls.setAttribute(receiver, kAXSelectedTextAttribute, text as CFTypeRef),
+          typed,
           whatMayHaveHappened: "the text was typed",
           failure: "This element did not accept the text.")
         {
@@ -1382,9 +1406,12 @@ public enum ActionRunner {
     try context.deliveryGate(
       binding, restarted: "This app restarted while a value was being set.")()
     context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
-    if let error = setValueOutcome(
-      context.accessibility.setAttribute(node.element, kAXValueAttribute, value as CFTypeRef)
+    let set = try await accessibilityChange(
+      binding: binding, context, restarted: "This app restarted while a value was being set."
     ) {
+      context.accessibility.setAttribute(node.element, kAXValueAttribute, value as CFTypeRef)
+    }
+    if let error = setValueOutcome(set) {
       throw error
     }
     return ActionDescription.setValue(
