@@ -1,4 +1,4 @@
-import { createId } from "@opensteer/core";
+import { createId, type AgentGrant } from "@opensteer/core";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import {
@@ -157,7 +157,7 @@ describeStore("an execution resolves to a known owner, an agent connection, or n
       .executeTakeFirstOrThrow();
     const target = { kind: "browser-profile", profileId: profile.id } as const;
     const connections = new AgentConnectionStore(database);
-    const connect = async (grant: Parameters<AgentConnectionStore["create"]>[0]["grant"]) => {
+    const connect = async (grant: AgentGrant) => {
       const created = await connections.create({
         userId: f.userId,
         label: grant.scope,

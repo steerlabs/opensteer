@@ -1256,7 +1256,12 @@ integration("what a connection is shown", () => {
       [
         "plugin_call malformed bracket path with newline",
         "plugin_call",
-        { calls: { path: `tools[${JSON.stringify(namespaceOf(w.calendar))}]["line\nbreak"]`, input: {} } },
+        {
+          calls: {
+            path: `tools[${JSON.stringify(namespaceOf(w.calendar))}]["line\nbreak"]`,
+            input: {},
+          },
+        },
       ],
       [
         "plugin_call array naming two plugins",

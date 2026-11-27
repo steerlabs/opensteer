@@ -1666,7 +1666,10 @@ describeStore("one admission for Home commands", (it) => {
     const guestGroupId = `tgr_${randomUUID()}`;
     const layoutItems = [
       { kind: "group", group: { groupId, name: "Work", color: "blue", tabIds: [tabId] } },
-      { kind: "group", group: { groupId: guestGroupId, name: "Guest", color: "gray", tabIds: [guestTabId] } },
+      {
+        kind: "group",
+        group: { groupId: guestGroupId, name: "Guest", color: "gray", tabIds: [guestTabId] },
+      },
     ];
     await database
       .insertInto("tabLayouts")
@@ -1688,7 +1691,9 @@ describeStore("one admission for Home commands", (it) => {
       resources: [{ kind: "browser-profile", profileId: profile.id }],
     });
     const everything = await connect({ scope: "everything" });
-    const countQueries = async <T>(action: () => Promise<T>): Promise<{ value: T; count: number }> => {
+    const countQueries = async <T>(
+      action: () => Promise<T>,
+    ): Promise<{ value: T; count: number }> => {
       let count = 0;
       const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
       const original = prototype.query;

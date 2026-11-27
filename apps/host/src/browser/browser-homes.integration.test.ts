@@ -651,6 +651,7 @@ describeStore("Host browser homes", (it) => {
     };
     const tabs = new TabService({
       store: tabStore,
+      devices: fixture.store,
       pages: {
         open: unused,
         state: async () => ({ state: "asleep", usedBy: [] }),
@@ -705,10 +706,13 @@ describeStore("Host browser homes", (it) => {
       onError: (error) => errors.push(error),
       targetResolver: { placements: () => [], resolve: () => undefined },
     });
-    const admin = new AdministrationService({
-      store: fixture.store,
-      browser,
-    } as never);
+    const admin = new AdministrationService(
+      {
+        store: fixture.store,
+        browser,
+      } as never,
+      () => undefined,
+    );
     const person = { kind: "person", ownerId: run.userId } as const;
     try {
       const deletedProfile = await fixture.store.createBrowserProfile({
@@ -738,7 +742,7 @@ describeStore("Host browser homes", (it) => {
         .insertInto("browserSessionAttachments")
         .values({
           sessionId: deletedSessionId,
-          agentBindingId: `run:${run.runId}`,
+          agentBindingId: `thread:${run.threadId}`,
           ownerId: run.userId,
         })
         .execute();
@@ -812,7 +816,7 @@ describeStore("Host browser homes", (it) => {
 
       // Delete through the administration door (`browser.profile.delete`).
       await admin.execute(
-        { kind: "person", userId: run.userId, roles: ["owner"] },
+        { kind: "person", userId: run.userId },
         {
           type: "browser.profile.delete",
           idempotencyKey: "delete-shopping-profile",

@@ -477,7 +477,7 @@ export const parseToolPath = (name: string): ParsedToolPath => {
   if (trimmed.startsWith("tools.") || trimmed.startsWith("tools[")) {
     const segments: Array<string> = [];
     let strict = true;
-    for (let rest = trimmed.slice("tools".length); rest !== ""; ) {
+    for (let rest = trimmed.slice("tools".length); rest !== "";) {
       const member = expressionMember.exec(rest);
       if (member !== null) {
         const [matched, identifier, quoted] = member;

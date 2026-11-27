@@ -2829,7 +2829,10 @@ describeStore("an external agent's direct work through sessions", (it) => {
                 ],
               },
       });
-      const first = await s.call("browser_use", { ...script, operationKey: "completed-before-archive" });
+      const first = await s.call("browser_use", {
+        ...script,
+        operationKey: "completed-before-archive",
+      });
       expect(first.isError).not.toBe(true);
       const operationId = (first.structuredContent as { operationId: string }).operationId;
       // While the profile is active, replaying the operationId returns the completed receipt.
