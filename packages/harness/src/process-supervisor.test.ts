@@ -140,7 +140,7 @@ describe("spawnSupervised", () => {
   // The same sequence with the step that lost run 16 of hosted CI held open. On Linux a killed
   // target's leader reads as a zombie (`ps` shows Z) while its other threads are still dying, and
   // waitid reports nothing until the last of them has gone. Those threads are kept dying here (one
-  // CPU, the idle class, two busy loops on that CPU) while the force reaches the supervisor.
+  // CPU, the idle class, a busy loop on that CPU) while the force reaches the supervisor.
   it.runIf(process.platform === "linux").each(Array.from({ length: 3 }, (_, run) => run))(
     "reports a target the kernel killed whose other threads were still dying when a force for it was queued (run %i)",
     async (run) => {
@@ -164,9 +164,9 @@ describe("spawnSupervised", () => {
         execFileSync("taskset", ["-pc", "0", thread], { stdio: "ignore" });
         execFileSync("chrt", ["--idle", "-p", "0", thread], { stdio: "ignore" });
       }
-      const busy = [0, 1].map(() =>
-        spawn("taskset", ["-c", "0", process.execPath, "-e", "for (;;) {}"], { stdio: "ignore" }),
-      );
+      const busy = spawn("taskset", ["-c", "0", process.execPath, "-e", "for (;;) {}"], {
+        stdio: "ignore",
+      });
       let stillDying = false;
       try {
         process.kill(supervisorPid, "SIGSTOP");
@@ -186,7 +186,7 @@ describe("spawnSupervised", () => {
         }
         await expect(child.exited).resolves.toMatchObject({ code: 137 });
       } finally {
-        for (const loop of busy) if (loop.pid !== undefined) process.kill(loop.pid, "SIGKILL");
+        if (busy.pid !== undefined) process.kill(busy.pid, "SIGKILL");
       }
       // The window was held: when the force was queued, the target had not wholly ended.
       expect(stillDying).toBe(true);
