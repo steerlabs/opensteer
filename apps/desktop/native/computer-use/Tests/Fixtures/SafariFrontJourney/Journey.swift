@@ -234,6 +234,16 @@ enum PersonInput {
     }
     throw JourneyFailure.failed("No \(role) with \(text) in the tree: \(tree.prefix(1_500))")
   }
+  /// The middle of an element on screen, from its line in the tree: "(x,y w×h)" in the
+  /// window's own points on this 1x display.
+  func screenPoint(index: Int, window: CGRect) throws -> CGPoint {
+    let line = try tree.split(separator: "\n").first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[\(index)]") }
+      .unwrap("tree line \(index)")
+    let open = try line.lastIndex(of: "(").unwrap("element frame")
+    let numbers = line[open...].split(whereSeparator: { !$0.isNumber && $0 != "." }).compactMap { Double($0) }
+    try require(numbers.count >= 4, "element frame in \(line)")
+    return CGPoint(x: window.minX + numbers[0] + numbers[2] / 2, y: window.minY + numbers[1] + numbers[3] / 2)
+  }
   /// One call; its receipt, or the error it ended with.
   func act(_ actions: [[String: Any]], snapshot needed: Bool = false) async throws -> [String: Any] {
     let envelope = try await wire.reply(try wire.send("session.act", [
@@ -475,7 +485,9 @@ final class FrontSampler {
     return process
   }
   func makeFront(_ app: NSRunningApplication, at: CGPoint) async throws {
-    for _ in 0..<2 where PrivateAPI.focusPID(front: true) != app.processIdentifier {
+    // Always one click (it also focuses what is under it); a second when the first did not
+    // bring the app forward.
+    for attempt in 0..<2 where attempt == 0 || PrivateAPI.focusPID(front: true) != app.processIdentifier {
       try await personClick(at)
       for _ in 0..<40 where PrivateAPI.focusPID(front: true) != app.processIdentifier { await sleepSeconds(0.05) }
     }
@@ -721,6 +733,7 @@ final class FrontSampler {
     let samples = sampler.stop()
     await screenshot(caseOut, "after")
     wire.drop()
+    defer { textEdit.hide() }
     let area = AXValueReader.copyElement(textWindow, "AXFocusedUIElement" as String)
       ?? AXValueReader.copyElement(AXUIElementCreateApplication(textEdit.processIdentifier), kAXFocusedUIElementAttribute)
     let typed = area.flatMap { AXValueReader.copyString($0, kAXValueAttribute) } ?? ""
@@ -753,6 +766,8 @@ final class FrontSampler {
     _ = try await agent.act([["type": "click", "target": ["index": field]]], snapshot: true)
     try await makeFront(front, at: point("field"))
     let frame = try KeyWindow.currentFrame(KeyWindow.windowID(of: safariWindow()).unwrap("Safari window id")).unwrap("Safari frame")
+    let fieldPoint = try agent.screenPoint(index: field, window: frame)
+    try require(fieldPoint.x > 720, "Safari's field is not in its exposed part: \(fieldPoint)")
     var frontAfterClick: [Int] = []
     var errors = 0
     var errorMessages: [String] = []
@@ -760,8 +775,9 @@ final class FrontSampler {
       let receipt = try await agent.act([["type": "type", "text": "q"]])
       if let error = receipt["error"], !(error is NSNull) { errors += 1; errorMessages.append(String(describing: error).prefix(160).description) }
       if step == 3 {
-        // Safari's toolbar: the window comes forward and the page keeps its field's focus.
-        try await personClick(CGPoint(x: frame.maxX - 330, y: frame.minY + 30))
+        // Safari's own field: the window comes forward and the page keeps its field's focus.
+        // (The helper's overlay pill covers the exposed part of Safari's toolbar.)
+        try await personClick(fieldPoint)
         await sleepSeconds(0.5)
         frontAfterClick.append(Int(PrivateAPI.focusPID(front: true) ?? 0))
         await screenshot(caseOut, "after-choice-click")
