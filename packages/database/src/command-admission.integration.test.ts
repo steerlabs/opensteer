@@ -9,7 +9,8 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { Command, CommandType } from "@opensteer/protocol/command-table";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
+import pg from "pg";
 import {
   commandAdmission,
   replayAdministrationCommand,
@@ -509,7 +510,10 @@ describeStore("one admission for Home commands", (it) => {
       });
     const profile = await newProfile(`Profile ${randomUUID().slice(0, 4)}`);
     const deviceId = await storeFixture.store.requireSelfDeviceId(f.runnerId);
-    const tab = async (openedBy: "person" | { taskId: string }, profileId = profile.id) => {
+    const tab = async (
+      openedBy: "person" | { taskId: string },
+      profileId: typeof profile.id | null = profile.id,
+    ) => {
       const id = createId("tab");
       await database
         .insertInto("personalTabs")
@@ -521,7 +525,7 @@ describeStore("one admission for Home commands", (it) => {
           title: "Bank",
           url: "https://bank.example",
           profileId,
-          profileName: "Profile",
+          profileName: profileId === null ? null : "Profile",
           openedBy: JSON.stringify(openedBy) as never,
         } as never)
         .execute();
@@ -1634,29 +1638,47 @@ describeStore("one admission for Home commands", (it) => {
     expect(ownRun.answer).toBe("now");
   });
 
-  it("refuses commands naming an archived browser profile or its tabs for a selected grant, as for a missing profile", async ({
+  it("refuses commands naming an archived browser profile or its tabs, groups and sessions across every agent while keeping Guest targets", async ({
     storeFixture,
   }) => {
     const { f, database, connect } = await setup(storeFixture);
     const { profile, tab, browserSession } = await browserFixtures(storeFixture, f);
     const tabId = await tab("person");
+    const guestTabId = await tab("person", null as never);
     const sessionId = await browserSession(null);
+    const guestSessionId = `bsn_${randomUUID()}`;
+    await database
+      .insertInto("browserSessions")
+      .values({
+        id: guestSessionId,
+        tabGroupId: guestSessionId,
+        origin: "agent",
+        profileId: null,
+        placementKey: guestSessionId,
+        runnerId: f.runnerId,
+        runtimeId: "runtime",
+        state: "ready",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as never)
+      .execute();
     const groupId = `tgr_${randomUUID()}`;
+    const guestGroupId = `tgr_${randomUUID()}`;
+    const layoutItems = [
+      { kind: "group", group: { groupId, name: "Work", color: "blue", tabIds: [tabId] } },
+      { kind: "group", group: { groupId: guestGroupId, name: "Guest", color: "gray", tabIds: [guestTabId] } },
+    ];
     await database
       .insertInto("tabLayouts")
       .values({
         ownerId: f.userId,
         revision: 1,
-        items: JSON.stringify([
-          { kind: "group", group: { groupId, name: "Work", color: "blue", tabIds: [tabId] } },
-        ]) as never,
+        items: JSON.stringify(layoutItems) as never,
       })
       .onConflict((oc) =>
         oc.column("ownerId").doUpdateSet({
           revision: 1,
-          items: JSON.stringify([
-            { kind: "group", group: { groupId, name: "Work", color: "blue", tabIds: [tabId] } },
-          ]) as never,
+          items: JSON.stringify(layoutItems) as never,
         }),
       )
       .execute();
@@ -1666,6 +1688,23 @@ describeStore("one admission for Home commands", (it) => {
       resources: [{ kind: "browser-profile", profileId: profile.id }],
     });
     const everything = await connect({ scope: "everything" });
+    const countQueries = async <T>(action: () => Promise<T>): Promise<{ value: T; count: number }> => {
+      let count = 0;
+      const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
+      const original = prototype.query;
+      const spy = vi.spyOn(prototype, "query").mockImplementation(function (
+        this: pg.Client,
+        ...args: unknown[]
+      ) {
+        count++;
+        return Reflect.apply(original, this, args);
+      });
+      try {
+        return { value: await action(), count };
+      } finally {
+        spy.mockRestore();
+      }
+    };
     const admit = async (callerKey: string, command: Record<string, unknown>) =>
       (
         await admitCommand(database, {
@@ -1682,23 +1721,61 @@ describeStore("one admission for Home commands", (it) => {
     const closeTab = { type: "tab.close", tabIds: [tabId] };
     const closeGroup = { type: "tab.group.close", groupId };
     const closeSession = { type: "browser.session.close", sessionId };
-    // Before archiving: reachable.
+    const closeGuestTab = { type: "tab.close", tabIds: [guestTabId] };
+    const closeGuestGroup = { type: "tab.group.close", groupId: guestGroupId };
+    const closeGuestSession = { type: "browser.session.close", sessionId: guestSessionId };
+    // Before archiving: reachable, and record exact statement counts for each query.
+    const countsBefore: Record<string, number> = {};
+    for (const [label, callerKey, command] of [
+      ["everything:tab.close", `connection:${everything.id}`, closeTab],
+      ["everything:tab.group.close", `connection:${everything.id}`, closeGroup],
+      ["everything:browser.session.close", `connection:${everything.id}`, closeSession],
+      ["selected:tab.close", `connection:${selected.id}`, closeTab],
+      ["selected:tab.group.close", `connection:${selected.id}`, closeGroup],
+      ["selected:browser.session.close", `connection:${selected.id}`, closeSession],
+    ] as const) {
+      const measured = await countQueries(() => admit(callerKey, command));
+      countsBefore[label] = measured.count;
+      expect(measured.value, label).not.toBe("not_found");
+    }
+    expect(countsBefore).toEqual({
+      "everything:tab.close": 7,
+      "everything:tab.group.close": 7,
+      "everything:browser.session.close": 7,
+      "selected:tab.close": 7,
+      "selected:tab.group.close": 7,
+      "selected:browser.session.close": 7,
+    });
     expect(await admit(`connection:${selected.id}`, rename)).not.toBe("not_found");
     expect(await admit(`connection:${selected.id}`, open)).not.toBe("not_found");
-    expect(await admit(`connection:${selected.id}`, closeTab)).not.toBe("not_found");
-    expect(await admit(`connection:${selected.id}`, closeGroup)).not.toBe("not_found");
-    expect(await admit(`connection:${selected.id}`, closeSession)).not.toBe("not_found");
     expect(await admit(`connection:${everything.id}`, rename)).not.toBe("not_found");
     expect(await admit(`run:${f.run.id}`, open)).not.toBe("not_found");
-    await storeFixture.store.deleteBrowserProfile({ ownerId: f.userId, profileId: profile.id });
-    // After archiving: not_found for profile commands across every agent, and for selected-grant
-    // tabs, tab groups and browser sessions of that profile.
+    // Archive the profile directly so this tests command-admission authority even if stale rows exist.
+    await database
+      .updateTable("browserProfiles")
+      .set({ archivedAt: new Date() })
+      .where("id", "=", profile.id)
+      .execute();
+    // After archiving: not_found across every agent (selected, everything, native Run).
     expect(await admit(`connection:${selected.id}`, rename)).toBe("not_found");
     expect(await admit(`connection:${selected.id}`, open)).toBe("not_found");
     expect(await admit(`connection:${selected.id}`, closeTab)).toBe("not_found");
     expect(await admit(`connection:${selected.id}`, closeGroup)).toBe("not_found");
     expect(await admit(`connection:${selected.id}`, closeSession)).toBe("not_found");
     expect(await admit(`connection:${everything.id}`, rename)).toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, closeTab)).toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, closeGroup)).toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, closeSession)).toBe("not_found");
     expect(await admit(`run:${f.run.id}`, open)).toBe("not_found");
+    expect(await admit(`run:${f.run.id}`, closeTab)).toBe("not_found");
+    expect(await admit(`run:${f.run.id}`, closeGroup)).toBe("not_found");
+    expect(await admit(`run:${f.run.id}`, closeSession)).toBe("not_found");
+    // Guest targets (`profileId === null`) remain reachable for `everything` and unavailable for `selected`.
+    expect(await admit(`connection:${everything.id}`, closeGuestTab)).not.toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, closeGuestGroup)).not.toBe("not_found");
+    expect(await admit(`connection:${everything.id}`, closeGuestSession)).not.toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeGuestTab)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeGuestGroup)).toBe("not_found");
+    expect(await admit(`connection:${selected.id}`, closeGuestSession)).toBe("not_found");
   });
 });

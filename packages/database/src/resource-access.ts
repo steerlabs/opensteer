@@ -1697,39 +1697,40 @@ async function commandReach(
   const profile = async (profileId: string): Promise<boolean> =>
     granted({ kind: "browser-profile", profileId }) &&
     (await activeOwnedBrowserProfile(database, owner, profileId));
-  /** Tabs by id: every one the owner's, and under a selected grant in an active profile it holds. */
+  /** Tabs by id: every one the owner's in an active profile (or Guest), and under a selected grant in a profile it holds. */
   const tabsReach = async (ids: readonly string[]): Promise<CommandReach> => {
     const tabs = await database
       .selectFrom("personalTabs")
-      .select(["profileId", "ownerId", "openedBy"])
-      .where("id", "in", ids as never)
+      .leftJoin("browserProfiles", "browserProfiles.id", "personalTabs.profileId")
+      .select([
+        "personalTabs.profileId",
+        "personalTabs.ownerId",
+        "personalTabs.openedBy",
+        "browserProfiles.ownerId as profileOwnerId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
+      .where("personalTabs.id", "in", ids as never)
       .execute();
     if (tabs.length !== new Set(ids).size || tabs.some((tab) => tab.ownerId !== owner))
       return outOfReach;
-    if (selected) {
-      const profileIds = [
-        ...new Set(tabs.flatMap((tab) => (tab.profileId ? [tab.profileId] : []))),
-      ];
-      if (
-        tabs.some(
-          (tab) =>
-            !granted(
-              tab.profileId === null ? null : { kind: "browser-profile", profileId: tab.profileId },
-            ),
-        )
+    if (
+      tabs.some(
+        (tab) =>
+          tab.profileId !== null &&
+          (tab.profileOwnerId !== owner || tab.profileArchivedAt !== null),
       )
-        return outOfReach;
-      if (profileIds.length) {
-        const active = await database
-          .selectFrom("browserProfiles")
-          .select("id")
-          .where("ownerId", "=", owner)
-          .where("archivedAt", "is", null)
-          .where("id", "in", profileIds as never)
-          .execute();
-        if (active.length !== profileIds.length) return outOfReach;
-      }
-    }
+    )
+      return outOfReach;
+    if (
+      selected &&
+      tabs.some(
+        (tab) =>
+          !granted(
+            tab.profileId === null ? null : { kind: "browser-profile", profileId: tab.profileId },
+          ),
+      )
+    )
+      return outOfReach;
     // Its own work is what its own task opened; the person's tabs, and anything that records
     // no opener, are not.
     const opened = (tab: (typeof tabs)[number]) => {
@@ -1815,9 +1816,10 @@ async function commandReach(
       return tabsReach(ids);
     }
     case "tab-group": {
-      // A group is reached only when every tab in it is (a selected grant through the profiles
-      // its tabs are in; never an empty one), decided in one statement whatever the group is: a
-      // hidden group does the same work as a missing one and answers the same (A6, rule 5).
+      // A group is reached only when every tab in it is (in an active owned profile or Guest, and
+      // under a selected grant through the profiles it holds; never an empty one for selected),
+      // decided in one statement whatever the group is: a hidden group does the same work as a
+      // missing one and answers the same (A6, rule 5).
       const grantedProfiles = selected
         ? (connection?.grant.scope === "selected" ? connection.grant.resources : [])
             .flatMap((entry) => (entry.kind === "browser-profile" ? [entry.profileId] : []))
@@ -1832,19 +1834,21 @@ async function commandReach(
             and item->>'kind' = 'group'
             and item->'group'->>'groupId' = ${resource.id}
             and (${!selected}
-              or (jsonb_array_length(coalesce(item->'group'->'tabIds', '[]'::jsonb)) > 0
-                and not exists (
-                  select 1
-                  from jsonb_array_elements_text(coalesce(item->'group'->'tabIds', '[]'::jsonb))
-                    member(tab_id)
-                  where not exists (
-                    select 1 from personal_tabs tab
-                    join browser_profiles profile on profile.id = tab.profile_id
-                    where tab.id = member.tab_id
-                      and tab.owner_id = ${owner}
-                      and profile.owner_id = ${owner}
-                      and profile.archived_at is null
-                      and tab.profile_id = any(${grantedProfiles}::text[])))))
+              or jsonb_array_length(coalesce(item->'group'->'tabIds', '[]'::jsonb)) > 0)
+            and not exists (
+              select 1
+              from jsonb_array_elements_text(coalesce(item->'group'->'tabIds', '[]'::jsonb))
+                member(tab_id)
+              left join personal_tabs tab
+                on tab.id = member.tab_id and tab.owner_id = ${owner}
+              left join browser_profiles profile
+                on profile.id = tab.profile_id
+                  and profile.owner_id = ${owner}
+                  and profile.archived_at is null
+              where tab.id is null
+                or (tab.profile_id is not null and profile.id is null)
+                or (${selected}
+                  and (tab.profile_id is null or not (tab.profile_id = any(${grantedProfiles}::text[])))))
         ) as reach
       `.execute(database);
       // A group records no opener: it is never an agent's own work.
@@ -1853,11 +1857,25 @@ async function commandReach(
     case "browser-session": {
       const session = await database
         .selectFrom("browserSessions")
-        .select("profileId")
-        .where("id", "=", resource.id as never)
+        .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+        .select([
+          "browserSessions.profileId",
+          "browserProfiles.ownerId as profileOwnerId",
+          "browserProfiles.archivedAt as profileArchivedAt",
+        ])
+        .where("browserSessions.id", "=", resource.id as never)
         .executeTakeFirst();
       if (!session) return outOfReach;
-      if (selected && (session.profileId === null || !(await profile(session.profileId))))
+      if (
+        session.profileId !== null &&
+        (session.profileOwnerId !== owner || session.profileArchivedAt !== null)
+      )
+        return outOfReach;
+      if (
+        selected &&
+        (session.profileId === null ||
+          !granted({ kind: "browser-profile", profileId: session.profileId }))
+      )
         return outOfReach;
       const used =
         ownTask !== null &&
