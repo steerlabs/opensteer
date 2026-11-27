@@ -6076,6 +6076,7 @@ integration.sequential("Computer use for a connected agent, through its session"
     async (ending) => {
       const s = await connectedAgent("full-access", { target: "mac" });
       const { computerUse, fakeMac, hub, owner } = s.world;
+      let resolveRefusal: (() => void) | undefined;
       try {
         const started = await s.call({ code: "return 1" }, "unsent-hold");
         expect(started.status).toBe("completed");
@@ -6091,14 +6092,24 @@ integration.sequential("Computer use for a connected agent, through its session"
         };
         const target = { kind: "app" as const, app: apps.notes, access: "read" as const };
         const first = await computerUse.prepare(machine, authority);
-        let refused = false;
-        const last = await computerUse.prepare(machine, {
-          ...authority,
-          assertActive: async () => {
-            if (refused)
-              throw new OpensteerError({ code: "forbidden", message: "Authority ended." });
-          },
-        });
+        const checking = Promise.withResolvers<void>();
+        const refuse = Promise.withResolvers<void>();
+        const last =
+          ending === "lease release" ? await computerUse.prepare(machine, authority) : null;
+        if (!last) resolveRefusal = refuse.resolve;
+        const refused = last
+          ? undefined
+          : expect(
+              computerUse.prepare(machine, {
+                ...authority,
+                assertActive: async () => {
+                  checking.resolve();
+                  await refuse.promise;
+                  throw new OpensteerError({ code: "forbidden", message: "Authority ended." });
+                },
+              }),
+            ).rejects.toThrow("authority has ended");
+        if (refused) await checking.promise;
         vi.spyOn(hub, "sendComputerUse").mockRejectedValueOnce(new Error("Before submission"));
         await expect(computerUse.sendObserve(first, target, false)).rejects.toThrow(
           "Before submission",
@@ -6106,18 +6117,15 @@ integration.sequential("Computer use for a connected agent, through its session"
         expect(await database.selectFrom("agentSessionDeviceHolds").select("id").execute()).toEqual(
           [{ id: first.sessionId }],
         );
-        if (ending === "lease release") computerUse.release(last);
-        else {
-          refused = true;
-          await expect(computerUse.sendObserve(last, target, false)).rejects.toThrow(
-            "authority has ended",
-          );
-        }
+        if (last) computerUse.release(last);
+        else refuse.resolve();
+        await refused;
         expect(fakeMac.openSessions()).toEqual([]);
         expect(fakeMac.closeReceivedCount).toBe(0);
         expect(await disconnect(s)).toMatchObject({ state: "stopped", lastActionUncertain: false });
         await expect(s.agents.remove(owner.userId, s.record.id)).resolves.toBeUndefined();
       } finally {
+        resolveRefusal?.();
         await s.world.close();
       }
     },
