@@ -5235,6 +5235,11 @@ export class MockHostClient implements HostClient {
     this.#state.mockAgentWork(options);
   }
 
+  /** For tests and journeys: the task's work takes this tab up now. */
+  mockAgentTakesTab(tabId: string, threadId: string): void {
+    this.#state.mockAgentTakesTab(tabId, threadId);
+  }
+
   /** Ends one of the preview's direct operations and publishes its task again, as the Home does. */
   settleAgentOperation(id: string, outcome: "completed" | "failed" | "unknown"): void {
     this.#state.settleAgentOperation(id, outcome);
@@ -8016,21 +8021,33 @@ class MockHostState {
       );
     this.tabCatalog.markSharedFromChrome(TabIdSchema.parse("mock-tab-0-0"));
     const at = this.now().toISOString();
+    // When the task's work took each tab up (two-tabs: the earlier tab a minute before).
+    const taken: Readonly<Record<string, string>> =
+      options.livePanel === "two-tabs"
+        ? { "mock-tab-2-0": new Date(this.now().getTime() - 60_000).toISOString() }
+        : {};
     // The working agent uses a tab of its own; the waiting one, a tab the person shares.
     const placed: Readonly<Record<string, string>> =
-      options.livePanel === "one" ||
-      options.livePanel === "cloud-tab" ||
-      options.livePanel === "long-one" ||
-      options.livePanel === "long-place" ||
-      options.livePanel === "one-history"
-        ? { "mock-tab-1-0": mockAgentWorkThreads.shopping }
-        : options.livePanel === "history"
+      options.livePanel === "two-tabs"
+        ? {
+            "mock-tab-1-0": mockAgentWorkThreads.shopping,
+            "mock-tab-2-0": mockAgentWorkThreads.shopping,
+          }
+        : options.livePanel === "late-tab"
           ? {}
-          : {
-              "mock-tab-1-0": mockAgentWorkThreads.working,
-              "mock-tab-0-0": mockAgentWorkThreads.waiting,
-              ...(options.livePanel ? { "mock-tab-1-1": mockAgentWorkThreads.shopping } : {}),
-            };
+          : options.livePanel === "one" ||
+              options.livePanel === "cloud-tab" ||
+              options.livePanel === "long-one" ||
+              options.livePanel === "long-place" ||
+              options.livePanel === "one-history"
+            ? { "mock-tab-1-0": mockAgentWorkThreads.shopping }
+            : options.livePanel === "history"
+              ? {}
+              : {
+                  "mock-tab-1-0": mockAgentWorkThreads.working,
+                  "mock-tab-0-0": mockAgentWorkThreads.waiting,
+                  ...(options.livePanel ? { "mock-tab-1-1": mockAgentWorkThreads.shopping } : {}),
+                };
     const browserSessions = this.snapshot.browserSessions.map((session) => {
       if (!session.catalog?.tabs.some(({ id }) => id in placed)) return session;
       const tabs = session.catalog.tabs.map((tab) =>
@@ -8044,7 +8061,7 @@ class MockHostState {
                   acting: seed.threads.some(
                     ({ id, status }) => id === placed[tab.id] && status === "running",
                   ),
-                  lastActiveAt: at,
+                  lastActiveAt: taken[tab.id] ?? at,
                 },
               ],
             }
@@ -8056,6 +8073,12 @@ class MockHostState {
         threadIds: [...new Set(tabs.flatMap(({ occupants }) => occupants.map((o) => o.threadId)))],
       };
     });
+    // The row naming the agent's tab reaches this client a moment after load.
+    if (options.livePanel === "late-tab")
+      setTimeout(
+        () => this.mockAgentTakesTab("mock-tab-1-0", mockAgentWorkThreads.shopping),
+        3_000,
+      );
     const seededIds = new Set(seed.threads.map(({ id }) => id));
     // The agent's tab is in the pooled browser of the computer the Home runs on, running.
     const cloudTab = browserSessions.find((session) =>
@@ -8072,6 +8095,36 @@ class MockHostState {
       browserSessions,
       ...(pooled ? { browserPools: pooled } : {}),
     });
+  }
+
+  /** The task's work takes this tab up now, as the Home publishes it: held, acting, since now. */
+  mockAgentTakesTab(tabId: string, threadId: string): void {
+    const at = this.now().toISOString();
+    const browserSessions = this.snapshot.browserSessions.map((session) => {
+      if (!session.catalog?.tabs.some(({ id }) => id === tabId)) return session;
+      const tabs = session.catalog.tabs.map((tab) =>
+        tab.id === tabId
+          ? {
+              ...tab,
+              occupants: [
+                ...tab.occupants.filter((occupant) => occupant.threadId !== threadId),
+                {
+                  threadId: ThreadIdSchema.parse(threadId),
+                  holding: true,
+                  acting: true,
+                  lastActiveAt: at,
+                },
+              ],
+            }
+          : tab,
+      );
+      return {
+        ...session,
+        catalog: { ...session.catalog, tabs },
+        threadIds: [...new Set(tabs.flatMap(({ occupants }) => occupants.map((o) => o.threadId)))],
+      };
+    });
+    this.update({ ...this.snapshot, browserSessions });
   }
 
   mockStartedTask(originConnectionId: string, title: string): string {

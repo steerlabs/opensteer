@@ -60,6 +60,12 @@ export const mockAgentWorkLiveScenes = [
   // As "one", on a Home reached as a Cloud Computer: the agent's tab is in that computer's own
   // pooled browser, the shape tester run 12 found Watch missing.
   "cloud-tab",
+  // As "one", the agent holding two tabs: an earlier one, and the one its call works in now
+  // (tester run 15, trials 2, 4, 6 and 7).
+  "two-tabs",
+  // As "one", the agent's tab reaching this client a moment after load: its call started on a
+  // tab an earlier call opened, and the row naming it is on its way (run 15, trial 5).
+  "late-tab",
   "three",
   "needs-you",
   "long-panel",
@@ -137,7 +143,13 @@ export function mockAgentWork(input: {
   const history = livePanel === "history" || livePanel === "one-history";
   const liveShopping = livePanel && livePanel !== "history";
   const solo =
-    livePanel === "one" || livePanel === "cloud-tab" || longSolo || longSoloPlace || history;
+    livePanel === "one" ||
+    livePanel === "cloud-tab" ||
+    livePanel === "two-tabs" ||
+    livePanel === "late-tab" ||
+    longSolo ||
+    longSoloPlace ||
+    history;
   const longAgent = { ...grok, label: "Grok research assistant for the entire household" };
   const longPlace = "Household shopping and weekly groceries shared with family";
   const workingAgent = liveWaiting ? grok : claude;

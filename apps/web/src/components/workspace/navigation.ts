@@ -379,6 +379,8 @@ export interface WorkspaceNavigation {
     readonly replace?: boolean;
   }) => ((destination: SurfaceDestination) => void) & {
     readonly launcher: (options: { address: string; open: boolean }) => void;
+    /** Whether the answer would still land: no newer choice, and the same conversation open. */
+    readonly standing: () => boolean;
   };
 }
 
@@ -613,6 +615,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
         options.address === undefined ? null : { address: options.address, operation: mine, epoch },
       );
       const current = () => operation.current === mine && placeEpoch.current === epoch;
+      const pathname = latest.current.pathname;
       return Object.assign(
         (destination: SurfaceDestination) => {
           if (!current()) return;
@@ -627,6 +630,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
             setPending(null);
             showLauncher({ ...failure, replace: true });
           },
+          standing: () => current() && latest.current.pathname === pathname,
         },
       );
     },

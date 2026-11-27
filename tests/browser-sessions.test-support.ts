@@ -127,8 +127,15 @@ export async function agentJourney(
   expect(sessionFor(report.guestReuse.second)).toBe(sessionFor(tabA));
   expect(report.listed).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ tabId: tabA, usedBy: [{ taskId: threadId }] }),
-      expect.objectContaining({ tabId: tabB, usedBy: [{ taskId: threadId }] }),
+      // Each holder says when its task's work last took the tab up.
+      expect.objectContaining({
+        tabId: tabA,
+        usedBy: [{ taskId: threadId, since: expect.any(String) }],
+      }),
+      expect.objectContaining({
+        tabId: tabB,
+        usedBy: [{ taskId: threadId, since: expect.any(String) }],
+      }),
     ]),
   );
   expect(report.reused).toEqual({ before: 3, after: 3, tabId: tabA });

@@ -141,7 +141,8 @@ try {
   await page.goto(`${web.origin}/?mock-agents&mock-agent-work=long-panel`);
   await page.getByRole("button", { name: /Open sidebar/ }).click();
   await showPanel(page);
-  // The place is named on its place line; the activity line names it again since a0b0d31c7.
+  // The panel names the place on its place line and again in its activity line: this looks
+  // for it on the place line, where it is once.
   await panel(page)
     .locator(".agents-now-panel__where")
     .getByText("Household shopping and weekly groceries shared with family", { exact: true })
@@ -186,6 +187,48 @@ try {
     throw new Error("Watch on a Cloud Computer's tab stayed on the launcher.");
   await page.locator(".session-activity").waitFor();
   await save(page, "watch-cloud-tab-dark");
+
+  // Two tabs held by the task (tester run 15, trials 2, 4, 6, 7): Watch lands on the one its work
+  // took up last, never the earlier one.
+  const shopping = "thr_00000000-0000-4000-8000-0000000000a5";
+  const watchLands = async (scene: string, tab: string, timeout: number) => {
+    await page.waitForURL(
+      (url) => url.pathname === `/tasks/${shopping}` && url.searchParams.get("tab") === tab,
+      { timeout },
+    );
+    await page.locator(".place--page").waitFor();
+    if (await page.locator(".place--launcher").count())
+      throw new Error(`Watch in ${scene} stayed on the launcher.`);
+  };
+  await openSettings("two-tabs", chatgpt);
+  await ready();
+  await now.getByRole("button", { name: "Watch ChatGPT" }).click();
+  await watchLands("two-tabs", "mock-tab-1-0", 5_000);
+  await save(page, "watch-two-tabs-dark");
+
+  // The row naming the task's tab reaches this client after the click (run 15, trial 5): the
+  // click lasts, and Watch lands when it arrives.
+  await openSettings("late-tab", chatgpt);
+  await ready();
+  const heldAtClick = await page.evaluate(
+    (task) =>
+      [
+        ...(
+          window as unknown as {
+            opensteerMock: {
+              getSnapshot(): { tabs: { rows: Map<string, { usedBy: { taskId: string }[] }> } };
+            };
+          }
+        ).opensteerMock
+          .getSnapshot()
+          .tabs.rows.values(),
+      ].some((tab) => tab.usedBy.some(({ taskId }) => taskId === task)),
+    shopping,
+  );
+  if (heldAtClick) throw new Error("The late tab reached the client before the Watch click.");
+  await now.getByRole("button", { name: "Watch ChatGPT" }).click();
+  await watchLands("late-tab", "mock-tab-1-0", 8_000);
+  await save(page, "watch-late-tab-dark");
 
   await openSettings("needs-you", claude);
   await now.getByText("Run a script in Travel?", { exact: true }).waitFor();

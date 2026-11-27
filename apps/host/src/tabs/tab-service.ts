@@ -794,10 +794,19 @@ export class TabService implements TabServicePort {
                     : "This app failed to start.",
             };
     }
-    const usedBy = [...new Set(live.usedBy.map(({ taskId }) => taskId))]
+    // Each task once, with the latest time its work took the tab up.
+    const since = new Map<Tab["usedBy"][number]["taskId"], string | undefined>();
+    for (const { taskId, since: at } of live.usedBy) {
+      const known = since.get(taskId);
+      since.set(taskId, known === undefined || (at !== undefined && at > known) ? at : known);
+    }
+    const usedBy = [...since.keys()]
       .sort()
       .slice(0, 128)
-      .map((taskId) => ({ taskId }));
+      .map((taskId) => {
+        const at = since.get(taskId);
+        return at === undefined ? { taskId } : { taskId, since: at };
+      });
     return TabSchema.parse({
       tabId: row.id,
       kind: row.kind,

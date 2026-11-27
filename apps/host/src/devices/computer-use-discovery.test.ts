@@ -52,6 +52,7 @@ describe("computer access", () => {
       ],
       computerToolEnabled: () => true,
       computerUseVersion: () => 2,
+      localDeviceAccessBlocked: async () => undefined,
     } as unknown as DeviceService;
     const input = { ownerUserId: "user" } as Parameters<DeviceService["computerAccess"]>[0];
     const runless = await gatherComputerAccess(platform, input);
@@ -97,6 +98,7 @@ describe("computer access", () => {
       },
       listCallableTools: async () => [],
       computerUseVersion: () => version,
+      localDeviceAccessBlocked: async () => undefined,
     } as unknown as DeviceService;
     const input = { ownerUserId: "user", runId: "run_this" } as Parameters<
       DeviceService["computerAccess"]

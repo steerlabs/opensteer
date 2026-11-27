@@ -22,6 +22,7 @@ export async function gatherComputerAccess(
     | "listCallableTools"
     | "computerToolEnabled"
     | "computerUseVersion"
+    | "localDeviceAccessBlocked"
   > & {
     readonly store: Pick<DeviceService["store"], "requesterShown">;
   },
@@ -132,6 +133,28 @@ export async function gatherComputerAccess(
     ),
   ]);
   const holders = new Map(holderEntries);
+  // What the device itself refuses now (its Apps switch, offline, asleep, agents stopped), from
+  // the function a call to one of its apps refuses with, in the same words, and from the switch
+  // the inventory already read: no read of its own.
+  const refusals = new Map(
+    await Promise.all(
+      inventory.machines.map(
+        async (machine) =>
+          [
+            machine.deviceId,
+            await platform
+              .localDeviceAccessBlocked(
+                machine.deviceId,
+                connectedAgent,
+                machine.accessPolicy === undefined
+                  ? undefined
+                  : { accessPolicy: machine.accessPolicy, name: machine.name, removed: false },
+              )
+              .catch(() => undefined),
+          ] as const,
+      ),
+    ),
+  );
   const held = (deviceId: DeviceId, key: string) => {
     const holder = holders.get(deviceId)?.get(key);
     return !!holder && holder.runId !== (run?.runId ?? input.runId);
@@ -150,6 +173,8 @@ export async function gatherComputerAccess(
     const approved = machine.apps.find((entry) => entry.bundleId.toLowerCase() === key);
     const refs = approved ? computerToolRefs(tools, approved.connectionId) : {};
     if (!hasRun) return runRequired;
+    const device = refusals.get(machine.deviceId);
+    if (device) return { blocked: device };
     return computerAppDiscovery({
       app: identity.displayName,
       computerId: machine.deviceId,

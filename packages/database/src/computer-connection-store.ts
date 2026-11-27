@@ -252,8 +252,29 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     readonly appApproval: "ask" | "automatic";
     readonly revision: number;
   }> {
+    const { accessPolicy: _accessPolicy, ...policy } = await this.deviceComputerUseFacts(input);
+    return policy;
+  }
+
+  /**
+   * A device's computer-use policy with its own switches, in the one read the policy takes: what
+   * its Apps switch says, for a listing that decides the device's own refusal from it.
+   */
+  async deviceComputerUseFacts(input: {
+    readonly deviceId: DeviceId;
+    readonly ownerUserId: UserId;
+  }): Promise<{
+    readonly appApproval: "ask" | "automatic";
+    readonly revision: number;
+    readonly accessPolicy: unknown;
+  }> {
     return withPersonalReadTransaction(this.database, async (transaction) => {
-      await this.#computerUsePolicyOwner(transaction, input.deviceId, input.ownerUserId, false);
+      const device = await this.#computerUsePolicyOwner(
+        transaction,
+        input.deviceId,
+        input.ownerUserId,
+        false,
+      );
       const policy = await computerUsePolicyInTransaction(
         transaction,
         input.deviceId,
@@ -261,6 +282,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
       );
       return {
         ...policy,
+        accessPolicy: device.accessPolicy,
       };
     });
   }
@@ -273,7 +295,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
   ) {
     const runner = await transaction
       .selectFrom("devices")
-      .select(["id", "name", "removedAt"])
+      .select(["id", "name", "removedAt", "accessPolicy"])
       .where("id", "=", deviceId)
       .$if(lock, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();

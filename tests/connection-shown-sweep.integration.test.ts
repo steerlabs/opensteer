@@ -1099,4 +1099,69 @@ integration("what a connection is shown", () => {
       expect(await w.waitingRequests()).toEqual([]);
     },
   );
+
+  /** Mac apps too: what the device refuses is listed as a call to the app says it. */
+  const macStates: readonly [string, (world: World) => Promise<void>][] = [
+    [
+      "the device's Apps switch is off",
+      async (w) => {
+        await w.host.store.database
+          .updateTable("devices")
+          .set({
+            accessPolicy: sql`jsonb_set(access_policy, '{apps}', 'false')`,
+            accessPolicyRevision: sql`access_policy_revision + 1`,
+          } as never)
+          .where("id", "=", w.mac as never)
+          .execute();
+      },
+    ],
+    ["the device is offline", (w) => w.computer.close()],
+  ];
+
+  it.each(macStates)(
+    "lists a Mac app that is lent but cannot be reached (%s) with its call's reason, asking no one",
+    async (_, change) => {
+      const w = await world();
+      const agent = keep(
+        await connectAgent(
+          w.host,
+          {
+            scope: "selected",
+            tasks: false,
+            resources: [
+              {
+                kind: "computer-app",
+                approvalId: w.notes,
+                deviceId: w.mac,
+                app: { kind: "mac-app", bundleId: notesBundle, teamId: null },
+              },
+            ],
+          } as AgentGrant,
+          "approval-required",
+        ),
+      );
+      await change(w);
+      const listed = async () => {
+        const root = (await agent.call("discover", {})).structuredContent as {
+          items: { id: string; kind: string; reachable?: boolean; blocked?: unknown }[];
+        };
+        return root.items.find((item) => item.id === appId(w.mac, notesBundle));
+      };
+      const called = callError(
+        await agent.call("computer_use", {
+          computerId: w.mac,
+          app: notesBundle,
+          code: "const app = await target; print(app.name);",
+          readOnly: true,
+        }),
+      );
+      expect(called).toBeDefined();
+      await waitForCondition(async () => (await listed())?.blocked !== undefined);
+      // The reason, as the call says it (its error also lists what it performed: nothing).
+      const { code, message, next } = called as { code: string; message: string; next: string };
+      expect((called as { performed?: unknown }).performed ?? []).toEqual([]);
+      expect(await listed()).toMatchObject({ reachable: false, blocked: { code, message, next } });
+      expect(await w.waitingRequests()).toEqual([]);
+    },
+  );
 });
