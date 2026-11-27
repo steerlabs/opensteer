@@ -29,6 +29,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "kysely";
 import { expect, vi, onTestFinished } from "vitest";
+import { eventWait } from "./event-wait.test-support.js";
 import { createId, OpensteerError } from "../packages/core/src/index.js";
 import { chromium } from "playwright-core";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
@@ -223,6 +224,9 @@ export async function journey(
   } = {},
 ) {
   const real = options.chromium !== false;
+  // Each time a Home republishes the person's tab rows (its descriptor flush wrote them): a wait
+  // on those rows checks again then, not on a clock.
+  const { changed: tabsChanged, until: untilTabs } = eventWait();
   const fixture = await createStoreFixture();
   const root = await mkdtemp(join(tmpdir(), "opensteer-pool-route-"));
   const task = await fixture.startRunFixture(key);
@@ -378,7 +382,10 @@ export async function journey(
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
       ...(options.requireAgentAccess ? { requireAgentAccess: options.requireAgentAccess } : {}),
-      ...(options.onTabsChanged ? { onTabsChanged: options.onTabsChanged } : {}),
+      onTabsChanged: (...changed) => {
+        options.onTabsChanged?.(...changed);
+        tabsChanged();
+      },
       ...(options.detachRunnerAgents ? { detachRunnerAgents: options.detachRunnerAgents } : {}),
       ...(profile
         ? {
@@ -554,6 +561,7 @@ export async function journey(
     store,
     controller,
     guest,
+    untilTabs,
     tabs,
     profile,
     issued,

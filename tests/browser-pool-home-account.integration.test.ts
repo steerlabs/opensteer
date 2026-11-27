@@ -38,6 +38,7 @@ import {
 } from "../packages/deployment-authority/src/index.js";
 import { Kysely, sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eventWait } from "./event-wait.test-support.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -669,12 +670,17 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
       await h.enrolAndReadyHost(host!.id, "10.40.0.10");
       const keys = await loadOrCreateManagedBrowserPoolKeys(directory);
       const sent: string[] = [];
+      // A wait here checks again on the Home's own events: each request it sends the account, each
+      // answer it records and its adoption of the target, not a clock (the service asks on its own
+      // timer).
+      const events = eventWait();
       // The Home's own client, over the account's real routes and store.
       const account = new ManagedBrowserPoolAccountClient({
         controlApiOrigin: publicOrigin,
         hostCredential: claimed.hostCredential,
         fetch: (async (input: URL, init?: RequestInit) => {
           sent.push(init?.method ?? "GET");
+          events.changed();
           const response = await h.app.inject({
             method: (init?.method ?? "GET") as "GET" | "PUT",
             url: input.pathname,
@@ -698,7 +704,14 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
       // The Home's own record, on its own PostgreSQL (never a stand-in: the database gives back
       // jsonb with its keys reordered).
       const homeDatabase = await createStoreFixture();
-      const record = databaseManagedBrowserPoolTargetRecord(homeDatabase.database, computer.id);
+      const stored = databaseManagedBrowserPoolTargetRecord(homeDatabase.database, computer.id);
+      const record: typeof stored = {
+        ...stored,
+        answer: async (input) => {
+          await stored.answer(input);
+          events.changed();
+        },
+      };
       const targets: ManagedBrowserPoolTarget[] = [];
       const service = new ManagedBrowserPoolTargetService({
         cloudComputerId: computer.id,
@@ -713,7 +726,7 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
       });
       service.start();
       try {
-        await vi.waitFor(async () => expect((await record.read())?.status).toBe("preparing"));
+        await events.until(async () => expect((await record.read())?.status).toBe("preparing"));
         // The provisioner places the slot and its host reports it ready.
         const slot = (await h.getDesiredSlots())[0]!;
         const ready = await h.app.inject({
@@ -781,7 +794,10 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
       }
       // The Home starts again with that target stored: it is chosen, read again from the account
       // as the same target, and nothing is retired.
-      const browser = { adoptPool: vi.fn(async () => {}), retirePool: vi.fn(async () => {}) };
+      const browser = {
+        adoptPool: vi.fn(async () => events.changed()),
+        retirePool: vi.fn(async () => {}),
+      };
       const restarted = await startManagedBrowserPool({
         database: homeDatabase.database,
         dataDirectory: directory,
@@ -793,9 +809,11 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
       });
       try {
         const reads = sent.filter((method) => method === "GET").length;
-        await vi.waitFor(() =>
-          expect(sent.filter((method) => method === "GET").length).toBeGreaterThan(reads),
-        );
+        // Read again, and adopted: the Home's own events, each one.
+        await events.until(() => {
+          expect(sent.filter((method) => method === "GET").length).toBeGreaterThan(reads);
+          expect(browser.adoptPool).toHaveBeenCalled();
+        });
         await restarted.close();
         expect(browser.adoptPool).toHaveBeenCalledTimes(1);
         expect(browser.retirePool).not.toHaveBeenCalled();

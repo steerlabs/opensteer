@@ -701,7 +701,7 @@ it("keeps a connected agent's pooled browser_use page attachment alive across mu
     // 2. A second script using openPage(tabId) on the tab created by the first script succeeds on
     // its first and subsequent commands (including goto).
     // The page's own navigation (the link click) is saved shortly after the script returns.
-    const createdTab = await vi.waitFor(async () => {
+    const createdTab = await j.untilTabs(async () => {
       const pages = await home.service.savedPages(j.task.userId, session.id);
       const tab = pages.find((row) => row.url?.includes("r=linked"));
       if (!tab?.pageBinding) throw new Error("Expected the navigated page tab.");
