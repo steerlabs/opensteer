@@ -1,9 +1,10 @@
 /**
  * Failure checklist: running work in the wrong group; destructive Done without
  * confirmation; Keep working mutating shared state; unread results hidden by
- * Done; reading failing to regroup; a frozen composer still accepting input;
- * Reopen restarting work or retaining a frozen composer; unnecessary stopped
- * confirmation; Done leaking into Chat; missing Done shelf.
+ * Done; reading failing to regroup; a Done composer that does not say sending
+ * reopens the task; Reopen restarting work or leaving it in Done; unnecessary
+ * stopped confirmation, or staying on the task Done moved away; Done leaking
+ * into Chat; a missing Done view.
  * Runs the production web app against MockHostClient in headless Chromium.
  */
 import { execFileSync } from "node:child_process";
@@ -22,17 +23,26 @@ const { checks, check, abort } = journeyChecks();
 const screenshots: string[] = [];
 await mkdir(directory, { recursive: true });
 
+// Done is a view that takes the place of Tasks: one list, labelled by its heading.
+const tasksList = (page: Page) => page.getByRole("list", { name: "Tasks", exact: true });
+const doneList = (page: Page) => page.getByRole("list", { name: "Done", exact: true });
+const doneLine = (page: Page) => page.getByRole("button", { name: /^Done, \d+ tasks?$/u });
 const groupRow = (page: Page, group: string, id: string) => {
   const working = ":is(.side-task--working, .side-task--waiting, .side-task--needs-you)";
-  const selector =
-    group === "done"
-      ? ".side-done ~ .side-task"
-      : `.side-task:not(.side-done ~ .side-task)${group === "working" ? working : `:not(${working})`}`;
-  return page.locator(`${selector}[data-thread-id="${id}"] .side-task__main`);
+  if (group === "done")
+    return doneList(page).locator(`.side-task[data-thread-id="${id}"] .side-task__main`);
+  const selector = `.side-task${group === "working" ? working : `:not(${working})`}`;
+  return tasksList(page).locator(`${selector}[data-thread-id="${id}"] .side-task__main`);
 };
+/** Opens Done from its line at the foot of Tasks. */
 async function openDone(page: Page) {
-  const shelf = page.getByRole("button", { name: /^Done, \d+ tasks?$/u });
-  if ((await shelf.getAttribute("aria-expanded")) === "false") await shelf.click();
+  if ((await doneList(page).count()) === 0) await doneLine(page).click();
+  await doneList(page).waitFor();
+}
+async function backToTasks(page: Page) {
+  if ((await doneList(page).count()) > 0)
+    await page.getByRole("button", { name: "Back to Tasks", exact: true }).click();
+  await tasksList(page).waitFor();
 }
 const sideRow = (page: Page, id: string) => page.locator(`.side-task[data-thread-id="${id}"]`);
 const state = (page: Page, id: string) =>
@@ -144,6 +154,7 @@ try {
     return observed;
   });
   await step(page, "05-unread-done-stays-ready", async () => {
+    await backToTasks(page);
     await groupRow(page, "ready", unread).waitFor();
     const before = await state(page, unread);
     expectThat(before, before.thread?.unread === true, "fixture has no unread result");
@@ -157,12 +168,15 @@ try {
     );
     await groupRow(page, "ready", unread).waitFor();
     const observed = await state(page, unread);
+    await openDone(page);
+    const inDone = await groupRow(page, "done", unread).count();
+    await backToTasks(page);
     expectThat(
-      observed,
-      observed.thread?.unread === true && (await groupRow(page, "done", unread).count()) === 0,
+      { ...observed, inDone },
+      observed.thread?.unread === true && inDone === 0,
       "Done hid the unread result",
     );
-    return observed;
+    return { ...observed, inDone };
   });
   await step(page, "06-reading-moves-to-done", async () => {
     await groupRow(page, "ready", unread).click();
@@ -177,34 +191,39 @@ try {
           .threads.find((thread) => thread.id === id)?.unread === false,
       unread,
     );
-    await page.locator(".side-home__main").click();
+    // While it is open it stays where the list showed it; once the reader leaves, it moves.
+    await page.getByRole("button", { name: "New task", exact: true }).click();
+    await page.waitForURL((url) => !url.pathname.endsWith(unread));
+    await groupRow(page, "ready", unread).waitFor({ state: "hidden" });
+    const inReady = await groupRow(page, "ready", unread).count();
     await openDone(page);
     await groupRow(page, "done", unread).waitFor();
-    expectThat(
-      {},
-      (await groupRow(page, "ready", unread).count()) === 0,
-      "read Done task remains in Ready",
-    );
+    expectThat({ inReady }, inReady === 0, "read Done task remains in Ready");
     return state(page, unread);
   });
-  await step(page, "07-done-composer-is-frozen", async () => {
+  await step(page, "07-done-composer-says-sending-reopens", async () => {
     await groupRow(page, "done", unread).click();
     const composer = page.locator(".input-surface");
-    await composer.getByRole("button", { name: "Reopen", exact: true }).waitFor();
-    const text = (await composer.innerText()).replace(/\s+/gu, " ").trim();
-    const inputs = await composer.locator("textarea, [contenteditable=true]").count();
+    await composer.locator(".input-surface__done").waitFor();
+    const text = (await composer.locator(".input-surface__done").innerText())
+      .replace(/\s+/gu, " ")
+      .trim();
+    const inputs = await composer.getByRole("textbox", { name: "Message", exact: true }).count();
+    const reopen = await composer.getByRole("button", { name: "Reopen", exact: true }).count();
     expectThat(
-      { text, inputs },
-      text === "This task is Done · Reopen" && inputs === 0,
-      "Done composer text or message-input exclusion is wrong",
+      { text, inputs, reopen },
+      text === "Done · Sending reopens it" && inputs === 1 && reopen === 0,
+      "Done composer text, its message input or its lack of a Reopen button is wrong",
     );
-    return { text, inputs };
+    return { text, inputs, reopen };
   });
   await step(page, "08-reopen-restores-input-and-leaves-done", async () => {
+    await page.locator(".conv-header__menu").click();
     await page
-      .locator(".input-surface")
+      .getByRole("group", { name: "This task", exact: true })
       .getByRole("button", { name: "Reopen", exact: true })
       .click();
+    await page.locator(".input-surface__done").waitFor({ state: "hidden" });
     await page.getByRole("textbox", { name: "Message", exact: true }).waitFor();
     await capture(page, "08-reopened-composer");
     const observed = await state(page, unread);
@@ -215,15 +234,16 @@ try {
         !observed.thread.inputQueuePaused,
       "Reopen did not leave the task idle and open",
     );
-    await page.locator(".side-home__main").click();
+    // Tasks offers New task; Done, open since 07, offers the way back.
+    await backToTasks(page);
+    await page.getByRole("button", { name: "New task", exact: true }).click();
+    await page.waitForURL((url) => !url.pathname.endsWith(unread));
     await openDone(page);
+    const inDone = await groupRow(page, "done", unread).count();
+    await backToTasks(page);
     await groupRow(page, "ready", unread).waitFor();
-    expectThat(
-      {},
-      (await groupRow(page, "done", unread).count()) === 0,
-      "Reopen left the task in Done",
-    );
-    return observed;
+    expectThat({ inDone }, inDone === 0, "Reopen left the task in Done");
+    return { ...observed, inDone };
   });
   await step(page, "09-stopped-title-done-needs-no-confirmation", async () => {
     await groupRow(page, "ready", unread).click();
@@ -234,18 +254,19 @@ try {
       .getByRole("group", { name: "This task", exact: true })
       .getByRole("button", { name: "Mark Done", exact: true })
       .click();
-    await page
-      .locator(".input-surface")
-      .getByRole("button", { name: "Reopen", exact: true })
-      .waitFor();
+    // Done on the task in view moves on to the next one in the list.
+    await page.waitForURL(
+      (url) => url.pathname.startsWith("/tasks/thr_") && !url.pathname.endsWith(unread),
+    );
     const confirmations = await page.getByText("Stop and mark Done?", { exact: true }).count();
     const observed = await state(page, unread);
+    const opened = new URL(page.url()).pathname;
     expectThat(
-      { ...observed, confirmations },
+      { ...observed, confirmations, opened },
       observed.thread?.doneAt != null && confirmations === 0,
       "stopped title action asked for confirmation or failed to apply",
     );
-    return { ...observed, confirmations };
+    return { ...observed, confirmations, opened };
   });
   await step(page, "10-chat-has-no-done", async () => {
     await page.locator(".side-home__main").click();
@@ -262,33 +283,44 @@ try {
     );
     return { doneActions, menus };
   });
-  await step(page, "11-sidebar-done-shelf-and-rows", async () => {
-    await openDone(page);
-    const shelf = page.getByRole("button", { name: /^Done, \d+ tasks?$/u });
+  await step(page, "11-sidebar-done-line-and-view", async () => {
+    await backToTasks(page);
+    const label = await doneLine(page).getAttribute("aria-label");
+    const lines = await page.locator(".side-done").count();
+    // Enter on the Done line opens Done in place of Tasks.
+    await doneLine(page).focus();
+    await page.keyboard.press("Enter");
+    await doneList(page).waitFor();
     await groupRow(page, "done", running).waitFor();
     await groupRow(page, "done", unread).waitFor();
-    const count = await page.locator(".side-done ~ .side-task").count();
-    const label = await shelf.getAttribute("aria-label");
+    const count = await doneList(page).locator(".side-task[data-thread-id]").count();
+    const heading = await page.locator("#sidebar-tasks").innerText();
+    const shown = await page.locator(".side-head--done .side-head__count").innerText();
     expectThat(
-      { count, label },
+      { count, label, lines, heading, shown },
       count >= 2 &&
         label === `Done, ${count} tasks` &&
-        (await shelf.getAttribute("aria-expanded")) === "true" &&
-        (await page.locator(".side-done").count()) === 1,
-      "Done shelf count, rows or expanded state are wrong",
+        lines === 1 &&
+        heading === "Done" &&
+        shown === String(count),
+      "Done line count, Done view rows or heading are wrong",
     );
-    await shelf.focus();
-    await page.keyboard.press("Enter");
+    // Back to Tasks by keyboard, then Space on the Done line opens it again.
+    const back = page.getByRole("button", { name: "Back to Tasks", exact: true });
+    await back.focus();
+    await page.keyboard.press("Space");
+    await tasksList(page).waitFor();
     expectThat(
       {},
-      (await shelf.getAttribute("aria-expanded")) === "false",
-      "Enter did not close Done",
+      (await doneList(page).count()) === 0 && (await doneLine(page).count()) === 1,
+      "Back to Tasks did not bring Tasks back",
     );
+    await doneLine(page).focus();
     await page.keyboard.press("Space");
     await groupRow(page, "done", unread).waitFor();
     expectThat(
       {},
-      (await shelf.getAttribute("aria-expanded")) === "true",
+      (await page.locator("#sidebar-tasks").innerText()) === "Done",
       "Space did not open Done",
     );
     await page.setViewportSize({ width: 390, height: 844 });
@@ -310,9 +342,10 @@ try {
       await drawerButtons.last().evaluate((node) => node === document.activeElement),
       "drawer did not wrap focus backward",
     );
+    await openDone(page);
     await groupRow(page, "done", unread).click();
     await page.locator(".sidebar--open").waitFor({ state: "hidden" });
-    return { count, label };
+    return { count, label, heading, shown };
   });
   await step(page, "12-no-browser-errors", async () => {
     expectThat({ errors }, errors.length === 0, "browser errors occurred");

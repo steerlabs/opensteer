@@ -20,6 +20,8 @@ const directory = process.env.OPENSTEER_TASK_MARKS_EVIDENCE_DIR
   : await mkdtemp(path.join(tmpdir(), "opensteer-task-marks-evidence-"));
 const flights = "thr_b21e07d4-9c3a-4f62-8e1d-73a5c0f4d912";
 const travel = "wsp_00000000-0000-4000-8000-000000000800";
+// "Build the new architecture", which handed out "Book a table for Friday".
+const assigning = "thr_00000000-0000-4000-8000-000000000001";
 const { checks, check, abort } = journeyChecks();
 await mkdir(directory, { recursive: true });
 const web = await openMockWeb("opensteer-task-marks");
@@ -70,6 +72,10 @@ try {
             stroke: getComputedStyle(svg).strokeWidth,
             header: head.getBoundingClientRect().width,
             headerText: document.querySelector(".conv-header")!.textContent,
+            // The title names the task and its state; only a state that asks something of the
+            // reader is said in visible words, and the ring around the mark shows work.
+            headerLabel: document.querySelector(".conv-header__menu")?.getAttribute("aria-label"),
+            headerRings: document.querySelectorAll(".conv-header .working-ring").length,
             state: row.querySelector(".task-state")?.getAttribute("data-state"),
           };
         },
@@ -84,8 +90,8 @@ try {
           observed.header === 20 &&
           observed.state === "working" &&
           observed.aria === "true" &&
-          !!observed.headerText?.includes("Travel") &&
-          !!observed.headerText.includes("Working"),
+          observed.headerLabel === "Tokyo flights in May, working" &&
+          observed.headerRings === 1,
         "row/header identity, geometry or state is wrong",
       );
       await capture(page, "sidebar", density, ".sidebar");
@@ -94,7 +100,7 @@ try {
     await check(
       `${density}x · searchable task picker, keyboard choice, default and focus`,
       async () => {
-        await page.locator(".conv-header__switcher").click();
+        await page.locator(".conv-header__menu").click();
         await page.locator('[data-action="change-icon"]').click();
         const picker = page.getByRole("dialog", { name: "Task icon", exact: true });
         await picker.waitFor();
@@ -114,10 +120,10 @@ try {
             "hotel",
         );
         const focused = await page
-          .locator(".conv-header__switcher")
+          .locator(".conv-header__menu")
           .evaluate((el) => el === document.activeElement);
         expectThat({ focused }, focused, "focus did not return to header opener");
-        await page.locator(".conv-header__switcher").click();
+        await page.locator(".conv-header__menu").click();
         await page.locator('[data-action="change-icon"]').click();
         await page.getByRole("button", { name: "Use default", exact: true }).click();
         await page.waitForFunction(
@@ -170,15 +176,16 @@ try {
     await page.goto(`${web.origin}/projects`);
     await page.locator(".project-cards").waitFor();
     await capture(page, "projects", density);
-    await page.goto(`${web.origin}/`);
-    await page.locator(".task-line").first().waitFor();
+    // A task that handed out work draws the task it handed out with that task's own mark.
+    await page.goto(`${web.origin}/tasks/${assigning}`);
+    await page.locator(".agent-mark .task-mark").first().waitFor();
     await capture(page, "conversation-assignment", density);
     await check(`${density}x · assignment marks, request badge and Chat excluded`, async () => {
       const observed = {
-        marks: await page.locator(".task-line .task-mark").count(),
+        marks: await page.locator(".agent-mark .task-mark").count(),
         orb: await page.locator(".conv-header .chat-orb").count(),
       };
-      await page.locator(".conv-header__switcher").click();
+      await page.locator(".conv-header__menu").click();
       const edit = await page.locator('[data-action="change-icon"]').count();
       expectThat(
         { ...observed, edit },
@@ -201,26 +208,44 @@ try {
       await client.setTaskDone(task.id, true);
     });
     await page.getByRole("button", { name: /^Done, \d+ tasks?$/u }).click();
-    await page.locator(".side-done ~ .side-task").first().waitFor();
+    const doneList = page.getByRole("list", { name: "Done", exact: true });
+    await doneList.locator(".side-task[data-thread-id]").first().waitFor();
     await check(`${density}x · quiet settled rows retain exceptional failure`, async () => {
-      const observed = await page.locator(".side-task[data-thread-id]").evaluateAll((rows) =>
-        rows.map((row) => ({
-          classes: row.className,
-          done: row.matches(".side-done ~ .side-task"),
-          state: row.querySelector(".task-state")?.getAttribute("data-state"),
-          quiet: row.querySelector(".task-mark")?.classList.contains("task-mark--quiet"),
-          title: row.textContent,
-        })),
-      );
+      // Done shows in place of Tasks, so each list is read in its own view.
+      const read = (done: boolean) =>
+        page.locator(".side-task[data-thread-id]").evaluateAll(
+          (rows, done) =>
+            rows.map((row) => ({
+              classes: row.className,
+              done,
+              state: row.querySelector(".task-state")?.getAttribute("data-state"),
+              quiet: row.querySelector(".task-mark")?.classList.contains("task-mark--quiet"),
+              unread:
+                row
+                  .querySelector(".side-task__main")
+                  ?.getAttribute("aria-label")
+                  ?.includes(", unread") ?? false,
+              title: row.textContent,
+            })),
+          done,
+        );
+      const doneRows = await read(true);
+      await page.getByRole("button", { name: "Back to Tasks", exact: true }).click();
+      await page.getByRole("list", { name: "Tasks", exact: true }).waitFor();
+      const observed = [...doneRows, ...(await read(false))];
       const quiet = observed.filter((row) => row.done && row.state === "finished");
+      // A failure stays bright while it is news; once seen it settles like any stopped task.
+      const failed = observed.filter((row) => row.state === "failed");
+      const asking = observed.filter((row) => row.state === "needs-you");
       expectThat(
         { rows: observed },
         quiet.length > 0 &&
           quiet.every((row) => row.quiet) &&
-          observed
-            .filter((row) => row.state === "failed" || row.state === "needs-you")
-            .every((row) => !row.quiet),
-        "done rows are loud or exceptional states were muted",
+          failed.length > 0 &&
+          failed.every((row) => row.quiet === !row.unread) &&
+          asking.length > 0 &&
+          asking.every((row) => !row.quiet),
+        "done rows are loud, an unread failure or an ask was muted, or a seen failure stays bright",
       );
       return { rows: observed };
     });
@@ -232,26 +257,28 @@ try {
       const s = m.getSnapshot();
       return {
         run: s.runQueue.find((run) => run.threadId === "thr_b21e07d4-9c3a-4f62-8e1d-73a5c0f4d912")!,
-        tab: [...s.tabs.rows.values()]
-          .filter((row) => row.kind === "page")
-          .map((row) => {
-            const viewer = m.tabViewer(row.tabId);
-            return {
-              id: row.tabId as string,
-              sessionId: viewer?.kind === "page" ? (viewer.sessionId as string) : "",
-              title: row.title,
-            };
-          })
-          .find((tab) => tab.title === "Launch brief")!,
+        tabId: [...s.tabs.rows.values()].find(
+          (row) => row.kind === "page" && row.title === "Launch brief",
+        )!.tabId as string,
       };
     });
     await page.evaluate(
-      ({ id, tab }) =>
-        (Reflect.get(window, "opensteerMock") as MockHostClient).actInPlace(id, tab.id),
-      { id: flights, tab: current.tab },
+      ({ id, tabId }) =>
+        (Reflect.get(window, "opensteerMock") as MockHostClient).actInPlace(id, tabId),
+      { id: flights, tabId: current.tabId },
     );
-    await page.locator(`.side-tab[data-place-key="${current.tab.id}"] .side-tab__main`).click();
+    await page.locator(`.side-tab[data-place-key="${current.tabId}"] .side-tab__main`).click();
     await page.locator(".browser-stage .cursor-layer--middle").waitFor();
+    // The page this device shows for the tab, which choosing the tab bound.
+    const viewer = await page
+      .waitForFunction((tabId) => {
+        const viewer = (Reflect.get(window, "opensteerMock") as MockHostClient).tabViewer(tabId);
+        return viewer?.kind === "page"
+          ? { sessionId: viewer.sessionId as string, id: viewer.surfaceId as string }
+          : null;
+      }, current.tabId)
+      .then((handle) => handle.jsonValue() as Promise<{ sessionId: string; id: string }>);
+    const tab = { ...viewer, title: "Launch brief" };
     await page.waitForFunction(
       ({ sessionId, id }) =>
         (Reflect.get(window, "opensteerMock") as MockHostClient).browserWatchFrame(
@@ -259,22 +286,22 @@ try {
           id,
         ) !== null &&
         (document.querySelector(".browser-stage canvas")?.getBoundingClientRect().width ?? 0) > 0,
-      current.tab,
+      tab,
     );
     await page.clock.install();
     await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
     await page.evaluate(
-      ({ id, tab, run }) => {
+      ({ id, tab, tabId, run }) => {
         const m = Reflect.get(window, "opensteerMock") as MockHostClient;
         const now = Date.now();
         const geometryRevision =
           m.browserWatchFrame(tab.sessionId, tab.id)?.header.geometryRevision ?? 1;
+        // The Host says where a Run acts by the tab it acts in.
         m.scriptPlaces().apply({
           type: "host.place-activity",
           activity: {
-            place: { kind: "browser", sessionId: tab.sessionId, surfaceId: tab.id },
+            tabId,
             threadId: id,
-            home: false,
             runId: run.id,
             generation: 1,
             seq: 1,
@@ -286,7 +313,7 @@ try {
           },
         });
       },
-      { id: flights, tab: current.tab, run: current.run },
+      { id: flights, tab, tabId: current.tabId, run: current.run },
     );
     const cursor = page.locator(`.browser-stage .acur[data-thread-id="${flights}"]`);
     await page.waitForFunction(
@@ -296,7 +323,7 @@ try {
           id,
         ) !== null &&
         (document.querySelector(".browser-stage canvas")?.getBoundingClientRect().width ?? 0) > 0,
-      current.tab,
+      tab,
     );
     await cursor.locator(".acur__ptr").waitFor();
     await capture(page, "cursor-over-page", density);
