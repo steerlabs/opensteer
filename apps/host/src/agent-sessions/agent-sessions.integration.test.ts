@@ -35,6 +35,7 @@ import {
 } from "@opensteer/database";
 import { createStoreFixture, describeStore } from "@opensteer/database/test-support/store";
 import { expect, vi } from "vitest";
+import pg from "pg";
 import { sql } from "kysely";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { withDatabaseOperationSignal } from "@opensteer/database";
@@ -149,6 +150,7 @@ async function setUp(
     readonly browserConnect?: Pick<BrowserToolPorts, "issueTicket"> &
       Pick<BrowserToolPorts["tabs"], "open" | "bindBrowserScript">;
     readonly pooledBrowser?: BrowserToolPorts["pooledBrowser"];
+    readonly profiles?: BrowserToolPorts["profiles"];
     readonly commands?: CommandTools;
     /** What `discover` reads, where a test holds it open. */
     readonly discoverSources?: Parameters<typeof serveMcp>[1] extends infer O
@@ -219,10 +221,12 @@ async function setUp(
       tabs,
       scripts: recorded,
       confinement: new BrowserScriptConfinement(),
-      profiles: async () => [
-        { id: profile, name: "Work", home },
-        { id: other, name: "Other", home },
-      ],
+      profiles:
+        options.profiles ??
+        (async () => [
+          { id: profile, name: "Work", home },
+          { id: other, name: "Other", home },
+        ]),
       requireDevice: async () => DeviceIdSchema.parse(home.runnerId),
       issueTicket: options.browserConnect?.issueTicket ?? unexpectedTabOperation,
       ...(options.pooledBrowser ? { pooledBrowser: options.pooledBrowser } : {}),
@@ -2805,11 +2809,9 @@ describeStore("an external agent's direct work through sessions", (it) => {
     // Exactly as an operation that does not exist: nothing of the row, no advice.
     expect(replayed).toEqual(unknownOperation);
     expect(JSON.stringify(replayed)).not.toMatch(/private-|outcome-unknown|bpr_/u);
-    // A repeat by its key alone is refused as the fresh call is.
+    // A repeat by its key alone reads exactly as an unknown operation and never reuses the key.
     const repeated = await s.call("browser_use", { ...script, operationKey: "replayed" });
-    expect(repeated).toEqual(
-      await s.call("browser_use", { ...script, operationKey: "another-fresh" }),
-    );
+    expect(repeated).toEqual(unknownOperation);
   });
 
   for (const scope of ["selected", "everything"] as const) {
@@ -2856,7 +2858,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
         isError: true,
         structuredContent: { error: { code: "not_found" } },
       });
-      // A fresh call and a repeat by operationKey alone are also refused as unavailable.
+      // A fresh call is refused as unavailable, and a repeat by operationKey alone reads as an unknown operation.
       const fresh = await s.call("browser_use", { ...script, operationKey: "after-archive" });
       expect(fresh).toMatchObject({
         isError: true,
@@ -2864,9 +2866,203 @@ describeStore("an external agent's direct work through sessions", (it) => {
       });
       expect(
         await s.call("browser_use", { ...script, operationKey: "completed-before-archive" }),
-      ).toEqual(fresh);
+      ).toEqual(unknownOperation);
     });
   }
+
+  it("refuses key-only replay of an archived profile's receipt even when another active profile resolves implicitly", async ({
+    storeFixture,
+  }) => {
+    const profileA = createId("browserProfile") as BrowserProfileId;
+    const profileB = createId("browserProfile") as BrowserProfileId;
+    const home = { runnerId: createId("runner"), name: "Mac" };
+    let activeProfiles: { id: BrowserProfileId; name: string }[] = [
+      { id: profileA, name: "Profile A" },
+    ];
+    const s = await setUp(storeFixture, "implicit-profile-key-replay", {
+      grant: { scope: "everything" },
+      profiles: async () => activeProfiles.map((entry) => ({ ...entry, home })),
+    });
+    // Start with only profileA active for this owner.
+    await storeFixture.database
+      .deleteFrom("browserProfiles")
+      .where("ownerId", "=", s.f.userId)
+      .execute();
+    await storeFixture.database
+      .insertInto("browserProfiles")
+      .values({
+        archivedAt: null,
+        id: profileA,
+        name: "Profile A",
+        ownerId: s.f.userId,
+        homeRunnerId: s.f.runnerId,
+        purpose: "person",
+      })
+      .execute();
+
+    // 1. Completed, failed, and unknown operations on profileA with no explicit profileId.
+    const completedFirst = await s.call("browser_use", {
+      code: 'print("done")',
+      operationKey: "implicit-completed",
+    });
+    expect(completedFirst.isError).not.toBe(true);
+    const completedOpId = (completedFirst.structuredContent as { operationId: string }).operationId;
+
+    s.runBrowserScript.mockImplementationOnce(async () => ({
+      content: [{ type: "text", text: "script-failed-secret" }],
+      isError: true,
+      structuredContent: {
+        error: { code: "script-error", message: "private-failed-detail" },
+      },
+    }));
+    const failedFirst = await s.call("browser_use", {
+      code: 'print("fail")',
+      operationKey: "implicit-failed",
+    });
+    expect(failedFirst.structuredContent).toMatchObject({ status: "failed" });
+
+    s.runBrowserScript.mockImplementationOnce(async () => ({
+      content: [{ type: "text", text: "script-unknown-secret" }],
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "outcome-unknown",
+          message: "private-unknown-detail",
+          performed: ["private-step"],
+        },
+      },
+    }));
+    const unknownFirst = await s.call("browser_use", {
+      code: 'print("unknown")',
+      operationKey: "implicit-unknown",
+    });
+    expect(unknownFirst.structuredContent).toMatchObject({ status: "unknown" });
+    expect(s.runBrowserScript).toHaveBeenCalledTimes(3);
+
+    // 2. Archive profileA and add active profileB as the only active profile.
+    await storeFixture.database
+      .updateTable("browserProfiles")
+      .set({ archivedAt: new Date() })
+      .where("id", "=", profileA)
+      .execute();
+    await storeFixture.database
+      .insertInto("browserProfiles")
+      .values({
+        archivedAt: null,
+        id: profileB,
+        name: "Profile B",
+        ownerId: s.f.userId,
+        homeRunnerId: s.f.runnerId,
+        purpose: "person",
+      })
+      .execute();
+    activeProfiles = [{ id: profileB, name: "Profile B" }];
+
+    const unknownOperation = await s.call("browser_use", {
+      code: 'print("done")',
+      operationId: createId("agentOperation"),
+    });
+
+    // 3. Replaying by operationKey alone (no profileId) must read exactly as an unknown operation,
+    // never return profileA's completed/failed/unknown receipt, and never execute on profileB.
+    for (const [key, code] of [
+      ["implicit-completed", 'print("done")'],
+      ["implicit-failed", 'print("fail")'],
+      ["implicit-unknown", 'print("unknown")'],
+      // Even with mismatched arguments, stored target authorization must refuse before conflict.
+      ["implicit-completed", 'print("different")'],
+    ] as const) {
+      const replayed = await s.call("browser_use", { code, operationKey: key });
+      expect(replayed, key).toEqual(unknownOperation);
+      expect(JSON.stringify(replayed)).not.toContain(completedOpId);
+      expect(JSON.stringify(replayed)).not.toContain("private-");
+    }
+    expect(s.runBrowserScript).toHaveBeenCalledTimes(3);
+
+    // 4. Direct AgentSessionService.run() also authorizes existing.target.grant (profileA) before
+    // argument comparison or returning any receipt, even when operation.target resolves to profileB.
+    const executeSpy = vi.fn(async () => ({ summary: "ran-on-b" }));
+    for (const [key, code] of [
+      ["implicit-completed", 'print("done")'],
+      ["implicit-failed", 'print("fail")'],
+      ["implicit-unknown", 'print("unknown")'],
+      ["implicit-completed", 'print("mismatched-args")'],
+    ] as const) {
+      await expect(
+        s.sessions.run({
+          ownerUserId: s.f.userId,
+          agentConnectionId: s.agent.id,
+          operationKey: key,
+          tool: "browser_use",
+          input: { code },
+          target: {
+            grant: { kind: "browser-profile", profileId: profileB },
+            name: "Profile B",
+            device: null,
+          },
+          effect: "write",
+          calls: `browser_use ${code}`,
+          execute: executeSpy,
+        }),
+      ).rejects.toMatchObject({ code: "not_found", message: "Operation is unavailable." });
+    }
+    expect(executeSpy).not.toHaveBeenCalled();
+  });
+
+  it("folds profile liveness into the connection-standing read on connected profile receipt replay", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "receipt-statement-budget", {
+      grant: granted,
+    });
+    const first = await s.call("browser_use", {
+      ...script,
+      operationKey: "budget-replay",
+    });
+    expect(first.isError).not.toBe(true);
+    const operationId = (first.structuredContent as { operationId: string }).operationId;
+    const capture = async (action: () => Promise<unknown>) => {
+      const queries: string[] = [];
+      const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
+      const original = prototype.query;
+      const spy = vi.spyOn(prototype, "query").mockImplementation(function (
+        this: pg.Client,
+        ...args: unknown[]
+      ) {
+        const arg = args[0];
+        queries.push(
+          typeof arg === "string"
+            ? arg
+            : arg && typeof arg === "object" && "text" in arg && typeof arg.text === "string"
+              ? arg.text
+              : "<unknown>",
+        );
+        return Reflect.apply(original, this, args);
+      });
+      try {
+        await action();
+      } finally {
+        spy.mockRestore();
+      }
+      return queries;
+    };
+    const byId = await capture(() => s.call("browser_use", { ...script, operationId }));
+    const byKey = await capture(() =>
+      s.call("browser_use", { ...script, operationKey: "budget-replay" }),
+    );
+    const standaloneProfileQuery = (sqlText: string) =>
+      /from browser_profiles\s+where id =/su.test(sqlText) && !/agent_connections/su.test(sqlText);
+    expect(
+      byId.filter(standaloneProfileQuery),
+      `byId total=${byId.length}, byKey total=${byKey.length}`,
+    ).toHaveLength(0);
+    expect(
+      byKey.filter(standaloneProfileQuery),
+      `byId total=${byId.length}, byKey total=${byKey.length}`,
+    ).toHaveLength(0);
+    expect(byId.length).toBe(5);
+    expect(byKey.length).toBe(5);
+  });
 
   it("records the cause a recheck read when the Disconnect reached the database before its stop", async ({
     storeFixture,

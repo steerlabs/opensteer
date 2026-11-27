@@ -11,6 +11,7 @@ import {
   refused,
   requestOperationCallsMaxLength,
   threadAccessModeAtMost,
+  type AgentGrantTarget,
   type AgentOperationDecision,
   type AgentOperationEnding,
   type AgentOperationId,
@@ -39,6 +40,7 @@ import {
   findAgentOperation,
   handOffAgentOperation,
   idleAgentSessions,
+  reachesTarget,
   readAgentOperation,
   refuseUnsentAgentOperation,
   refuseUnsentHandedOffAgentOperation,
@@ -453,16 +455,16 @@ export class AgentSessionService {
       identity: { key: operation.operationKey },
     });
     if (existing) {
+      // Authorize the stored operation's target before comparing arguments or returning any
+      // receipt (completed, failed, unknown, or refused); an unreachable stored target reads
+      // exactly as an unknown operation and never reuses the key to run a new effect.
+      const storedTarget = existing.target.grant;
+      const execution = await this.#admitStoredTarget(operation, storedTarget);
+      assertOperationArguments(existing, argumentDigest, operation.taskId);
       if (
         existing.state === "completed" &&
         (!operation.replay || existing.sessionStatus === "ended")
       ) {
-        await admitExecution(this.#store.database, {
-          ownerUserId: operation.ownerUserId,
-          subject: { kind: "connection", agentConnectionId: operation.agentConnectionId },
-          grantTarget: operation.target?.grant,
-        });
-        assertOperationArguments(existing, argumentDigest, operation.taskId);
         return {
           status: "completed",
           taskId: existing.taskId,
@@ -471,14 +473,24 @@ export class AgentSessionService {
           ...(operation.reportReplay ? { replayed: true } : {}),
         };
       }
-      assertOperationArguments(existing, argumentDigest, operation.taskId);
       return withAgentOperationReceipt(
         this.#store.database,
         existing,
         existing.taskId,
         async () => {
-          const execution = await this.#admit(operation, `session:${existing.sessionId}`);
-          const result = await this.#advance(operation, existing, existing.taskId, execution);
+          const replayExecution =
+            existing.state === "failed" ||
+            existing.state === "unknown" ||
+            existing.state === "refused"
+              ? execution
+              : await this.#admit(
+                  {
+                    ...operation,
+                    ...(storedTarget.kind === "device" ? {} : { target: existing.target }),
+                  },
+                  `session:${existing.sessionId}`,
+                );
+          const result = await this.#advance(operation, existing, existing.taskId, replayExecution);
           return operation.reportReplay ? { ...result, replayed: true as const } : result;
         },
       );
@@ -694,6 +706,29 @@ export class AgentSessionService {
     if (session?.status === "ended" && session.endReason) return sessionEnding[session.endReason];
     const reason = await connectionEndReason(this.#store.database, row.userId, row.connectionId);
     return reason ? connectionCleanupEnding(reason) : null;
+  }
+
+  async #admitStoredTarget(
+    operation: Pick<DirectOperation<unknown>, "ownerUserId" | "agentConnectionId">,
+    storedTarget: AgentGrantTarget,
+  ): Promise<ExecutionAuthority> {
+    let execution: ExecutionAuthority;
+    try {
+      execution = await admitExecution(this.#store.database, {
+        ownerUserId: operation.ownerUserId,
+        subject: { kind: "connection", agentConnectionId: operation.agentConnectionId },
+        ...(storedTarget.kind === "browser-profile" ? { grantTarget: storedTarget } : {}),
+      });
+    } catch (error) {
+      if (error instanceof OpensteerError && error.code === "not_found")
+        throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
+      throw error;
+    }
+    if (storedTarget.kind !== "device" && storedTarget.kind !== "browser-profile") {
+      if (!(await reachesTarget(this.#store.database, execution, storedTarget)))
+        throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
+    }
+    return execution;
   }
 
   async #admit(

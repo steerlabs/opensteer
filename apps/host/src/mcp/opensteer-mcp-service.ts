@@ -891,13 +891,11 @@ export class OpensteerMcpService {
       if (operationId && !row)
         throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
       // A replay is a call: nothing of its row is returned unless the connection may still reach
-      // its target under the grant it holds now. Outside it, a named operation reads exactly as an
-      // unknown one does, and a repeat by its key alone is refused as a fresh call is, below.
-      if (row && !(await this.#reachable(caller, row))) {
-        if (operationId)
-          throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
-        row = undefined;
-      }
+      // its target under the grant it holds now. Outside it, any replay (by operationId or by
+      // operationKey alone) reads exactly as an unknown operation and never reuses the key to run
+      // a new effect.
+      if (row && !(await this.#reachable(caller, row)))
+        throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
       if (row) {
         const taskId =
           "taskId" in input ? ThreadIdSchema.optional().parse(input.taskId) : undefined;
@@ -1315,14 +1313,18 @@ export class OpensteerMcpService {
     caller: Extract<AgentCaller, { kind: "connection" }>,
     row: { readonly target: { readonly grant: import("@opensteer/core").AgentGrantTarget } },
   ): Promise<boolean> {
-    if (row.target.grant.kind === "device") return true;
+    const grantTarget = row.target.grant;
+    if (grantTarget.kind === "device") return true;
     const database = this.options.store.database;
     if (!database) return false;
     const execution = await admitExecution(database, {
       ownerUserId: caller.userId,
       subject: { kind: "connection", agentConnectionId: caller.connectionId },
+      ...(grantTarget.kind === "browser-profile" ? { grantTarget } : {}),
     }).catch(() => null);
-    return execution !== null && (await reachesTarget(database, execution, row.target.grant));
+    if (execution === null) return false;
+    if (grantTarget.kind === "browser-profile") return true;
+    return reachesTarget(database, execution, grantTarget);
   }
   /** What happened to a session's access, read from its connection's standing. */
   async #changeOf(session: McpSession): Promise<AgentAccessChange> {
