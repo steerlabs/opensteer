@@ -111,7 +111,7 @@ describe("computer REPL worker boundary", () => {
           );
         },
         invoke: async ({ operation, markSubmitted }) => {
-        if (operation === "apps") return { value: [] };
+          if (operation === "apps") return { value: [] };
           if (operation === "phones") return { value: [{ id: "phone", name: "iPhone" }] };
           if (operation === "bind") return { value: {} };
           markSubmitted!();
