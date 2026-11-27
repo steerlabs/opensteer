@@ -46,6 +46,11 @@ export async function openMockWeb(name: string): Promise<MockWeb> {
       process.env.OPENSTEER_JOURNEY_BROWSER === "webkit"
         ? await webkit.launch({ headless: true })
         : await chromium.launch({
+            // Text is antialiased the same way on every platform, as headless Chromium on
+            // macOS always does: on Linux and Windows it switches between subpixel and
+            // grayscale with the state of things around the text (a text field's selection,
+            // for one), which a screenshot comparison would read as paint.
+            args: ["--disable-lcd-text"],
             headless: true,
             ...(executablePath ? { executablePath } : {}),
           });
