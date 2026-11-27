@@ -3228,16 +3228,44 @@ it("follows document.title changes and single-page app navigations without a loa
   cleanup.push(() => runtime.shutdown());
 
   const sink = new FakeSink();
+  const tabWaiters = new Set<() => boolean>();
+  sink.sendServerImplementation = async (message) => {
+    if (message.type !== "browser.tabs") return;
+    for (const check of tabWaiters) {
+      if (check()) tabWaiters.delete(check);
+    }
+  };
+  const tabRow = () => [...sink.tabs.rows.values()][0];
+  const waitForTab = (
+    match: (row: { readonly url: string; readonly title: string }) => boolean,
+    timeoutMs = 10_000,
+  ) => {
+    const existing = tabRow();
+    if (existing && match(existing)) return Promise.resolve(existing);
+    return withTimeout(
+      new Promise<NonNullable<ReturnType<typeof tabRow>>>((resolve) => {
+        tabWaiters.add(() => {
+          const row = tabRow();
+          if (!row || !match(row)) return false;
+          resolve(row);
+          return true;
+        });
+      }),
+      timeoutMs,
+      {
+        timeoutError: () =>
+          new Error(`Timed out waiting for browser.tabs; last=${JSON.stringify(tabRow())}`),
+      },
+    );
+  };
+
   const attachment = await runtime.attach("ticket", sink);
   cleanup.push(() => attachment.close());
   const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
   const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
     sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
 
-  const tabRow = () => [...sink.tabs.rows.values()][0];
-  await vi.waitFor(() => expect(tabRow()).toMatchObject({ title: "Load title" }), {
-    timeout: 10_000,
-  });
+  await waitForTab((row) => row.title === "Load title");
 
   const listed = z
     .object({
@@ -3255,9 +3283,7 @@ it("follows document.title changes and single-page app navigations without a loa
     { expression: `document.title = "Script title"`, returnByValue: true },
     cdpSessionId,
   );
-  await vi.waitFor(() => expect(tabRow()).toMatchObject({ title: "Script title" }), {
-    timeout: 4_000,
-  });
+  await waitForTab((row) => row.title === "Script title", 4_000);
 
   // 2) Text node mutation inside <title>.
   await agent(
@@ -3268,48 +3294,240 @@ it("follows document.title changes and single-page app navigations without a loa
     },
     cdpSessionId,
   );
-  await vi.waitFor(() => expect(tabRow()).toMatchObject({ title: "Text node title" }), {
-    timeout: 4_000,
-  });
+  await waitForTab((row) => row.title === "Text node title", 4_000);
 
-  // 3) Single-page app navigation without a load where title updates asynchronously after pushState.
+  // 3) Single-page app navigation without a load: pushState and title update as separate commands
+  //    with the URL publication committed between them.
   await agent(
     "Runtime.evaluate",
-    {
-      expression: `history.pushState({}, "", "/spa-route"); setTimeout(() => { document.title = "SPA route title"; }, 50); true`,
-      returnByValue: true,
-    },
+    { expression: `history.pushState({}, "", "/spa-route"); true`, returnByValue: true },
     cdpSessionId,
   );
-  await vi.waitFor(
-    () =>
-      expect(tabRow()).toMatchObject({
-        url: `${origin}/spa-route`,
-        title: "SPA route title",
-      }),
-    { timeout: 4_000 },
+  await waitForTab(
+    (row) => row.url === `${origin}/spa-route` && row.title === "Text node title",
+    4_000,
+  );
+  await agent(
+    "Runtime.evaluate",
+    { expression: `document.title = "SPA route title"`, returnByValue: true },
+    cdpSessionId,
+  );
+  await waitForTab(
+    (row) => row.url === `${origin}/spa-route` && row.title === "SPA route title",
+    4_000,
   );
 
   // 4) Document starting with no <title> element gets one created later and then removed.
   await agent("Page.navigate", { url: `${origin}/untitled` }, cdpSessionId);
-  await vi.waitFor(() => expect(tabRow()).toMatchObject({ url: `${origin}/untitled`, title: "" }), {
-    timeout: 10_000,
-  });
+  await waitForTab((row) => row.url === `${origin}/untitled` && row.title === "");
   await agent(
     "Runtime.evaluate",
     { expression: `document.title = "Added later"`, returnByValue: true },
     cdpSessionId,
   );
-  await vi.waitFor(() => expect(tabRow()).toMatchObject({ title: "Added later" }), {
-    timeout: 4_000,
-  });
+  await waitForTab((row) => row.title === "Added later", 4_000);
   await agent(
     "Runtime.evaluate",
     { expression: `document.querySelector("title").remove()`, returnByValue: true },
     cdpSessionId,
   );
-  await vi.waitFor(() => expect(tabRow()).toMatchObject({ title: "" }), { timeout: 4_000 });
+  await waitForTab((row) => row.title === "", 4_000);
 }, 60_000);
+
+describe("Chromium title observer bounds and lifecycle", () => {
+  async function launchTitlePage() {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><title>Initial</title><body>ok</body>");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing HTTP port.");
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const launcher = new PlaywrightChromiumLauncher({
+      chromiumSandbox: false,
+      executablePath,
+      headless: true,
+    });
+    const launched = await launcher.launch({
+      initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
+      partitionKey: `session:${randomUUID()}`,
+      sessionId: validClaims().sessionId,
+      storage: { kind: "guest" },
+    });
+    cleanup.push(() => launched.close());
+    const page = launched.context.pages()[0]!;
+    const cdp = await page.cdp();
+    const inspected = page as unknown as {
+      rawCdpSession: {
+        listenerCount(event: string): number;
+        on(event: string, listener: (event: unknown) => void): void;
+        off(event: string, listener: (event: unknown) => void): void;
+        send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+      } | null;
+      titleObserver: unknown;
+    };
+    const raw = inspected.rawCdpSession!;
+    const observerWorlds: number[] = [];
+    const onContextCreated = (event: unknown) => {
+      if (
+        event &&
+        typeof event === "object" &&
+        "context" in event &&
+        event.context &&
+        typeof event.context === "object" &&
+        "id" in event.context &&
+        "name" in event.context &&
+        typeof event.context.id === "number" &&
+        typeof event.context.name === "string" &&
+        event.context.name.startsWith("opensteer-title-")
+      ) {
+        observerWorlds.push(event.context.id);
+      }
+    };
+    raw.on("Runtime.executionContextCreated", onContextCreated);
+    cleanup.push(async () => {
+      raw.off("Runtime.executionContextCreated", onContextCreated);
+    });
+
+    const loaded = new Promise<void>((resolve) => {
+      const onMeta = () => {
+        if (page.url() === `${origin}/`) {
+          page.offMetadataChanged(onMeta);
+          resolve();
+        }
+      };
+      page.onMetadataChanged(onMeta);
+    });
+    await cdp.send("Page.navigate", { url: `${origin}/` });
+    await loaded;
+
+    const waitForNextWorld = (previousCount: number) =>
+      withTimeout(
+        new Promise<number>((resolve) => {
+          const check = () => {
+            if (observerWorlds.length > previousCount) {
+              raw.off("Runtime.executionContextCreated", check);
+              resolve(observerWorlds.at(-1)!);
+            }
+          };
+          if (observerWorlds.length > previousCount) resolve(observerWorlds.at(-1)!);
+          else raw.on("Runtime.executionContextCreated", check);
+        }),
+        5_000,
+        { timeoutError: () => new Error("Title observer isolated world never created") },
+      );
+
+    return { page, cdp, inspected, raw, observerWorlds, waitForNextWorld };
+  }
+
+  it("delivers 120 title changes across 120 page tasks at a bounded cadence with latest title winning", async () => {
+    const { page, cdp, raw, observerWorlds, waitForNextWorld } = await launchTitlePage();
+    let bindingCalls = 0;
+    let burstSettled: (() => void) | undefined;
+    const burstDone = new Promise<void>((resolve) => {
+      burstSettled = resolve;
+    });
+    const onBurstBinding = (event: unknown) => {
+      if (
+        event &&
+        typeof event === "object" &&
+        "name" in event &&
+        typeof event.name === "string" &&
+        event.name.startsWith("opensteerTitle_")
+      ) {
+        bindingCalls++;
+      }
+    };
+    raw.on("Runtime.bindingCalled", onBurstBinding);
+    cleanup.push(async () => {
+      raw.off("Runtime.bindingCalled", onBurstBinding);
+    });
+
+    const prevWorlds = observerWorlds.length;
+    const onBurstMeta = () => {
+      void page.title().then((title) => {
+        if (title === "burst-120") burstSettled?.();
+      });
+    };
+    page.onMetadataChanged(onBurstMeta);
+    cleanup.push(async () => {
+      page.offMetadataChanged(onBurstMeta);
+    });
+    await waitForNextWorld(prevWorlds);
+
+    await cdp.send("Runtime.evaluate", {
+      awaitPromise: true,
+      expression: `new Promise((resolve) => {
+        const ch = new MessageChannel();
+        let i = 0;
+        ch.port1.onmessage = () => {
+          i++;
+          document.title = "burst-" + i;
+          if (i < 120) ch.port2.postMessage(0);
+          else resolve(i);
+        };
+        ch.port2.postMessage(0);
+      })`,
+      returnByValue: true,
+    });
+    await withTimeout(burstDone, 5_000, {
+      timeoutError: () => new Error("Final burst title was not delivered"),
+    });
+    expect(await page.title()).toBe("burst-120");
+    expect(bindingCalls).toBeGreaterThanOrEqual(1);
+    expect(bindingCalls).toBeLessThanOrEqual(5);
+  }, 60_000);
+
+  it("disconnects the current document's observer when the last metadata listener leaves", async () => {
+    const { page, raw, observerWorlds, waitForNextWorld } = await launchTitlePage();
+    const prevWorlds = observerWorlds.length;
+    const listener = () => {};
+    page.onMetadataChanged(listener);
+    const worldId = await waitForNextWorld(prevWorlds);
+
+    page.offMetadataChanged(listener);
+    await raw.send("Runtime.evaluate", {
+      contextId: worldId,
+      expression: "1",
+      returnByValue: true,
+    });
+    const stillInstalled = asRecord(
+      await raw.send("Runtime.evaluate", {
+        contextId: worldId,
+        expression: "Boolean(globalThis.__opensteerTitleObserver)",
+        returnByValue: true,
+      }),
+    );
+    expect(asRecord(stillInstalled.result).value).toBe(false);
+    expect(raw.listenerCount("Runtime.bindingCalled")).toBe(0);
+  }, 60_000);
+
+  it("clears the title observer record and Runtime.bindingCalled listener after a renderer crash", async () => {
+    const { page, cdp, inspected, raw, observerWorlds, waitForNextWorld } = await launchTitlePage();
+    const prevWorlds = observerWorlds.length;
+    const listener = () => {};
+    page.onMetadataChanged(listener);
+    await waitForNextWorld(prevWorlds);
+    expect(inspected.titleObserver).not.toBeNull();
+    expect(raw.listenerCount("Runtime.bindingCalled")).toBe(1);
+
+    const crashed = new Promise<void>((resolve) => {
+      const off = page.onRendererGone!(() => {
+        off();
+        resolve();
+      });
+    });
+    void cdp.send("Page.crash").catch(() => undefined);
+    await withTimeout(crashed, 10_000, {
+      timeoutError: () => new Error("Renderer crash event did not fire"),
+    });
+    expect(inspected.titleObserver).toBeNull();
+    expect(raw.listenerCount("Runtime.bindingCalled")).toBe(0);
+  }, 60_000);
+});
 
 /**
  * CZ5: the context of the field a page surface has focused, as it last published it: what a

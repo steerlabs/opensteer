@@ -2830,9 +2830,17 @@ class PlaywrightPageHandle implements BrowserPage {
     readonly binding: string;
     readonly session: PlaywrightCdpSession;
     readonly onBinding: (event: unknown) => void;
+    readonly onContextCreated: (event: unknown) => void;
+    readonly onContextDestroyed: (event: unknown) => void;
+    readonly onContextsCleared: () => void;
+    readonly onCrash: () => void;
+    readonly onSessionClose: () => void;
+    readonly contextIds: Set<number>;
     readonly scriptId: Promise<string | null>;
+    stopped: boolean;
   } | null = null;
   private titleObserverStarting = false;
+  private titleObserverEpoch = 0;
   private closing = false;
   private closeAttempts = 0;
   /** This page's target once known, for a close that goes around Playwright. */
@@ -3370,13 +3378,20 @@ class PlaywrightPageHandle implements BrowserPage {
 
   private startTitleObserver(): void {
     if (this.titleObserver || this.titleObserverStarting || this.gone || this.closing) return;
+    const epoch = ++this.titleObserverEpoch;
     this.titleObserverStarting = true;
+    const onPendingCrash = () => {
+      this.titleObserverEpoch++;
+    };
+    this.page.once("crash", onPendingCrash);
     void this.cdp()
       .then(() => {
+        this.page.off("crash", onPendingCrash);
         this.titleObserverStarting = false;
         const session = this.rawCdpSession;
         if (
           !session ||
+          this.titleObserverEpoch !== epoch ||
           this.gone ||
           this.closing ||
           this.metadataListeners.size === 0 ||
@@ -3385,6 +3400,16 @@ class PlaywrightPageHandle implements BrowserPage {
           return;
         const binding = `opensteerTitle_${randomUUID().replaceAll("-", "")}`;
         const world = `opensteer-title-${randomUUID()}`;
+        const contextIds = new Set<number>();
+        const disconnectContext = (contextId: number) => {
+          if (this.gone || this.closing) return;
+          void session
+            .send("Runtime.evaluate", {
+              contextId,
+              expression: "globalThis.__opensteerStopTitleObserver?.()",
+            })
+            .catch(() => undefined);
+        };
         const onBinding = (event: unknown) => {
           if (
             !event ||
@@ -3397,7 +3422,45 @@ class PlaywrightPageHandle implements BrowserPage {
             return;
           for (const listener of this.metadataListeners.keys()) listener();
         };
-        untypedCdp(session).on("Runtime.bindingCalled", onBinding);
+        const onContextCreated = (event: unknown) => {
+          if (
+            !event ||
+            typeof event !== "object" ||
+            !("context" in event) ||
+            !event.context ||
+            typeof event.context !== "object" ||
+            !("id" in event.context) ||
+            !("name" in event.context) ||
+            typeof event.context.id !== "number" ||
+            event.context.name !== world
+          )
+            return;
+          if (observer.stopped) {
+            disconnectContext(event.context.id);
+            return;
+          }
+          contextIds.add(event.context.id);
+        };
+        const onContextDestroyed = (event: unknown) => {
+          if (
+            event &&
+            typeof event === "object" &&
+            "executionContextId" in event &&
+            typeof event.executionContextId === "number"
+          )
+            contextIds.delete(event.executionContextId);
+        };
+        const onContextsCleared = () => contextIds.clear();
+        const onCrash = () => this.stopTitleObserver(true);
+        const onSessionClose = () => this.stopTitleObserver(true);
+        const cdp = untypedCdp(session);
+        cdp.on("Runtime.bindingCalled", onBinding);
+        cdp.on("Runtime.executionContextCreated", onContextCreated);
+        cdp.on("Runtime.executionContextDestroyed", onContextDestroyed);
+        cdp.on("Runtime.executionContextsCleared", onContextsCleared);
+        cdp.on("close", onSessionClose);
+        this.page.on("crash", onCrash);
+        // Chromium emits no title-change event; this one isolated-world observer costs ~275 KB V8 heap/tab with no measurable navigation delay.
         const scriptId = Promise.all([
           session.send("Runtime.enable"),
           session.send("Runtime.addBinding", { name: binding, executionContextName: world }),
@@ -3416,23 +3479,65 @@ class PlaywrightPageHandle implements BrowserPage {
               : null,
           )
           .catch(() => null);
-        this.titleObserver = { binding, session, onBinding, scriptId };
+        const observer = {
+          binding,
+          session,
+          onBinding,
+          onContextCreated,
+          onContextDestroyed,
+          onContextsCleared,
+          onCrash,
+          onSessionClose,
+          contextIds,
+          scriptId,
+          stopped: false,
+        };
+        this.titleObserver = observer;
       })
       .catch(() => {
+        this.page.off("crash", onPendingCrash);
         this.titleObserverStarting = false;
       });
   }
 
-  private stopTitleObserver(): void {
+  private stopTitleObserver(skipCdp = false): void {
+    this.titleObserverEpoch++;
     const observer = this.titleObserver;
     if (!observer) return;
     this.titleObserver = null;
-    untypedCdp(observer.session).off("Runtime.bindingCalled", observer.onBinding);
-    if (this.gone || this.closing) return;
+    observer.stopped = true;
+    const cdp = untypedCdp(observer.session);
+    cdp.off("Runtime.bindingCalled", observer.onBinding);
+    cdp.off("close", observer.onSessionClose);
+    this.page.off("crash", observer.onCrash);
+    const detachContextListeners = () => {
+      cdp.off("Runtime.executionContextCreated", observer.onContextCreated);
+      cdp.off("Runtime.executionContextDestroyed", observer.onContextDestroyed);
+      cdp.off("Runtime.executionContextsCleared", observer.onContextsCleared);
+      observer.contextIds.clear();
+    };
+    if (skipCdp || this.gone || this.closing) {
+      detachContextListeners();
+      return;
+    }
+    const disconnectLiveContexts = () => {
+      for (const contextId of observer.contextIds) {
+        observer.contextIds.delete(contextId);
+        void observer.session
+          .send("Runtime.evaluate", {
+            contextId,
+            expression: "globalThis.__opensteerStopTitleObserver?.()",
+          })
+          .catch(() => undefined);
+      }
+    };
+    disconnectLiveContexts();
     void observer.session
       .send("Runtime.removeBinding", { name: observer.binding })
       .catch(() => undefined);
     void observer.scriptId.then((identifier) => {
+      disconnectLiveContexts();
+      detachContextListeners();
       if (identifier && !this.gone && !this.closing)
         void observer.session
           .send("Page.removeScriptToEvaluateOnNewDocument", { identifier })
@@ -3478,7 +3583,7 @@ class PlaywrightPageHandle implements BrowserPage {
 /**
  * Runs in a private isolated world on the top frame only. Observes document, documentElement,
  * head (direct children), and the active title element — never body mutations — and notifies
- * the binding only when document.title changes.
+ * the binding at a bounded 250 ms cadence (leading + trailing, latest title wins).
  */
 function titleObserverScript(binding: string): string {
   return `(() => {
@@ -3486,6 +3591,7 @@ function titleObserverScript(binding: string): string {
   globalThis.__opensteerTitleObserver = true;
   const svgNs = "http://www.w3.org/2000/svg";
   const xhtmlNs = "http://www.w3.org/1999/xhtml";
+  const minIntervalMs = 250;
   const activeTitle = () => {
     const docEl = document.documentElement;
     if (docEl && docEl.namespaceURI === svgNs) {
@@ -3497,11 +3603,15 @@ function titleObserverScript(binding: string): string {
     return document.getElementsByTagNameNS(xhtmlNs, "title")[0] ?? null;
   };
   let last = document.title;
+  let lastSentAt = -Infinity;
   let root = null;
   let head = null;
   let titleEl = null;
   let queued = false;
+  let timer = null;
+  let stopped = false;
   const syncTargets = () => {
+    if (stopped) return;
     const nextRoot = document.documentElement;
     const nextHead = document.head;
     const nextTitle = activeTitle();
@@ -3515,20 +3625,51 @@ function titleObserverScript(binding: string): string {
     if (head) observer.observe(head, { childList: true });
     if (titleEl) observer.observe(titleEl, { childList: true, characterData: true, subtree: true });
   };
-  const check = () => {
-    queued = false;
+  const emit = () => {
+    if (stopped) return;
     syncTargets();
     const next = document.title;
     if (next === last) return;
+    const now = performance.now();
+    const remaining = minIntervalMs - (now - lastSentAt);
+    if (remaining > 0) {
+      if (timer === null) {
+        timer = setTimeout(() => {
+          timer = null;
+          emit();
+        }, remaining);
+      }
+      return;
+    }
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
     last = next;
+    lastSentAt = now;
     globalThis[${JSON.stringify(binding)}]?.("1");
   };
+  const check = () => {
+    queued = false;
+    emit();
+  };
   const schedule = () => {
-    if (queued) return;
+    if (stopped || queued || timer !== null) return;
     queued = true;
     queueMicrotask(check);
   };
   const observer = new MutationObserver(schedule);
+  globalThis.__opensteerStopTitleObserver = () => {
+    stopped = true;
+    observer.disconnect();
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    document.removeEventListener("DOMContentLoaded", schedule);
+    delete globalThis.__opensteerTitleObserver;
+    delete globalThis.__opensteerStopTitleObserver;
+  };
   syncTargets();
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", schedule, { once: true });
