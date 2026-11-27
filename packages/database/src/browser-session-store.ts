@@ -23,6 +23,7 @@ import {
   AgentSessionIdSchema,
   type BrowserProfileId,
   BrowserProfileIdSchema,
+  type TabId,
   type ContentPart,
   OpensteerError,
   raisedBeforeEffect,
