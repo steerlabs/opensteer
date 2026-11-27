@@ -71,6 +71,8 @@ async function directWork(
      */
     readonly misfileHolders?: () =>
       { readonly bindingId: string; readonly threadId: string } | undefined;
+    /** Each command a script sends, after its recheck, with the tab it goes to. */
+    readonly onScriptCommand?: (tabId: string) => void;
   } = {},
 ) {
   let tabChange: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined;
@@ -147,7 +149,10 @@ async function directWork(
     store: j.store,
     tabs: confinement.tabs(scriptTabs as never),
     // As the Home's runtime wires it.
-    workingIn: (bindingId: string, tabId: never) => sessions.workingIn.note(bindingId, tabId),
+    workingIn: (bindingId: string, tabId: never) => {
+      options.onScriptCommand?.(tabId);
+      sessions.workingIn.note(bindingId, tabId);
+    },
   } as never);
   // As the Home's runtime: the session's end closes its raw CDP and its scripts' browser work.
   endBrowserWork = (bindingId, reason) => {
@@ -3581,7 +3586,13 @@ it.each([
 it("names the task as the holder of the tab it works in while the person's viewers watch it: one before the call, a second during it", async () => {
   // The owner's setup, run 16: the Mac app and a web app both had the task's tab open. The
   // holder must be found by the tab itself, whatever session its page is bound to now.
-  const j = await journey("direct-holder-viewers", { profile: true });
+  /** Taken while sampling is on: at each command of the script, and at each tabs publish. */
+  const samples: Promise<boolean>[] = [];
+  let sample: (() => void) | undefined;
+  const j = await journey("direct-holder-viewers", {
+    profile: true,
+    onTabsChanged: () => sample?.(),
+  });
   try {
     const home = await j.startHome();
     const { session } = await home.service.start({
@@ -3591,14 +3602,14 @@ it("names the task as the holder of the tab it works in while the person's viewe
     const [tab] = await home.service.savedPages(j.task.userId, session.id);
     if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
     await j.draft();
-    const work = await directWork(j, () => home);
+    const work = await directWork(j, () => home, { onScriptCommand: () => sample?.() });
     const first = j.viewer(home, session.id, "watch");
     await first.attaching;
     const bound = (await row(j, tab.id)).pageBinding?.sessionId;
     let done = false;
     const working = work
       .useTab(
-        `const page = await openPage(${JSON.stringify(tab.id)}); await page.title(); await page.waitForTimeout(4000); await page.title(); return 1;`,
+        `const page = await openPage(${JSON.stringify(tab.id)}); for (let step = 0; step < 8; step++) { await page.title(); await page.waitForTimeout(500); } await page.title(); return 1;`,
         tab.id,
       )
       .finally(() => {
@@ -3613,17 +3624,20 @@ it("names the task as the holder of the tab it works in while the person's viewe
     // A second viewer of the same tab, while the call works in it.
     const second = j.viewer(home, (await row(j, tab.id)).pageBinding!.sessionId, "control");
     await second.attaching;
-    const seen: boolean[] = [];
-    while (!done) {
-      seen.push(await holds());
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
+    // From now until the call ends, each command it sends and each tabs publish reads the holder.
+    expect(done).toBe(false);
+    sample = () => {
+      if (!done) samples.push(holds());
+    };
     const result = await working;
+    sample = undefined;
     expect(result.isError, text(result)).not.toBe(true);
+    const seen = await Promise.all(samples);
     // Whether the person's viewing moved the tab's page to another session, it named the task.
     const now = (await row(j, tab.id)).pageBinding?.sessionId;
     console.info(`holder viewers: bound ${bound} -> ${now}; held ${seen.join(",")}`);
-    expect(seen.length).toBeGreaterThan(0);
+    // Its last command at least, and others before it while both viewers watched.
+    expect(seen.length).toBeGreaterThan(1);
     expect(seen.every(Boolean)).toBe(true);
   } finally {
     await j.close();
