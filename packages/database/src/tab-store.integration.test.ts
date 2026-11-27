@@ -1,5 +1,4 @@
-import { DeviceIdSchema } from "@opensteer/core";
-import { TabIdSchema, WindowIdSchema } from "@opensteer/core";
+import { DeviceIdSchema, TabIdSchema, WindowIdSchema, createId } from "@opensteer/core";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
@@ -601,5 +600,81 @@ integration("workspace tabs", () => {
     const snapshot = await tabs.snapshot(ownerId);
     expect(snapshot.rows).toHaveLength(1000);
     expect(snapshot.layout).toEqual({ revision: 1, items });
+  });
+
+  it("refuses opening a page tab when its session's profile was archived while the session is still ready, while keeping Guest sessions", async () => {
+    const { tabs, database, ownerId, computerId } = await fixture();
+    const profileId = createId("browserProfile");
+    await database
+      .insertInto("browserProfiles")
+      .values({
+        id: profileId,
+        ownerId,
+        homeRunnerId: computerId as never,
+        name: "Work",
+        archivedAt: null,
+      })
+      .execute();
+    const profileSessionId = createBrowserSessionId();
+    const guestSessionId = createBrowserSessionId();
+    await sql`insert into browser_sessions(id,tab_group_id,origin,profile_id,placement_key,runner_id,runtime_id,state)
+      values
+        (${profileSessionId},${profileSessionId},'person',${profileId},'personal',${computerId},'browser','ready'),
+        (${guestSessionId},${guestSessionId},'person',null,'guest',${computerId},'browser','ready')`.execute(
+      database,
+    );
+    // Archive commits while the session is still ready (before stop completes).
+    await database
+      .updateTable("browserProfiles")
+      .set({ archivedAt: new Date() })
+      .where("id", "=", profileId)
+      .execute();
+
+    const archivedTabId = TabIdSchema.parse(`${profileSessionId}-late`);
+    await expect(
+      tabs.open(
+        {
+          id: archivedTabId,
+          ownerId,
+          computerId: DeviceIdSchema.parse(computerId),
+          kind: "page",
+          title: "Late page",
+          url: "https://example.com/",
+          profileId,
+          profileName: "Work",
+          openedBy: "person",
+          pageBinding: {
+            lineageId: profileSessionId,
+            sessionId: profileSessionId,
+            surfaceId: archivedTabId,
+          },
+        },
+        "late-open-after-archive",
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await tabs.get(ownerId, archivedTabId, true)).toBeNull();
+
+    // Guest sessions (`profileId === null`) continue to open page tabs.
+    const guestTabId = TabIdSchema.parse(`${guestSessionId}-guest`);
+    await tabs.open(
+      {
+        id: guestTabId,
+        ownerId,
+        computerId: DeviceIdSchema.parse(computerId),
+        kind: "page",
+        title: "Guest page",
+        url: "https://example.com/",
+        profileId: null,
+        profileName: null,
+        openedBy: "person",
+        pageBinding: {
+          lineageId: guestSessionId,
+          sessionId: guestSessionId,
+          surfaceId: guestTabId,
+        },
+      },
+      "guest-open",
+    );
+    expect(await tabs.get(ownerId, guestTabId)).not.toBeNull();
   });
 });
