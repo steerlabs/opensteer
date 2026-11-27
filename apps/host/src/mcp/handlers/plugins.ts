@@ -1,5 +1,5 @@
 import { grantHolds, pluginCaller, pluginGrantTarget } from "../../plugins/plugin-authority.js";
-import { canonical } from "@opensteer/plugin-engine-mcp";
+import { parseToolPath } from "@opensteer/plugin-engine-mcp";
 import { pluginTargetBlocked } from "../../plugins/target-blocked.js";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
@@ -339,12 +339,16 @@ export class PluginToolHandlers {
           message: `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected plugin operation.`,
         });
     };
-    const assertSinglePluginPaths = (paths: readonly string[]) => {
+    const assertPluginPaths = (paths: readonly string[]) => {
       const namespaces = new Set<string>();
       for (const path of paths) {
-        const normalized = canonical(path);
-        const dot = normalized.indexOf(".");
-        if (dot > 0) namespaces.add(normalized.slice(0, dot));
+        const parsed = parseToolPath(path);
+        if (parsed.malformed)
+          throw new OpensteerError({
+            code: "bad_request",
+            message: "Invalid plugin tool path. Pass an exact path from discover.",
+          });
+        if (parsed.namespace !== null) namespaces.add(parsed.namespace);
       }
       if (namespaces.size > 1)
         throw new OpensteerError({
@@ -360,7 +364,7 @@ export class PluginToolHandlers {
       const paths = (Array.isArray(input.calls) ? input.calls : [input.calls]).map(
         ({ path }) => path,
       );
-      assertSinglePluginPaths(paths);
+      assertPluginPaths(paths);
       // The engine alone reads which tool each path names, with its own parser and escaping; a
       // tool that is there but blocked comes with its reason.
       const resolved = await o.service.resolveTools({ paths }, context, signal);

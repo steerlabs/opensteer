@@ -1254,6 +1254,11 @@ integration("what a connection is shown", () => {
       ["plugin_call empty array", "plugin_call", { calls: [] }],
       ["plugin_call array missing input", "plugin_call", { calls: [{ path: p1 }] }],
       [
+        "plugin_call malformed bracket path with newline",
+        "plugin_call",
+        { calls: { path: `tools[${JSON.stringify(namespaceOf(w.calendar))}]["line\nbreak"]`, input: {} } },
+      ],
+      [
         "plugin_call array naming two plugins",
         "plugin_call",
         {

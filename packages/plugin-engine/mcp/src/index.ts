@@ -11,6 +11,8 @@ export { makeExecutions, runningPrograms } from "./implementation/executions.ts"
 export { refusedMcpRequest } from "./implementation/diagnostics.ts";
 export {
   canonical,
+  parseToolPath,
+  type ParsedToolPath,
   executeProgram,
   callTools,
   searchCatalog,

@@ -330,4 +330,48 @@ describe("connected plugin shape errors before grant lookup", () => {
     );
     expect(resolveTools).not.toHaveBeenCalled();
   });
+
+  it("refuses malformed bracket/tool paths with invalid_input before resolving tools, identically for holder and non-holder", async () => {
+    const resolveTools = vi.fn(async () => []);
+    const handlers = new PluginToolHandlers({
+      service: { list: async () => [], resolveTools },
+      localProviders: { providers: async () => [] },
+      sessions: () => ({}),
+      authority: {
+        admit: () => ({ caller: "connection", mode: "automatic" }),
+        scoped: (_caller: unknown, work: () => unknown) => work(),
+      },
+      settings: { settings: async () => [] },
+    } as unknown as PluginToolHandlers["options"]).handlers();
+    const holder = connectionWith("plg_fixture");
+    const other = connectionWith("plg_other");
+    for (const path of [
+      'tools["fixture"]["line\nbreak"]',
+      'tools["fixture"]["tab\there"]',
+      'tools["fixture"]["unclosed',
+      "tools.fixture..read",
+    ]) {
+      for (const calls of [{ path, input: {} }, [{ path, input: {} }]]) {
+        const callFor = async (caller: AgentCaller) => {
+          const error = await handlers.plugin_call!({
+            caller,
+            input: { calls },
+            operationKey: "k",
+          } as never).then(
+            () => undefined,
+            (caught: unknown) => caught,
+          );
+          return agentToolFailureResult(agentToolFailure(error, "write", undefined, true));
+        };
+        const held = await callFor(holder);
+        const unheld = await callFor(other);
+        expect(held, path).toMatchObject({
+          isError: true,
+          structuredContent: { error: { code: "invalid_input" } },
+        });
+        expect(unheld, path).toEqual(held);
+      }
+    }
+    expect(resolveTools).not.toHaveBeenCalled();
+  });
 });
