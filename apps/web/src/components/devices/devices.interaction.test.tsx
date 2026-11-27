@@ -4,14 +4,17 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
 import { AuthSessionIdSchema, DeploymentIdSchema } from "@opensteer/core";
-import { MockHostClient } from "@opensteer/client/mock";
+import { HttpHostClient } from "@opensteer/client/host";
+import { MockHostClient, MockPersonalHost } from "@opensteer/client/mock";
+import { withDeviceSwitch } from "@opensteer/client/computers";
 import { useHostSnapshot } from "@opensteer/client/react";
 import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
 import { desktopPreviewBridge } from "../../desktop/desktop-preview-bridge.js";
 import { desktopSummaryFromAccess } from "../../desktop/desktop-deployment-selection.js";
 import { observeLocalExecutionStatus } from "../../desktop/local-execution-status.js";
 import { turnOnDeviceAccess } from "../thread-device-access-action.js";
-import { useAccessSwitch } from "./device-access-switches.js";
+import { deviceSwitches } from "./device-access.js";
+import { DeviceAccessSwitchRow, useAccessSwitch } from "./device-access-switches.js";
 import { DeviceRemovedScreen } from "./device-removed.js";
 import { FinishSetupBar, SetUpThisMac } from "./set-up-this-mac.js";
 import { useThisDeviceLifecycle } from "./this-device.js";
@@ -254,6 +257,113 @@ it("leaves through desktop main and shows the removed screen, which never signs 
   // Main must resume authorization before selection can open setup.
   await act(async () => button("Connect again").click());
   await waitForText("Connect this Mac to", "setup after Connect again");
+});
+
+it("keeps Apps off while the Home saves and delivers the next device list", async () => {
+  const seed = new MockHostClient({ latencyMs: 0 });
+  client = seed;
+  await seed.load();
+  const initial = seed.getSnapshot().machines.find(({ id }) => id === laptopId)!.access!;
+  await seed.updateMachineAccess({
+    deviceId: laptopId,
+    expectedRevision: initial.revision,
+    policy: withDeviceSwitch(initial.policy, "apps", true),
+  });
+  const home = new MockPersonalHost(seed);
+  const reply = Promise.withResolvers<void>();
+  const listed = Promise.withResolvers<void>();
+  const listCaptured = Promise.withResolvers<void>();
+  let holdList = false;
+  let save: unknown;
+  const host = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    capabilities: ["devices-v1"],
+    webSocketFactory: () => {
+      const socket = home.connect();
+      const deliver = socket.deliver.bind(socket);
+      socket.deliver = (frame) => {
+        if (!save || frame.type !== "host.resource") deliver(frame);
+      };
+      return socket;
+    },
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname.endsWith("/commands.dispatch")) {
+        save = JSON.parse(String(init?.body));
+        await reply.promise;
+      }
+      const response = await home.fetch(input, init);
+      if (holdList && url.pathname.endsWith("/resources.detail.get")) {
+        const query = JSON.parse(url.searchParams.get("input")!);
+        if (query.kind === "machine") {
+          listCaptured.resolve();
+          await listed.promise;
+        }
+      }
+      return response;
+    },
+  });
+  try {
+    await host.load();
+    const stop = host.watchPersonalResource("machine", () => undefined);
+    const machine = () => host.getSnapshot().machines.find((entry) => entry.id === laptopId)!;
+    await vi.waitFor(() => expect(machine()?.access).toBeTruthy());
+    await vi.waitFor(() => expect(host.connection.getSnapshot().phase).toBe("ready"));
+    const revision = machine().access!.revision;
+    function Probe() {
+      const { snapshot } = useHostSnapshot(host, () => false);
+      const device = snapshot.machines.find(({ id }) => id === laptopId)!;
+      const access = useAccessSwitch(host, device);
+      return (
+        <DeviceAccessSwitchRow
+          item={deviceSwitches(device, true).find(({ capability }) => capability === "apps")!}
+          machine={device}
+          onSet={(capability, on) => void access.set(capability, on)}
+          pending={access.pending}
+          thisDevice={false}
+        />
+      );
+    }
+    document.body.innerHTML = '<div id="root"></div>';
+    root = createRoot(container());
+    await act(async () => root!.render(<Probe />));
+    const control = container().querySelector<HTMLInputElement>('[role="switch"]')!;
+    expect(control.checked).toBe(true);
+    holdList = true;
+    await seed.dispatch({
+      type: "machine.rename",
+      machineId: laptopId,
+      name: "Work Mac",
+      idempotencyKey: "rename-before-switch",
+    });
+    const stopWhileSaving = host.watchPersonalResource("machine", () => undefined);
+    await listCaptured.promise;
+    await act(async () => control.click());
+    expect(save).toMatchObject({
+      type: "machine.access.update",
+      deviceId: laptopId,
+      expectedRevision: revision,
+      policy: { apps: false },
+    });
+    expect(control.disabled).toBe(true);
+    expect(control.checked).toBe(false);
+
+    await act(async () => reply.resolve());
+    await vi.waitFor(() => expect(control.disabled).toBe(false));
+    expect(control.checked).toBe(false);
+    expect(machine().access).toMatchObject({ revision: revision + 1, policy: { apps: false } });
+    await act(async () => listed.resolve());
+    await vi.waitFor(() => expect(machine().name).toBe("Work Mac"));
+    expect(control.checked).toBe(false);
+    expect(machine().access).toMatchObject({ revision: revision + 1, policy: { apps: false } });
+    stopWhileSaving();
+    stop();
+  } finally {
+    reply.resolve();
+    listed.resolve();
+    host.dispose();
+    home.dispose();
+  }
 });
 
 it("writes a switch against the revision on screen, and shows a newer one instead of overwriting it", async () => {

@@ -12,12 +12,14 @@ import {
 
 const accessConflictNotice = "This changed on another device. The switches show what’s set now.";
 
+type PendingSwitch = { readonly capability: DeviceCapability; readonly on: boolean };
+
 /** A stale revision means another device changed it first: nothing is written; the page reloads. */
 export function useAccessSwitch(
   hostClient: Pick<HostClient, "connection" | "refresh" | "updateMachineAccess">,
   machine: MachineSummary,
 ) {
-  const [pending, setPending] = useState<DeviceCapability | null>(null);
+  const [pending, setPending] = useState<PendingSwitch | null>(null);
   const [notice, setNotice] = useState<{
     readonly conflict: boolean;
     readonly text: string;
@@ -28,15 +30,18 @@ export function useAccessSwitch(
       const access = machine.access;
       if (!access || busy.current) return false;
       busy.current = true;
-      setPending(capability);
+      setPending({ capability, on });
       setNotice(null);
       try {
-        const result = await act(hostClient, { label: "change this", done: "changed" }, () =>
-          hostClient.updateMachineAccess({
-            expectedRevision: access.revision,
-            policy: withDeviceSwitch(access.policy, capability, on),
-            deviceId: machine.id,
-          }),
+        const result = await act(
+          hostClient,
+          { label: "change device access", done: "changed" },
+          () =>
+            hostClient.updateMachineAccess({
+              expectedRevision: access.revision,
+              policy: withDeviceSwitch(access.policy, capability, on),
+              deviceId: machine.id,
+            }),
         );
         if (result.outcome === "conflict") {
           await hostClient.refresh();
@@ -71,7 +76,7 @@ export function DeviceAccessSwitches({
   readonly machine: MachineSummary;
   readonly notice: { readonly conflict: boolean; readonly text: string } | null;
   readonly onSet: (capability: DeviceCapability, on: boolean) => void;
-  readonly pending: DeviceCapability | null;
+  readonly pending: PendingSwitch | null;
   /** What fixes a missing macOS grant, where this window can. */
   readonly remedy: Partial<Record<DeviceCapability, ReactNode>>;
   readonly switches: readonly DeviceSwitch[];
@@ -121,10 +126,11 @@ export function DeviceAccessSwitchRow({
   readonly item: DeviceSwitch;
   readonly machine: MachineSummary;
   readonly onSet: (capability: DeviceCapability, on: boolean) => void;
-  readonly pending: DeviceCapability | null;
+  readonly pending: PendingSwitch | null;
   readonly thisDevice: boolean;
 }) {
   const waiting = item.kind === "switch" && item.needsMacos;
+  const changing = pending?.capability === item.capability;
   return (
     <div className="card__row device-uses__row">
       <span className="card__row-body">
@@ -135,7 +141,7 @@ export function DeviceAccessSwitchRow({
           className={`card__row-detail${waiting ? " device-uses__waiting" : ""}`}
           id={`device-use-${item.capability}-detail`}
         >
-          {deviceSwitchDetail(item, machine, thisDevice)}
+          {changing ? "Saving…" : deviceSwitchDetail(item, machine, thisDevice)}
         </span>
       </span>
       <span className="card__row-actions">
@@ -145,7 +151,7 @@ export function DeviceAccessSwitchRow({
           <input
             aria-describedby={`device-use-${item.capability}-detail`}
             aria-labelledby={`device-use-${item.capability}`}
-            checked={item.on}
+            checked={changing ? pending.on : item.on}
             className="switch"
             disabled={pending !== null || !machine.access}
             onChange={(event) => onSet(item.capability, event.currentTarget.checked)}

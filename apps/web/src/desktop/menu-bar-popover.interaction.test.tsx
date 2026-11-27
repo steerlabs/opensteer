@@ -225,6 +225,43 @@ describe("This Mac", () => {
       await view.close();
     }
   });
+
+  it("shows the saved switch even if the previous status arrives late", async () => {
+    const base = menuBarStates.localHome;
+    const statusWithApps = (on: boolean, revision: number): MenuBarStatus => ({
+      ...base,
+      thisMac: {
+        ...base.thisMac!,
+        revision,
+        switches: base.thisMac!.switches.map((item) =>
+          item.capability === "apps" ? { ...item, on } : item,
+        ),
+      },
+    });
+    const previous = statusWithApps(true, 7);
+    const value = bridge(previous);
+    const saved = Promise.withResolvers<void>();
+    value.setSwitch = vi.fn(() => saved.promise);
+    const view = await render(value);
+    try {
+      const input = view.node
+        .querySelector("#menu-bar-switch-apps")!
+        .closest("li")!
+        .querySelector("input")!;
+      expect(input.checked).toBe(true);
+      await act(async () => input.click());
+      expect(input.disabled).toBe(true);
+      expect(input.checked).toBe(false);
+      vi.mocked(value.status).mockResolvedValue(statusWithApps(false, 8));
+      await act(async () => saved.resolve());
+      await act(async () => value.push(previous));
+      expect(input.disabled).toBe(false);
+      expect(input.checked).toBe(false);
+    } finally {
+      saved.resolve();
+      await view.close();
+    }
+  });
 });
 
 describe("Stop everything", () => {

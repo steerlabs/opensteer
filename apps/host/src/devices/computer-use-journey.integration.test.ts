@@ -4333,6 +4333,10 @@ class FakeMac {
 
   async attach(): Promise<void> {
     this.#hub.attach(this.peer, this.stream);
+    await this.reportStatus();
+  }
+
+  async reportStatus(): Promise<void> {
     await this.#hub.handleMessage(this.peer, this.stream, {
       ...this.stream.fence,
       apps: [
@@ -6547,31 +6551,87 @@ integration.sequential("Computer use for a connected agent, through its session"
     }
   });
 
-  it("tells a connected agent holding a Mac app when the Mac's apps are off or the Mac is offline, never that the app does not exist", async () => {
+  it("refuses computer_use after the person turns Apps off and before the Mac reports again", async () => {
     const s = await connectedAgent("full-access", { target: "mac", personApproved: true });
+    let closeHost: (() => Promise<unknown>) | undefined;
     try {
+      const { world } = s;
+      const host = await createHostServer(
+        hostServerTestDependencies({
+          store: world.store,
+          computerApps: world.hub,
+          browser: {
+            withRunnerAdmission: async (_runnerId: RunnerId, work: () => Promise<unknown>) =>
+              work(),
+          } as never,
+          discovery: signHostDiscovery(generateKeyPairSync("ed25519"), {
+            canonicalOrigin: "https://device-access.test",
+            deploymentId: createId("deployment"),
+            hostInstanceId: createId("hostInstance"),
+            hostKey: { algorithm: "Ed25519" },
+            deploymentShape: { kind: "personal" },
+          }),
+          authenticator: {
+            authenticateSessionContext: async () => ({
+              credentialKind: "header",
+              surface: "canonical",
+              session: {
+                id: createId("authSession"),
+                user: {
+                  id: world.owner.userId,
+                  disabledAt: null,
+                  displayName: "Owner",
+                  email: "owner@example.test",
+                  emailVerified: true,
+                  image: null,
+                },
+                createdAt: new Date().toISOString(),
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                absoluteExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+            }),
+          } as never,
+        }),
+      );
+      closeHost = () => host.close();
       const observe = () =>
         s.call({
           code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
           readOnly: true,
         });
       const absent = "No app or phone screen shared with this agent matches";
-      const policy = (apps: boolean) =>
-        database
-          .updateTable("devices")
-          .set({
-            accessPolicy: sql`${JSON.stringify({ ...machineAccessPolicyDefault, apps })}::jsonb`,
-            accessPolicyRevision: sql`access_policy_revision + 1`,
-          })
-          .where("id", "=", s.computerId)
-          .execute();
-      await policy(false);
-      const off = await observe().catch((error: unknown) => agentToolFailure(error, "read"));
-      expect(JSON.stringify(off)).toContain(
-        `Apps access is off on ${mac}. The person can turn it on in Opensteer.`,
-      );
-      expect(JSON.stringify(off)).not.toContain(absent);
-      await policy(true);
+      const device = await database
+        .selectFrom("devices")
+        .select(["accessPolicy", "accessPolicyRevision"])
+        .where("id", "=", s.computerId)
+        .executeTakeFirstOrThrow();
+      const setApps = async (apps: boolean, expectedRevision: number) => {
+        const response = await injectRpcRequest(host, "commands.dispatch", {
+          type: "machine.access.update",
+          deviceId: s.computerId,
+          idempotencyKey: `apps-switch-${apps}`,
+          expectedRevision,
+          policy: { ...device.accessPolicy, apps },
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json()).toMatchObject({
+          ok: true,
+          data: { outcome: "updated", revision: expectedRevision + 1 },
+        });
+      };
+      const expectOff = async () => {
+        const off = await observe().catch((error: unknown) => agentToolFailure(error, "read"));
+        expect(JSON.stringify(off)).toContain(
+          `Apps access is off on ${mac}. The person can turn it on in Opensteer.`,
+        );
+        expect(JSON.stringify(off)).not.toContain(absent);
+        expect(JSON.stringify(off)).not.toContain("needs-you");
+      };
+      await setApps(false, device.accessPolicyRevision);
+      await expectOff();
+      await world.fakeMac.reportStatus();
+      await expectOff();
+      await setApps(true, device.accessPolicyRevision + 1);
       s.world.fakeMac.detach();
       const offline = await observe().catch((error: unknown) => agentToolFailure(error, "read"));
       expect(offline).toMatchObject({
@@ -6584,6 +6644,7 @@ integration.sequential("Computer use for a connected agent, through its session"
       expect(JSON.stringify(offline)).not.toContain(absent);
       expect(s.world.fakeMac.frames.some(({ operation }) => operation === "bind")).toBe(false);
     } finally {
+      await closeHost?.();
       await s.world.close();
     }
   });

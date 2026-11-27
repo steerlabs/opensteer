@@ -2,6 +2,7 @@ import { deviceWords } from "./devices-copy.js";
 import { computerStatus, isServiceMachine } from "./computers.js";
 import type { AuthSessionSummary } from "@opensteer/core";
 import {
+  deviceAccess,
   type DesktopDeviceMembership,
   type MachineSummary,
   type OtherDevice,
@@ -187,13 +188,14 @@ export function deviceAccessRows(
 ): readonly DeviceAccessRow[] {
   const capabilities = machine.capabilities;
   if (!capabilities) return [];
+  const policy = machine.access ? deviceAccess(machine.access.policy) : null;
   return deviceCapabilities.flatMap((capability): DeviceAccessRow[] => {
     const fact = capabilities[capability];
     if (!fact.supported) return [];
     if (!fact.configurable) return [{ capability, kind: "fixed", reason: "home" }];
     if (!devicesAvailable && capability !== "files")
       return [{ capability, kind: "fixed", reason: "older-host" }];
-    return [{ capability, kind: "switch", on: machine.access ? fact.enabled : null }];
+    return [{ capability, kind: "switch", on: policy?.[capability] ?? null }];
   });
 }
 

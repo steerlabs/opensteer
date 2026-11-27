@@ -1,4 +1,6 @@
-import { createId } from "@opensteer/core";
+import { createId, DeviceIdSchema } from "@opensteer/core";
+import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
+import { withDeviceSwitch } from "@opensteer/client/computers";
 import { cloneTestDatabase, type TestDatabase } from "@opensteer/database/test-support/database";
 import { testRunnerDescriptor } from "@opensteer/database/test-support/store";
 import {
@@ -8,7 +10,8 @@ import {
   runnerPublicKeyFingerprint,
 } from "@opensteer/runner-auth";
 import { generateKeyPairSync } from "node:crypto";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import {
   startPrivateMachineHost,
   type MachineAccessHost,
@@ -65,6 +68,77 @@ async function enrolled() {
   expect(device.access?.policy).toMatchObject({ browser: false, apps: false, reach: "nobody" });
   return { ...keys, runnerId };
 }
+
+it("applies the Home's Apps receipt before a delayed machine read arrives", async () => {
+  const { runnerId } = await enrolled();
+  const read = () => host.api["resources.detail.get"]({ kind: "machine" });
+  const before = await read();
+  if (!before.ok || before.data.data.kind !== "machine") throw new Error("Missing devices");
+  const device = before.data.data.machines.find(({ id }) => id === runnerId)!;
+  const turnOn = await host.api["commands.dispatch"]({
+    type: "machine.access.update",
+    idempotencyKey: "enable-apps-for-test",
+    deviceId: DeviceIdSchema.parse(runnerId),
+    expectedRevision: device.access!.revision,
+    policy: withDeviceSwitch(device.access!.policy, "apps", true),
+  });
+  expect(turnOn).toMatchObject({ ok: true, data: { outcome: "updated" } });
+
+  const releaseList = Promise.withResolvers<void>();
+  const listRequested = Promise.withResolvers<void>();
+  let holdReads = false;
+  const person = new HttpHostClient({
+    baseUrl: host.origin,
+    capabilities: ["devices-v1"],
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (
+        holdReads &&
+        url.pathname.endsWith("/resources.detail.get") &&
+        JSON.parse(url.searchParams.get("input")!).kind === "machine"
+      ) {
+        listRequested.resolve();
+        await releaseList.promise;
+      }
+      return fetch(input, {
+        ...init,
+        headers: { ...Object.fromEntries(new Headers(init?.headers)), ...host.ownerHeaders },
+      });
+    },
+    webSocketFactory: (url) =>
+      new WebSocket(url, { headers: host.ownerHeaders }) as unknown as WebSocketClient,
+  });
+  try {
+    await person.load();
+    const stop = person.watchPersonalResource("machine", () => undefined);
+    const shown = () => person.getSnapshot().machines.find(({ id }) => id === runnerId)?.access;
+    await vi.waitFor(() => expect(shown()?.policy.apps).toBe(true));
+    const starting = shown()!;
+    holdReads = true;
+    const receipt = await person.updateMachineAccess({
+      deviceId: runnerId,
+      expectedRevision: starting.revision,
+      policy: withDeviceSwitch(starting.policy, "apps", false),
+    });
+    expect(receipt).toEqual({ outcome: "updated", revision: starting.revision + 1 });
+    const current = await read();
+    if (!current.ok || current.data.data.kind !== "machine") throw new Error("Missing devices");
+    expect(current.data.data.machines.find(({ id }) => id === runnerId)?.access).toMatchObject({
+      revision: starting.revision + 1,
+      policy: { apps: false },
+    });
+    expect(shown()).toMatchObject({ revision: starting.revision + 1, policy: { apps: false } });
+    const patched = person.getSnapshot().machineRevision;
+    await listRequested.promise;
+    releaseList.resolve();
+    await vi.waitFor(() => expect(person.getSnapshot().machineRevision).toBeGreaterThan(patched));
+    expect(shown()).toMatchObject({ revision: starting.revision + 1, policy: { apps: false } });
+    stop();
+  } finally {
+    releaseList.resolve();
+    person.dispose();
+  }
+});
 
 it("binds the current session and signs out by removing its non-Home device after the response", async () => {
   const target = await enrolled();
