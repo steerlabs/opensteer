@@ -18,7 +18,10 @@ import {
   AgentPoolController,
   poolControllerKind,
 } from "./browser-pool-controller-under-test.test-support.js";
-import { type BrowserPoolControl } from "../packages/browser-runtime-core/src/browser-pool.js";
+import {
+  BrowserPoolRuntimeControl,
+  type BrowserPoolControl,
+} from "../packages/browser-runtime-core/src/browser-pool.js";
 import { BrowserRuntime } from "../packages/browser-runtime-core/src/runtime.js";
 import { BrowserPoolAgentSlotDeleted } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
 import {
@@ -53,6 +56,13 @@ import { BrowserSessionIdSchema, type BrowserSessionId } from "../packages/proto
 type RuntimeKind = BrowserPoolControl["kind"];
 
 /** Hangs every call from the first match on, as a Home process that died there would. */
+/** Every pool-state write of a runtime, whichever fixture's: each fixture listens while it lives. */
+const runtimeControl = BrowserPoolRuntimeControl.prototype as unknown as {
+  write(next: unknown): void;
+};
+const runtimeWrite = runtimeControl.write;
+const runtimeChanges = new Set<() => void>();
+
 class Crash {
   #armed: { kind: string; when: "before" | "after" } | undefined;
   dead = false;
@@ -92,7 +102,8 @@ async function poolFixture(
   const task = await fixture.createRunFixture(key);
   const { database } = fixture;
   // What a wait re-checks on: each call a coordinator makes settling (to the controller, the
-  // runtime and the adopter), and each change it publishes. The product's own events, not a clock.
+  // runtime and the adopter), each change it publishes, and each change of the runtime's pool
+  // state. The product's own events, not a clock.
   let change = Promise.withResolvers<void>();
   const changed = () => {
     const previous = change;
@@ -103,6 +114,13 @@ async function poolFixture(
     void work.then(changed, changed);
     return work;
   };
+  // The runtime's own pool-state changes are events too: an adoption it ends at its window, say.
+  runtimeChanges.add(changed);
+  if (!vi.isMockFunction(runtimeControl.write))
+    vi.spyOn(runtimeControl, "write").mockImplementation(function (this: unknown, next: unknown) {
+      runtimeWrite.call(this, next);
+      for (const listener of runtimeChanges) listener();
+    });
   /**
    * Waits until `check` passes, checking it again after each of those events. The test's own
    * end (its timeout) ends the wait with the check's last failure.
@@ -373,6 +391,7 @@ async function poolFixture(
     sinks.clear();
   };
   const close = async () => {
+    runtimeChanges.delete(changed);
     for (const coordinator of homes) coordinator.close();
     await runtime.shutdown();
     await controller.close?.();
@@ -2021,7 +2040,7 @@ it("records an adoption the runtime ended at its window while the Home was gone"
     crash.arm("runtime:adopt", "after");
     void dying.gate.reserve(AbortSignal.timeout(10_000)).catch(() => undefined);
     // The Home died just after adopt; the runtime ends the adoption at its window by itself.
-    await vi.waitFor(() => expect(f.runtime.poolState()?.phase).toBe("running"));
+    await f.until(() => expect(f.runtime.poolState()?.phase).toBe("running"));
     dying.close();
     expect(f.runtime.poolState()).toMatchObject({
       phase: "running",
