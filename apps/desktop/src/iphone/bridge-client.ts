@@ -31,6 +31,9 @@ interface Pending {
   settle(error: Error | undefined, result?: unknown): void;
   readonly method: string;
 }
+function mayHaveEffect(method: string): boolean {
+  return method === "phone.perform" || method === "session.close";
+}
 const responseSchema = z.strictObject({
   kind: z.literal("response"),
   id: z.number().int().positive(),
@@ -144,7 +147,7 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
       const cancel = () => {
         const error = new IphoneServiceError(
           options.signal?.aborted ? "cancelled" : "deadline-exceeded",
-          method === "phone.perform" ? "unknown" : "not-started",
+          mayHaveEffect(method) ? "unknown" : "not-started",
         );
         pending.settle(error);
         if (!this.#closed && method !== "request.cancel")
@@ -181,7 +184,7 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
             reject(
               new IphoneServiceError(
                 method === "hello" ? "bridge-protocol-mismatch" : "protocol-unsupported",
-                method === "phone.perform" ? "unknown" : "not-started",
+                mayHaveEffect(method) ? "unknown" : "not-started",
               ),
             );
             this.#fail();
@@ -261,7 +264,7 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
       pending.settle(
         new IphoneServiceError(
           "phone-disconnected",
-          pending.method === "phone.perform" ? "unknown" : "not-started",
+          mayHaveEffect(pending.method) ? "unknown" : "not-started",
         ),
       );
     for (const listener of this.#lost) listener();

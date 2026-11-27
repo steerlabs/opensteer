@@ -1308,6 +1308,7 @@ export function computerUseRequestMayHaveEffect(method: string, params: unknown)
     method === "session.close" ||
     method === "iphone.perform" ||
     method === "iphone.session.close" ||
+    method === "iphone.cancel" ||
     method === "imessage.send" ||
     method === "view.open" ||
     method === "view.activate"

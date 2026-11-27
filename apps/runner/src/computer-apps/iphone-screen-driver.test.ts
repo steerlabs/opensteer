@@ -858,6 +858,26 @@ describe("iPhone screen driver", () => {
     },
   );
 
+  it.each(["failed", "outcome-unknown"] as const)(
+    "preserves %s from the iPhone cancellation that started closing a session",
+    async (code) => {
+      const f = fixture();
+      const context = f.context();
+      await f.observe(context, observeParams);
+      f.bridge.replies.set("iphone.cancel", async () => {
+        throw new ComputerUseBridgeError(code, "Native close did not answer successfully");
+      });
+      const followUp = vi.fn(async () => ({}));
+      f.bridge.replies.set("iphone.session.close", followUp);
+      await expect(f.connection.close(context, {})).rejects.toMatchObject({ code });
+      expect(followUp).not.toHaveBeenCalled();
+      if (code === "outcome-unknown") {
+        await expect(f.connection.close(context, {})).rejects.toMatchObject({ code });
+        expect(followUp).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("orders replacement assignments and withdraws them on detach", async () => {
     const f = fixture();
     const context = f.context();

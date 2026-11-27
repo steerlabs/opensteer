@@ -79,7 +79,7 @@ type Phone = {
   tail: Promise<unknown>;
   revision: number;
   work: Set<Work>;
-  closing?: Promise<void>;
+  closing: Map<string, Promise<void>>;
 };
 
 type DisplayRef = DeviceDriverTarget & { streamId: DisplayStreamId };
@@ -233,6 +233,10 @@ function sameSession(a: Session, b: { sessionId: string; runId: string }) {
   return a.sessionId === b.sessionId && a.runId === b.runId;
 }
 
+function closeKey(session: Pick<Session, "sessionId" | "runId">): string {
+  return JSON.stringify([session.sessionId, session.runId]);
+}
+
 export class IphoneScreenDriver implements PhoneScreenDriver {
   readonly #bridge: IphoneScreenBridge;
   readonly #now: () => number;
@@ -336,6 +340,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
           tail: Promise.resolve(),
           revision: 0,
           work: new Set(),
+          closing: new Map(),
         };
         this.#phones.set(assignment.deviceId, phone);
         void this.#status(phone, "phone-disconnected");
@@ -928,12 +933,15 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     });
   }
   async close(context: PhoneScreenContext) {
-    const phone = this.#phone(context);
-    if (phone.session && !sameSession(phone.session, context))
-      failure("no-session", "That iPhone session has ended.");
-    this.#invalidate(phone, true);
-    await phone.tail.catch(() => undefined);
-    await phone.closing;
+    const phone = this.#phones.get(context.deviceId);
+    if (!this.#alive || phone?.assignment.generation !== context.driverGeneration)
+      failure("outcome-unknown", "That iPhone driver assignment has ended.");
+    if (!phone.session || sameSession(phone.session, context)) this.#invalidate(phone, true);
+    await this.#closeSession(
+      phone,
+      ref(context),
+      phone.tail.catch(() => undefined),
+    );
     return {};
   }
   async ownerView(frame: PhoneScreenOwnerView, signal: AbortSignal, _receivedAt: number) {
@@ -1378,27 +1386,68 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     if (!session) return;
     const cancelled = this.#bridge
       .iphoneRequest("iphone.cancel", sessionParams(session), { deadline: this.#now() + 5000 })
-      .catch(() => undefined);
-    const released = Promise.all([cancelled, phone.tail.catch(() => undefined)]).then(async () => {
-      await this.#bridge
-        .iphoneRequest("iphone.session.close", sessionParams(session), {
+      .then(
+        () => null,
+        (error: unknown) =>
+          error instanceof ComputerUseBridgeError && error.code === "no-session" ? null : error,
+      );
+    const ready = Promise.all([cancelled, phone.tail.catch(() => undefined)]).then(([error]) => {
+      if (error !== null) throw error;
+    });
+    void this.#closeSession(phone, session, ready);
+  }
+  #closeSession(phone: Phone, session: Session, ready: Promise<unknown>): Promise<void> {
+    const key = closeKey(session);
+    const closing = phone.closing.get(key);
+    if (closing) return closing;
+    const released = ready
+      .then(async () => {
+        await this.#bridge.iphoneRequest("iphone.session.close", sessionParams(session), {
           deadline: this.#now() + 5000,
-        })
-        .catch(() => undefined);
-    });
-    phone.closing = released;
+        });
+      })
+      .catch((error: unknown) => {
+        if (error instanceof ComputerUseBridgeError) {
+          if (error.code === "no-session") return;
+          throw error;
+        }
+        throw new ComputerUseBridgeError(
+          "outcome-unknown",
+          "The iPhone could not complete this request.",
+        );
+      });
+    phone.closing.set(key, released);
     this.#lanes.set(session.deviceId, released);
-    void released.finally(() => {
+    const finished = (unknown: boolean) => {
       if (this.#lanes.get(session.deviceId) === released) this.#lanes.delete(session.deviceId);
-    });
-    this.#track(released);
+      if (!unknown) phone.closing.delete(key);
+    };
+    this.#track(
+      released.then(
+        () => finished(false),
+        (error: unknown) =>
+          finished(
+            error instanceof ComputerUseBridgeError &&
+              (error.code === "outcome-unknown" || error.code === "device-offline"),
+          ),
+      ),
+    );
+    return released;
   }
   #invalidate(phone: Phone, cancel: boolean) {
     ++phone.revision;
     phone.latest = undefined;
     for (const work of phone.work) work.abort.abort();
     if (cancel) this.#cancelSession(phone);
-    else phone.session = undefined;
+    else if (phone.session) {
+      const session = phone.session;
+      const lost = Promise.reject<void>(
+        new ComputerUseBridgeError("outcome-unknown", "That iPhone driver assignment has ended."),
+      );
+      phone.closing.set(closeKey(session), lost);
+      void lost.catch(() => undefined);
+      phone.session = undefined;
+    }
   }
   #target(target: IphoneRunnerResult<"iphone.targets">["targets"][number]) {
     const phone = this.#phones.get(target.deviceId);

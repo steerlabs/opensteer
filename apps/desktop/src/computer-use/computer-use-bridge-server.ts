@@ -951,14 +951,14 @@ export class ComputerUseBridgeServer {
         else if (outcome.kind === "late") {
           request.abort();
           const session = iphoneRunnerParams["iphone.session.close"].strip().safeParse(params);
-          if (session.success)
+          if (session.success && method !== "iphone.session.close" && method !== "iphone.cancel")
             void owner.iphone
               .request("iphone.cancel", session.data, {
                 deadline: this.#now() + sessionCloseTimeoutMs,
               })
               .catch(() => undefined);
           refuse(
-            method === "iphone.perform" ? "outcome-unknown" : "failed",
+            computerUseRequestMayHaveEffect(method, params) ? "outcome-unknown" : "failed",
             "The iPhone did not answer in time.",
           );
         } else {
