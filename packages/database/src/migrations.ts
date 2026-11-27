@@ -940,10 +940,12 @@ export function migrationProvider(options?: {
               },
               "0125_retire_archived_profile_tabs": {
                 /**
-                 * Retires open and closed tabs left behind by browser profiles archived before
-                 * profile deletion retired them, strips their IDs from tab_layouts.items, drops
-                 * only groups that this migration empties (preserving mixed and unrelated groups),
-                 * and advances tab_layouts.revision for affected owners.
+                 * Retires open and closed tabs left behind by browser profiles with explicit
+                 * deletion provenance (preserving tabs of profiles archived by device removal or
+                 * without provable deletion provenance), strips their IDs from tab_layouts.items,
+                 * drops only groups that this migration empties (preserving mixed and unrelated
+                 * groups), advances tab_layouts.revision for affected owners, and advances durable
+                 * client_sync_state sequence + tab/tab-layout resource revisions when rows retire.
                  */
                 async up(database: Kysely<unknown>) {
                   await sql`
@@ -953,6 +955,22 @@ export function migrationProvider(options?: {
                       where t.profile_id = p.id
                         and t.owner_id = p.owner_id
                         and p.archived_at is not null
+                        and (
+                          exists (
+                            select 1
+                            from browser_profile_deletions d
+                            where d.profile_id = p.id
+                              and d.state in ('pending-computer', 'pending-restart', 'deleted')
+                          )
+                          or exists (
+                            select 1
+                            from commands c
+                            where c.requested_by = p.owner_id
+                              and c.type = 'browser.profile.delete'
+                              and c.status = 'succeeded'
+                              and c.payload->'request'->>'profileId' = p.id
+                          )
+                        )
                       returning t.owner_id, t.id
                     ),
                     retired_by_owner as (
@@ -1000,14 +1018,29 @@ export function migrationProvider(options?: {
                         ) as next_items
                       from tab_layouts l
                       join retired_by_owner r on r.owner_id = l.owner_id
+                    ),
+                    updated_layouts as (
+                      update tab_layouts l
+                      set
+                        items = rebuilt.next_items,
+                        revision = l.revision + 1
+                      from rebuilt
+                      where l.owner_id = rebuilt.owner_id
+                        and l.items is distinct from rebuilt.next_items
+                      returning l.owner_id
                     )
-                    update tab_layouts l
+                    update client_sync_state s
                     set
-                      items = rebuilt.next_items,
-                      revision = l.revision + 1
-                    from rebuilt
-                    where l.owner_id = rebuilt.owner_id
-                      and l.items is distinct from rebuilt.next_items
+                      sequence = s.sequence + 1,
+                      last_commit_at = clock_timestamp(),
+                      resource_revisions =
+                        s.resource_revisions
+                        || jsonb_build_object(
+                          'tab', (s.sequence + 1)::text,
+                          'tab-layout', (s.sequence + 1)::text
+                        )
+                    where exists (select 1 from retired)
+                       or exists (select 1 from updated_layouts)
                   `.execute(database);
                 },
               },
