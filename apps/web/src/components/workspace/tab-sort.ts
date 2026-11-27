@@ -1,5 +1,6 @@
 import type { TabGroupColor, TabId, TabLayout } from "@opensteer/core";
 import type { TabOrganizeInput } from "@opensteer/protocol";
+import type { TabStrip, TabStripEntry } from "@opensteer/client/host";
 
 type BrowserTabGroupColor = TabGroupColor;
 /** A drop: one tab or a whole group, into a group or the top level, before a row or at the end. */
@@ -239,6 +240,82 @@ export function organizeInput(move: TabMove, layout: TabLayout): TabOrganizeInpu
       : null,
     ...anchor,
   };
+}
+
+/**
+ * The strip as a move leaves it, read as the Host's organize reads it: what
+ * the list shows from the drop until the Host answers. A group its last tab
+ * leaves stays, empty, as the Host's organize keeps it; a top-level anchor
+ * stands for the block that holds it. A move whose anchor or group is gone
+ * leaves the strip as it is, as the Host refuses it. Applied to the Host's
+ * answer, it changes nothing.
+ */
+export function movedStrip(strip: TabStrip, move: TabMove): TabStrip {
+  const liftedGroup =
+    "groupId" in move.item
+      ? strip.entries.find(
+          (entry) =>
+            entry.kind === "group" &&
+            entry.group.groupId === (move.item as { groupId: string }).groupId,
+        )
+      : undefined;
+  if ("groupId" in move.item && !liftedGroup) return strip;
+  const tabIds = "tabIds" in move.item ? move.item.tabIds.map((tabId) => tabId as TabId) : [];
+  const moving = new Set<string>(tabIds);
+  const entries = strip.entries.flatMap((entry): TabStripEntry[] => {
+    if (entry === liftedGroup) return [];
+    if (entry.kind === "tab") return moving.has(entry.tabId) ? [] : [entry];
+    if (!entry.tabIds.some((tabId) => moving.has(tabId))) return [entry];
+    return [
+      withMembers(
+        entry,
+        entry.tabIds.filter((tabId) => !moving.has(tabId)),
+      ),
+    ];
+  });
+  const before = move.to.before;
+  if (liftedGroup || move.to.groupId === null) {
+    const at =
+      before === null
+        ? entries.length
+        : entries.findIndex((entry) =>
+            "groupId" in before
+              ? entry.kind === "group" && entry.group.groupId === before.groupId
+              : entry.kind === "tab"
+                ? entry.tabId === before.tabId
+                : entry.tabIds.includes(before.tabId as TabId),
+          );
+    if (at < 0) return strip;
+    entries.splice(
+      at,
+      0,
+      ...(liftedGroup ? [liftedGroup] : tabIds.map((tabId) => ({ kind: "tab" as const, tabId }))),
+    );
+  } else {
+    const index = entries.findIndex(
+      (entry) => entry.kind === "group" && entry.group.groupId === move.to.groupId,
+    );
+    const target = entries[index];
+    if (target?.kind !== "group" || (before !== null && !("tabId" in before))) return strip;
+    const members = [...target.tabIds];
+    const at = before === null ? members.length : members.indexOf(before.tabId as TabId);
+    if (at < 0) return strip;
+    members.splice(at, 0, ...tabIds);
+    entries[index] = withMembers(target, members);
+  }
+  const ordered = entries.flatMap((entry) => (entry.kind === "tab" ? [entry.tabId] : entry.tabIds));
+  const visible = entries.flatMap((entry) =>
+    entry.kind === "tab" ? [entry.tabId] : entry.group.collapsed ? [] : entry.tabIds,
+  );
+  return { entries, ordered, visible };
+}
+
+/** A group's entry drawing these of its members, in this order. */
+function withMembers(
+  entry: Extract<TabStripEntry, { kind: "group" }>,
+  tabIds: readonly TabId[],
+): TabStripEntry {
+  return { ...entry, tabIds };
 }
 
 /** One keyboard step to the neighbouring gap; collapsed groups are stepped over, as Chrome's are. */

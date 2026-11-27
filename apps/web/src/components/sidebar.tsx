@@ -233,23 +233,22 @@ export function Sidebar({
   const tabsList = useRef<HTMLUListElement | null>(null);
   const motion = useRef<RowMotion | null>(null);
   const announcer = useRef<HTMLParagraphElement | null>(null);
-  const sortRows = useMemo(() => sortRowsOf(liveStrip), [liveStrip]);
   const sort = useTabSort({
     strip: liveStrip,
-    rows: sortRows,
+    rowsOf: sortRowsOf,
     movable: true,
     list: tabsList,
     motion,
     move: (move) => {
       const input = organizeInput(move, layout);
+      if (!input) return null;
       // The drag is over by the answer, so only a toast is left to say it didn't move.
-      if (input)
-        void runAction(hostClient, {
-          label: "move this tab",
-          done: "moved",
-          happened: "this tab moved",
-          execute: () => hostClient.organizeTabs(input),
-        }).then(toastOutcome(toast));
+      return runAction(hostClient, {
+        label: "move this tab",
+        done: "moved",
+        happened: "this tab moved",
+        execute: () => hostClient.organizeTabs(input),
+      }).then(toastOutcome(toast));
     },
     announce: (words) => {
       if (announcer.current) announcer.current.textContent = words;
@@ -258,8 +257,8 @@ export function Sidebar({
   });
   // A lifted row must draw and take the pointer above a native page.
   useNativeBrowserOverlay(sort.lift !== null);
-  // Until the drop the list stands as it was when the row lifted.
-  const strip = sort.lift?.strip ?? liveStrip;
+  // Until the drop the list stands as it was when the row lifted; from the drop, as it was moved.
+  const strip = sort.lift?.strip ?? sort.strip;
   const tabIndices = useMemo(
     () => new Map(strip.ordered.map((tabId, index) => [tabId, index])),
     [strip.ordered],
@@ -1370,7 +1369,12 @@ const TabRowItem = memo(function TabRowItem({
   placeKey,
   ...props
 }: TabRowProps) {
-  const place = usePlace(props.hostClient, placeKey);
+  const live = usePlace(props.hostClient, placeKey);
+  // Until the drop the list stands as it was: a tab closed elsewhere keeps its row, as it last
+  // was, while a row is lifted, and leaves the list with the drop.
+  const last = useRef(live);
+  if (live) last.current = live;
+  const place = live ?? (props.sort?.held() ? last.current : undefined);
   const occupantIds = useMemo(
     () => place?.occupants.map((occupant) => occupant.threadId) ?? [],
     [place?.occupants],
