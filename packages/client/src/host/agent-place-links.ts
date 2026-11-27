@@ -55,9 +55,10 @@ export function threadAgentPlace(
 
 /**
  * Where the person's Watch on a task lands. A connected agent's session that the Home says is
- * working in a tab (`workingIn`: the tab of its operation in flight, else of its last command)
- * names that tab; null until its row reaches this client, which Watch waits for. A task the Home
- * names no tab for (a Run, computer use, an older Home) has the page it holds: `threadAgentPage`.
+ * working in a tab (the tab of its last command) names that tab, while this client has it as a
+ * page it can show. Otherwise, as with no record (a Run, computer use, an older Home, a tab this
+ * client does not have: unshared, its row gone or not here yet), the page the task holds:
+ * `threadAgentPage`. Watch's following moves to the named tab once its row arrives.
  */
 export function watchPage(
   source: Pick<HostSnapshot, "tabs" | "agentWorkingIn" | "threads" | "tasks" | "activeTasks">,
@@ -71,7 +72,9 @@ export function watchPage(
     (!work || (work.status === "active" && work.sessionId === working.sessionId));
   if (!working || !current) return threadAgentPage(source, threadId);
   const tab = source.tabs.get(working.tabId!);
-  return tab?.kind === "page" && tab.state !== "unavailable" ? { tabId: tab.tabId } : null;
+  return tab?.kind === "page" && tab.state !== "unavailable"
+    ? { tabId: tab.tabId }
+    : threadAgentPage(source, threadId);
 }
 
 /**

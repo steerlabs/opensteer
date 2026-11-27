@@ -177,3 +177,14 @@ it("falls back to the page the task holds once the Home says the session's work 
   });
   expect(shownTab()).toBe("mock-tab-1-0");
 });
+
+it("falls back as with no record when the Home names a tab this client does not have, and never opens an empty pane", async () => {
+  // A shared Chrome tab unshared, a tab whose row is gone: Watch lands where it would with no
+  // record, and moves to the named tab if its row arrives.
+  await watch("two-tabs", undefined, (source) =>
+    source.mockAgentWorksIn(mockAgentWorkThreads.shopping, "mock-tab-gone"),
+  );
+  expect(history.at(-1)?.path).toBe(`/tasks/${mockAgentWorkThreads.shopping}`);
+  expect(shownTab()).toBe("mock-tab-1-0");
+  await vi.waitFor(() => expect(document.querySelector(".place")).not.toBeNull());
+});

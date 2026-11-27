@@ -1451,6 +1451,8 @@ export async function createHostRuntime(
         tabs?.changed(ownerId);
         announceResources("tab");
       },
+      // A shared tab gone is no longer where any connected agent works.
+      removed: (ownerId, tabId) => agentSessionsLate?.workingIn.forgetTab(ownerId, tabId),
       device: async (ownerId, deviceId, list, person) => {
         const computer = await tabComputer(ownerId, deviceId, database);
         if (computer.removed || !computer.selfRunnerId)

@@ -21,6 +21,8 @@ import type { OpensteerStore } from "@opensteer/database";
 import { SessionCdpRouter } from "@opensteer/browser-runtime-core";
 import { describe, expect, it, vi } from "vitest";
 import { ChromeSharedTabs } from "./chrome-shared-tabs.js";
+import { AgentWorkingInRegistry } from "../agent-sessions/agent-working-in.js";
+import type { AgentWorkingIn, TabId } from "@opensteer/core";
 import { ChromeTabBackend } from "./chrome-tab-backend.js";
 
 it("shares the standard CDP byte and pending-command budgets", () => {
@@ -826,3 +828,39 @@ describe("a shared Chrome tab's agent never touches the Home's own cookies in th
     ).toEqual(["Network.setCookie", "Network.deleteCookies"]);
   });
 });
+
+it.each(["unshare", "source disconnect"] as const)(
+  "clears where a connected agent works when its shared Chrome tab stops being shared (%s), and tells the owner",
+  async (ending) => {
+    const service = new ChromeSharedTabs(
+      { admitExecution: vi.fn() as never },
+      { removed: (ownerId, tabId) => working.forgetTab(ownerId, tabId) },
+    );
+    const told: AgentWorkingIn[] = [];
+    const working = new AgentWorkingInRegistry((_owner, notice) => told.push(notice));
+    const ownerId = createId("user");
+    const sessionId = createId("agentSession");
+    const threadId = createId("thread");
+    const source = service.connectSource({
+      ownerId,
+      sourceId: createId("browserSource"),
+      name: "Chrome",
+      write: () => true,
+      fail: () => {},
+    });
+    const tab = shared();
+    try {
+      await source.receive(tab);
+      working.begin(sessionId, threadId, ownerId);
+      working.note(`session:${sessionId}`, tab.shareId as TabId);
+      expect(working.current(ownerId)).toEqual([{ threadId, sessionId, tabId: tab.shareId }]);
+      if (ending === "unshare")
+        await source.receive({ type: "tab.unshared", shareId: tab.shareId });
+      else source.close();
+      expect(told.at(-1)).toEqual({ threadId, sessionId, tabId: null });
+      expect(working.current(ownerId)).toEqual([]);
+    } finally {
+      service.close();
+    }
+  },
+);
