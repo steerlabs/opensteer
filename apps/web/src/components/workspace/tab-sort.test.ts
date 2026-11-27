@@ -119,8 +119,8 @@ it("the list shows a drop at once, as the Host will order it, and the Host's ans
     [dropMove("d", "c", "G"), "a G[b d c] H[e]"],
     // Out of a group at its foot, right after it.
     [dropMove("c", "d", null), "a G[b] c d H[e]"],
-    // A group's only member out: the Host keeps the emptied group.
-    [dropMove("e", null, null), "a G[b c] d H[] e"],
+    // A group's only member out: the Host keeps the emptied group, and no list draws it.
+    [dropMove("e", null, null), "a G[b c] d e"],
     // A whole group, before another one and to the end.
     [dropMove("G", "H", null), "a d G[b c] H[e]"],
     [dropMove("G", null, null), "a d H[e] G[b c]"],

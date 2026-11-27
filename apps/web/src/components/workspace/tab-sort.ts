@@ -245,7 +245,7 @@ export function organizeInput(move: TabMove, layout: TabLayout): TabOrganizeInpu
 /**
  * The strip as a move leaves it, read as the Host's organize reads it: what
  * the list shows from the drop until the Host answers. A group its last tab
- * leaves stays, empty, as the Host's organize keeps it; a top-level anchor
+ * leaves goes from the list, as no strip draws a group with no tab; a top-level anchor
  * stands for the block that holds it. A move whose anchor or group is gone
  * leaves the strip as it is, as the Host refuses it. Applied to the Host's
  * answer, it changes nothing.
@@ -266,12 +266,8 @@ export function movedStrip(strip: TabStrip, move: TabMove): TabStrip {
     if (entry === liftedGroup) return [];
     if (entry.kind === "tab") return moving.has(entry.tabId) ? [] : [entry];
     if (!entry.tabIds.some((tabId) => moving.has(tabId))) return [entry];
-    return [
-      withMembers(
-        entry,
-        entry.tabIds.filter((tabId) => !moving.has(tabId)),
-      ),
-    ];
+    const members = entry.tabIds.filter((tabId) => !moving.has(tabId));
+    return members.length ? [withMembers(entry, members)] : [];
   });
   const before = move.to.before;
   if (liftedGroup || move.to.groupId === null) {
