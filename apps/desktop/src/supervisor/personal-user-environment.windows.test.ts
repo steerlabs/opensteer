@@ -24,6 +24,8 @@ const readRegistry = async () =>
       maximumOutputBytes: 8 * 1_024 * 1_024,
       reg,
       timeoutMs: 30_000,
+      // A retried export or a directory left behind is printed for whoever reads the lane's log.
+      log: (event, fields) => console.warn(JSON.stringify({ event, ...fields })),
     }),
   );
 

@@ -359,51 +359,155 @@ describe("Personal user environment", () => {
     ]);
   });
 
-  it("exports both keys with reg.exe's export command into files it removes, within its bound", async () => {
-    if (process.platform === "win32") return;
+  /**
+   * A stand-in for reg.exe, for macOS and Linux: `export <key> <file> /y` copies that key's
+   * export to <file> and records its start and end. In its directory, `fail-<scope>` holds how
+   * many more times that export exits 1 saying "ERROR: Access is denied.", `slow-<scope>` makes
+   * it take 300 ms, and `lock-<scope>` makes it leave the export directory unremovable.
+   */
+  async function standInReg() {
     const directory = await mkdtemp(path.join(tmpdir(), "opensteer-reg-"));
     temporaryDirectories.push(directory);
     await writeFile(path.join(directory, "machine.reg"), machineExport);
     await writeFile(path.join(directory, "user.reg"), userExport);
-    // A stand-in for reg.exe: `export <key> <file> /y` copies that key's export to <file>.
     const reg = path.join(directory, "reg");
     await writeFile(
       reg,
       [
         "#!/bin/sh",
-        `echo "$*" >> '${directory}/calls'`,
+        'd="$STANDIN"',
         '[ "$1" = export ] && [ "$4" = /y ] || exit 2',
         'case "$2" in',
-        `  'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment') cp '${directory}/machine.reg' "$3" ;;`,
-        `  'HKEY_CURRENT_USER\\Environment') cp '${directory}/user.reg' "$3" ;;`,
+        "  'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment') scope=machine ;;",
+        "  'HKEY_CURRENT_USER\\Environment') scope=user ;;",
         "  *) exit 1 ;;",
         "esac",
+        'echo "start $scope $3" >> "$d/calls"',
+        'if [ -s "$d/fail-$scope" ]; then',
+        '  n=$(cat "$d/fail-$scope"); echo $((n - 1)) > "$d/fail-$scope"',
+        '  if [ "$n" -gt 0 ]; then echo "ERROR: Access is denied." >&2; echo "end $scope failed" >> "$d/calls"; exit 1; fi',
+        "fi",
+        '[ -f "$d/slow-$scope" ] && sleep 0.3',
+        'cp "$d/$scope.reg" "$3"',
+        '[ -f "$d/lock-$scope" ] && chmod 500 "$(dirname "$3")"',
+        'echo "end $scope" >> "$d/calls"',
         "",
       ].join("\n"),
       { mode: 0o700 },
     );
+    const log = vi.fn();
     const spec = {
-      environment: { PATH: "/usr/bin:/bin" },
+      environment: { PATH: "/usr/bin:/bin", STANDIN: directory },
+      log,
       maximumOutputBytes: 8 * 1_024 * 1_024,
       reg,
       timeoutMs: 5_000,
     };
+    const calls = async () =>
+      (await readFile(path.join(directory, "calls"), "utf8")).trim().split("\n");
+    return { calls, directory, log, reg, spec };
+  }
+  const machineKeyName = String.raw`HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`;
+
+  it("exports one key at a time, each into its own file, and removes them once every reg.exe has ended", async () => {
+    if (process.platform === "win32") return;
+    const { calls, directory, log, spec } = await standInReg();
+    await writeFile(path.join(directory, "slow-machine"), "");
     const exports = await probeWindowsRegistryEnvironment(spec);
     expect(Buffer.from(exports.machine).equals(machineExport)).toBe(true);
     expect(Buffer.from(exports.user).equals(userExport)).toBe(true);
-    const files = (await readFile(path.join(directory, "calls"), "utf8"))
-      .trim()
-      .split("\n")
-      .map((call) => call.split(" ").at(-2)!);
-    expect(files).toHaveLength(2);
-    for (const file of files) await expect(stat(file)).rejects.toThrow();
+    const made = await calls();
+    // The person's export starts only after the machine's, slow as it is, has ended.
+    expect(made.map((call) => call.split(" ").slice(0, 2).join(" "))).toEqual([
+      "start machine",
+      "end machine",
+      "start user",
+      "end user",
+    ]);
+    const files = made
+      .filter((call) => call.startsWith("start"))
+      .map((call) => call.split(" ")[2]!);
+    expect(new Set(files).size).toBe(2);
+    for (const file of files) {
+      await expect(stat(file)).rejects.toThrow();
+      await expect(stat(path.dirname(file))).rejects.toThrow();
+    }
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("tries a failed export once more, saying why, and names the key and reg.exe's words if it fails again", async () => {
+    if (process.platform === "win32") return;
+    const once = await standInReg();
+    await writeFile(path.join(once.directory, "fail-machine"), "1");
+    const exports = await probeWindowsRegistryEnvironment(once.spec);
+    expect(Buffer.from(exports.machine).equals(machineExport)).toBe(true);
+    expect(once.log).toHaveBeenCalledOnce();
+    expect(once.log).toHaveBeenCalledWith(
+      "personal.user_environment.windows_registry_export_retried",
+      {
+        key: machineKeyName,
+        reason: `reg.exe export ${machineKeyName} ended with exit 1: ERROR: Access is denied.`,
+      },
+    );
+    // The second try writes a new file, not the first one's.
+    const tries = (await once.calls()).filter((call) => call.startsWith("start machine"));
+    expect(tries).toHaveLength(2);
+    expect(tries[0]).not.toBe(tries[1]);
+
+    const twice = await standInReg();
+    await writeFile(path.join(twice.directory, "fail-machine"), "2");
+    await expect(probeWindowsRegistryEnvironment(twice.spec)).rejects.toThrow(
+      new PersonalUserEnvironmentError(
+        `Windows could not export the registry environment (reg.exe export ${machineKeyName} ended with exit 1: ERROR: Access is denied.).`,
+      ),
+    );
+    // Nothing else ran, and nothing was left running under the directory's removal.
+    expect(await twice.calls()).toEqual([
+      expect.stringMatching(/^start machine /u),
+      "end machine failed",
+      expect.stringMatching(/^start machine /u),
+      "end machine failed",
+    ]);
+    const file = (await twice.calls())[0]!.split(" ")[2]!;
+    await expect(stat(path.dirname(file))).rejects.toThrow();
+
+    const missing = await standInReg();
+    await expect(
+      probeWindowsRegistryEnvironment({
+        ...missing.spec,
+        reg: path.join(missing.directory, "no-reg"),
+      }),
+    ).rejects.toThrow(/ended with ENOENT\)\.$/u);
+    expect(missing.log).toHaveBeenCalledOnce();
+  });
+
+  it("returns what the exports gave when their directory cannot be removed, and says so", async () => {
+    if (process.platform === "win32") return;
+    const { calls, directory, log, spec } = await standInReg();
+    await writeFile(path.join(directory, "lock-user"), "");
+    const exports = await probeWindowsRegistryEnvironment(spec);
+    expect(Buffer.from(exports.user).equals(userExport)).toBe(true);
+    const left = path.dirname((await calls())[0]!.split(" ")[2]!);
+    try {
+      expect(log).toHaveBeenCalledWith(
+        "personal.user_environment.windows_registry_cleanup_failed",
+        {
+          code: expect.stringMatching(/^(EACCES|EPERM)$/u),
+          directory: left,
+        },
+      );
+    } finally {
+      await chmod(left, 0o700);
+      await rm(left, { force: true, recursive: true });
+    }
+  });
+
+  it("bounds an export, waits for its reg.exe to end, and refuses one too large", async () => {
+    if (process.platform === "win32") return;
+    const { reg, spec } = await standInReg();
     await expect(
       probeWindowsRegistryEnvironment({ ...spec, maximumOutputBytes: 1_024 }),
     ).rejects.toThrow("The Windows registry environment response is too large.");
-    await writeFile(reg, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
-    await expect(probeWindowsRegistryEnvironment(spec)).rejects.toThrow(
-      "Windows could not export the registry environment (exit 1).",
-    );
     await writeFile(reg, "#!/bin/sh\nexec sleep 5\n", { mode: 0o700 });
     await expect(probeWindowsRegistryEnvironment({ ...spec, timeoutMs: 50 })).rejects.toThrow(
       "The Windows registry environment probe timed out.",
