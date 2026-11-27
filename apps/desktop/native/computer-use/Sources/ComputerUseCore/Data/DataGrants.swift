@@ -42,6 +42,50 @@ public protocol DataGrantReading: Sendable {
   func awaitingRestart(_ grant: DataGrant) async -> Bool
 }
 
+/// Calendars and reminders as EventKit reports them to this process, and asking for them.
+///
+/// EventKit can keep reporting a process the status it read before the person answered its
+/// question: on a real Mac, Reminders allowed at 23:11 read "not determined" in the same helper
+/// until it was a new process, more than an hour later. macOS's own answer to this process's
+/// question is the truth for it, so an allowed grant counts at once, unless macOS reports it
+/// refused.
+final class EventKitGrants: Sendable {
+  static let shared = EventKitGrants()
+
+  private let status: @Sendable (EKEntityType) -> EKAuthorizationStatus
+  private let requestEvents: @Sendable () async -> Bool
+  private let requestReminders: @Sendable () async -> Bool
+  /// The grants macOS answered "allowed" to this process's own question.
+  private let allowed = Locked<Set<DataGrant>>([])
+
+  init(
+    status: @escaping @Sendable (EKEntityType) -> EKAuthorizationStatus = {
+      EKEventStore.authorizationStatus(for: $0)
+    },
+    requestEvents: @escaping @Sendable () async -> Bool = {
+      (try? await EKEventStore().requestFullAccessToEvents()) ?? false
+    },
+    requestReminders: @escaping @Sendable () async -> Bool = {
+      (try? await EKEventStore().requestFullAccessToReminders()) ?? false
+    }
+  ) {
+    self.status = status
+    self.requestEvents = requestEvents
+    self.requestReminders = requestReminders
+  }
+
+  func state(_ grant: DataGrant) -> DataGrantState {
+    let read = DataGrantReader.state(status(grant == .reminders ? .reminder : .event))
+    return read == .requestable && allowed.current.contains(grant) ? .granted : read
+  }
+
+  func request(_ grant: DataGrant) async {
+    if grant == .reminders ? await requestReminders() : await requestEvents() {
+      allowed.withLock { _ = $0.insert(grant) }
+    }
+  }
+}
+
 /// The grants as macOS reports them to this process.
 ///
 /// Nothing here runs on the caller's thread for long: Automation and Full
@@ -52,11 +96,14 @@ public struct DataGrantReader: DataGrantReading {
 
   private let automation: MessagesAutomation
   private let fullDiskAccess: FullDiskAccessGrant
+  private let eventKit: EventKitGrants
 
   init(
     automation: MessagesAutomation = .shared,
-    fullDiskAccess: FullDiskAccessGrant = .shared
+    fullDiskAccess: FullDiskAccessGrant = .shared,
+    eventKit: EventKitGrants = .shared
   ) {
+    self.eventKit = eventKit
     self.automation = automation
     self.fullDiskAccess = fullDiskAccess
   }
@@ -78,8 +125,7 @@ public struct DataGrantReader: DataGrantReading {
     case .automation: return await automation.state()
     case .fullDiskAccess: return await fullDiskAccess.state()
     case .contacts: return Self.state(CNContactStore.authorizationStatus(for: .contacts))
-    case .calendars: return Self.state(EKEventStore.authorizationStatus(for: .event))
-    case .reminders: return Self.state(EKEventStore.authorizationStatus(for: .reminder))
+    case .calendars, .reminders: return eventKit.state(grant)
     }
   }
 
@@ -92,10 +138,8 @@ public struct DataGrantReader: DataGrantReading {
       break
     case .contacts:
       _ = try? await CNContactStore().requestAccess(for: .contacts)
-    case .calendars:
-      _ = try? await EKEventStore().requestFullAccessToEvents()
-    case .reminders:
-      _ = try? await EKEventStore().requestFullAccessToReminders()
+    case .calendars, .reminders:
+      await eventKit.request(grant)
     }
     return await current()
   }
