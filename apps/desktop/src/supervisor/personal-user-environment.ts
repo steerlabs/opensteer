@@ -3,7 +3,7 @@ import { networkEnvironmentNames } from "@opensteer/shared/safeMessage";
 import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir, userInfo, type UserInfo } from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -20,6 +20,9 @@ const maximumWindowsVariableLength = 32_767;
 const windowsRegistryTimeoutMs = 30_000;
 /** One key's export: a long PATH as hex(2) text in UTF-16 is about 400 KB. */
 const maximumWindowsRegistryExportBytes = 8 * 1_024 * 1_024;
+/** The pause before an export that failed is tried once more. */
+const windowsRegistryRetryPauseMs = 250;
+const maximumRegistryStderrBytes = 4_096;
 /** The keys a new logon's environment comes from: the machine's, then the person's. */
 const windowsEnvironmentKeys = {
   machine: "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
@@ -79,6 +82,8 @@ export interface WindowsRegistryProbeSpec {
   /** `%SystemRoot%\System32\reg.exe`. */
   readonly reg: string;
   readonly timeoutMs: number;
+  /** Where a retried export and a temporary directory left behind are told. */
+  readonly log?: (event: string, fields: Readonly<Record<string, unknown>>) => void;
 }
 
 /** Each environment key as `reg.exe export` writes it: a .reg file in UTF-16LE. */
@@ -212,6 +217,7 @@ export class NativePersonalUserEnvironment implements PersonalUserEnvironmentPor
         maximumOutputBytes: maximumWindowsRegistryExportBytes,
         reg: windowsRegExecutable(inherited),
         timeoutMs: windowsRegistryTimeoutMs,
+        log: this.#log,
       });
       registry = parseWindowsRegistryEnvironment(exports);
     } catch (error) {
@@ -261,66 +267,149 @@ export async function probeLoginShell(spec: LoginShellProbeSpec): Promise<Buffer
  * each as a .reg file whose bytes are defined: UTF-16LE with a byte-order mark, and every
  * REG_EXPAND_SZ value as its unexpanded UTF-16LE bytes (`hex(2):`). Nothing goes through a
  * console code page, and no PowerShell starts.
+ *
+ * One export at a time, each into a file of its own: each takes tens of milliseconds, and no
+ * reg.exe is ever still writing when the next starts or when the directory goes. An export that
+ * fails is tried once more, after a pause and into a new file, with why it failed logged: a
+ * scanner that opens a .reg file the moment it is written can hold it. Its failure names the
+ * key and carries what reg.exe said. The temporary directory is removed only once every reg.exe
+ * has ended, and its removal never decides the read: it is retried, then logged if it stays.
  */
 export async function probeWindowsRegistryEnvironment(
   spec: WindowsRegistryProbeSpec,
 ): Promise<WindowsRegistryExports> {
-  const directory = await mkdtemp(path.join(tmpdir(), "opensteer-environment-"));
+  const log = spec.log ?? (() => undefined);
+  // The long form of the directory (not an 8.3 name such as OPENST~1) is what reg.exe is given.
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), "opensteer-environment-")));
   try {
+    let files = 0;
     const exportKey = async (scope: keyof typeof windowsEnvironmentKeys) => {
-      const file = path.join(directory, `${scope}.reg`);
-      await runWindowsRegistryExport(spec, windowsEnvironmentKeys[scope], file);
-      if ((await stat(file)).size > spec.maximumOutputBytes) {
-        throw new PersonalUserEnvironmentError(
-          "The Windows registry environment response is too large.",
-        );
+      const key = windowsEnvironmentKeys[scope];
+      for (let attempt = 1; ; attempt++) {
+        const file = path.join(directory, `${scope}-${++files}.reg`);
+        const ended = await runWindowsRegistryExport(spec, key, file);
+        if (ended.kind === "exported") {
+          let size: number;
+          try {
+            size = (await stat(file)).size;
+          } catch (missing) {
+            throw new PersonalUserEnvironmentError(
+              `Windows could not export the registry environment (reg.exe export ${key} wrote no file: ${(missing as NodeJS.ErrnoException).code ?? "unknown"}).`,
+              { cause: missing },
+            );
+          }
+          if (size > spec.maximumOutputBytes) {
+            throw new PersonalUserEnvironmentError(
+              "The Windows registry environment response is too large.",
+            );
+          }
+          return readFile(file);
+        }
+        if (ended.kind === "timed-out") {
+          throw new PersonalUserEnvironmentError(
+            "The Windows registry environment probe timed out.",
+          );
+        }
+        const reason = `reg.exe export ${key} ended with ${ended.status}${ended.said ? `: ${ended.said}` : ""}`;
+        if (attempt === 2) {
+          throw new PersonalUserEnvironmentError(
+            `Windows could not export the registry environment (${reason}).`,
+          );
+        }
+        log("personal.user_environment.windows_registry_export_retried", { key, reason });
+        await new Promise((resolvePause) => setTimeout(resolvePause, windowsRegistryRetryPauseMs));
       }
-      return readFile(file);
     };
-    const [machine, user] = await Promise.all([exportKey("machine"), exportKey("user")]);
+    const machine = await exportKey("machine");
+    const user = await exportKey("user");
     return { machine, user };
   } finally {
-    await rm(directory, { force: true, recursive: true });
+    try {
+      await rm(directory, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
+    } catch (cleanup) {
+      log("personal.user_environment.windows_registry_cleanup_failed", {
+        code: (cleanup as NodeJS.ErrnoException).code ?? "unknown",
+        directory,
+      });
+    }
   }
 }
 
+type WindowsRegistryExportEnd =
+  | { readonly kind: "exported" }
+  | { readonly kind: "timed-out" }
+  | { readonly kind: "failed"; readonly said: string; readonly status: string };
+
+/**
+ * Runs one `reg.exe export` and settles only once the process has ended, so its file is closed:
+ * a reg.exe stopped at the bound is waited for too, up to a few seconds more.
+ */
 function runWindowsRegistryExport(
   spec: WindowsRegistryProbeSpec,
   key: string,
   file: string,
-): Promise<void> {
-  return new Promise<void>((resolvePromise, rejectPromise) => {
+): Promise<WindowsRegistryExportEnd> {
+  return new Promise<WindowsRegistryExportEnd>((resolvePromise) => {
     const child = spawn(spec.reg, ["export", key, file, "/y"], {
       env: { ...spec.environment },
       shell: false,
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
     });
+    const stderr: Buffer[] = [];
+    let stderrBytes = 0;
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderrBytes >= maximumRegistryStderrBytes) return;
+      stderr.push(chunk);
+      stderrBytes += chunk.byteLength;
+    });
     let settled = false;
-    const finish = (error?: Error) => {
+    let timedOut = false;
+    let abandon: ReturnType<typeof setTimeout> | undefined;
+    const settle = (end: WindowsRegistryExportEnd) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (error) rejectPromise(error);
-      else resolvePromise();
+      clearTimeout(abandon);
+      resolvePromise(end);
     };
     const timer = setTimeout(() => {
+      timedOut = true;
       child.kill("SIGKILL");
-      finish(new PersonalUserEnvironmentError("The Windows registry environment probe timed out."));
+      abandon = setTimeout(() => settle({ kind: "timed-out" }), 5_000);
+      abandon.unref?.();
     }, spec.timeoutMs);
     timer.unref?.();
-    child.once("error", (error) => finish(error));
+    child.once("error", (error) =>
+      settle({
+        kind: "failed",
+        said: "",
+        status: (error as NodeJS.ErrnoException).code ?? "an error",
+      }),
+    );
     child.once("close", (code, signal) => {
-      if (code === 0) finish();
-      else {
-        finish(
-          new PersonalUserEnvironmentError(
-            `Windows could not export the registry environment (${signal ?? `exit ${code}`}).`,
-          ),
-        );
-      }
+      if (timedOut) settle({ kind: "timed-out" });
+      else if (code === 0) settle({ kind: "exported" });
+      else
+        settle({
+          kind: "failed",
+          said: registryStderr(Buffer.concat(stderr)),
+          status: signal ?? `exit ${code}`,
+        });
     });
   });
+}
+
+/**
+ * What reg.exe said, for the log: its own words, in one line and bounded. reg.exe writes in the
+ * console's code page; text that is not UTF-8 shows as replacement characters, never as bytes.
+ */
+function registryStderr(bytes: Buffer): string {
+  return new TextDecoder("utf-8")
+    .decode(bytes.subarray(0, maximumRegistryStderrBytes))
+    .replace(/[\p{Control}\s]+/gu, " ")
+    .trim()
+    .slice(0, 300);
 }
 
 function runBoundedProbe(
