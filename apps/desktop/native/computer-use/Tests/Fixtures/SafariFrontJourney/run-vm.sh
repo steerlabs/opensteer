@@ -7,7 +7,7 @@
 set -euo pipefail
 fixtures=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$fixtures/../../../../.."
-default_cases=type-into,front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control
+default_cases=front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control,type-into
 
 compile() {
   local output=$1 replacements=${2:-}
