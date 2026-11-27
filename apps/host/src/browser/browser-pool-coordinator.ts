@@ -313,6 +313,8 @@ export class BrowserPoolCoordinator {
   readonly #recovering = Promise.withResolvers<void>();
   readonly #releasedForGood = Promise.withResolvers<void>();
   #changed = new AbortController();
+  /** Aborted when this coordinator closes: what outlives a turn (an announcement) ends with it. */
+  readonly #closing = new AbortController();
   #running: Promise<void> | undefined;
   /** The step running now, and the signal everything it awaits takes: its deadline or a removal. */
   #step: { readonly name: string; readonly preempt: AbortController } | undefined;
@@ -492,6 +494,7 @@ export class BrowserPoolCoordinator {
 
   close(): void {
     this.#closed = true;
+    this.#closing.abort(new BrowserPoolAdmissionClosed("This browser's Home is closing."));
     this.#postWakeStatusCheck = undefined;
     clearInterval(this.#pruning);
     this.#clearIdleTimer();
@@ -1043,7 +1046,8 @@ export class BrowserPoolCoordinator {
         //   holders' settlements   database statements, as above (applyDatabaseOperationBudget
         //                          gives each of them the operation's options)
         //   an over target's end   a step of its own ("end-over"), as above, until it succeeds
-        //   refusal announcement   outside any step: its own bound (5 s) and the turn's change
+        //   refusal announcement   outside any step: its own bound (5 s) or the coordinator's
+        //                          close; the turn's change ends only the wait for it
         //   backoff                the turn's own change signal and five seconds at most (a start
         //                          or wake the controller refused: 5 s doubling to five minutes)
         const deadlineMs = step.deadlineMs ?? defaultStepMs;
@@ -2534,17 +2538,24 @@ export class BrowserPoolCoordinator {
     }
   }
 
-  /** Tells clients the shown state changed, outside any step: its own bound, and a removal's. */
+  /**
+   * Tells subscribed clients that what they are shown changed (a refusal, the browser reachable
+   * again). The announcement always goes out, within its own bound or until this coordinator
+   * closes; a change during the turn only ends the loop's wait for it, never the announcement:
+   * the demand that asked for a wake that was then refused is such a change, and a refusal not
+   * announced then is not announced again (the next one is the same refusal).
+   */
   async #announce(changed: AbortSignal): Promise<void> {
-    await Promise.resolve()
+    const announcing = Promise.resolve()
       .then(() =>
         withDatabaseOperationSignal(
-          AbortSignal.any([changed, AbortSignal.timeout(announceMs)]),
+          AbortSignal.any([this.#closing.signal, AbortSignal.timeout(announceMs)]),
           Date.now() + announceMs,
           () => announceBrowserPool(this.#options.database),
         ),
       )
       .catch(() => undefined);
+    await untilSettledOrAborted(announcing, changed).catch(() => undefined);
   }
 
   #clearUnanswered(): boolean {
