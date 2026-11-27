@@ -2912,7 +2912,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
       content: [{ type: "text", text: "script-failed-secret" }],
       isError: true,
       structuredContent: {
-        error: { code: "script-error", message: "private-failed-detail" },
+        error: { code: "script-error", message: "private-failed-detail", performed: [] },
       },
     }));
     const failedFirst = await s.call("browser_use", {
