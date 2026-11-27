@@ -164,11 +164,15 @@ describe("spawnSupervised", () => {
         execFileSync("taskset", ["-pc", "0", thread], { stdio: "ignore" });
         execFileSync("chrt", ["--idle", "-p", "0", thread], { stdio: "ignore" });
       }
-      const busy = spawn("taskset", ["-c", "0", process.execPath, "-e", "for (;;) {}"], {
-        stdio: "ignore",
-      });
+      const busy = spawn(
+        "taskset",
+        ["-c", "0", process.execPath, "-e", 'console.log("busy"); for (;;) {}'],
+        { stdio: ["ignore", "pipe", "ignore"] },
+      );
       let stillDying = false;
       try {
+        // The loop holds the CPU before the kill, or the threads die at once on an idle one.
+        for await (const chunk of busy.stdout) if (String(chunk).includes("busy")) break;
         process.kill(supervisorPid, "SIGSTOP");
         try {
           process.kill(targetPid, "SIGKILL");
