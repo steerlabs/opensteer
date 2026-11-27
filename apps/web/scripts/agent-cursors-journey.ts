@@ -64,6 +64,7 @@ import { markColorPaint } from "@opensteer/client/host";
 /** Opensteer's own cursor (Voice and what it starts), as `taskCursorPaint` draws it. */
 const ownCursorPaint = "#a46149";
 import type { MockHostClient } from "@opensteer/client/mock";
+import type { PlaceIdentity } from "@opensteer/protocol";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -82,7 +83,6 @@ const artifactDirectory = path.resolve(
 );
 const middleLayer = ".browser-stage .cursor-layer--middle";
 const browserViewfinder = ".viewfinder:not(.viewfinder--native)";
-const viewfinderLayer = `${browserViewfinder} .cursor-layer--viewfinder`;
 const glassLayer = ".glass-scene";
 /** The motion module's spring, which bounds how fast a cursor's step may change. */
 const omega = 17;
@@ -166,16 +166,6 @@ try {
   await page.clock.install();
   await page.goto(`${origin}/`);
   await page.locator(".side-tab").first().waitFor();
-  // The mock records the pages a reply used as it runs: let it run until a reply shows one.
-  // A reply's picture holds a place for a moment before cutting to the next, so wait for
-  // the page, not an app it touched first.
-  const viewfinderShown = await page
-    .locator(browserViewfinder)
-    .first()
-    .waitFor({ timeout: 10_000 })
-    .then(() => true)
-    .catch(() => false);
-
   const fixture = await page.evaluate(() => {
     const mock = Reflect.get(window, "opensteerMock") as MockHostClient;
     mock.scriptPlaces();
@@ -948,49 +938,81 @@ try {
   await check(
     "21 · the viewfinder draws a cursor on the picture point the main view does",
     async () => {
-      const viewfinders = await page.locator(browserViewfinder).count();
-      const key = viewfinders
-        ? await page.locator(browserViewfinder).first().getAttribute("data-place-key")
-        : null;
-      const pictured = fixture.tabs.find((candidate) => keyOf(candidate) === key);
-      if (!pictured) {
+      // A working task's live place is a small viewfinder in its header (676a7124b), and it
+      // steps aside while the middle shows that same place: here the middle shows `here`
+      // while the run enters `there`, then a press on the viewfinder brings it to the middle.
+      const pictured = there;
+      await page.evaluate(
+        ({ threadId, tabId }) => {
+          history.pushState({}, "", `/tasks/${threadId}?panel=browser&tab=${tabId}`);
+          dispatchEvent(new PopStateEvent("popstate"));
+        },
+        { threadId: homeRun.threadId, tabId: here.id },
+      );
+      await settle(page);
+      await page.evaluate(
+        ({ runId, threadId, sessionId, surfaceId, title }) =>
+          (Reflect.get(window, "opensteerMock") as MockHostClient).enterPlace(runId, threadId, {
+            // The journey holds the mock world's ids as plain strings.
+            place: { kind: "browser", sessionId, surfaceId } as PlaceIdentity,
+            title,
+            site: null,
+          }),
+        {
+          runId: homeRun.id,
+          threadId: homeRun.threadId,
+          sessionId: pictured.sessionId,
+          surfaceId: pictured.id,
+          title: pictured.title,
+        },
+      );
+      await settle(page);
+      await frames(20);
+      const finderOf = `.conv-header ${browserViewfinder}[data-place-key="${keyOf(pictured)}"]`;
+      if (!(await page.locator(finderOf).count())) {
         await shot("21-no-viewfinder.png");
-        throw new JourneyFailure("no reply shows a page's picture", {
-          key,
-          slots: await page.locator(".viewfinder-slot").count(),
-          turns: await page.locator(".turn").count(),
-          viewfinders,
-          viewfinderShown,
+        throw new JourneyFailure("the working task's header shows no viewfinder", {
+          url: page.url(),
+          viewfinders: await page.locator(browserViewfinder).count(),
         });
       }
-      // A region narrower than the viewfinder is drawn larger than itself there.
       const region = { width: 200, height: 150 };
       await cropPicture(pictured, region);
-      await show(pictured);
       await frames(20);
-      await page.evaluate(() =>
-        document
-          .querySelector(".viewfinder:not(.viewfinder--native)")
-          ?.scrollIntoView({ block: "center" }),
-      );
+      // The viewfinder scales in as it appears; its cursor scales with it, so a reading taken
+      // mid-way would compare a scaled picture with the cursor's own unscaled point.
+      await page.evaluate((query) => {
+        for (const animation of document.querySelector(query)?.getAnimations({ subtree: true }) ??
+          [])
+          animation.finish();
+      }, finderOf);
       const header = await pictureHeader(pictured);
       const pointer = { x: 0.1, y: 0.1 };
       await apply(await activity(homeRun, pictured, pointer));
-      let middle: LayerView | undefined;
+      const finderLayer = `${finderOf} .cursor-layer--viewfinder`;
       let finder: LayerView | undefined;
       for (let index = 0; index < 120; index++) {
         await page.clock.runFor(frameMs);
-        middle = await readLayer(page);
-        finder = (await page.locator(viewfinderLayer).count())
-          ? await readLayer(page, viewfinderLayer)
+        finder = (await page.locator(finderLayer).count())
+          ? await readLayer(page, finderLayer)
           : undefined;
-        if (
-          cursorOf(middle, homeRun.threadId)?.on &&
-          finder &&
-          cursorOf(finder, homeRun.threadId)?.on
-        )
-          break;
+        if (finder && cursorOf(finder, homeRun.threadId)?.on && finder.animating === "false") break;
       }
+      const box = await page.locator(finderOf).boundingBox();
+      if (box)
+        await page.screenshot({
+          clip: box,
+          path: path.join(artifactDirectory, "21-viewfinder.png"),
+        });
+      await page.locator(finderOf).click();
+      await settle(page);
+      let middle: LayerView | undefined;
+      for (let index = 0; index < 120; index++) {
+        await page.clock.runFor(frameMs);
+        middle = await readLayer(page);
+        if (cursorOf(middle, homeRun.threadId)?.on && middle.animating === "false") break;
+      }
+      await shot("21-viewfinder-in-the-middle.png");
       const expected = {
         x: (pointer.x * header.viewportWidth) / region.width,
         y: (pointer.y * header.viewportHeight) / region.height,
@@ -1001,33 +1023,26 @@ try {
         expected,
         finder: inFinder ?? null,
         finderPicture: finder?.picture ?? null,
+        finderLeft: await page.locator(finderOf).count(),
         middle: inMiddle ?? null,
         middlePicture: middle?.picture ?? null,
       };
-      const box = await page.evaluate(() => {
-        const rect = document
-          .querySelector(".viewfinder:not(.viewfinder--native)")
-          ?.getBoundingClientRect();
-        return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
-      });
-      if (box)
-        await page.screenshot({
-          clip: box,
-          path: path.join(artifactDirectory, "21-viewfinder.png"),
-        });
       await cropPicture(pictured, null);
       await frames(10);
       expectThat(
         observed,
-        !!inMiddle?.on && near(inMiddle, at(middle!.picture, expected)),
-        "the main view's cursor is off its picture point",
+        !!inFinder?.on &&
+          // The captured region fills the viewfinder's width at the region's own shape.
+          Math.abs(finder!.picture.width / finder!.picture.height - region.width / region.height) <
+            0.01 &&
+          near(inFinder, at(finder!.picture, expected)),
+        "the viewfinder's cursor is off the picture point",
       );
+      expectThat(observed, observed.finderLeft === 0, "the viewfinder stayed beside the middle");
       expectThat(
         observed,
-        !!inFinder?.on &&
-          finder!.picture.width > region.width &&
-          near(inFinder, at(finder!.picture, expected)),
-        "the viewfinder's cursor is off the picture point the main view draws",
+        !!inMiddle?.on && near(inMiddle, at(middle!.picture, expected)),
+        "the main view's cursor is off the picture point the viewfinder drew",
       );
       return observed;
     },

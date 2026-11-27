@@ -14,6 +14,7 @@ import { threadAgentPage, watchPage } from "../packages/client/src/host/agent-pl
 import { createConnectionRpcHandlers } from "../apps/host/src/mcp/connections/connection-routes.js";
 import { CommandTools } from "../apps/host/src/mcp/handlers/commands.js";
 import { stateAreas } from "../packages/agent-tools/src/tools/commands.js";
+import { eventWait } from "./event-wait.test-support.js";
 import { listAgentOperations } from "../packages/database/src/agent-session-store.js";
 import { tabReadAuthority } from "../apps/host/src/tabs/tab-authority.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
@@ -129,10 +130,14 @@ async function directWork(
   let endBrowserWork: (bindingId: string, reason: string) => void = () => {};
   /** What the person who owns the Home was told of where each session works, in order. */
   const workingIn: { readonly ownerUserId: string; readonly notice: AgentWorkingIn }[] = [];
+  const { changed: workingChanged, until: untilWorking } = eventWait();
   const sessions = new AgentSessionService({
     store: j.store,
     holdMs: 0,
-    onWorkingIn: (ownerUserId, notice) => workingIn.push({ ownerUserId, notice }),
+    onWorkingIn: (ownerUserId, notice) => {
+      workingIn.push({ ownerUserId, notice });
+      workingChanged();
+    },
     // As the Home's runtime wires it: a session a narrowing leaves running starts afresh.
     resetBinding: (bindingId) => {
       scripts.resetBrowserScriptsForBinding(bindingId);
@@ -286,6 +291,8 @@ async function directWork(
     sessions,
     scripts,
     workingIn,
+    /** `check`'s value once it passes, checked again at each notice the owner is told. */
+    untilWorking,
     connectAs,
     agent,
     use,
@@ -776,7 +783,7 @@ it("keeps a connected agent's pooled browser_use page attachment alive across mu
     // 2. A second script using openPage(tabId) on the tab created by the first script succeeds on
     // its first and subsequent commands (including goto).
     // The page's own navigation (the link click) is saved shortly after the script returns.
-    const createdTab = await vi.waitFor(async () => {
+    const createdTab = await j.untilTabs(async () => {
       const pages = await home.service.savedPages(j.task.userId, session.id);
       const tab = pages.find((row) => row.url?.includes("r=linked"));
       if (!tab?.pageBinding) throw new Error("Expected the navigated page tab.");
@@ -3363,20 +3370,17 @@ it("tells the person where a kept page handle works, with no holder record of th
       .finally(() => {
         done = true;
       });
-    await vi.waitFor(
-      async () => {
-        expect(done).toBe(false);
-        // The Home holds no record of the task in either tab.
-        for (const tab of [first, second]) {
-          const state = await home.service.pageTabs.state!(j.task.userId, await row(j, tab));
-          expect(state.usedBy.some(({ taskId }) => taskId === threadId)).toBe(false);
-        }
-        const last = work.workingIn.at(-1)!;
-        expect(last.notice).toMatchObject({ threadId, tabId: first });
-        expect(await watchLands(j, home, threadId, work.workingIn)).toBe(first);
-      },
-      { timeout: 4_000 },
-    );
+    await work.untilWorking(async () => {
+      expect(done).toBe(false);
+      // The Home holds no record of the task in either tab.
+      for (const tab of [first, second]) {
+        const state = await home.service.pageTabs.state!(j.task.userId, await row(j, tab));
+        expect(state.usedBy.some(({ taskId }) => taskId === threadId)).toBe(false);
+      }
+      const last = work.workingIn.at(-1)!;
+      expect(last.notice).toMatchObject({ threadId, tabId: first });
+      expect(await watchLands(j, home, threadId, work.workingIn)).toBe(first);
+    });
     const result = await later;
     expect(result.isError, text(result)).not.toBe(true);
     // Only the person who owns the Home heard it; nothing of it reached the agent.
@@ -3410,14 +3414,11 @@ it("tells the person where a script works once it opens a page, before any comma
       .finally(() => {
         done = true;
       });
-    await vi.waitFor(
-      async () => {
-        expect(done).toBe(false);
-        expect(work.workingIn.at(-1)?.notice).toMatchObject({ threadId, tabId: tab });
-        expect(await watchLands(j, home, threadId, work.workingIn)).toBe(tab);
-      },
-      { timeout: 3_000 },
-    );
+    await work.untilWorking(async () => {
+      expect(done).toBe(false);
+      expect(work.workingIn.at(-1)?.notice).toMatchObject({ threadId, tabId: tab });
+      expect(await watchLands(j, home, threadId, work.workingIn)).toBe(tab);
+    });
     const result = await opening;
     expect(result.isError, text(result)).not.toBe(true);
   } finally {
@@ -3444,7 +3445,7 @@ it("tells only the owner, within one notice of the first command, and no read an
         done = true;
       });
     const { threadId, id: sessionId } = await sessionOf(j);
-    await vi.waitFor(() => expect(work.workingIn.length).toBeGreaterThan(0), { timeout: 3_000 });
+    await work.untilWorking(() => expect(work.workingIn.length).toBeGreaterThan(0));
     const tab = work.workingIn[0]!.notice.tabId!;
     // One notice for the page it opened and every command on it: the tab did not change.
     expect(work.workingIn).toEqual([
@@ -3502,7 +3503,7 @@ it("keeps each connection's workingIn to its own task, and starts over after the
       threadId: first.threadId as ThreadId,
       sessionId: first.id,
     });
-    await vi.waitFor(() =>
+    await work.untilWorking(() =>
       expect(work.workingIn.at(-1)?.notice).toMatchObject({
         threadId: first.threadId,
         sessionId: first.id,
@@ -3772,9 +3773,8 @@ it("clears where an agent works and its holds when its browser session ends, as 
     // A deleted profile stops each of its browser sessions (deleteProfile -> stop); in this pooled
     // fixture the deletion then waits on the computer, so the same stop is driven here.
     await home.service.stop(j.task.userId, (await row(j, tab)).pageBinding!.sessionId);
-    await vi.waitFor(() => expect(told.some(({ tabIds }) => tabIds.includes(tab))).toBe(true), {
-      timeout: 5_000,
-    });
+    // Let go of with the session's end, which republishes the tabs' rows.
+    await j.untilTabs(() => expect(told.some(({ tabIds }) => tabIds.includes(tab))).toBe(true));
     expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
     expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
   } finally {
@@ -3869,7 +3869,7 @@ it.each([
           grant: { scope: "selected", tasks: false, resources: [] },
         });
       await j.store.driveConnectionCleanups();
-      await vi.waitFor(async () => expect(await holds()).toBe(false), { timeout: 3_000 });
+      await j.untilTabs(async () => expect(await holds()).toBe(false));
       expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
       expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
     } finally {
@@ -3916,7 +3916,7 @@ it("names the task as the holder of the tab it works in while the person's viewe
       (await home.service.pageTabs.state!(j.task.userId, await row(j, tab.id))).usedBy.some(
         ({ taskId }) => taskId === threadId,
       );
-    await vi.waitFor(async () => expect(await holds()).toBe(true), { timeout: 3_000 });
+    await j.untilTabs(async () => expect(await holds()).toBe(true));
     // A second viewer of the same tab, while the call works in it.
     const second = j.viewer(home, (await row(j, tab.id)).pageBinding!.sessionId, "control");
     await second.attaching;

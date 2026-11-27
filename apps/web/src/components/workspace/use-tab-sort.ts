@@ -1,5 +1,6 @@
 import {
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -11,6 +12,7 @@ import { rowPositions, type RowMotion } from "./row-motion.js";
 import { snapTop } from "./scroll-edges.js";
 import {
   homeSlot,
+  movedStrip,
   nearestSlot,
   slotMove,
   slotWords,
@@ -41,6 +43,8 @@ export interface TabSortLift {
 export interface TabSortHandle {
   readonly press: (event: ReactPointerEvent<HTMLElement>, key: string) => void;
   readonly keyMove: (event: ReactKeyboardEvent<HTMLElement>, key: string) => void;
+  /** Whether a row is lifted: until the drop the list stands as it was, every row in it. */
+  readonly held: () => boolean;
 }
 
 interface Drag {
@@ -89,7 +93,11 @@ interface Drag {
  * Drag-and-drop and ⌘↑/⌘↓ for the tab list. While a row is lifted nothing
  * renders: the pointer moves the row and its neighbours by `translate`
  * alone, and React renders twice — when the row lifts and when it drops. The
- * drop commits one move; `RowMotion` slides every row from where it stood.
+ * drop sends one move and the list shows it at once (`strip`), in the same
+ * render, so `RowMotion` slides every row from where it stood and keeps the
+ * moved row in view. The list shows the move over the Host's order until the
+ * Host answers; then the Host's order alone, which is the move, or, refused
+ * or unanswered, the order as it was, with the person told.
  *
  * A lifted row turns the list's snap off (its neighbours move under it), so
  * the drag lands the list on whole rows itself whenever its scroll stops —
@@ -97,18 +105,28 @@ interface Drag {
  * drop then moves only the rows the new order moves.
  */
 export function useTabSort(input: {
+  /** The Host's order, as this list draws it. */
   readonly strip: TabStrip;
-  readonly rows: readonly SortRow[];
+  /** The rows drag-and-drop sees in a strip. */
+  readonly rowsOf: (strip: TabStrip) => readonly SortRow[];
   readonly movable: boolean;
   readonly list: RefObject<HTMLElement | null>;
   readonly motion: RefObject<RowMotion | null>;
-  readonly move: (move: TabMove) => void;
+  /** Sends a move; settles once the Host has answered it, or null when nothing was sent. */
+  readonly move: (move: TabMove) => Promise<unknown> | null;
   readonly announce: (words: string) => void;
   readonly title: (row: SortRow) => string;
-}): { readonly lift: TabSortLift | null; readonly handle: TabSortHandle } {
+}): {
+  readonly lift: TabSortLift | null;
+  /** The order the list shows: the Host's, with the moves it has not answered yet. */
+  readonly strip: TabStrip;
+  readonly handle: TabSortHandle;
+} {
   const [lift, setLift] = useState<TabSortLift | null>(null);
-  const latest = useRef(input);
-  latest.current = input;
+  const [sent, setSent] = useState<readonly TabMove[]>([]);
+  const strip = useMemo(() => sent.reduce(movedStrip, input.strip), [sent, input.strip]);
+  const latest = useRef({ ...input, strip });
+  latest.current = { ...input, strip };
   const drag = useRef<Drag | null>(null);
   const refocus = useRef<string | null>(null);
 
@@ -164,7 +182,16 @@ export function useTabSort(input: {
         ),
       );
     setLift(null);
-    if (chosen) latest.current.move(chosen);
+    if (chosen) send(chosen);
+  };
+
+  /** Shows the move from this render on, until the Host's answer to it has landed. */
+  const send = (move: TabMove) => {
+    const answered = latest.current.move(move);
+    if (!answered) return;
+    setSent((moves) => [...moves, move]);
+    const landed = () => setSent((moves) => moves.filter((entry) => entry !== move));
+    void answered.then(landed, landed);
   };
 
   const paint = () => {
@@ -254,7 +281,8 @@ export function useTabSort(input: {
   };
 
   const begin = (current: Drag) => {
-    const { rows, strip } = latest.current;
+    const { rowsOf, strip } = latest.current;
+    const rows = rowsOf(strip);
     const from = rows.findIndex((row) => row.key === current.key);
     const lifted = rows[from];
     if (!lifted) {
@@ -432,7 +460,7 @@ export function useTabSort(input: {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
       event.preventDefault();
       event.stopPropagation();
-      const { rows } = latest.current;
+      const rows = latest.current.rowsOf(latest.current.strip);
       const lifted = rows.find((row) => row.key === key);
       if (!lifted) return;
       const shown =
@@ -448,11 +476,12 @@ export function useTabSort(input: {
       const list = latest.current.list.current;
       if (list) latest.current.motion.current?.hold(rowPositions(list), key);
       latest.current.announce(slotWords(shown, from, step.slots[step.slot]!, latest.current.title));
-      latest.current.move(chosen);
+      send(chosen);
     },
+    held: () => drag.current?.lifted === true,
   }).current;
 
-  return { lift, handle };
+  return { lift, strip, handle };
 }
 
 /**

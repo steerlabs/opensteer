@@ -29,6 +29,25 @@ describe("tabStrip", () => {
     expect(strip.entries.map((entry) => entry.kind)).toEqual(["tab", "group", "tab"]);
   });
 
+  it("draws no group with no tab to show: the Home keeps an emptied group for Undo", () => {
+    const strip = tabStrip(
+      {
+        revision: 4,
+        items: [
+          { kind: "tab", tabId: id("page-1") },
+          { kind: "group", group: group("emptied", []) },
+          { kind: "group", group: group("not received yet", ["page-9"]) },
+          { kind: "group", group: group("work", ["page-2"]) },
+        ],
+      },
+      new Set([id("page-1"), id("page-2")]),
+    );
+    expect(
+      strip.entries.map((entry) => (entry.kind === "tab" ? entry.tabId : entry.group.name)),
+    ).toEqual(["page-1", "work"]);
+    expect(strip.ordered).toEqual(["page-1", "page-2"]);
+  });
+
   it("hides a collapsed group's tabs from the visible order only", () => {
     const strip = tabStrip(mixed(true), all);
     expect(strip.visible).toEqual(["page-1", "window-2"]);

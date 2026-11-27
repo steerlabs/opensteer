@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { describe, expect, it, vi } from "vitest";
+import { eventWait } from "./event-wait.test-support.js";
 import {
   BrowserPoolCoordinator,
   type BrowserPoolAdopter,
@@ -18,7 +19,10 @@ import {
   AgentPoolController,
   poolControllerKind,
 } from "./browser-pool-controller-under-test.test-support.js";
-import { type BrowserPoolControl } from "../packages/browser-runtime-core/src/browser-pool.js";
+import {
+  BrowserPoolRuntimeControl,
+  type BrowserPoolControl,
+} from "../packages/browser-runtime-core/src/browser-pool.js";
 import { BrowserRuntime } from "../packages/browser-runtime-core/src/runtime.js";
 import { BrowserPoolAgentSlotDeleted } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
 import {
@@ -53,24 +57,35 @@ import { BrowserSessionIdSchema, type BrowserSessionId } from "../packages/proto
 type RuntimeKind = BrowserPoolControl["kind"];
 
 /** Hangs every call from the first match on, as a Home process that died there would. */
+/** Every pool-state write of a runtime, whichever fixture's: each fixture listens while it lives. */
+const runtimeControl = BrowserPoolRuntimeControl.prototype as unknown as {
+  write(next: unknown): void;
+};
+const runtimeWrite = runtimeControl.write;
+const runtimeChanges = new Set<() => void>();
+
 class Crash {
   #armed: { kind: string; when: "before" | "after" } | undefined;
+  /** Told when the Home dies: its calls never settle after it, so nothing else says so. */
+  readonly #deaths = new Set<() => void>();
   dead = false;
   arm(kind: string, when: "before" | "after") {
     this.#armed = { kind, when };
   }
+  onDeath(listener: () => void) {
+    this.#deaths.add(listener);
+  }
   async pass<T>(kind: string, call: () => Promise<T>): Promise<T> {
     if (this.dead) return new Promise<T>(() => {});
-    if (this.#armed?.kind === kind && this.#armed.when === "before") {
-      this.dead = true;
-      return new Promise<T>(() => {});
-    }
+    if (this.#armed?.kind === kind && this.#armed.when === "before") return this.#die<T>();
     const result = await call();
-    if (this.#armed?.kind === kind) {
-      this.dead = true;
-      return new Promise<T>(() => {});
-    }
+    if (this.#armed?.kind === kind) return this.#die<T>();
     return result;
+  }
+  #die<T>(): Promise<T> {
+    this.dead = true;
+    for (const listener of this.#deaths) listener();
+    return new Promise<T>(() => {});
   }
 }
 
@@ -91,6 +106,21 @@ async function poolFixture(
   const fixture = await createStoreFixture();
   const task = await fixture.createRunFixture(key);
   const { database } = fixture;
+  // What a wait re-checks on: each call a coordinator makes settling (to the controller, the
+  // runtime and the adopter), each change it publishes, and each change of the runtime's pool
+  // state. The product's own events, not a clock.
+  const { changed, until } = eventWait();
+  const settles = <T>(work: Promise<T>): Promise<T> => {
+    void work.then(changed, changed);
+    return work;
+  };
+  // The runtime's own pool-state changes are events too: an adoption it ends at its window, say.
+  runtimeChanges.add(changed);
+  if (!vi.isMockFunction(runtimeControl.write))
+    vi.spyOn(runtimeControl, "write").mockImplementation(function (this: unknown, next: unknown) {
+      runtimeWrite.call(this, next);
+      for (const listener of runtimeChanges) listener();
+    });
   // The agent cannot see a loopback runtime that outlives a start: against it every start is a
   // new guest with an empty runtime, as on a real host.
   if (poolControllerKind() === "agent") options = { ...options, freshGuests: true };
@@ -215,24 +245,28 @@ async function poolFixture(
     physical: BrowserPoolPhysicalController = controller,
     extra: Partial<ConstructorParameters<typeof BrowserPoolCoordinator>[0]> = {},
   ) => {
+    crash?.onDeath(changed);
     const channel: BrowserPoolRuntimeChannel = {
-      poolState: async () => {
-        // As a remote runtime behind a relay: slow, and with no guest running there is no
-        // runtime to ask.
-        if (options.remote) {
-          for (let turn = 0; turn < 5; turn++)
-            await new Promise<void>((resolve) => setImmediate(resolve));
-          const status = await controller.status(`slot-${key}`, 1);
-          if (status.phase !== "running") return null;
-        }
-        return runtime.poolState() ?? null;
-      },
+      poolState: () => settles(poolState()),
       controlPool: (control, signature) =>
-        crash
-          ? crash.pass(`runtime:${control.kind}`, () => runtime.controlPool(control, signature))
-          : runtime.controlPool(control, signature),
-      endSession: (ticket) => runtime.endPoolSession(ticket),
+        settles(
+          crash
+            ? crash.pass(`runtime:${control.kind}`, () => runtime.controlPool(control, signature))
+            : runtime.controlPool(control, signature),
+        ),
+      endSession: (ticket) => settles(runtime.endPoolSession(ticket)),
     };
+    async function poolState() {
+      // As a remote runtime behind a relay: slow, and with no guest running there is no
+      // runtime to ask.
+      if (options.remote) {
+        for (let turn = 0; turn < 5; turn++)
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        const status = await controller.status(`slot-${key}`, 1);
+        if (status.phase !== "running") return null;
+      }
+      return runtime.poolState() ?? null;
+    }
     const port: BrowserPoolPhysicalController = crash
       ? {
           status: (slot, term) => crash.pass("status", () => physical.status(slot, term)),
@@ -243,6 +277,11 @@ async function poolFixture(
             ),
         }
       : physical;
+    const watched: BrowserPoolPhysicalController = {
+      status: (slot, term) => settles(port.status(slot, term)),
+      result: (slot, term, id) => settles(port.result(slot, term, id)),
+      apply: (call) => settles(port.apply(call)),
+    };
     const coordinator = new BrowserPoolCoordinator({
       database,
       runnerId: task.runnerId,
@@ -250,15 +289,24 @@ async function poolFixture(
       slotId: `slot-${key}`,
       term: 1,
       runtime: channel,
-      controller: port,
+      controller: watched,
       retryMs: 5,
       ...extra,
+      onStateChanged: () => {
+        extra.onStateChanged?.();
+        changed();
+      },
       runtimeFault: (kind) => {
         const index = runtimeFaults.findIndex((entry) => entry.kind === kind);
         return index < 0 ? undefined : runtimeFaults.splice(index, 1)[0]!.fault;
       },
     });
-    coordinator.setAdopter(adopter);
+    coordinator.setAdopter({
+      ...adopter,
+      withoutChannel: (target) => settles(adopter.withoutChannel(target)),
+      quiesce: () => settles(adopter.quiesce()),
+      reattach: (request) => settles(adopter.reattach(request)),
+    });
     homes.push(coordinator);
     return coordinator;
   };
@@ -320,6 +368,7 @@ async function poolFixture(
     sinks.clear();
   };
   const close = async () => {
+    runtimeChanges.delete(changed);
     for (const coordinator of homes) coordinator.close();
     await runtime.shutdown();
     await controller.close?.();
@@ -364,6 +413,8 @@ async function poolFixture(
     stallReattach: (until: Promise<void> | undefined) => {
       stalled = until;
     },
+    /** Waits for a check on the coordinator's own events, not a clock. */
+    until,
     /** The Runner's channel drops: the guest keeps the session detached. */
     loseChannel: async (id: BrowserSessionId = sessionId) => {
       await sinks.get(id)?.close(false, false, true);
@@ -583,7 +634,7 @@ it("keeps a channel lost again while its attach is being finished as a new loss,
     home.channelLost(f.sessionId);
     await vi.waitFor(() => expect(attempts).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
     expect(second).toEqual({ document: "document-now", admits: false });
-    await vi.waitFor(() => expect(home.gate.phase).toBe("open"));
+    await f.until(() => expect(home.gate.phase).toBe("open"));
     expect(home.reattaching(f.sessionId)).toBe(false);
     expect((await f.row())?.state).toBe("ready");
   } finally {
@@ -995,7 +1046,7 @@ it("keeps a repair decided for one instance off the fresh guest that replaced it
     // A command in flight holds the guest, so the repair decided for its instance waits.
     const command = await home.gate.reserve(AbortSignal.timeout(10_000));
     f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    await f.until(() => expect(home.report()).toMatchObject({ phase: "waking" }));
     // The person restarts the browser: a fresh guest, whose proxy serves.
     const restarting = home.restart();
     command.release();
@@ -1003,7 +1054,7 @@ it("keeps a repair decided for one instance off the fresh guest that replaced it
     expect(f.controller.effects).toEqual(["start", "stop", "start"]);
     // Read after read, the fresh guest is never parked for the old instance's repair.
     const before = reads;
-    await vi.waitFor(() => expect(reads).toBeGreaterThan(before + 5));
+    await f.until(() => expect(reads).toBeGreaterThan(before + 5));
     expect(f.controller.effects).toEqual(["start", "stop", "start"]);
     expect(home.report()).toBeUndefined();
   } finally {
@@ -1042,7 +1093,7 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
     });
     f.controller.observe({ proxy: "down" });
     // While the repair runs the person is shown it waking, never "paused" first (W10).
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    await f.until(() => expect(home.report()).toMatchObject({ phase: "waking" }));
     expect(home.report()?.proxyDown).toBeUndefined();
     // Nothing holds it: the Home parks it and wakes it again by itself, which is what brings a
     // proxy back. (It used to park and wait for demand to wake: a person watching would have
@@ -1057,9 +1108,9 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
     // Down again after that wake (a real agent's wake brings it back once): shown paused, and
     // the repair is not made again for this instance, read after read.
     f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
+    await f.until(() => expect(home.report()).toMatchObject({ proxyDown: true }));
     const reads = counted.reads;
-    await vi.waitFor(() => expect(counted.reads).toBeGreaterThan(reads + 5));
+    await f.until(() => expect(counted.reads).toBeGreaterThan(reads + 5));
     expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
     expect(await f.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
     // A park that is not a repair, and its wake, are a fresh chance: still down after them, the
@@ -1067,7 +1118,7 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
     expect(await home.tryPark()).toBe("parked");
     (await home.gate.reserve(AbortSignal.timeout(10_000))).release();
     f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() =>
+    await f.until(() =>
       expect(f.controller.effects).toEqual([
         "start",
         "pause",
@@ -1079,10 +1130,10 @@ it("reports a running browser whose egress proxy is down, repairs it once by a p
       ]),
     );
     const again = counted.reads;
-    await vi.waitFor(() => expect(counted.reads).toBeGreaterThan(again + 5));
+    await f.until(() => expect(counted.reads).toBeGreaterThan(again + 5));
     expect(f.controller.effects).toHaveLength(7);
     f.controller.observe({ proxy: "up" as never });
-    await vi.waitFor(() => expect(home.report()).toBeUndefined());
+    await f.until(() => expect(home.report()).toBeUndefined());
   } finally {
     await f.close();
   }
@@ -1097,9 +1148,9 @@ it("waits for a command in flight before it repairs a guest whose egress proxy i
     // A command in flight: a reservation taken with demand, ended by its own bound.
     const command = await home.gate.reserve(AbortSignal.timeout(10_000));
     f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    await f.until(() => expect(home.report()).toMatchObject({ phase: "waking" }));
     const reads = counted.reads;
-    await vi.waitFor(() => expect(counted.reads).toBeGreaterThan(reads + 5));
+    await f.until(() => expect(counted.reads).toBeGreaterThan(reads + 5));
     // Turn after turn, nothing was paused under it.
     expect(f.controller.effects).toEqual(["start"]);
     expect(home.gate.phase).toBe("open");
@@ -1619,7 +1670,7 @@ for (const [point, when, ends] of crashes)
           parked === "parked" ? dying.gate.reserve(AbortSignal.timeout(10_000)) : undefined,
         )
         .catch(() => undefined);
-      await vi.waitFor(() => expect(crash.dead).toBe(true));
+      await f.until(() => expect(crash.dead).toBe(true));
       dying.close();
       // The old process's sockets close with it.
       await f.crashSockets();
@@ -1966,7 +2017,7 @@ it("records an adoption the runtime ended at its window while the Home was gone"
     crash.arm("runtime:adopt", "after");
     void dying.gate.reserve(AbortSignal.timeout(10_000)).catch(() => undefined);
     // The Home died just after adopt; the runtime ends the adoption at its window by itself.
-    await vi.waitFor(() => expect(f.runtime.poolState()?.phase).toBe("running"));
+    await f.until(() => expect(f.runtime.poolState()?.phase).toBe("running"));
     dying.close();
     expect(f.runtime.poolState()).toMatchObject({
       phase: "running",
@@ -2247,7 +2298,7 @@ it("keeps a partial tab loss through a Home restart between the runtime's comple
     await dying.recover();
     crash.arm("runtime:complete", "after");
     void dying.gate.reserve(AbortSignal.timeout(10_000)).catch(() => undefined);
-    await vi.waitFor(() => expect(crash.dead).toBe(true));
+    await f.until(() => expect(crash.dead).toBe(true));
     dying.close();
     f.reportTabLoss(undefined);
     const next = f.home();
@@ -2703,7 +2754,7 @@ for (const fault of ["status-fails", "stop-throws", "stop-not-applied"] as const
       expect(removing.gate.phase).toBe("released");
       // The driver keeps asking; however often it is refused, the row stays.
       const before = refused;
-      await vi.waitFor(() => expect(refused).toBeGreaterThanOrEqual(before + 3));
+      await f.until(() => expect(refused).toBeGreaterThanOrEqual(before + 3));
       expect(await f.slot()).toMatchObject({ phase: "releasing" });
       expect(f.controller.effects).toEqual(["start"]);
       // A Home restart resumes the stop; once it is known, the slot goes with its journal.
@@ -2988,6 +3039,7 @@ it("delivers a refusal after an outage without waiting for the database announce
     let refusalReturned = false;
     let releaseAnnounce: (() => void) | undefined;
     let holdNextAnnounce = false;
+    const announceHeld = Promise.withResolvers<void>();
     const rawConnection = f.database.connection.bind(f.database);
     vi.spyOn(f.database, "connection").mockImplementation(() => {
       const builder = rawConnection();
@@ -2995,9 +3047,11 @@ it("delivers a refusal after an outage without waiting for the database announce
       builder.execute = async (...args) => {
         if (holdNextAnnounce) {
           holdNextAnnounce = false;
-          await new Promise<void>((resolve) => {
+          const held = new Promise<void>((resolve) => {
             releaseAnnounce = resolve;
           });
+          announceHeld.resolve();
+          await held;
         }
         return rawExecute(...args);
       };
@@ -3055,12 +3109,24 @@ it("delivers a refusal after an outage without waiting for the database announce
     await vi.waitFor(() => expect(home.report()?.unreachable).toBe(true), { timeout: 2_000 });
 
     // Now the host answers with a refusal while the DB announce is stalled: the waiting caller
-    // must receive BrowserPoolAttemptRefused immediately, not miss its deadline waiting on #announce.
+    // receives BrowserPoolAttemptRefused when the refusal is delivered, not once #announce ends
+    // (by its statement or its own bound). Said as order, not time: the caller has no deadline,
+    // and it has the refusal by the time the held announce began and what was queued then ran.
     mode = "refuse";
+    let delivered: unknown;
+    const waiting = home.gate.reserve(new AbortController().signal, { failOnRefusal: true }).then(
+      (reservation) => {
+        reservation.release();
+        delivered = "admitted";
+      },
+      (error: unknown) => {
+        delivered = error;
+      },
+    );
     try {
-      await expect(
-        home.gate.reserve(AbortSignal.timeout(250), { failOnRefusal: true }),
-      ).rejects.toMatchObject({
+      await announceHeld.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(delivered).toMatchObject({
         name: "BrowserPoolAttemptRefused",
         refusedReason: "egress-required",
       });
@@ -3068,6 +3134,7 @@ it("delivers a refusal after an outage without waiting for the database announce
       expect(home.report()?.refused).toBe("egress-required");
     } finally {
       releaseAnnounce?.();
+      await waiting;
     }
   } finally {
     await f.close();

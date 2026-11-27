@@ -54,14 +54,23 @@ try {
   const activations = () =>
     page.evaluate(() => (Reflect.get(window, "activations") as string[]).slice());
 
-  await check("a selected tab is activated once and says why it failed", async () => {
+  await check("a selected tab is activated once and says it could not open", async () => {
     await page.locator(`.side-tab[data-place-key="${tabId}"] .side-tab__main`).click();
-    await page.locator(".place-state").getByText("The browser could not start.").waitFor();
+    // The tab's own fact, never the failure's raw text (67af87553).
+    const title = page.locator(".place-state .place-state__title");
+    await title.waitFor();
+    const said = await title.textContent();
+    const raw = await page.getByText("The browser could not start.").count();
     const calls = await activations();
     expectThat(
       { calls },
       calls.filter((id) => id === tabId).length === 1,
       "Activated more than once",
+    );
+    expectThat(
+      { said, raw },
+      said === "This tab could not open." && raw === 0,
+      "The failed tab does not say it could not open, or shows the raw failure",
     );
     await shot("01-activation-failed");
     trace.push({ phase: "failed", calls });

@@ -34,8 +34,11 @@ type WebRow =
       readonly grouped: boolean;
     };
 
-/** The web section as it stands: each row's key, kind and group. */
-async function webRows(page: Page) {
+/**
+ * The rows the list draws now, each row's key, kind and group: a long list
+ * draws only the rows near its view (87ec45567), so this is not its order.
+ */
+async function drawnRows(page: Page) {
   return page.locator(".side-section--tabs .side-list").evaluate((list) =>
     [...list.children].flatMap((node): WebRow[] => {
       const row = node as HTMLElement;
@@ -61,7 +64,32 @@ async function webRows(page: Page) {
     }),
   );
 }
-const keys = async (page: Page) => (await webRows(page)).map((row) => row.key);
+/**
+ * The list's rows in order, as the Host holds them and the list draws them
+ * once a move has landed: each row's key, kind and group.
+ */
+async function listRows(page: Page) {
+  return page.evaluate(() => {
+    const { tabs } = (
+      Reflect.get(window, "opensteerMock") as import("@opensteer/client/host").HostClient
+    ).getSnapshot();
+    return tabs.strip.entries.flatMap((entry): WebRow[] => {
+      const tab = (tabId: string, grouped: boolean): WebRow => ({
+        key: tabId,
+        kind: "tab",
+        title: tabs.rows.get(tabId as never)?.title ?? "",
+        grouped,
+      });
+      if (entry.kind === "tab") return [tab(entry.tabId, false)];
+      const { group } = entry;
+      return [
+        { key: group.groupId, kind: "group", title: group.name, expanded: !group.collapsed },
+        ...(group.collapsed ? [] : entry.tabIds.map((tabId) => tab(tabId, true))),
+      ];
+    });
+  });
+}
+const keys = async (page: Page) => (await listRows(page)).map((row) => row.key);
 const rowAt = (page: Page, key: string) =>
   page.locator(`.side-section--tabs .side-list > [data-motion-key="${key}"]`);
 
@@ -130,6 +158,7 @@ async function watchRows(page: Page, trigger: "pointerup" | "keydown") {
       const top = list.getBoundingClientRect().top + list.clientTop;
       return {
         scroll: list.scrollTop,
+        end: list.scrollHeight - list.clientHeight,
         moving: list.hasAttribute("data-moving"),
         top,
         bottom: top + list.clientHeight,
@@ -161,7 +190,7 @@ async function watchRows(page: Page, trigger: "pointerup" | "keydown") {
  * How the list went from the watched release on: how far any row but `moved`
  * jumped in the first frame, how far any row the new order leaves in its
  * place moved on screen by the end, every scroll position it took after that
- * frame, whether it rests on a row's top, and whether `moved` lands whole in
+ * frame, whether it rests on a row's top (or its end), and whether `moved` lands whole in
  * view.
  */
 async function rowsAfter(page: Page, moved: string) {
@@ -171,6 +200,7 @@ async function rowsAfter(page: Page, moved: string) {
       Reflect.get(window, "__rows") as {
         frames: {
           scroll: number;
+          end: number;
           moving: boolean;
           top: number;
           bottom: number;
@@ -217,7 +247,11 @@ async function rowsAfter(page: Page, moved: string) {
     released: release!.scroll,
     snapped: Math.round(Math.max(0, ...resumed) * 10) / 10,
     still: !last.moving,
-    whole: last.rows.some((row) => Math.abs(row.top - last.top) < 0.5),
+    // Tabs is not a whole number of rows tall (4aa249227: its header and six pitches), so at its
+    // end the list rests where its last row is whole, as its snap does (snapTop, scroll-edges.ts).
+    whole:
+      last.rows.some((row) => Math.abs(row.top - last.top) < 0.5) ||
+      Math.abs(last.scroll - last.end) < 0.5,
     inView: !!landed && landed.top >= last.top - 0.5 && landed.bottom <= last.bottom + 0.5,
   };
 }
@@ -248,11 +282,14 @@ async function observe(page: Page, run: () => Promise<void>) {
       lifted: false,
       childChanges: 0,
       commits: 0,
+      renders: 0,
       liftedAt: 0,
+      rendersAt: 0,
       frames: [] as number[],
       longTasks: [] as number[],
     };
     const commits = () => (globalThis as unknown as { __commits?: number }).__commits ?? 0;
+    const renders = () => (globalThis as unknown as { __renders?: number }).__renders ?? 0;
     (window as unknown as { __drag: typeof state }).__drag = state;
     new MutationObserver((records) => {
       if (!state.lifted) return;
@@ -260,8 +297,14 @@ async function observe(page: Page, run: () => Promise<void>) {
     }).observe(list, { childList: true });
     new MutationObserver(() => {
       const lifted = list.hasAttribute("data-sorting");
-      if (lifted && !state.lifted) state.liftedAt = commits();
-      if (!lifted && state.lifted) state.commits += commits() - state.liftedAt;
+      if (lifted && !state.lifted) {
+        state.liftedAt = commits();
+        state.rendersAt = renders();
+      }
+      if (!lifted && state.lifted) {
+        state.commits += commits() - state.liftedAt;
+        state.renders += renders() - state.rendersAt;
+      }
       state.lifted = lifted;
     }).observe(list, { attributes: true, attributeFilter: ["data-sorting"] });
     new PerformanceObserver((entries) => {
@@ -279,13 +322,20 @@ async function observe(page: Page, run: () => Promise<void>) {
   return page.evaluate(() => {
     const state = (
       window as unknown as {
-        __drag: { childChanges: number; commits: number; frames: number[]; longTasks: number[] };
+        __drag: {
+          childChanges: number;
+          commits: number;
+          renders: number;
+          frames: number[];
+          longTasks: number[];
+        };
       }
     ).__drag;
     const sorted = [...state.frames].sort((a, b) => a - b);
     return {
       childChanges: state.childChanges,
       commits: state.commits,
+      renders: state.renders,
       frames: sorted.length,
       p95: sorted[Math.floor(sorted.length * 0.95)] ?? 0,
       worst: sorted[sorted.length - 1] ?? 0,
@@ -308,12 +358,34 @@ async function openWorld(world: "busy" | "stress") {
   );
   // tsx keeps function names with a helper the page lacks; observers here define functions.
   await context.addInitScript("globalThis.__name = (value) => value;");
-  // React reports every commit to a DevTools hook; the journey counts those made while a row is lifted.
-  await context.addInitScript(`globalThis.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
-    supportsFiber: true, renderers: new Map(), inject() { return 1; },
-    onCommitFiberRoot() { globalThis.__commits = (globalThis.__commits ?? 0) + 1; },
-    onCommitFiberUnmount() {}, onPostCommitFiberRoot() {}, checkDCE() {},
-  };`);
+  // React reports every commit to a DevTools hook; the journey counts those made while a row is
+  // lifted, and those that rendered any component but a site icon settling. A drag draws every
+  // row (windowed-rows.ts), and the icons of the rows the lift drew settle when their image loads
+  // or fails (site-mark.tsx): that is the image's work, not the drag's.
+  await context.addInitScript(`(() => {
+    const icon = (fiber) => {
+      for (let host = fiber.return; host; host = host.return)
+        if (host.tag === 5) return !!host.stateNode.closest?.(".site-mark");
+      return false;
+    };
+    // Components that rendered in this commit; a subtree whose child is unchanged did not render.
+    const rendered = (fiber) => {
+      for (let node = fiber; node; node = node.sibling) {
+        if (node.flags & 1 && [0, 1, 11, 14, 15].includes(node.tag) && !icon(node)) return true;
+        if (node.child && (!node.alternate || node.child !== node.alternate.child) && rendered(node.child))
+          return true;
+      }
+      return false;
+    };
+    globalThis.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+      supportsFiber: true, renderers: new Map(), inject() { return 1; },
+      onCommitFiberRoot(_id, root) {
+        globalThis.__commits = (globalThis.__commits ?? 0) + 1;
+        if (rendered(root.current.child)) globalThis.__renders = (globalThis.__renders ?? 0) + 1;
+      },
+      onCommitFiberUnmount() {}, onPostCommitFiberRoot() {}, checkDCE() {},
+    };
+  })();`);
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -324,17 +396,16 @@ async function openWorld(world: "busy" | "stress") {
     (Reflect.get(window, "opensteerMock") as { scriptPlaces(): unknown }).scriptPlaces(),
   );
   // This journey moves page tabs: window, phone and app tabs leave the list (closing a tab
-  // only takes it off the list). The busy world's checks build their own one group.
-  await page.evaluate(async (ungroup) => {
+  // only takes it off the list). Each world's checks build their own groups.
+  await page.evaluate(async () => {
     const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-    if (ungroup)
-      for (const item of client.getSnapshot().tabs.layout.items)
-        if (item.kind === "group") await client.deleteTabGroup(item.group.groupId);
+    for (const item of client.getSnapshot().tabs.layout.items)
+      if (item.kind === "group") await client.deleteTabGroup(item.group.groupId);
     const others = [...client.getSnapshot().tabs.rows.values()]
       .filter((tab) => tab.kind !== "page")
       .map((tab) => tab.tabId);
     if (others.length) await client.closeTabs(others);
-  }, world === "busy");
+  });
   await settle(page);
   return { context, page, errors };
 }
@@ -345,7 +416,7 @@ const shot = (page: Page, name: string) =>
 try {
   const { context, page, errors } = await openWorld("busy");
   const order = async () =>
-    (await webRows(page)).filter((row) => row.kind === "tab").map((row) => row.key);
+    (await listRows(page)).filter((row) => row.kind === "tab").map((row) => row.key);
 
   await check("a press that barely moves is still a click on the tab", async () => {
     const [, second] = await order();
@@ -375,7 +446,11 @@ try {
       );
       const after = await order();
       timings.reorder = stats;
-      expectThat({ stats }, stats.commits === 0, "React committed while the row was lifted");
+      expectThat(
+        { stats },
+        stats.renders === 0,
+        "React rendered more than site icons settling while the row was lifted",
+      );
       expectThat(
         { before, after, stats },
         after.indexOf(first!) === 2,
@@ -407,27 +482,56 @@ try {
     }
     await page.getByRole("button", { name: "Research, 2 tabs", exact: true }).waitFor();
     await settle(page);
-    return { rows: (await webRows(page)).slice(0, 5) };
+    return { rows: (await listRows(page)).slice(0, 5) };
   });
 
   /** Scrolls a row into the list's view as a person does, with the wheel. */
   const reveal = async (key: string) => {
+    const list = page.locator(".side-section--tabs .side-list");
     for (let tries = 0; tries < 40; tries++) {
-      const [row, view] = await Promise.all([
-        box(page, key),
-        page.locator(".side-section--tabs .side-list").boundingBox(),
-      ]);
-      if (row.y >= view!.y && row.y + row.height <= view!.y + view!.height) break;
-      await page.mouse.move(view!.x + view!.width / 2, view!.y + view!.height / 2);
-      await page.mouse.wheel(0, row.y < view!.y ? -row.height : row.height);
+      const view = (await list.boundingBox())!;
+      // The list draws only the rows near its view: a row it does not draw lies beyond the
+      // first one in view, up or down as the Host orders them.
+      const { row, first } = await list.evaluate((node, key) => {
+        const top = node.getBoundingClientRect().top;
+        const drawn = [...node.querySelectorAll<HTMLElement>(":scope > [data-motion-key]")];
+        const found = drawn.find((element) => element.dataset.motionKey === key);
+        const box = found?.getBoundingClientRect();
+        return {
+          row: box ? { y: box.y, height: box.height } : null,
+          first: drawn.find((element) => element.getBoundingClientRect().bottom > top)?.dataset
+            .motionKey,
+        };
+      }, key);
+      if (row && row.y >= view.y && row.y + row.height <= view.y + view.height) break;
+      const order = row ? [] : await keys(page);
+      const up = row ? row.y < view.y : order.indexOf(key) < order.indexOf(first ?? "");
+      const step = row?.height ?? view.height;
+      await page.mouse.move(view.x + view.width / 2, view.y + view.height / 2);
+      await page.mouse.wheel(0, up ? -step : step);
       await page.waitForTimeout(160);
     }
     await page.waitForTimeout(200);
   };
-  const groupKey = async () => (await webRows(page)).find((row) => row.kind === "group")!.key;
-  const members = async () => {
-    const rows = await webRows(page);
-    const start = rows.findIndex((row) => row.kind === "group");
+  /**
+   * Tabs as tall as it goes, or back to its own height: by default it is as tall as its header
+   * and six rows (4aa249227), and a drop aimed two rows past a group needs more in view.
+   */
+  const tallTabs = async (tall: boolean) => {
+    const split = page.getByRole("separator", { name: "Resize Tabs", exact: true });
+    if (tall) {
+      await split.focus();
+      await page.keyboard.press("Home");
+      // Its line is a hairline nothing can point at: the double-click that resets it is sent to it.
+    } else await split.dispatchEvent("dblclick");
+    await settle(page);
+  };
+  /** The Research group these checks built: a later check builds another one. */
+  const research = (row: WebRow) => row.kind === "group" && row.title === "Research";
+  const groupKey = async () => (await listRows(page)).find(research)!.key;
+  const members = async (read = listRows) => {
+    const rows = await read(page);
+    const start = rows.findIndex(research);
     const out: string[] = [];
     for (const row of rows.slice(start + 1)) {
       if (row.kind !== "tab" || !row.grouped) break;
@@ -438,8 +542,8 @@ try {
 
   /** The loose tab right after the group's block, or right before its header, scrolled into view. */
   const neighbour = async (side: "after" | "before") => {
-    const rows = await webRows(page);
-    const header = rows.findIndex((row) => row.kind === "group");
+    const rows = await listRows(page);
+    const header = rows.findIndex(research);
     const block = header + 1 + (await members()).length;
     const row = side === "after" ? rows[block] : rows[header - 1];
     expectThat({ rows: rows.length, side }, row?.kind === "tab", `no loose tab ${side} the group`);
@@ -473,7 +577,7 @@ try {
         during: () => shot(page, "03-leaving-group.png"),
       });
       const after = await members();
-      const rows = await webRows(page);
+      const rows = await listRows(page);
       const index = rows.findIndex((row) => row.key === last);
       const previous = rows[index - 1];
       expectThat(
@@ -538,7 +642,7 @@ try {
     async () => {
       const header = await groupKey();
       const before = await members();
-      const rows = await webRows(page);
+      const rows = await listRows(page);
       const below = rows[rows.findIndex((row) => row.key === header) + 1 + before.length + 2]!.key;
       await reveal(header);
       let foldedDuring = -1;
@@ -548,7 +652,7 @@ try {
       };
       await drag(page, header, target, {
         during: async () => {
-          foldedDuring = (await members()).length;
+          foldedDuring = (await members(drawnRows)).length;
           await shot(page, "05-group-lifted.png");
         },
       });
@@ -666,11 +770,20 @@ try {
   await check(
     "a tab closed elsewhere mid-drag changes nothing until the drop, then both land",
     async () => {
-      const tabs = (await webRows(page)).filter((row) => row.kind === "tab" && !row.grouped);
+      const tabs = (await listRows(page)).filter((row) => row.kind === "tab" && !row.grouped);
       const [moving, , landing] = tabs;
       const closing = tabs.at(-1)!.key;
+      // The drag aims at the landing row in the list's view, the moving row in view above it.
+      await tallTabs(true);
       await reveal(moving!.key);
-      const target = await box(page, landing!.key);
+      await reveal(landing!.key);
+      const view = (await page.locator(".side-section--tabs .side-list").boundingBox())!;
+      const [from, target] = await Promise.all([box(page, moving!.key), box(page, landing!.key)]);
+      expectThat(
+        { view, from, target },
+        from.y >= view.y && target.y + target.height <= view.y + view.height,
+        "the moving and landing rows are not both in the list's view",
+      );
       const tabId = closing;
       const stats = await observe(page, () =>
         drag(page, moving!.key, target.y + target.height / 2, {
@@ -699,38 +812,53 @@ try {
   );
 
   await check("a drop whose anchor closed mid-drag moves nothing and says so", async () => {
-    const tabs = (await webRows(page)).filter((row) => row.kind === "tab" && !row.grouped);
-    const [moving, , landing, after] = tabs;
-    await reveal(moving!.key);
-    const target = await box(page, landing!.key);
-    const before = await keys(page);
-    await drag(page, moving!.key, target.y + target.height / 2, {
-      during: () =>
-        page.evaluate(
-          (id) =>
-            (
-              Reflect.get(window, "opensteerMock") as {
-                closeTabs(ids: string[]): Promise<unknown>;
-              }
-            ).closeTabs([id]),
-          after!.key,
-        ),
-    });
-    const now = await keys(page);
-    const toasts = await page.locator(".toast__message").allTextContents();
-    expectThat(
-      { before, now, toasts },
-      !now.includes(after!.key) &&
-        JSON.stringify(now) === JSON.stringify(before.filter((key) => key !== after!.key)) &&
-        toasts.length === 1,
-      "the drop did not refuse the closed anchor plainly",
-    );
-    await page.locator(".toast").first().waitFor({ state: "detached", timeout: 15_000 });
-    return { toasts };
+    try {
+      const tabs = (await listRows(page)).filter((row) => row.kind === "tab" && !row.grouped);
+      const [moving, , landing, after] = tabs;
+      await reveal(moving!.key);
+      await reveal(after!.key);
+      const view = (await page.locator(".side-section--tabs .side-list").boundingBox())!;
+      const [from, target, anchor] = await Promise.all(
+        [moving!, landing!, after!].map((row) => box(page, row.key)),
+      );
+      expectThat(
+        { view, from, anchor },
+        from!.y >= view.y && anchor!.y + anchor!.height <= view.y + view.height,
+        "the moving row and the anchor are not both in the list's view",
+      );
+      const before = await keys(page);
+      await drag(page, moving!.key, target!.y + target!.height / 2, {
+        during: () =>
+          page.evaluate(
+            (id) =>
+              (
+                Reflect.get(window, "opensteerMock") as {
+                  closeTabs(ids: string[]): Promise<unknown>;
+                }
+              ).closeTabs([id]),
+            after!.key,
+          ),
+      });
+      const now = await keys(page);
+      const toasts = await page.locator(".toast__message").allTextContents();
+      expectThat(
+        { before, now, toasts },
+        !now.includes(after!.key) &&
+          JSON.stringify(now) === JSON.stringify(before.filter((key) => key !== after!.key)) &&
+          toasts.length === 1,
+        "the drop did not refuse the closed anchor plainly",
+      );
+      return { toasts };
+    } finally {
+      // Whatever this check found, its toast goes before the next checks count toasts.
+      for (const toast of await page.locator(".toast").all())
+        await toast.waitFor({ state: "detached", timeout: 15_000 });
+      await tallTabs(false);
+    }
   });
 
   await check("⌘↑ on a group's only tab takes it out, and the empty group goes", async () => {
-    const [tab] = (await webRows(page)).filter((row) => row.kind === "tab" && !row.grouped);
+    const [tab] = (await listRows(page)).filter((row) => row.kind === "tab" && !row.grouped);
     await reveal(tab!.key);
     await rowAt(page, tab!.key).locator(".side-tab__main").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Add to group", exact: true }).click();
@@ -746,12 +874,24 @@ try {
       .getByRole("button", { name: "Solo, 1 tabs", exact: true })
       .waitFor({ state: "detached" });
     await settle(page);
-    const row = (await webRows(page)).find((entry) => entry.key === tab!.key);
+    const row = (await listRows(page)).find((entry) => entry.key === tab!.key);
     const toasts = await page.locator(".toast").allTextContents();
     expectThat(
       { row, toasts },
       row?.kind === "tab" && !row.grouped && toasts.length === 0,
       "the tab did not leave its group cleanly",
+    );
+    // The group goes from the Host's layout and from the list: no header of it is left, empty.
+    const solo = (await listRows(page)).filter(
+      (entry) => entry.kind === "group" && entry.title === "Solo",
+    );
+    const headers = await page
+      .locator(".side-section--tabs .side-tab-group__main")
+      .evaluateAll((all) => all.map((header) => header.getAttribute("aria-label")));
+    expectThat(
+      { solo, headers },
+      solo.length === 0 && !headers.some((label) => label?.startsWith("Solo,")),
+      "the empty group stayed",
     );
     return { row, toasts };
   });
@@ -791,10 +931,20 @@ try {
 
   const stress = await openWorld("stress");
   const stressList = stress.page.locator(".side-section--tabs .side-list");
-  /** The list scrolled to its top and at rest there. */
+  /**
+   * The list scrolled to its top and at rest there. It draws only the rows near its view and
+   * snaps to rows, so a jump from far down lands on the nearest row it draws: it jumps again
+   * from there, its top rows drawn by then.
+   */
   const toTop = async () => {
-    await stressList.evaluate((list) => (list.scrollTop = 0));
-    await stress.page.waitForTimeout(400);
+    for (let tries = 0; tries < 10; tries++) {
+      await stressList.evaluate((list) => (list.scrollTop = 0));
+      await stress.page.waitForTimeout(150);
+      if ((await stressList.evaluate((list) => list.scrollTop)) === 0) break;
+    }
+    await stress.page.waitForTimeout(250);
+    const scroll = await stressList.evaluate((list) => list.scrollTop);
+    expectThat({ scroll }, scroll === 0, "the list did not come to its top");
   };
   await check(
     "a drop while the list scrolls lands with every row where it stood, on whole rows",
@@ -803,7 +953,7 @@ try {
       // Each push scrolls at its own speed, so each release stops the list at its own fraction of a row.
       for (const push of [8, 15, 22]) {
         await toTop();
-        const tabs = (await webRows(stress.page)).filter((row) => row.kind === "tab");
+        const tabs = (await listRows(stress.page)).filter((row) => row.kind === "tab");
         const key = tabs[1]!.key;
         const view = (await stressList.boundingBox())!;
         await drag(stress.page, key, view.y + view.height + push, {
@@ -834,7 +984,7 @@ try {
       // Each push scrolls at its own speed, so each stops the list at its own fraction of a row.
       for (const push of [10, 22]) {
         await toTop();
-        const tabs = (await webRows(stress.page)).filter((row) => row.kind === "tab");
+        const tabs = (await listRows(stress.page)).filter((row) => row.kind === "tab");
         const key = tabs[1]!.key;
         const from = await box(stress.page, key);
         const x = from.x + Math.min(60, from.width / 3);
@@ -870,7 +1020,7 @@ try {
       const runs = [];
       for (const release of [false, true]) {
         await toTop();
-        const tabs = (await webRows(stress.page)).filter((row) => row.kind === "tab");
+        const tabs = (await listRows(stress.page)).filter((row) => row.kind === "tab");
         const key = tabs[1]!.key;
         const from = await box(stress.page, key);
         const pointer = { x: from.x + Math.min(60, from.width / 3), y: 0 };
@@ -935,7 +1085,7 @@ try {
       const runs = [];
       for (const delta of [50, 120]) {
         await toTop();
-        const tabs = (await webRows(stress.page)).filter((row) => row.kind === "tab");
+        const tabs = (await listRows(stress.page)).filter((row) => row.kind === "tab");
         const key = tabs[1]!.key;
         const from = await box(stress.page, key);
         // Pressed at its centre, the row's centre is the pointer's.
@@ -976,7 +1126,7 @@ try {
   );
   await check("a group dropped while the list scrolls lands as steadily", async () => {
     await toTop();
-    const [first, second] = (await webRows(stress.page)).filter((row) => row.kind === "tab");
+    const [first, second] = (await listRows(stress.page)).filter((row) => row.kind === "tab");
     for (const [key, target] of [
       [first!.key, "New group"],
       [second!.key, "Steady"],
@@ -993,7 +1143,7 @@ try {
     await stress.page.getByRole("button", { name: "Steady, 2 tabs", exact: true }).waitFor();
     await settle(stress.page);
     await toTop();
-    const group = (await webRows(stress.page)).find((row) => row.kind === "group")!.key;
+    const group = (await listRows(stress.page)).find((row) => row.kind === "group")!.key;
     const view = (await stressList.boundingBox())!;
     await drag(stress.page, group, view.y + view.height + 15, {
       during: () => watchRows(stress.page, "pointerup"),
@@ -1008,7 +1158,7 @@ try {
   await check(
     "a group held past the list's foot scrolls it to its end and no further",
     async () => {
-      const group = (await webRows(stress.page)).find((row) => row.kind === "group")!.key;
+      const group = (await listRows(stress.page)).find((row) => row.kind === "group")!.key;
       await stressList.evaluate((list, key) => {
         const row = list.querySelector<HTMLElement>(
           `:scope > [data-motion-key="${CSS.escape(key)}"]`,
@@ -1042,7 +1192,7 @@ try {
   await check("⌘↓ on the last row in view brings it into view as it slides", async () => {
     await toTop();
     const view = (await stressList.boundingBox())!;
-    const tabs = (await webRows(stress.page)).filter((row) => row.kind === "tab" && !row.grouped);
+    const tabs = (await listRows(stress.page)).filter((row) => row.kind === "tab" && !row.grouped);
     let key = tabs[0]!.key;
     for (const tab of tabs) {
       const row = await box(stress.page, tab.key);
@@ -1066,7 +1216,9 @@ try {
     for (const delta of [100, 40]) {
       await toTop();
       const view = (await stressList.boundingBox())!;
-      const tabs = (await webRows(stress.page)).filter((row) => row.kind === "tab" && !row.grouped);
+      const tabs = (await listRows(stress.page)).filter(
+        (row) => row.kind === "tab" && !row.grouped,
+      );
       const key = tabs[3]!.key;
       await rowAt(stress.page, key).locator(".side-tab__main").focus();
       await stress.page.mouse.move(view.x + view.width / 2, view.y + view.height / 2);
@@ -1087,7 +1239,7 @@ try {
     async () => {
       const list = stressList;
       await toTop();
-      const rows = (await webRows(stress.page)).filter((row) => row.kind === "tab");
+      const rows = (await listRows(stress.page)).filter((row) => row.kind === "tab");
       const first = rows[0]!.key;
       const existing = rows.map((row) => row.key);
       const view = (await list.boundingBox())!;
@@ -1107,7 +1259,7 @@ try {
       );
       const landing = await rowsAfter(stress.page, first);
       // Agents in this world keep opening tabs, which rightly land after it.
-      const after = (await webRows(stress.page))
+      const after = (await listRows(stress.page))
         .filter((row) => row.kind === "tab" && existing.includes(row.key))
         .map((row) => row.key);
       timings.autoscroll = stats;
@@ -1126,12 +1278,9 @@ try {
   );
   await check("with reduced motion a drop lands at once, without slides", async () => {
     await stress.page.emulateMedia({ reducedMotion: "reduce" });
-    const rows = (await webRows(stress.page)).filter((row) => row.kind === "tab");
+    const rows = (await listRows(stress.page)).filter((row) => row.kind === "tab");
     const [first, , third] = rows;
-    await stress.page
-      .locator(".side-section--tabs .side-list")
-      .evaluate((list) => (list.scrollTop = 0));
-    await stress.page.waitForTimeout(300);
+    await toTop();
     // Every animation started is counted, not only those still running after the drop.
     await stress.page.evaluate(() => {
       const animate = Element.prototype.animate;
@@ -1148,7 +1297,7 @@ try {
     const slides = await stress.page.evaluate(
       () => (Reflect.get(window, "__slides") as { slides: number }).slides,
     );
-    const after = (await webRows(stress.page))
+    const after = (await listRows(stress.page))
       .filter((row) => row.kind === "tab")
       .map((row) => row.key);
     expectThat(
@@ -1163,7 +1312,7 @@ try {
     async () => {
       await stress.page.emulateMedia({ reducedMotion: "no-preference" });
       await toTop();
-      const [first, second] = await webRows(stress.page);
+      const [first, second] = await listRows(stress.page);
       expectThat(
         { first, second },
         first?.kind === "tab" && !first.grouped && second?.kind === "tab" && !second.grouped,
@@ -1193,12 +1342,12 @@ try {
             ?.getAttribute("aria-expanded") === "false",
       );
       await settle(stress.page);
-      const rows = await webRows(stress.page);
+      const rows = await listRows(stress.page);
       const loose = rows[1]!;
       expectThat({ rows: rows.slice(0, 3) }, loose.kind === "tab", "no loose tab below the group");
       const view = (await stressList.boundingBox())!;
       await drag(stress.page, loose.key, view.y - 12);
-      const after = await webRows(stress.page);
+      const after = await listRows(stress.page);
       expectThat(
         { after: after.slice(0, 3) },
         after[0]?.key === loose.key &&

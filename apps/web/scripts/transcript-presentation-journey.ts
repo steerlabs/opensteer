@@ -349,7 +349,8 @@ async function card(page: Page, messageId: string) {
       .filter((element) => !clipped(element))
       .reduce((widest, element) => Math.max(widest, element.getBoundingClientRect().right), 0);
     const toggle = node.querySelector<HTMLButtonElement>("button[aria-expanded]");
-    const meta = node.querySelector(".input-card__meta");
+    // The sender line names the sender (9a6f085e4): `.input-card__from` > `.input-card__name`.
+    const meta = node.querySelector(".input-card__from");
     const pre = node.querySelector("pre");
     return {
       column: box(column),
@@ -357,7 +358,7 @@ async function card(page: Page, messageId: string) {
       card: box(node.querySelector(".input-card")),
       meta: box(meta),
       metaLineHeight: meta ? parseFloat(getComputedStyle(meta).lineHeight) || 16 : null,
-      title: node.querySelector(".input-card__title")?.textContent ?? null,
+      title: node.querySelector(".input-card__name")?.textContent ?? null,
       body: box(node.querySelector(".message-fold")),
       bodyLineHeight: (() => {
         const body = node.querySelector(".message-fold");
@@ -483,7 +484,8 @@ try {
     );
 
     await check(`${viewport.name}: Tab onto a link the fold hides opens the fold`, async () => {
-      await automation.locator(".input-card__open").focus();
+      // The header's last focusable control (its "Open" link went with 9a6f085e4).
+      await automation.locator(".input-card__copy").focus();
       await page.keyboard.press("Tab");
       const observed = await automation.evaluate((node) => {
         const focused = document.activeElement;
@@ -606,19 +608,42 @@ try {
       },
     );
 
+    // A turn still working shows its steps; a settled one, failed or stopped too, folds to its
+    // status line and keeps how it ended in view, and its steps open from that line in place
+    // (9a6f085e4, 6d56df8f9).
     for (const [name, number] of [
       ["failed", 2],
       ["stopped", 3],
       ["still working", 4],
     ] as const) {
       await check(
-        `${viewport.name}: a turn that ${name === "still working" ? "is" : ""} ${name} keeps its steps`,
+        name === "still working"
+          ? `${viewport.name}: a turn that is still working shows its steps`
+          : `${viewport.name}: a turn that ${name} folds, says so, and opens to its steps`,
         async () => {
           const turn = await turnOf(page, id("run", number));
           const observed = await turnState(turn);
-          expectThat(observed, observed.steps > 0, `a ${name} turn hides its steps`);
-          expectThat(observed, observed.toggle === null, `a ${name} turn folds`);
-          return observed;
+          if (name === "still working") {
+            expectThat(
+              observed,
+              observed.steps > 0 && observed.toggle?.expanded === "true",
+              "a still working turn hides its steps",
+            );
+            return observed;
+          }
+          expectThat(
+            observed,
+            observed.toggle?.expanded === "false" &&
+              (observed.toggle.text ?? "").startsWith("Worked for") &&
+              observed.steps === 0,
+            `a ${name} turn does not fold to its status line`,
+          );
+          expectThat(observed, observed.failure !== null, `a ${name} turn hides how it ended`);
+          await turn.locator("button.work__toggle").click();
+          const opened = await turnState(turn);
+          expectThat(opened, opened.steps > 0, `a ${name} turn does not open to its steps`);
+          await turn.locator("button.work__toggle").click();
+          return { observed, opened };
         },
       );
     }
@@ -669,8 +694,10 @@ try {
           text: node.textContent ?? "",
           buttons,
           mark:
-            node.querySelector(".conv-header__mark [data-state]")?.getAttribute("data-state") ??
-            null,
+            // Agent work is one quiet ring around the mark (d22f4a88f).
+            node.querySelector(".conv-header__mark .working-ring:not([data-settling])")
+              ? "working"
+              : null,
         };
       });
       expectThat(
@@ -698,7 +725,7 @@ try {
       const rows = await menu.locator(".picker__label").allTextContents();
       expectThat(
         { rows },
-        rows[0] === "Expand chat" && rows[1] === "Find in conversation",
+        rows[0] === "Expand" && rows[1] === "Find in conversation",
         "the menu does not lead with Expand and Find",
       );
       await menu.getByRole("button", { name: /Find in conversation/u }).click();
@@ -706,7 +733,7 @@ try {
       expectThat({ opened }, opened === 1, "the menu's Find does not open Find");
       await page.keyboard.press("Escape");
       await header.locator(".conv-header__menu").click();
-      await menu.getByRole("button", { name: /Expand chat/u }).click();
+      await menu.getByRole("button", { name: /^Expand/u }).click();
       await page.locator(".workspace--talk").waitFor({ timeout: 3_000 });
       return { rows, opened };
     });

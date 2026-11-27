@@ -42,6 +42,9 @@ export function tabStrip(
       continue;
     }
     const tabIds = item.group.tabIds.filter((id) => known.has(id));
+    // A group shows while any of its tabs does. The Home keeps a group its last tab leaves,
+    // so Undo can put the tab back in it; until then there is nothing of it to draw.
+    if (!tabIds.length) continue;
     const old = reuse.get(item.group.groupId);
     entries.push(
       old?.kind === "group" && old.group === item.group && sameIds(old.tabIds, tabIds)

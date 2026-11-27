@@ -1,10 +1,11 @@
 import { mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Page } from "playwright-core";
 import { openMockWeb } from "./mock-web-journey.js";
 
-const output = process.argv[2];
-if (!output) throw new Error("Pass the directory for the connected agent screenshots.");
+// The screenshots go to the directory given, as every other journey's evidence goes to its own.
+const output = process.argv[2] ?? path.join(tmpdir(), "opensteer-connected-agents-now-evidence");
 await mkdir(output, { recursive: true });
 const web = await openMockWeb("opensteer-connected-agents-now");
 
@@ -140,10 +141,11 @@ try {
   await page.goto(`${web.origin}/?mock-agents&mock-agent-work=long-panel`);
   await page.getByRole("button", { name: /Open sidebar/ }).click();
   await showPanel(page);
-  // The panel names the place in the agent's line and again in its activity (891c55166).
+  // The panel names the place on its place line and again in its activity line: this looks
+  // for it on the place line, where it is once.
   await panel(page)
+    .locator(".agents-now-panel__where")
     .getByText("Household shopping and weekly groceries shared with family", { exact: true })
-    .first()
     .waitFor();
   await save(page, "panel-728");
 

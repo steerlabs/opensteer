@@ -216,8 +216,9 @@ type sentStops struct {
 }
 
 // A containment that notes each stop the supervisor sends through it, before sending it. A stop
-// that finds the target already ended (a zombie not yet reaped) is sent to the rest of the tree
-// but not noted: it cannot be what ended the target, whose own end is then reported as it was.
+// that finds the target already ended (a zombie not yet reaped, or on Linux a thread group a
+// SIGKILL already reached whose last threads are still dying) is sent to the rest of the tree but
+// not noted: it cannot be what ended the target, whose own end is then reported as it was.
 type stopRecordingContainment struct {
 	processContainment
 	sent sentStops

@@ -80,24 +80,23 @@ try {
     return observed;
   });
   await check(
-    "Host-authored computer steps keep chips, counts and live status; outer code stays compact",
+    "Host-authored computer steps keep live status, then chips and counts; outer code stays compact",
     async () => {
       await page.goto(`${web.origin}/tasks/thr_00000000-0000-4000-8000-000000000006`);
       await page.locator(".computer-now").waitFor();
       const status = await page.locator(".computer-now").innerText();
-      const chip = await page
-        .locator(".surface-chip__title", { hasText: "Slack" })
-        .first()
-        .textContent();
+      // A reply's app chips appear once it is done (fcf78e901); while the run works, the live
+      // status names the app and the device.
+      const liveChips = await page.locator(".surface-chip").count();
       const body = await page.locator("body").innerText();
       await page.screenshot({
         animations: "disabled",
         path: path.join(directory, "host-computer-live.png"),
       });
       expectThat(
-        { status, chip, body },
-        status.includes("Slack") && status.includes("Mac mini") && chip === "Slack",
-        "Host operations lost computer status or chip",
+        { status, liveChips, body },
+        status.includes("Slack") && status.includes("Mac mini") && liveChips === 0,
+        "Host operations lost computer status, or a working reply shows chips",
       );
       await page.goto(`${web.origin}/tasks/thr_00000000-0000-4000-8000-000000000005`);
       await page.locator(".work__toggle, .reply__action").first().waitFor();
@@ -105,6 +104,10 @@ try {
         animations: "disabled",
         path: path.join(directory, "host-computer-folded.png"),
       });
+      const chip = await page
+        .locator(".surface-chip__title", { hasText: "Slack" })
+        .first()
+        .textContent();
       const toggle = page.locator(".work__toggle").first();
       if (await toggle.count()) {
         if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
@@ -131,11 +134,13 @@ try {
       };
       expectThat(
         observed,
+        // The folded row names the app and counts the device's steps; "N steps in App" went
+        // in 9a6f085e4, and the mock's computer.windows call (d29ab2922) is the tenth step.
         observed.outerSteps === 1 &&
-          text.includes("9 steps in Slack") &&
-          text.includes("9 steps on Mac mini") &&
-          text.includes("Used Slack"),
-        "outer computer code or operation counts are wrong",
+          chip === "Slack" &&
+          text.includes("Used Slack") &&
+          text.includes("10 steps on Mac mini"),
+        "settled chip, outer computer code or operation counts are wrong",
       );
       return observed;
     },

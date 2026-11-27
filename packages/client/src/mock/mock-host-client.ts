@@ -13442,8 +13442,10 @@ class MockHostState {
                   status: runQueue.some((entry) => entry.threadId === threadId)
                     ? "running"
                     : "idle",
-                  // The Home records the Run it stopped as the task's latest ended one.
-                  latestRunCompletedAt: timestamp,
+                  // The stopped Run is the task's latest, and as on the Home (runNewsAt) the
+                  // end of a Run the person stopped is not news: the task is not unread.
+                  latestRunCompletedAt: null,
+                  unread: false,
                   updatedAt: timestamp,
                 }
               : thread,

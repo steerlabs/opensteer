@@ -89,8 +89,22 @@ function Fixture() {
   >(null);
   useEffect(() => {
     const drive = setTimeout(() => {
-      const field = document.querySelector("textarea")!;
-      field.setSelectionRange(13, 13);
+      // The caret after the 13th character of the composer's field, a contenteditable editor.
+      const field = document.querySelector<HTMLElement>("[data-composer-input]")!;
+      field.focus();
+      const text = document.createTreeWalker(field, NodeFilter.SHOW_TEXT);
+      for (let remaining = 13, node = text.nextNode(); node; node = text.nextNode()) {
+        const length = node.textContent?.length ?? 0;
+        if (remaining <= length) {
+          const caret = document.createRange();
+          caret.setStart(node, remaining);
+          caret.collapse(true);
+          getSelection()?.removeAllRanges();
+          getSelection()?.addRange(caret);
+          break;
+        }
+        remaining -= length;
+      }
       if (scenario !== "idle")
         document.querySelector<HTMLButtonElement>('[title="Dictate"]')!.click();
       if (scenario === "downloading") emit({ type: "downloading", progress: 0.42 });

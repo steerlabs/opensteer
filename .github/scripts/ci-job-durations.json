@@ -4,8 +4,8 @@
     "runs": 30
   },
   "browser-journeys": {
-    "p95": 6.5,
-    "runs": 30
+    "p95": 10.0,
+    "runs": 0
   },
   "build": {
     "p95": 3.0,
