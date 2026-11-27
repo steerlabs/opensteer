@@ -1,4 +1,5 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { readdirSync } from "node:fs";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -128,6 +129,67 @@ describe("spawnSupervised", () => {
         process.kill(supervisorPid, "SIGCONT");
       }
       await expect(child.exited).resolves.toMatchObject({ code: 137 });
+      expect(
+        killedSupervisedProcesses().some(
+          ({ environment }) => environment.OPENSTEER_TEST_MARKER === marker,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  // The same sequence with the step that lost run 16 of hosted CI held open. On Linux a killed
+  // target's leader reads as a zombie (`ps` shows Z) while its other threads are still dying, and
+  // waitid reports nothing until the last of them has gone. Those threads are kept dying here (one
+  // CPU, the idle class, two busy loops on that CPU) while the force reaches the supervisor.
+  it.runIf(process.platform === "linux").each(Array.from({ length: 3 }, (_, run) => run))(
+    "reports a target the kernel killed whose other threads were still dying when a force for it was queued (run %i)",
+    async (run) => {
+      const marker = `dying-${process.pid}-${run}-${Date.now()}`;
+      const child = node("console.log(process.pid); setInterval(() => {}, 1000)", {
+        environment: { OPENSTEER_TEST_MARKER: marker },
+        output: "raw",
+      });
+      const supervisorPid = child.child.pid!;
+      let printed = "";
+      for await (const chunk of child.stdout) {
+        printed += chunk.toString("utf8");
+        if (printed.includes("\n")) break;
+      }
+      const targetPid = Number(printed.trim());
+      const threads = () =>
+        readdirSync(`/proc/${String(targetPid)}/task`).filter((id) => id !== String(targetPid));
+      const held = threads();
+      expect(held.length).toBeGreaterThan(0);
+      for (const thread of held) {
+        execFileSync("taskset", ["-pc", "0", thread], { stdio: "ignore" });
+        execFileSync("chrt", ["--idle", "-p", "0", thread], { stdio: "ignore" });
+      }
+      const busy = [0, 1].map(() =>
+        spawn("taskset", ["-c", "0", process.execPath, "-e", "for (;;) {}"], { stdio: "ignore" }),
+      );
+      let stillDying = false;
+      try {
+        process.kill(supervisorPid, "SIGSTOP");
+        try {
+          process.kill(targetPid, "SIGKILL");
+          await vi.waitFor(() =>
+            expect(
+              execFileSync("ps", ["-o", "stat=", "-p", String(targetPid)], { encoding: "utf8" }),
+            ).toMatch(/^Z/u),
+          );
+          stillDying = threads().length > 0;
+          runningSupervisedProcesses()
+            .find(({ pid }) => pid === supervisorPid)
+            ?.control("force");
+        } finally {
+          process.kill(supervisorPid, "SIGCONT");
+        }
+        await expect(child.exited).resolves.toMatchObject({ code: 137 });
+      } finally {
+        for (const loop of busy) if (loop.pid !== undefined) process.kill(loop.pid, "SIGKILL");
+      }
+      // The window was held: when the force was queued, the target had not wholly ended.
+      expect(stillDying).toBe(true);
       expect(
         killedSupervisedProcesses().some(
           ({ environment }) => environment.OPENSTEER_TEST_MARKER === marker,
