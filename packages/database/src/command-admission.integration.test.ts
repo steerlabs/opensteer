@@ -20,6 +20,7 @@ import {
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { beginAgentSession } from "./agent-session-store.js";
 import { admitCommand, commandSubject } from "./resource-access.js";
+import { jsonValue } from "./store-primitives.js";
 import {
   commandResourceKey,
   commandTable,
@@ -1782,5 +1783,152 @@ describeStore("one admission for Home commands", (it) => {
     expect(await admit(`connection:${selected.id}`, closeGuestTab)).toBe("not_found");
     expect(await admit(`connection:${selected.id}`, closeGuestGroup)).toBe("not_found");
     expect(await admit(`connection:${selected.id}`, closeGuestSession)).toBe("not_found");
+  });
+
+  it("limits archived-profile replay reach to the same caller's succeeded browser.profile.delete only", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const { profile } = await browserFixtures(storeFixture, f);
+    const connA = await connect({ scope: "everything" });
+    const connB = await connect({ scope: "everything" });
+    const principal = await database
+      .selectFrom("principals")
+      .select("id")
+      .where("userId", "=", f.userId)
+      .executeTakeFirstOrThrow();
+    const deleteKey = `delete-key-${randomUUID()}`;
+    const failedDeleteKey = `failed-delete-key-${randomUUID()}`;
+    await database
+      .insertInto("commands")
+      .values([
+        {
+          id: createId("command"),
+          requestedBy: f.userId,
+          actorPrincipalId: principal.id,
+          authoritySource: jsonValue({
+            kind: "mcp",
+            callerKind: "connection",
+            callerKey: `connection:${connA.id}`,
+          }),
+          idempotencyKey: deleteKey,
+          type: "browser.profile.delete",
+          payload: jsonValue({
+            request: { profileId: profile.id },
+            result: { deletion: null },
+          }),
+          status: "succeeded",
+          environmentId: null,
+          threadId: null,
+          runId: null,
+          dispatcherId: null,
+          lastError: null,
+        },
+        {
+          id: createId("command"),
+          requestedBy: f.userId,
+          actorPrincipalId: principal.id,
+          authoritySource: jsonValue({
+            kind: "mcp",
+            callerKind: "connection",
+            callerKey: `connection:${connA.id}`,
+          }),
+          idempotencyKey: failedDeleteKey,
+          type: "browser.profile.delete",
+          payload: jsonValue({
+            request: { profileId: profile.id },
+            result: null,
+          }),
+          status: "failed",
+          environmentId: null,
+          threadId: null,
+          runId: null,
+          dispatcherId: null,
+          lastError: jsonValue({ message: "boom" }),
+        },
+      ])
+      .execute();
+    await database
+      .updateTable("browserProfiles")
+      .set({ archivedAt: new Date() })
+      .where("id", "=", profile.id)
+      .execute();
+
+    const admit = async (
+      subject: ReturnType<typeof commandSubject>,
+      command: Record<string, unknown>,
+    ) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject,
+          command: command as never,
+        })
+      ).answer;
+
+    // True retry by the same caller with the succeeded delete's key is admitted.
+    expect(
+      await admit(commandSubject(`connection:${connA.id}`), {
+        type: "browser.profile.delete",
+        profileId: profile.id,
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("now");
+
+    // The same caller acting through its active direct session still matches its recorded callerKey.
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connA.id,
+      purpose: "direct-delete-retry",
+    });
+    expect(
+      await admit(commandSubject(`session:${session.id}`), {
+        type: "browser.profile.delete",
+        profileId: profile.id,
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("now");
+
+    // Another command (rename, history clear) carrying the delete's key reads not_found.
+    expect(
+      await admit(commandSubject(`connection:${connA.id}`), {
+        type: "browser.profile.rename",
+        profileId: profile.id,
+        name: "Renamed",
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("not_found");
+    expect(
+      await admit(commandSubject(`connection:${connA.id}`), {
+        type: "browser.history.clear",
+        profileId: profile.id,
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("not_found");
+
+    // Another caller (another connection or a native Run) carrying the delete's key reads not_found.
+    expect(
+      await admit(commandSubject(`connection:${connB.id}`), {
+        type: "browser.profile.delete",
+        profileId: profile.id,
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("not_found");
+    expect(
+      await admit(commandSubject(`run:${f.run.id}`), {
+        type: "browser.profile.delete",
+        profileId: profile.id,
+        idempotencyKey: deleteKey,
+      }),
+    ).toBe("not_found");
+
+    // A non-succeeded browser.profile.delete row does not keep the archived profile reachable.
+    expect(
+      await admit(commandSubject(`connection:${connA.id}`), {
+        type: "browser.profile.delete",
+        profileId: profile.id,
+        idempotencyKey: failedDeleteKey,
+      }),
+    ).toBe("not_found");
   });
 });

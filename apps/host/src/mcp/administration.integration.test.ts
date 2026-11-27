@@ -641,6 +641,11 @@ describeStore("MCP administration", (it) => {
       preferredSourceId: sourceId,
     };
     await sources.upsertGrant(site);
+    const otherProfile = await f.store.createBrowserProfile({
+      ownerId: run.userId,
+      name: "Other",
+      idempotencyKey: "other-profile",
+    });
     const agent = await mcp(
       {
         store: f.store,
@@ -662,8 +667,36 @@ describeStore("MCP administration", (it) => {
             idempotencyKey: "new-profile",
           }),
         () => f.store.listBrowserProfiles(run.userId),
-        { target: "history" },
+        { profileId: otherProfile.id },
       );
+      // A different command carrying the delete's key on the archived profile reads not_found.
+      const deleteKey = randomUUID();
+      const deleted = await agent.call(
+        "browser_profile_remove",
+        { target: "profile", profileId: otherProfile.id },
+        deleteKey,
+      );
+      expect(
+        await agent.call(
+          "browser_profile_remove",
+          { target: "profile", profileId: otherProfile.id },
+          deleteKey,
+        ),
+      ).toEqual(deleted);
+      await expect(
+        agent.call(
+          "browser_profile_update",
+          { profileId: otherProfile.id, name: "AfterDelete" },
+          deleteKey,
+        ),
+      ).rejects.toMatchObject({ code: "not_found", message: "That item is unavailable." });
+      await expect(
+        agent.call(
+          "browser_profile_remove",
+          { target: "history", profileId: otherProfile.id },
+          deleteKey,
+        ),
+      ).rejects.toMatchObject({ code: "not_found", message: "That item is unavailable." });
       await retryAfterPersonChange(
         agent,
         "browser_profile_remove",

@@ -1631,6 +1631,20 @@ interface CommandReach {
 const inReach: CommandReach = { reach: true, ownWork: true };
 const outOfReach: CommandReach = { reach: false, ownWork: false };
 
+/** The callerKey recorded in `commands.authority_source` for this admitted execution. */
+function commandCallerKey(execution: ExecutionAuthority): string | null {
+  if (execution.subject.kind === "connection")
+    return `connection:${execution.subject.agentConnectionId}`;
+  if (execution.subject.kind === "binding") {
+    if (execution.subject.bindingId.startsWith("session:"))
+      return execution.agentConnection
+        ? `connection:${execution.agentConnection.agentConnectionId}`
+        : null;
+    return execution.subject.bindingId;
+  }
+  return null;
+}
+
 /**
  * Whether the governed thing exists and is within this agent's reach, and whether a task row's
  * task is its own work. A task is reached in its lineage (a connection's own, or the person's
@@ -1697,12 +1711,16 @@ async function commandReach(
   const profile = async (profileId: string): Promise<boolean> => {
     if (!granted({ kind: "browser-profile", profileId })) return false;
     const idempotencyKey =
-      "idempotencyKey" in command && typeof command.idempotencyKey === "string"
+      command.type === "browser.profile.delete" &&
+      "idempotencyKey" in command &&
+      typeof command.idempotencyKey === "string"
         ? command.idempotencyKey
         : null;
-    if (idempotencyKey === null) return activeOwnedBrowserProfile(database, owner, profileId);
+    const callerKey = idempotencyKey === null ? null : commandCallerKey(execution);
+    if (idempotencyKey === null || callerKey === null)
+      return activeOwnedBrowserProfile(database, owner, profileId);
     // An active owned profile is in reach; an archived owned profile is reached only by a retry
-    // carrying the idempotency key that deleted it (for idempotent replay or key-reuse conflict).
+    // of the same caller's succeeded browser.profile.delete carrying its resolved idempotency key.
     const row = await database
       .selectNoFrom(
         sql<boolean>`exists (
@@ -1716,6 +1734,8 @@ async function commandReach(
                 where requested_by = ${owner}
                   and idempotency_key = ${idempotencyKey}
                   and type = 'browser.profile.delete'
+                  and status = 'succeeded'
+                  and authority_source->>'callerKey' = ${callerKey}
                   and payload->'request'->>'profileId' = ${profileId}
               )
             )
