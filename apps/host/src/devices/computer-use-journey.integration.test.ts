@@ -7607,6 +7607,66 @@ integration.sequential("Computer use for a connected agent, through its session"
     });
   }
 
+  it("keeps Disconnect pending when the Mac refused a preceding task Stop", async () => {
+    const s = await connectedAgent("full-access", { target: "mac" });
+    const mac = s.world.fakeMac;
+    try {
+      const opened = await s.call(
+        { code: 'await (await (await app("Notes")).window()).observe();' },
+        "retained-mac-hold",
+      );
+      expect(opened.status).toBe("completed");
+      const holds = mac.openSessions();
+      expect(holds).toHaveLength(1);
+      const { sessionId } = await s.operation("retained-mac-hold");
+      mac.closeFailureCode = "failed";
+      expect(
+        await s.sessions.stopSession({
+          ownerUserId: s.world.owner.userId,
+          threadId: opened.taskId,
+          sessionId,
+        }),
+      ).toEqual({ ended: true });
+      await vi.waitFor(() => expect(mac.closeCompletedCount).toBe(1));
+      expect(mac.openSessions()).toEqual(holds);
+      expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
+
+      const driveCleanup = () =>
+        s.world.store.driveConnectionCleanups({
+          stopper: {
+            stop: async () => {},
+            stopAgentSession: (attempt, change, settle) =>
+              s.sessions.stopAgentSession(
+                attempt.id,
+                connectionCleanupEnding(change.reason),
+                settle,
+              ),
+          },
+          onCleanup: (change) =>
+            s.sessions.closeConnection(
+              change.connectionId,
+              false,
+              connectionCleanupEnding(change.reason),
+            ),
+        });
+      const receipt = async () =>
+        (await s.agents.list(s.world.owner.userId, { includeRevoked: true })).find(
+          ({ id }) => id === s.record.id,
+        );
+      await s.agents.revoke(s.world.owner.userId, s.record.id);
+      await driveCleanup();
+      expect(mac.openSessions()).toEqual(holds);
+      expect(await receipt()).toMatchObject({ state: "stopping", lastActionUncertain: false });
+
+      mac.closeFailureCode = null;
+      await driveCleanup();
+      expect(mac.openSessions()).toEqual([]);
+      expect(await receipt()).toMatchObject({ state: "stopped", lastActionUncertain: false });
+    } finally {
+      await s.world.close();
+    }
+  });
+
   for (const ending of ["Stop on the task", "Disconnect"] as const) {
     it(`ends the script in flight on ${ending}, closes the phone's session, and refuses the next call`, async () => {
       const s = await connectedAgent("full-access");
