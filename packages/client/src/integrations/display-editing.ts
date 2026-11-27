@@ -269,11 +269,9 @@ export class DisplayEditingSession {
       pendingList.some((pending) => !pending.onlyMove) ||
       dropped.some((entry) => entry.copy || entry.atomic || !entry.events.every(isMove));
     const singleClipboard =
-      !packedMulti &&
-      dropped.length === 0 &&
-      cause !== "refused" &&
-      cause !== "bound" &&
-      pendingList.find((pending) => pending.sent && pending.mutatesClipboard);
+      !packedMulti && dropped.length === 0 && cause !== "refused" && cause !== "bound"
+        ? pendingList.find((pending) => pending.sent && pending.mutatesClipboard)
+        : undefined;
     const isStoppedBurst =
       cause === "bound" ||
       (cause !== "reset" &&

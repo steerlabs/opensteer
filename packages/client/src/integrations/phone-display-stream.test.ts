@@ -1966,7 +1966,7 @@ describe("display editing receipt adapter", () => {
         action,
         key: "Shift",
         code: "ShiftLeft",
-        modifiers: action === "down" ? (["shift"] as const) : ([] as const),
+        modifiers: action === "down" ? (["shift"] as "shift"[]) : [],
         location: 1 as const,
         repeat: false,
       },
