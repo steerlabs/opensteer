@@ -18,9 +18,9 @@ enum OverlayStyle {
   static let surface = rgb(0x101010)
   static let red = rgb(0xE77E76)
   static let amber = rgb(0xDFB36B)
-  /// The click ring: ember pulled toward clay, so a thin line still reads on
-  /// a white page as well as a dark one.
-  static let emberRing = mix(ember, rgb(0xC8674B), 0.5)
+  /// The click ring: ember pulled most of the way to clay, so a thin line
+  /// still reads on a white page as well as a dark one.
+  static let emberRing = mix(ember, rgb(0xC8674B), 0.8)
 
   // MARK: - Chip
 
@@ -68,7 +68,7 @@ enum OverlayStyle {
   /// clicks. Setting this to false removes it.
   static let showsClickRing = true
   static let ringRadii: (from: CGFloat, to: CGFloat) = (4, 18)
-  static let ringWidth: CGFloat = 1.25
+  static let ringWidth: CGFloat = 1.5
   static let ringDuration: TimeInterval = 0.5
 
   // MARK: - Colors

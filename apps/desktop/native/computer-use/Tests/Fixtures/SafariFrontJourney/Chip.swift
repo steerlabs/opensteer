@@ -138,7 +138,6 @@ extension SafariFront {
       if ring == nil { await sleepSeconds(0.01) }
     }
     if let ring {
-      await sleepSeconds(0.1)
       await png(caseOut, "i-click-ring-closeup", ring.insetBy(dx: -70, dy: -40))
     }
     checks["i-ring"] = ring != nil
