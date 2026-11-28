@@ -27,6 +27,9 @@ compile() {
   else
     flags=(-I "$build" -L "$build" -lOpensteerAppleData -lMacOSSigning -o "$output")
   fi
+  if [[ "${OPENSTEER_SAFARI_FRONT_TRACE_KEYS:-0}" == 1 ]]; then
+    flags+=(-D SAFARI_FRONT_KEY_TRACE)
+  fi
   xcrun swiftc -parse-as-library -module-name ComputerUseCore -swift-version 5 \
     "${flags[@]}" "${sources[@]}" "$fixtures/Journey.swift" "$fixtures/Reminders.swift"
 }

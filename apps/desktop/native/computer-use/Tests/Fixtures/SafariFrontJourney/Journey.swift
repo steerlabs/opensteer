@@ -28,9 +28,29 @@ extension Optional {
 func wallMs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 func sleepSeconds(_ seconds: Double) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9)) }
 
+#if SAFARI_FRONT_KEY_TRACE
+enum SafariKeyTapTrace {
+  struct Row: Encodable {
+    let lane: String
+    let pid: pid_t
+    let at: Int64
+    let tick: UInt64
+    let stamp: UInt64?
+  }
+
+  static let rows = Locked<[Row]?>(nil)
+
+  static func record(_ lane: String, pid: pid_t, stamp: UInt64? = nil) {
+    rows.withLock { $0?.append(Row(lane: lane, pid: pid, at: wallMs(),
+      tick: DispatchTime.now().uptimeNanoseconds, stamp: stamp)) }
+  }
+}
+#endif
+
 enum SafariFrontCase: String {
   case front, stop, typing, control, choice, churn, overlay
   case typeInto = "type-into"
+  case controlIdle = "control-idle"
 
   static func parse(_ name: String) throws -> SafariFrontCase {
     let base = name.hasSuffix("-watch") ? String(name.dropLast("-watch".count)) : name
@@ -98,11 +118,13 @@ enum PersonInput {
   static func keys(_ text: String, intervalMs: UInt32, log: String) -> Never {
     guard CGPreflightPostEventAccess(), FileManager.default.createFile(atPath: log, contents: nil),
       let file = FileHandle(forWritingAtPath: log) else { exit(3) }
+    let trace = ProcessInfo.processInfo.environment["OPENSTEER_SAFARI_FRONT_TRACE_KEYS"] == "1"
     for character in text {
       for down in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { exit(4) }
         let units = Array(String(character).utf16)
         event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+        if trace { event.timestamp = DispatchTime.now().uptimeNanoseconds }
         if down {
           let row = "{\"text\":\"\(character)\",\"at\":\(wallMs()),\"stamp\":\(event.timestamp)}\n"
           file.write(Data(row.utf8))
@@ -441,6 +463,7 @@ final class FrontSampler {
         case .typing: row = try await typingCase(caseOut)
         case .typeInto: row = try await typeIntoCase(caseOut)
         case .control: row = try await controlCase(caseOut)
+        case .controlIdle: row = try await controlCase(caseOut, agentActs: false)
         case .choice: row = try await choiceCase(caseOut)
         case .churn: row = try await churnCase(caseOut)
         case .overlay: row = try await overlayCase(caseOut)
@@ -805,7 +828,7 @@ final class FrontSampler {
     return taps
   }
 
-  func controlCase(_ caseOut: URL) async throws -> [String: Any] {
+  func controlCase(_ caseOut: URL, agentActs: Bool = true) async throws -> [String: Any] {
     let document = caseOut.appendingPathComponent("control.txt")
     try Data().write(to: document)
     let configuration = NSWorkspace.OpenConfiguration()
@@ -818,40 +841,46 @@ final class FrontSampler {
     _ = AXUIElementSetAttributeValue(textWindow, kAXSizeAttribute as CFString, AXValueCreate(.cgSize, &size)!)
     await sleepSeconds(0.5)
     try await makeFront(textEdit, at: CGPoint(x: 200, y: 300))
-    let wire = try AgentWire(helper: helper)
-    defer { wire.drop() }
-    let agent = Agent(wire: wire, identity: safariIdentity)
-    try await agent.open(title: "Sol fixture")
+    let wire = agentActs ? try AgentWire(helper: helper) : nil
+    defer { wire?.drop() }
+    let agent = wire.map { Agent(wire: $0, identity: safariIdentity) }
+    try await agent?.open(title: "Sol fixture")
     let cycle = "abcdefghijlnoprstuvwxyz"
     let letters = String(String(repeating: cycle, count: 42).prefix(960))
     let keysLog = caseOut.appendingPathComponent("person-keys.jsonl")
     let routes = Locked<[KeyRoute]>([])
     let observers = try await keyRoutes(to: textEdit.processIdentifier, recording: routes)
     defer { for observer in observers { observer.stop() } }
+    #if SAFARI_FRONT_KEY_TRACE
+    if !observers.isEmpty { SafariKeyTapTrace.rows.withLock { $0 = [] } }
+    defer { SafariKeyTapTrace.rows.withLock { $0 = nil } }
+    #endif
     let person = try personKeys(letters, intervalMs: 40, log: keysLog)
     var calls: [Call] = []
     let sampler = FrontSampler()
     sampler.start()
-    for round in 1...5 {
-      calls.append(try await call(agent, "observe-\(round)", caseOut, sampler: sampler, shots: false, [] ))
-      try await agent.observe()
-      let link = try agent.index(role: "link", containing: "Open fixture page")
-      calls.append(try await call(agent, "click-index-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "click", "target": ["index": link]]]))
-      await sleepSeconds(0.6)
-      try await agent.observe()
-      let field = try agent.index(role: "textfield", containing: "Fixture field")
-      calls.append(try await call(agent, "type-into-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "type", "text": "k", "target": ["index": field]]]))
-      try await agent.observe()
-      calls.append(try await call(agent, "click-then-type-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "click", "target": ["index": field]], ["type": "type", "text": "m"]]))
-      try await agent.observe()
-      calls.append(try await call(agent, "scroll-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "scroll", "target": ["index": link], "direction": "down", "amount": 2], ["type": "scroll", "target": ["index": link], "direction": "up", "amount": 2]]))
-      calls.append(try await call(agent, "menu-\(round)", caseOut, sampler: sampler, shots: round == 5, [["type": "key", "keys": "cmd+r"]]))
+    if let agent {
+      for round in 1...5 {
+        calls.append(try await call(agent, "observe-\(round)", caseOut, sampler: sampler, shots: false, [] ))
+        try await agent.observe()
+        let link = try agent.index(role: "link", containing: "Open fixture page")
+        calls.append(try await call(agent, "click-index-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "click", "target": ["index": link]]]))
+        await sleepSeconds(0.6)
+        try await agent.observe()
+        let field = try agent.index(role: "textfield", containing: "Fixture field")
+        calls.append(try await call(agent, "type-into-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "type", "text": "k", "target": ["index": field]]]))
+        try await agent.observe()
+        calls.append(try await call(agent, "click-then-type-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "click", "target": ["index": field]], ["type": "type", "text": "m"]]))
+        try await agent.observe()
+        calls.append(try await call(agent, "scroll-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "scroll", "target": ["index": link], "direction": "down", "amount": 2], ["type": "scroll", "target": ["index": link], "direction": "up", "amount": 2]]))
+        calls.append(try await call(agent, "menu-\(round)", caseOut, sampler: sampler, shots: round == 5, [["type": "key", "keys": "cmd+r"]]))
+      }
     }
     while person.isRunning { await sleepSeconds(0.05) }
     await sleepSeconds(1)
     let samples = sampler.stop()
     await screenshot(caseOut, "after")
-    wire.drop()
+    wire?.drop()
     defer { textEdit.hide() }
     let area = AXValueReader.copyElement(textWindow, "AXFocusedUIElement" as String)
       ?? AXValueReader.copyElement(AXUIElementCreateApplication(textEdit.processIdentifier), kAXFocusedUIElementAttribute)
@@ -868,6 +897,11 @@ final class FrontSampler {
     if !observers.isEmpty {
       try JSONEncoder().encode(routes.current).write(to: caseOut.appendingPathComponent("key-routing.json"))
     }
+    #if SAFARI_FRONT_KEY_TRACE
+    if let tapTrace = SafariKeyTapTrace.rows.current {
+      try JSONEncoder().encode(tapTrace).write(to: caseOut.appendingPathComponent("key-taps.json"))
+    }
+    #endif
     return [
       "met": textEditFront == calls.count && kept == letters,
       "callCount": calls.count, "textEditFrontAfter300ms": textEditFront,
