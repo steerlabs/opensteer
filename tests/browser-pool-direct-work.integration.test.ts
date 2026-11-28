@@ -5,7 +5,10 @@ import type { AddressInfo } from "node:net";
 import { expect, it, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { standardCdpEndpoint } from "../apps/host/src/browser/standard-cdp-endpoint.test-support.js";
-import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
+import {
+  AgentSessionService,
+  type PooledBrowserUseTrace,
+} from "../apps/host/src/agent-sessions/agent-session-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { BrowserScriptService } from "../apps/host/src/browser-use/browser-script-service.js";
 import { TabService } from "../apps/host/src/tabs/tab-service.js";
@@ -67,9 +70,7 @@ async function directWork(
     readonly endsBrowserWork?: boolean;
     /** Each call's own bound (two minutes). */
     readonly executionMs?: number;
-    readonly onPooledBrowserUseTiming?: ConstructorParameters<
-      typeof AgentSessionService
-    >[0]["onPooledBrowserUseTiming"];
+    readonly onPooledBrowserUseTiming?: (trace: PooledBrowserUseTrace) => void;
     /**
      * The Home's holder record for each tab a script opens or binds is filed under the binding
      * this names (another session's), and a kept handle taken up again refreshes none: the task
@@ -691,10 +692,7 @@ it("runs a connected agent's script on a parked browser after one wake, and rebi
     const [tab] = await home.service.savedPages(j.task.userId, session.id);
     if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
     const page = await j.draft();
-    type Timing = Parameters<
-      NonNullable<ConstructorParameters<typeof AgentSessionService>[0]["onPooledBrowserUseTiming"]>
-    >[0];
-    const timings: Timing[] = [];
+    const timings: PooledBrowserUseTrace[] = [];
     const work = await directWork(j, () => home, {
       onPooledBrowserUseTiming: (trace) => timings.push(trace),
     });

@@ -172,7 +172,7 @@ export interface PooledDirectBrowser {
   recheckTarget(afterSubmit?: boolean): Promise<void>;
 }
 
-interface PooledBrowserUseMarks {
+type PooledBrowserUseMarks = {
   reservingMs?: number;
   reservedMs?: number;
   handedOffMs?: number;
@@ -180,24 +180,17 @@ interface PooledBrowserUseMarks {
   firstReplyMs?: number;
   lastReplyMs?: number;
   scriptFinishedMs?: number;
-}
+};
 
-interface PooledBrowserUseTrace extends PooledBrowserUseMarks {
+export type PooledBrowserUseTrace = Readonly<PooledBrowserUseMarks> & {
   readonly operationId: AgentOperationId;
   readonly operationCreatedAt: string;
   readonly target?: BrowserPoolTargetIdentity;
   readonly waited?: boolean;
   readonly totalMs: number;
-}
-
-type PooledBrowserUseTiming = {
-  readonly started: number;
-  readonly marks: PooledBrowserUseMarks;
 };
 
-function elapsed(started: number): number {
-  return Math.round((performance.now() - started) * 10) / 10;
-}
+const elapsedMs = (started: number) => Math.round((performance.now() - started) * 10) / 10;
 
 /** An executor's way to say it cannot tell whether its effect happened. */
 export class OperationOutcomeUnknown extends Error {
@@ -1107,23 +1100,23 @@ export class AgentSessionService {
     stop: AbortSignal,
   ): Promise<DirectOperationResult<Result>> {
     const bindingId = `session:${row.sessionId}` as const;
-    const timing: PooledBrowserUseTiming | undefined =
+    const timing =
       operation.tool === "browser_use" && this.#onPooledBrowserUseTiming
-        ? { started: performance.now(), marks: {} }
+        ? { started: performance.now(), marks: {} as PooledBrowserUseMarks }
         : undefined;
-    let target: BrowserPoolTargetIdentity | undefined;
     const deadline = Date.now() + (operation.timeoutMs ?? this.#executionMs);
     const signal = AbortSignal.any([stop, AbortSignal.timeout(Math.max(0, deadline - Date.now()))]);
     let reservation: BrowserPoolReservation | undefined;
+    let identity: BrowserPoolTargetIdentity | undefined;
     let handed: AgentOperationRow | null = null;
     try {
       // A caller the target check would refuse never wakes a parked browser: the same check runs
       // first, before the reserve, and again after it, where it stays the authority.
       await pool.recheckTarget();
       signal.throwIfAborted();
-      if (timing) timing.marks.reservingMs = elapsed(timing.started);
+      if (timing) timing.marks.reservingMs = elapsedMs(timing.started);
       reservation = await pool.reserve(signal);
-      if (timing) timing.marks.reservedMs = elapsed(timing.started);
+      if (timing) timing.marks.reservedMs = elapsedMs(timing.started);
       // Between here and the execution's own settler (registered once its send counters exist),
       // a restart that can wait no longer records this holder too: refused while nothing is
       // handed off, and refused as unsent once it is, since no command can have left before the
@@ -1176,8 +1169,7 @@ export class AgentSessionService {
             ),
           ])
         : signal;
-      const identity = pool.identity();
-      if (timing) target = identity;
+      identity = pool.identity();
       await pool.recheckTarget();
       held.throwIfAborted();
       handed = await handOffAgentOperation(this.#store.database, {
@@ -1188,7 +1180,7 @@ export class AgentSessionService {
         pool: { target: identity, signal: held },
       });
       if (!handed) throw refused("forbidden", "The connected agent's access changed or ended.");
-      if (timing) timing.marks.handedOffMs = elapsed(timing.started);
+      if (timing) timing.marks.handedOffMs = elapsedMs(timing.started);
       return await this.#execute(operation, handed, taskId, bindingId, held, {
         deadline,
         identity,
@@ -1231,10 +1223,10 @@ export class AgentSessionService {
           this.#onPooledBrowserUseTiming?.({
             operationId: row.id,
             operationCreatedAt: row.createdAt.toISOString(),
-            ...(target ? { target } : {}),
+            ...(identity ? { target: identity } : {}),
             ...(reservation ? { waited: reservation.waited === true } : {}),
             ...timing.marks,
-            totalMs: elapsed(timing.started),
+            totalMs: elapsedMs(timing.started),
           });
         } catch {
           // Diagnostics must never change an operation's result.
@@ -1287,7 +1279,7 @@ export class AgentSessionService {
       identity: BrowserPoolTargetIdentity;
       pool: PooledDirectBrowser;
       reservation?: BrowserPoolReservation;
-      timing?: PooledBrowserUseTiming;
+      timing?: { readonly started: number; readonly marks: PooledBrowserUseMarks };
     },
   ): Promise<DirectOperationResult<Result>> {
     const entry = this.#sessions.get(row.sessionId) ?? {
@@ -1423,13 +1415,13 @@ export class AgentSessionService {
                   },
                   submitted: () => {
                     if (pooled.timing && submitted === 0)
-                      pooled.timing.marks.firstFrameMs = elapsed(pooled.timing.started);
+                      pooled.timing.marks.firstFrameMs = elapsedMs(pooled.timing.started);
                     outstanding++;
                     submitted++;
                   },
                   acknowledged: () => {
                     if (pooled.timing) {
-                      const reply = elapsed(pooled.timing.started);
+                      const reply = elapsedMs(pooled.timing.started);
                       pooled.timing.marks.firstReplyMs ??= reply;
                       pooled.timing.marks.lastReplyMs = reply;
                     }
@@ -1440,7 +1432,7 @@ export class AgentSessionService {
               }
             : {}),
         });
-        if (pooled?.timing) pooled.timing.marks.scriptFinishedMs = elapsed(pooled.timing.started);
+        if (pooled?.timing) pooled.timing.marks.scriptFinishedMs = elapsedMs(pooled.timing.started);
         // The REPL can return normally even when a script caught a failed authority check.
         // A cut never releases buffered output, and an unsent refusal never becomes unknown.
         if (authorityEnded) throw authorityEnded;
