@@ -24,6 +24,45 @@ describe("browser profile settings", () => {
     ]);
   });
 
+  it("says what a deleted profile is waiting for as its Cloud Computer goes offline and returns", () => {
+    const mock = new MockHostClient({ latencyMs: 0 });
+    try {
+      const computerId = createId("runner");
+      const machine = {
+        ...mock.getSnapshot().machines[0]!,
+        selfRunnerId: computerId,
+        name: "Main computer",
+        status: "online" as const,
+      };
+      const snapshot = {
+        machines: [machine],
+        browserPools: [
+          { runnerId: computerId, phase: "parked" as const, since: "2026-11-28T00:00:00Z" },
+        ],
+        browserProfileDeletions: [
+          { profileId: "bpr_deleted", computerId, state: "pending-computer" as const },
+        ],
+      };
+      expect(browserProfileDeletionRows(snapshot)).toEqual([
+        { profileId: "bpr_deleted", status: "Will be erased when the browser next starts" },
+      ]);
+      expect(
+        browserProfileDeletionRows({ ...snapshot, machines: [{ ...machine, status: "offline" }] }),
+      ).toEqual([
+        { profileId: "bpr_deleted", status: "Will be erased when Main computer is back online" },
+      ]);
+      expect(
+        browserProfileDeletionRows({
+          ...snapshot,
+          browserPools: [{ ...snapshot.browserPools[0]!, phase: "running" }],
+        }),
+      ).toEqual([{ profileId: "bpr_deleted", status: "Data erasure is pending" }]);
+      expect(browserProfileDeletionRows({ ...snapshot, browserProfileDeletions: [] })).toEqual([]);
+    } finally {
+      mock.dispose();
+    }
+  });
+
   it("lists profiles by name with the projects allowed and says what deleting takes", () => {
     const mock = new MockHostClient({ latencyMs: 0 });
     try {

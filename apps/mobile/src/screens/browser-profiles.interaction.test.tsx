@@ -223,6 +223,7 @@ function host(manage = true, empty = false) {
         id: "computer-delete",
         selfRunnerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
         name: "Studio Mac",
+        status: "offline",
       },
     ],
     tabs: tabStoreFixture([]),
