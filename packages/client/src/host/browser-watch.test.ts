@@ -1128,11 +1128,15 @@ it("stops a cloud-tab typing burst on browser-input-overload, keeps an ordered p
   const queueLimit = 128;
   const admittedKeys: {
     readonly action: string;
-    readonly code?: string;
-    readonly text?: string;
+    readonly code: string | undefined;
+    readonly text: string | undefined;
   }[] = [];
   const reservedReleases = new Set<string>();
-  const pending: { readonly action: string; readonly code?: string; readonly text?: string }[] = [];
+  const pending: {
+    readonly action: string;
+    readonly code: string | undefined;
+    readonly text: string | undefined;
+  }[] = [];
   let freedAfterOverload = false;
   const originalSend = socket.send.bind(socket);
   socket.send = (raw: string) => {
