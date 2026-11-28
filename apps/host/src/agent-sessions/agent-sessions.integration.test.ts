@@ -3664,10 +3664,11 @@ describeStore("an external agent's direct work through sessions", (it) => {
       const home = commands(storeFixture, s.f.userId, {
         stopper: {
           stop: async () => {},
-          stopDirectOperation: (attempt) => s.sessions.stopDirectOperation(attempt.id),
+          stopDirectOperation: (attempt, cleanup) =>
+            s.sessions.stopDirectOperation(attempt.id, connectionCleanupEnding(cleanup.reason)),
         },
-        afterStop: (connectionId, reason) =>
-          s.sessions.closeConnection(connectionId, reason === "disconnect"),
+        afterStop: (connectionId, _reason, cause) =>
+          s.sessions.closeConnection(connectionId, false, connectionCleanupEnding(cause)),
       });
       await home.effects.driveCleanups();
       expect(home.failures).toEqual([]);
@@ -3687,10 +3688,11 @@ describeStore("an external agent's direct work through sessions", (it) => {
     }
     await expect(previous).rejects.toBeInstanceOf(ToolBlockedError);
     await expect(previous).rejects.toMatchObject({
-      message: "The connected agent's access to this work ended.",
+      message: "The person changed this agent's access.",
       blocked: {
         next: "Part of it may have happened. Check the current state before doing anything else.",
       },
+      receipt: { status: "unknown", ending: "narrowed" },
     });
     await expect(newer).resolves.toMatchObject({ status: "completed" });
     expect(
@@ -3701,6 +3703,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
           "grantRevision",
           "state",
           "outcome",
+          "ending",
           "terminalEvidenceAt",
           "contactLostAt",
         ])
@@ -3713,6 +3716,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
         grantRevision: 1,
         state: "unknown",
         outcome: "unknown",
+        ending: "narrowed",
         terminalEvidenceAt: expect.any(Date),
         contactLostAt: expect.any(Date),
       },
@@ -3721,6 +3725,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
         grantRevision: 2,
         state: "completed",
         outcome: "completed",
+        ending: null,
         terminalEvidenceAt: expect.any(Date),
         contactLostAt: null,
       },
