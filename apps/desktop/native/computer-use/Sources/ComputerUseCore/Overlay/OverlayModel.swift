@@ -56,6 +56,7 @@ struct OverlayModel {
     let threadTitle: String?
     let apps: [App]
     var ownerInput = false
+    var ownerView = false
   }
 
   /// Why the sessions that just went away ended.
@@ -173,7 +174,7 @@ struct OverlayModel {
   /// but replacing any holder retires the app's previous visual feedback.
   static func owners(_ sessions: [Session]) -> [String: Set<String>] {
     var result: [String: Set<String>] = [:]
-    for session in sessions {
+    for session in sessions where !session.ownerView {
       for app in session.apps { result[app.key, default: []].insert(session.id) }
     }
     return result
@@ -324,12 +325,14 @@ struct OverlayModel {
       ? sessions
       : active.compactMap { app in sessions.first { $0.apps.contains(app) } }
     let ordered = frontOrder(at: now)
+    let sharing = sessions.filter { $0.ownerInput || $0.ownerView }
+    let sharedNames = Self.list(sharing.flatMap(\.apps).map(\.name))
     let pill = Pill(
-      status: sessions.contains(where: \.ownerInput)
-        ? "Sharing " + Self.list(sessions.filter(\.ownerInput).flatMap(\.apps).map(\.name))
+      status: !sharing.isEmpty
+        ? "Sharing " + sharedNames
         : Self.status(active: active, held: heldApps, typing: typing),
-      compactStatus: sessions.contains(where: \.ownerInput)
-        ? "Sharing · " + Self.list(sessions.filter(\.ownerInput).flatMap(\.apps).map(\.name))
+      compactStatus: !sharing.isEmpty
+        ? "Sharing · " + sharedNames
         : compactStatus(active: active, front: ordered.first),
       detail: Self.detail(Self.titles(of: detailSessions)),
       controls: .session,
@@ -346,7 +349,7 @@ struct OverlayModel {
         point: point, activity: activeKeys.contains(app.key) ? .working : .thinking)
     }
     return Presentation(
-      pill: pill, cursors: cursors, outlined: Set(heldApps.map(\.key)), sweeping: activeKeys)
+      pill: pill, cursors: cursors, outlined: Set(Self.owners(sessions).keys), sweeping: activeKeys)
   }
 
   /// When `presentation(at:)` next changes without another event.

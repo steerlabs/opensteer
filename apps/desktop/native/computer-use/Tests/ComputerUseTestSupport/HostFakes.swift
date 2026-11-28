@@ -175,6 +175,7 @@ func hostInput(
   catalog: AppCatalog = AppCatalog(roots: [], bundles: []),
   dataPlane: DataPlane = DataPlane(
     contracts: [:], grants: [:], providers: [:], grantReader: FakeGrants([:])),
+  overlay: OverlayController? = nil,
   terminate: @escaping @MainActor () -> Void = {
     XCTFail("Unexpected helper exit")
   }
@@ -192,7 +193,7 @@ func hostInput(
       }),
       sendRecords: URL(fileURLWithPath: "/nonexistent/cu-host-test-records.json")),
     permissions: { PermissionsState(accessibility: .granted, screenRecording: .granted) },
-    appRunning: { _, _ in false }, terminate: terminate)
+    appRunning: { _, _ in false }, overlay: overlay, terminate: terminate)
 }
 
 func startQueuedWork(_ work: QueuedWork) -> Bool { work.start() }

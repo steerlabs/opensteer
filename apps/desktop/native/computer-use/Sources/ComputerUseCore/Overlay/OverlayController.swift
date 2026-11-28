@@ -35,11 +35,21 @@ public final class OverlayController: ActionFeedback {
   private var appInstances: [String: ObjectIdentifier] = [:]
   private var timer: Timer?
   private let tracker = WindowTracker()
+  private let drawsWindows: Bool
 
-  public init(onStop: @escaping @MainActor () -> Void) {
+  public convenience init(onStop: @escaping @MainActor () -> Void) {
+    self.init(drawsWindows: true, onStop: onStop)
+  }
+
+  init(drawsWindows: Bool, onStop: @escaping @MainActor () -> Void) {
+    self.drawsWindows = drawsWindows
     self.onStop = onStop
     tracker.refresh = { [weak self] ordering in self?.placeOverWindows(ordering) ?? false }
     tracker.onWorkspaceEvent = { [weak self] event in self?.workspaceChanged(event) }
+  }
+
+  func presentation(at now: Date) -> OverlayModel.Presentation {
+    model.presentation(at: now)
   }
 
   // MARK: - What the runtime reports
@@ -50,12 +60,13 @@ public final class OverlayController: ActionFeedback {
     sessions: some Collection<HelperSession>,
     owners: [String: String],
     ending: OverlayModel.Ending,
-    ownerInput: [OverlayModel.Session] = []
+    ownerInput: [OverlayModel.Session] = [],
+    ownerViews: [OverlayModel.Session] = []
   ) {
     let controlled = Set(ownerInput.flatMap(\.apps).map(\.key))
     let next = Self.sessions(sessions, owners: owners).map {
       OverlayModel.Session(id: $0.id, threadTitle: $0.threadTitle, apps: $0.apps.filter { !controlled.contains($0.key) })
-    } + ownerInput
+    } + ownerInput + ownerViews
     let previousOwners = OverlayModel.owners(model.sessions)
     let nextOwners = OverlayModel.owners(next)
     let nextInstances = Dictionary(
@@ -195,6 +206,7 @@ public final class OverlayController: ActionFeedback {
   // MARK: - Drawing
 
   private func render() {
+    guard drawsWindows else { return }
     let now = Date()
     let presentation = model.presentation(at: now)
     if let state = presentation.pill {
