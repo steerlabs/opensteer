@@ -3,6 +3,8 @@ import { refreshInputQueue } from "./waiting-inputs.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   lockThreadCaller,
+  lockLineageConnection,
+  threadCallerLineageId,
   assertThreadCaller,
   callerAuthoritySource,
   type ThreadCallerAuthority,
@@ -18,6 +20,8 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
+import { jsonArrayFrom } from "kysely/helpers/postgres";
+import { endAgentSessionRows } from "./agent-session-store.js";
 import { TransactionScopeChanged } from "./connection.js";
 import type { DatabaseSchema, ThreadRow } from "./schema.js";
 import {
@@ -52,6 +56,7 @@ import {
 } from "./thread-status.js";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
 import { threadIsQuiet } from "./quiet-tasks.js";
+import { bindingAgentConnectionId } from "./resource-access.js";
 export interface ThreadWriteActor {
   readonly authority?: ThreadCallerAuthority;
   readonly requestedBy: UserId;
@@ -212,7 +217,7 @@ export async function setThreadDone(
 ) {
   return commitPersonalMutation(
     database,
-    async (transaction) => {
+    async (transaction, mutation) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
       const payload = {
         threadId: input.threadId,
@@ -240,6 +245,53 @@ export async function setThreadDone(
       )
         throw idempotencyConflict(input.idempotencyKey);
       const scope = await discoverDoneScope(transaction, input);
+      const selfDone =
+        input.actorRunId &&
+        scope.runs.some((run) => run.id === input.actorRunId && run.threadId === input.threadId);
+      const observed = await transaction
+        .selectFrom("threads")
+        .select("threads.id")
+        .$if(!existing && input.done && !selfDone, (query) =>
+          query.select((eb) =>
+            jsonArrayFrom(
+              eb
+                .selectFrom("agentSessions")
+                .select("agentSessions.id")
+                .where("agentSessions.threadId", "in", scope.threadIds)
+                .where("agentSessions.userId", "=", input.requestedBy)
+                .where("agentSessions.status", "=", "active")
+                .$if(scope.threadIds.length === 1, (sessions) =>
+                  sessions.where("threads.worker", "=", "external"),
+                )
+                .orderBy("agentSessions.id"),
+            ).as("activeSessions"),
+          ),
+        )
+        .where("threads.id", "=", input.threadId)
+        .executeTakeFirst();
+      const sessions = observed?.activeSessions;
+      const checkedQuietAt = sessions?.length && input.quiet ? new Date() : undefined;
+      const quietWithSessions = checkedQuietAt
+        ? !input.actorRunId && (await threadIsQuiet(transaction, input.threadId, checkedQuietAt))
+        : undefined;
+      if (input.admission && !input.authority)
+        await lockLineageConnection(
+          transaction,
+          await bindingAgentConnectionId(transaction, `run:${input.admission.runId}`),
+        );
+      if (sessions?.length && quietWithSessions !== false) {
+        if (input.authority)
+          await lockLineageConnection(
+            transaction,
+            await threadCallerLineageId(transaction, input.authority),
+          );
+        const ended = await endAgentSessionRows(
+          transaction,
+          sessions.map(({ id }) => id),
+          "done",
+        );
+        mutation.sessionsEndedByDone(ended.map(({ id }) => id));
+      }
       await lockThreadCaller(
         transaction,
         input.authority,
@@ -280,11 +332,6 @@ export async function setThreadDone(
             .execute()
         : [];
       await admitThreadWrite(transaction, input);
-      const observed = await transaction
-        .selectFrom("threads")
-        .selectAll()
-        .where("id", "=", input.threadId)
-        .executeTakeFirst();
       if (!observed)
         throw new OpensteerError({
           code: "not_found",
@@ -339,7 +386,11 @@ export async function setThreadDone(
       const now = new Date();
       const stillQuiet =
         !input.quiet ||
-        (input.done && !input.actorRunId && (await threadIsQuiet(transaction, thread.id, now)));
+        (input.done &&
+          !input.actorRunId &&
+          (await threadIsQuiet(transaction, thread.id, checkedQuietAt ?? now)));
+      if (quietWithSessions !== undefined && quietWithSessions !== stillQuiet)
+        throw new TransactionScopeChanged("Task changed while being marked Done");
       const authoritySource = jsonValue(
         input.quiet
           ? {

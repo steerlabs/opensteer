@@ -293,7 +293,9 @@ export function connectionCleanupEnding(
 function endedBy(ending: AgentOperationEnding | null): OpensteerError {
   return new OpensteerError({
     code: "forbidden",
-    reason: ending === "stopped" ? "agent-session-stopped" : "authority-changed",
+    ...(ending === "task-done"
+      ? { next: doneBeforeSendNext }
+      : { reason: ending === "stopped" ? "agent-session-stopped" : "authority-changed" }),
     message: ending
       ? agentOperationEndingWords[ending].message
       : "The connected agent's access to this work ended.",
@@ -315,6 +317,7 @@ export function unknownOperationNext(ending: AgentOperationEnding | null | undef
 }
 
 const sessionEnding: Readonly<Record<AgentSessionEndReason, AgentOperationEnding | null>> = {
+  done: "task-done",
   stopped: "stopped",
   revoked: "disconnected",
   expired: "expired",
@@ -725,6 +728,14 @@ export class AgentSessionService {
     }
   }
 
+  /** Done committed with these sessions ended. Release their places before the Done publish. */
+  taskDone(sessionIds: readonly AgentSessionId[]): void {
+    this.#ended(
+      sessionIds.map((id) => ({ id })),
+      "done",
+    );
+  }
+
   #ended(sessions: readonly { readonly id: AgentSessionId }[], reason: AgentSessionEndReason) {
     for (const session of sessions)
       void this.#abort(session.id, sessionEnding[reason]).catch(this.#onError);
@@ -738,6 +749,7 @@ export class AgentSessionService {
     this.#worked.delete(sessionId);
     this.#resetRevision.delete(sessionId);
     this.workingIn.close(sessionId);
+    if (ending === "task-done") this.#releaseBindingPlaces(`session:${sessionId}`);
     await this.#closeBinding(`session:${sessionId}`, error.message);
     if (this.#sessions.get(sessionId) === entry) this.#sessions.delete(sessionId);
   }
@@ -1370,9 +1382,11 @@ export class AgentSessionService {
               code: refusal.code,
               message: refusal.message,
               next:
-                refusal.code === "stopped_by_person"
-                  ? stoppedBeforeSendNext
-                  : refusedBeforeSendNext,
+                ending === "task-done"
+                  ? doneBeforeSendNext
+                  : refusal.code === "stopped_by_person"
+                    ? stoppedBeforeSendNext
+                    : refusedBeforeSendNext,
             },
             { ...base, status: "refused", ...(ending ? { ending } : {}) },
           );
@@ -1483,16 +1497,19 @@ export async function withAgentOperationReceipt<Result>(
       throw error;
     const current = await readAgentOperation(database, row.id).catch(() => null);
     const state = current?.state;
-    throw new AgentOperationFailure(error, {
+    const done = current?.state === "refused" && current.ending === "task-done";
+    throw new AgentOperationFailure(done ? endedBy("task-done") : error, {
       taskId,
       operationId: row.id,
       ...(state === "refused" || state === "failed" || state === "unknown"
         ? { status: state }
         : {}),
+      ...(done ? { ending: "task-done" as const } : {}),
     });
   }
 }
 
+const doneBeforeSendNext = "Nothing was sent. It is safe to try again on a new task.";
 const stoppedBeforeSendNext =
   "Nothing was sent. Stop this task and ask the person before starting again.";
 const refusedBeforeSendNext = "Nothing was sent. Check the current state before trying again.";
@@ -1501,6 +1518,7 @@ export function agentOperationRefusal(
   decision: AgentOperationDecision | null,
   ending?: AgentOperationEnding | null,
 ): OpensteerError {
+  if (ending === "task-done") return endedBy(ending);
   if (decision?.by === "refused")
     return new OpensteerError({
       code: "forbidden",
@@ -1553,6 +1571,8 @@ function unsentRefusal(
   const refusal = ended ?? (error instanceof OpensteerError ? error : null);
   if (!refusal) return undefined;
   const { message } = refusal;
+  if (endingOfAbort(refusal) === "task-done")
+    return { code: "access_denied", reason: "changed", message };
   if (refusal.reason === "agent-session-stopped")
     return { code: "stopped_by_person", reason: "stopped", message };
   if (refusal.reason === "authority-changed")

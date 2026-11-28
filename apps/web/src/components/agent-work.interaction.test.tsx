@@ -98,6 +98,71 @@ describe("a task a connected agent works itself", () => {
     }
   });
 
+  it("clears the session and Stop in the client that clicked Done when its socket catches up", async () => {
+    const id = mockAgentWorkThreads.working;
+    let wire: MockPersonalHost | undefined;
+    let real: HttpHostClient | undefined;
+    try {
+      await mount(task(id), {
+        ...options,
+        hostClient(seed) {
+          seed.mockAgentWork();
+          wire = new MockPersonalHost(seed);
+          real = new HttpHostClient({
+            baseUrl: "http://scoped-host",
+            fetch: wire.fetch,
+            webSocketFactory: wire.connect,
+          });
+          return real;
+        },
+      });
+      const held = () => real?.getSnapshot().threads.find((thread) => thread.id === id);
+      await vi.waitFor(() => expect(held()?.externalWork?.status).toBe("active"));
+      expect(document.querySelector(".session-bar__stop")).not.toBeNull();
+      const socket = [...wire!.sockets][0]!;
+      const deliver = socket.deliver.bind(socket);
+      const inFlight: Parameters<typeof deliver>[0][] = [];
+      const buffer = vi.spyOn(socket, "deliver").mockImplementation((frame) => {
+        inFlight.push(frame);
+      });
+
+      await act(async () =>
+        document.querySelector<HTMLButtonElement>(".conv-header__menu")!.click(),
+      );
+      const mark = [
+        ...document.querySelectorAll<HTMLButtonElement>(".conversation-menu__actions button"),
+      ].find((node) => node.textContent?.trim() === "Mark Done");
+      expect(mark).toBeDefined();
+      await act(async () => mark!.click());
+      const confirm = document.querySelector<HTMLButtonElement>('[role="dialog"] .btn--danger');
+      if (confirm) await act(async () => confirm.click());
+      await vi.waitFor(() => expect(held()?.doneAt).toBeTruthy());
+      expect(held()?.externalWork?.status).toBe("active");
+      const revision = String(wire!.client.getSnapshot().revision);
+      expect(inFlight).toContainEqual(
+        expect.objectContaining({ type: "host.changes", throughSequence: revision }),
+      );
+
+      buffer.mockRestore();
+      await act(async () => {
+        for (const frame of inFlight) deliver(frame);
+      });
+      expect(held()).toMatchObject({
+        agentSessionId: null,
+        externalWork: { status: "ended", endReason: "done" },
+      });
+      expect(document.querySelector(".session-bar__stop")).toBeNull();
+      expect(document.querySelector(".session-bar")?.textContent ?? "").not.toMatch(
+        /is idle|Stopped|Disconnected/u,
+      );
+    } finally {
+      await act(async () => {
+        real?.dispose();
+        wire?.dispose();
+      });
+    }
+  });
+
   it("shows how an operation ended as soon as the Home publishes its task again", async () => {
     // The Home publishes the task when one of its operations ends: only the task's revision moves,
     // its status and times stay. The person watching must see the ending, never "Running…".

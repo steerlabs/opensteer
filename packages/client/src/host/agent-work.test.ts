@@ -231,6 +231,16 @@ describe("a task a connected agent works itself", () => {
     expect(sessionTaskView({ thread: { status: "running" }, slot: null })).toBeNull();
   });
 
+  it("names Done as the reason a connected agent's session ended", () => {
+    const session = slot("ended");
+    expect(
+      sessionTaskView({
+        thread: { status: "idle", agentSessionId: session.sessionId },
+        slot: { ...session, endReason: "done" },
+      }),
+    ).toMatchObject({ state: "ended", statusLine: "Task marked Done", stop: null });
+  });
+
   it("names the agent and what it is using in Tasks", () => {
     expect(sessionTaskRow({ thread: { status: "running" }, slot: slot("working") })).toMatchObject({
       agent: { name: "Claude", providerId: "anthropic" },
@@ -313,6 +323,10 @@ describe("why an operation ended, as the person reads it", () => {
 
   const endingSentences = {
     stopped: ["You stopped this while it ran.", "You stopped this before anything was sent."],
+    "task-done": [
+      "The task was marked Done while this was running.",
+      "The task was marked Done before anything was sent.",
+    ],
     disconnected: [
       "You disconnected this agent while this ran.",
       "You disconnected this agent before anything was sent.",

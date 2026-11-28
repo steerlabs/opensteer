@@ -18,6 +18,7 @@ export const agentWorkCopy = {
   "work.waiting": "{agent} needs you",
   "work.idle": "{agent} is idle",
   "work.stopped": "Stopped by you",
+  "work.ended.done": "Task marked Done",
   "work.ended.revoked": "Ended: {agent} was disconnected",
   "work.ended.expired": "Ended: {agent}’s access expired",
   "work.ended.narrowed": "Ended: {agent} can no longer use what this task used",
@@ -67,6 +68,7 @@ export const agentWorkCopy = {
   "op.outcome.unknown": "Uncertain",
   "op.outcome.notSent": "Not sent",
   "op.unsent.stopped": "You stopped this before anything was sent.",
+  "op.unsent.task-done": "The task was marked Done before anything was sent.",
   "op.unsent.disconnected": "You disconnected this agent before anything was sent.",
   "op.unsent.expired": "Its access expired before anything was sent.",
   "op.unsent.narrowed": "You changed its access before anything was sent.",
@@ -75,6 +77,8 @@ export const agentWorkCopy = {
   "op.unsent.contact-lost": "Opensteer lost contact before anything was sent.",
   "op.ending.stopped":
     "You stopped this while it ran. Part of it may have happened. Check before trying again.",
+  "op.ending.task-done":
+    "The task was marked Done while this was running. Part of it may have happened. Check before trying again.",
   "op.ending.disconnected":
     "You disconnected this agent while this ran. Part of it may have happened. Check before trying again.",
   "op.ending.expired":

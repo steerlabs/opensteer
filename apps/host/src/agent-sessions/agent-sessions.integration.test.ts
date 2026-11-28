@@ -145,6 +145,7 @@ async function setUp(
   key: string,
   options: {
     readonly accessMode?: ThreadAccessMode;
+    readonly holdMs?: number;
     readonly grant?: AgentGrant;
     readonly run?: Awaited<ReturnType<Fixture["startRunFixture"]>>;
     readonly browserConnect?: Pick<BrowserToolPorts, "issueTicket"> &
@@ -186,7 +187,7 @@ async function setUp(
   const recorded = recordingExecutor();
   const sessions = new AgentSessionService({
     store: storeFixture.store,
-    holdMs: 0,
+    holdMs: options.holdMs ?? 0,
   });
   const unexpectedTabOperation = () => {
     throw new Error("This fixture runs scripts by profile ID.");
@@ -268,8 +269,73 @@ async function setUp(
 }
 
 describeStore("an external agent's direct work through sessions", (it) => {
+  it("returns the same Done refusal for a waiting call and its replay", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "done-request-copy", {
+      accessMode: "approval-required",
+      holdMs: 30_000,
+    });
+    const requests = storeFixture.store.requests;
+    const waiting = Promise.withResolvers<RequestId>();
+    const get = requests.get.bind(requests);
+    const spy = vi.spyOn(requests, "get").mockImplementation(async (id) => {
+      const request = await get(id);
+      if (request?.status === "pending") waiting.resolve(id);
+      return request;
+    });
+    const removeHooks = storeFixture.observePersonalReactions({
+      notice(notice) {
+        if (notice.doneAgentSessions) s.sessions.taskDone(notice.doneAgentSessions);
+      },
+      reaction(reaction) {
+        if (reaction.type === "requestChanged" && reaction.status !== "pending")
+          s.sessions.requestClosed(reaction.requestId);
+      },
+    });
+    try {
+      const initial = s.call("browser_use", script);
+      const requestId = await waiting.promise;
+      const pending = await storeFixture.database
+        .selectFrom("agentOperations")
+        .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
+        .select(["agentOperations.id as operationId", "agentSessions.threadId as taskId"])
+        .where("requestId", "=", requestId)
+        .executeTakeFirstOrThrow();
+      await storeFixture.store.setThreadDone({
+        done: true,
+        threadId: pending.taskId,
+        requestedBy: s.f.userId,
+        idempotencyKey: "done-request-copy",
+      });
+      const refusal = await initial;
+      expect(refusal).toMatchObject({
+        isError: true,
+        structuredContent: {
+          ...pending,
+          status: "refused",
+          ending: "task-done",
+          error: {
+            code: "access_denied",
+            message: "This task was marked Done.",
+            next: "Nothing was sent. It is safe to try again on a new task.",
+          },
+        },
+      });
+      expect(await s.call("browser_use", { ...script, operationId: pending.operationId })).toEqual(
+        refusal,
+      );
+      expect((await get(requestId))?.status).toBe("cancelled");
+      expect(s.runBrowserScript).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      removeHooks();
+    }
+  });
+
   for (const cut of [
     "Stop",
+    "Done",
     "Disconnect",
     "grant cut",
     "task-mode cut",
@@ -380,6 +446,41 @@ describeStore("an external agent's direct work through sessions", (it) => {
               threadId,
             });
             break;
+          case "Done": {
+            const removeHooks = storeFixture.observePersonalReactions({
+              notice(notice) {
+                if (notice.doneAgentSessions) s.sessions.taskDone(notice.doneAgentSessions);
+              },
+              reaction: () => undefined,
+            });
+            try {
+              await store.setThreadDone({
+                threadId,
+                done: true,
+                requestedBy: f.userId,
+                idempotencyKey: "done-during-browser-reserve",
+              });
+              const refusal = await resumed;
+              expect(refusal).toMatchObject({
+                isError: true,
+                structuredContent: {
+                  status: "refused",
+                  ending: "task-done",
+                  error: {
+                    code: "access_denied",
+                    message: "This task was marked Done.",
+                    next: "Nothing was sent. It is safe to try again on a new task.",
+                  },
+                },
+              });
+              expect(
+                await s.call("browser_use", { ...script, operationId: pending.operationId }),
+              ).toEqual(refusal);
+            } finally {
+              removeHooks();
+            }
+            break;
+          }
           case "Disconnect":
             await home.revoke(s.agent.id);
             break;

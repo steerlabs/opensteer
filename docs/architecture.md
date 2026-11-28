@@ -213,10 +213,13 @@ Each call is one reviewed **operation** of an **agent session**:
   (`agent_sessions`). The existing Tasks, Tabs, Watch, Needs you and Stop surfaces show that work.
   The task never starts a Run of the person's own agents and accepts no typed input. A Home needs
   no engine for it.
-- A session starts with the first direct call and ends on Stop, Disconnect, expiry, narrowing or
-  15 minutes idle (never while an operation is handed off or a Request is open). Direct tools take
-  an optional `taskId`: left out, the call continues the connection's current session or starts
-  one. Every result carries it.
+- A session starts with the first direct call and ends on Stop, Disconnect, expiry, narrowing,
+  Done, or 15 minutes idle. Idle expiry waits while an operation is handed off or a Request is
+  open. An immediate Done interrupts in-flight work just as it does for a Run, ends the session
+  in the same commit, and releases its tab and device holds through session cleanup. A Run can
+  mark its own task Done at the end of its turn. The connection stays active. Reopening the task
+  does not reopen the session. Direct tools take an optional `taskId`: left out, the call continues the connection's
+  current session or starts one. Every result carries it.
 - If narrowing leaves a session active, the Home aborts its older operations. After settlement it
   releases their tab holds and clears Watch, unless a call under the new grant has already started
   in the session. That call owns the session's places.

@@ -19,6 +19,13 @@ import { pauseAfterLock } from "./lock-race.test-support.js";
 import { TriggerStore } from "./trigger-store.js";
 import { AutomationFailureStore, recordAutomationFailure } from "./automation-failure-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { AgentConnectionStore } from "./agent-connection-store.js";
+import {
+  admitAgentOperation,
+  askForAgentOperation,
+  beginAgentSession,
+  endAgentSessions,
+} from "./agent-session-store.js";
 
 /**
  * Stage 1 fault matrix, database side: every way a Stop, an answer, a steer or
@@ -59,6 +66,149 @@ integration.sequential("Shared task Done", () => {
       .where("entityId", "=", threadId)
       .where("sequence", "=", sequence)
       .execute();
+  async function connected(f: Pick<Fixture, "userId">, key: string) {
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: { scope: "everything" },
+    });
+    await connections.activate(connection.id, `hash-${key}`);
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connection.id,
+    });
+    return { connection, session };
+  }
+
+  it("locks the connection before Runs when its Run marks a native task Done", async () => {
+    const source = await context.startRunFixture("lineaged-done");
+    const target = await fixture("native-done-target");
+    const { connection } = await connected(source, "lineaged-done");
+    await database
+      .updateTable("runs")
+      .set({ connectionId: connection.id })
+      .where("id", "=", source.run.id)
+      .execute();
+    const result = await store.setThreadDone({
+      threadId: target.thread.id,
+      requestedBy: source.userId,
+      actorRunId: source.run.id,
+      idempotencyKey: "lineaged-native-done",
+      done: true,
+      admission: {
+        action: "thread.write",
+        bindingGeneration: source.bindingGeneration,
+        environmentId: source.environmentId,
+        requestFingerprint: "a".repeat(64),
+        requestId: "lineaged-native-done",
+        requestedBy: source.userId,
+        runnerBootId: source.runnerBootId,
+        runnerId: source.runnerId,
+        runId: source.run.id,
+        sourceThreadId: source.threadId,
+        targetThreadIds: [target.thread.id],
+      },
+    });
+    expect(result.thread.doneAt).not.toBeNull();
+  });
+
+  it("ends a session with two pending operations under the ordered Done locks", async () => {
+    const f = await fixture("connection-pending");
+    const { connection, session } = await connected(f, "pending");
+    const { grantRevision } = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", connection.id)
+      .executeTakeFirstOrThrow();
+    for (const key of ["one", "two"]) {
+      const { operation } = await admitAgentOperation(database, {
+        userId: f.userId,
+        agentConnectionId: connection.id,
+        sessionId: session.id,
+        operationKey: key,
+        tool: "browser_use",
+        argumentDigest: key,
+        target: { grant: { kind: "device" }, name: "Browser", device: null },
+        targetGeneration: null,
+        grantRevision,
+        mode: "approval-required",
+        effect: "write",
+        calls: "browser_use",
+        agentReason: null,
+      });
+      expect(
+        await askForAgentOperation(database, store.requests, {
+          operation,
+          threadId: session.threadId,
+          copy: () => ({ title: key, summary: key }),
+        }),
+      ).toMatchObject({ state: "pending" });
+    }
+    await store.setThreadDone({
+      done: true,
+      threadId: session.threadId,
+      requestedBy: f.userId,
+      idempotencyKey: "connection-pending",
+    });
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "ending"])
+        .where("sessionId", "=", session.id)
+        .execute(),
+    ).toEqual([
+      { state: "refused", ending: "task-done" },
+      { state: "refused", ending: "task-done" },
+    ]);
+  });
+
+  it("locks both ended tasks before cancelling the first session’s Request", async () => {
+    const f = await fixture("two-sessions");
+    const sessions = [await connected(f, "first"), await connected(f, "second")].sort((a, b) =>
+      a.session.threadId.localeCompare(b.session.threadId),
+    );
+    const [first, second] = [sessions[0]!, sessions[1]!];
+    const { grantRevision } = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", first.connection.id)
+      .executeTakeFirstOrThrow();
+    const { operation } = await admitAgentOperation(database, {
+      userId: f.userId,
+      agentConnectionId: first.connection.id,
+      sessionId: first.session.id,
+      operationKey: "pending-first",
+      tool: "browser_use",
+      argumentDigest: "pending-first",
+      target: { grant: { kind: "device" }, name: "Browser", device: null },
+      targetGeneration: null,
+      grantRevision,
+      mode: "approval-required",
+      effect: "write",
+      calls: "browser_use",
+      agentReason: null,
+    });
+    const pending = await askForAgentOperation(database, store.requests, {
+      operation,
+      threadId: first.session.threadId,
+      copy: () => ({ title: "First", summary: "First" }),
+    });
+    expect(pending.state).toBe("pending");
+    const ended = await endAgentSessions(database, {
+      userId: f.userId,
+      sessionIds: [second.session.id, first.session.id],
+      reason: "done",
+    });
+    expect(ended.map(({ id }) => id).sort()).toEqual([first.session.id, second.session.id].sort());
+    expect(ended.map(({ endReason }) => endReason)).toEqual(["done", "done"]);
+    expect((await store.requests.get(pending.requestId!))?.status).toBe("cancelled");
+  });
+
   it.each(["queued", "starting", "running"] as const)(
     "stops %s work, freezes inputs and reopens before interrupt acknowledgement",
     async (status) => {

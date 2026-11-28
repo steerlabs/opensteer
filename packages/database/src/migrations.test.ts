@@ -98,6 +98,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0124_agent_session_device_holds",
     "0125_retire_archived_profile_tabs",
     "0126_agent_operation_profile_deleted",
+    "0127_task_done_agent_session_endings",
   ]);
   // Kysely runs migrations in name order, so names must be unique and ascending (gaps are allowed).
   expect(new Set(names).size).toBe(names.length);

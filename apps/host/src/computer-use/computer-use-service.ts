@@ -1823,18 +1823,23 @@ export class ComputerUseService {
   /** Disconnect waits for the device's close or loss of its route, including idle holds. */
   async closeForAgentSession(runId: RunId, sessionId: AgentSessionId): Promise<void> {
     this.#clearStopsForRun(runId);
-    if (this.#agentSessionDatabase)
-      await settleOrphanedAgentSessionDeviceHolds(
-        this.#agentSessionDatabase,
-        sessionId,
-        this.#homeProcessId,
-      );
     const sessions = new Set(
       [...this.#snapshot(), ...this.#closingSessions.keys(), ...this.#undeliveredCloses].filter(
         (session) => session.runId === runId,
       ),
     );
-    await Promise.all([...sessions].map((session) => this.#closeSession(session)));
+    // Withdraw this Home's places before the task is published. Device evidence settles
+    // independently, including holds left by a previous Home process.
+    await Promise.all([
+      ...[...sessions].map((session) => this.#closeSession(session)),
+      this.#agentSessionDatabase
+        ? settleOrphanedAgentSessionDeviceHolds(
+            this.#agentSessionDatabase,
+            sessionId,
+            this.#homeProcessId,
+          )
+        : undefined,
+    ]);
     for (const session of sessions)
       if (this.#undeliveredCloses.has(session))
         throw new Error("The device has not confirmed that its computer use ended.");

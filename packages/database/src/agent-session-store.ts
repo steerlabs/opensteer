@@ -2,6 +2,7 @@ import { outsideName } from "@opensteer/shared/outsideName";
 import {
   AgentOperationTargetSchema,
   agentSessionIdleMs,
+  agentOperationEndingWords,
   minThreadAccessMode,
   threadAccessModeAtMost,
   ThreadAccessModeSchema,
@@ -40,6 +41,7 @@ import { cancelPending } from "./request-cancellation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   assertRequestRevision,
+  lockRequestThreads,
   refreshRequestState,
   requestFromRow,
 } from "./request-persistence.js";
@@ -390,37 +392,8 @@ export async function endAgentSessions(
       query = query.where("id", "in", eligible);
     }
     const ids = (await query.orderBy("id").execute()).map(({ id }) => id);
-    if (!ids.length) return [];
-    const ended = await tx
-      .updateTable("agentSessions")
-      .set({ status: "ended", endedAt: new Date(), endReason: input.reason })
-      .where("id", "in", ids)
-      .where("status", "=", "active")
-      .returningAll()
-      .execute();
-    const reason =
-      input.reason === "stopped"
-        ? "The person stopped this work."
-        : input.reason === "idle"
-          ? "The session ended after it went quiet."
-          : "The connected agent's access changed or ended.";
-    await tx
-      .updateTable("agentOperations")
-      .set({
-        state: "refused",
-        outcome: "refused",
-        completedAt: new Date(),
-        terminalEvidenceAt: new Date(),
-        updatedAt: new Date(),
-        decision: jsonValue({
-          by: "refused",
-          reason: input.reason === "stopped" ? "stopped" : "authority",
-          message: reason,
-        } satisfies AgentOperationDecision),
-      })
-      .where("sessionId", "in", ids)
-      .where("state", "in", ["admitted", "pending", "approved"])
-      .execute();
+    const ended = await endAgentSessionRows(tx, ids, input.reason);
+    if (!ended.length) return [];
     // Nothing an ended session asked for can be answered any more, but a command it proposed:
     // that ask belongs to its connection, which still stands, so it waits for the person after
     // a session that ended on its own (went quiet, expired, closed by the agent). The person's
@@ -433,6 +406,11 @@ export async function endAgentSessions(
       .$if(input.reason !== "stopped", (query) => query.where("command", "is", null))
       .orderBy("id")
       .execute();
+    if (open.length && ended.length > 1)
+      await lockRequestThreads(
+        tx,
+        ended.map(({ threadId }) => threadId),
+      );
     if (open.length)
       await cancelPending(tx, {
         reason: input.reason === "stopped" ? "run-ended" : "authority-revoked",
@@ -444,6 +422,70 @@ export async function endAgentSessions(
       await projectThreadState(tx, session.threadId, new Date(), true);
     return ended;
   });
+}
+
+/** End authority and unsent work before locking Runs, threads and Requests. */
+export async function endAgentSessionRows(
+  tx: Tx,
+  ids: readonly AgentSessionId[],
+  reason: AgentSessionEndReason,
+): Promise<readonly AgentSessionRow[]> {
+  if (!ids.length) return [];
+  const sessions = await tx
+    .selectFrom("agentSessions")
+    .select("id")
+    .where("id", "in", ids)
+    .where("status", "=", "active")
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+  if (!sessions.length) return [];
+  const sessionIds = sessions.map(({ id }) => id);
+  const ended = await tx
+    .updateTable("agentSessions")
+    .set({ status: "ended", endedAt: new Date(), endReason: reason })
+    .where("id", "in", sessionIds)
+    .returningAll()
+    .execute();
+  const operations = await tx
+    .selectFrom("agentOperations")
+    .select("id")
+    .where("sessionId", "in", sessionIds)
+    .where("state", "in", ["admitted", "pending", "approved"])
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+  if (!operations.length) return ended;
+  const message =
+    reason === "stopped"
+      ? "The person stopped this work."
+      : reason === "done"
+        ? agentOperationEndingWords["task-done"].message
+        : reason === "idle"
+          ? "The session ended after it went quiet."
+          : "The connected agent's access changed or ended.";
+  await tx
+    .updateTable("agentOperations")
+    .set({
+      state: "refused",
+      outcome: "refused",
+      completedAt: new Date(),
+      terminalEvidenceAt: new Date(),
+      updatedAt: new Date(),
+      ...(reason === "done" ? { ending: "task-done" as const } : {}),
+      decision: jsonValue({
+        by: "refused",
+        reason: reason === "stopped" ? "stopped" : reason === "done" ? "changed" : "authority",
+        message,
+      } satisfies AgentOperationDecision),
+    })
+    .where(
+      "id",
+      "in",
+      operations.map(({ id }) => id),
+    )
+    .execute();
+  return ended;
 }
 
 /** How long a person's open answer keeps a quiet session alive. */

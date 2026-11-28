@@ -322,6 +322,8 @@ export const connectedAgentsCopy = {
     "Contact was lost while {agent} was in the middle of something. It may have finished. Check what it was working on before you rely on it.",
   "disconnect.uncertain.detail.stopped":
     "You stopped {agent} while it was in the middle of something. Part of it may have happened. Check what it was working on before you rely on it.",
+  "disconnect.uncertain.detail.task-done":
+    "The task was marked Done while {agent} was working. Part of its last action may have happened. Check before relying on it.",
   "disconnect.uncertain.detail.disconnected":
     "You disconnected {agent} while it was in the middle of something. Part of it may have happened. Check what it was working on before you rely on it.",
   "disconnect.uncertain.detail.expired":

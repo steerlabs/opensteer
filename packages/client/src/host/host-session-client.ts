@@ -2097,6 +2097,7 @@ export class HttpHostClient {
           this.#threadState.reconcile(
             {
               ...held,
+              revision: row.revision,
               title: row.title,
               status: row.status,
               doneAt: row.doneAt,
@@ -4502,7 +4503,10 @@ export class HttpHostClient {
   #reconcilePageThread(
     thread: ThreadSummary,
     sequence: Sequence,
-    compact?: { readonly inputQueuePaused?: boolean | undefined },
+    compact?: {
+      readonly inputQueuePaused?: boolean | undefined;
+      readonly retry?: ThreadSummary["retry"];
+    },
   ) {
     const reconciled = this.#threadState.reconcile(thread, sequence, undefined, compact);
     return reconciled.pendingRequests === thread.pendingRequests
