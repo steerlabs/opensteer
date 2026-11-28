@@ -134,6 +134,8 @@ extension SafariFront {
     defer { _ = front.unhide() }
     let safariAX = try safariWindow()
     place(safariAX, at: CGPoint(x: 160, y: 140), size: CGSize(width: 700, height: 480))
+    // A person's click on the page brings Safari forward: an accessory app cannot activate it.
+    try await makeFront(safari, at: CGPoint(x: 510, y: 596))
     let wire = try AgentWire(helper: helper)
     defer { wire.drop() }
     let agent = Agent(wire: wire, identity: safariIdentity)
@@ -206,7 +208,8 @@ extension SafariFront {
     let width = min(940, screen.frame.width - 300), height = min(600, screen.frame.height - 260)
     let home = CGPoint(x: (screen.frame.width - width) / 2, y: menuBarBottom + 90)
     place(safariAX, at: home, size: CGSize(width: width, height: height))
-    safari.activate()
+    // A person's click on the page brings Safari forward: an accessory app cannot activate it.
+    try await makeFront(safari, at: CGPoint(x: home.x + width / 2, y: home.y + height - 24))
     try await move(away)
     await sleepSeconds(0.8)
 
@@ -285,11 +288,11 @@ extension SafariFront {
     defer { wireB.drop() }
     let b = Agent(wire: wireB, identity: textEditIdentity)
     try await b.open(title: "Chip notes", page: false)
-    textEdit.activate()
     await sleepSeconds(OverlayModel.holdAfterWork + OverlayStyle.fadeDuration + 0.6)
     let textEditFrame = try frame(of: textEditAX)
     checks["textedit-chip"] = await chip(on: textEditFrame) != nil
-    safari.activate()
+    safariFrame = try frame(of: safariAX)
+    try await makeFront(safari, at: CGPoint(x: safariFrame.maxX - 60, y: safariFrame.maxY - 24))
     await sleepSeconds(0.6)
 
     // Stop on Safari's chip ends Safari's agent and leaves TextEdit's working.
@@ -393,6 +396,7 @@ extension SafariFront {
     let focusBeside = safariAddressFieldFocused()
     checks["f-click-beside-the-open-notch-reaches-safari"] = !focusPage.0 && focusBeside.0
       && helper.registry.sessions[c.session] != nil
+    try await personClick(CGPoint(x: safariFrame.midX, y: safariFrame.midY + 120))
     row["addressField"] = ["before": focusBefore.1, "belowRestingNotch": focusBelow.1, "page": focusPage.1,
       "besideOpenNotch": focusBeside.1]
     try await move(away)
