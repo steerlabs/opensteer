@@ -506,6 +506,28 @@ final class OverlayModelTests: XCTestCase {
     }
   }
 
+  func testReturningOwnerInputReplacesTheLostConnectionNotice() {
+    let firstView = OverlayModel.Session(
+      id: "first-window", threadTitle: nil, apps: [notes], ownerInput: true)
+    let reopenedView = OverlayModel.Session(
+      id: "reopened-window", threadTitle: nil, apps: [notes], ownerInput: true)
+    for pending in [false, true] {
+      var model = OverlayModel()
+      model.update(sessions: [firstView], ending: .ended, at: at(0))
+      model.workStarted(app: notes.key, at: at(0.2))
+      if !pending { model.workEnded(app: notes.key, at: at(0.4)) }
+      model.update(sessions: [], ending: .connectionLost, at: at(1))
+      XCTAssertEqual(
+        pill(model, 1)?.status,
+        pending ? "Connection lost · last action unconfirmed" : "Computer use ended")
+
+      // The relaunched app's first input installs a fresh owner attachment.
+      model.update(sessions: [reopenedView], ending: .ended, at: at(4))
+      XCTAssertEqual(pill(model, 4)?.status, "Sharing Notes")
+      XCTAssertEqual(pill(model, 65)?.status, "Sharing Notes")
+    }
+  }
+
   func testDismissOnlyClearsConnectionLost() {
     var model = OverlayModel()
     model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
