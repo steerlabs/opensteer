@@ -1325,22 +1325,29 @@ public final class HelperRuntime {
     }
   }
 
-  private func ownerInput(_ envelope: RequestEnvelope, connection: IPCConnection, budget: WorkBudget)
+  func ownerInput(_ envelope: RequestEnvelope, connection: IPCConnection, budget: WorkBudget)
     async throws -> MacOwnerInput.Result {
     let params = try envelope.decodeParams(MacOwnerInput.InputParams.self, method: envelope.method)
-    guard params.sequence >= 0, params.sequence <= 9_007_199_254_740_991,
-      params.geometry > 0, params.geometry <= 9_007_199_254_740_991 else {
-      throw HelperError(.failed, "Owner input needs a valid generation and sequence.")
-    }
     guard connection.negotiatedOwnerInputVersion == 2, params.source.kind == "owner-view"
     else { return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "unavailable") }
-    tickOwnerInput()
     let id = attachmentKey(streamID: params.streamId, source: params.source)
-    if let previous = ownerAttachments[id], !previous.active.current {
-      await waitForOwnerCleanup(previous)
+    func releaseRefusedSource() async {
+      guard let attachment = ownerAttachments[id], attachment.connection === connection else { return }
+      releaseOwnerInput(attachment, reason: "batch-refused")
+      await waitForOwnerCleanup(attachment)
+    }
+    guard params.sequence >= 0, params.sequence <= 9_007_199_254_740_991,
+      params.geometry > 0, params.geometry <= 9_007_199_254_740_991 else {
+      await releaseRefusedSource()
+      throw HelperError(.failed, "Owner input needs a valid generation and sequence.")
     }
     do {
       try budget.check()
+      tickOwnerInput()
+      if let previous = ownerAttachments[id], previous.connection === connection, !previous.active.current {
+        await waitForOwnerCleanup(previous)
+        try budget.check()
+      }
       try Self.requireUnlocked()
       guard (1...64).contains(params.events.count) else { throw MacOwnerInput.Refusal("unsupported") }
       for event in params.events { try event.validate() }
@@ -1358,16 +1365,27 @@ public final class HelperRuntime {
       let bytes = try JSONCoding.encoder.encode(envelope.params).count
       let reservation = try lease.admission.admit(sequence: params.sequence, bytes: bytes)
       let deadline = ProcessInfo.processInfo.systemUptime + budget.remaining()
-      return await withCheckedContinuation { continuation in
+      let result: MacOwnerInput.Result = await withCheckedContinuation { continuation in
         if lease.mailbox.append(.init(params: params, reservation: reservation, deadline: deadline, reply: continuation)) {
           lease.queue.enqueue { await lease.worker.drain(lease) }
         }
       }
-    } catch let refusal as MacOwnerInput.Refusal {
-      return MacOwnerInput.Result(sequence: params.sequence,
-        outcome: refusal.reason == "stale" ? "stale" : "refused", reason: refusal.reason)
+      let expired = result.outcome == "dispatched" && ProcessInfo.processInfo.systemUptime >= deadline
+      if expired {
+        releaseOwnerInput(lease, reason: "timed-out")
+        await waitForOwnerCleanup(lease)
+      }
+      if expired || result.outcome == "unknown" {
+        throw HelperError(.outcomeUnknown, "Some of the input may already have reached this app.")
+      }
+      return result
+    } catch let error as HelperError where error.code == .outcomeUnknown {
+      throw error
     } catch {
-      return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "unavailable")
+      await releaseRefusedSource()
+      let reason = (error as? MacOwnerInput.Refusal)?.reason ?? "unavailable"
+      return MacOwnerInput.Result(sequence: params.sequence,
+        outcome: reason == "stale" ? "stale" : "refused", reason: reason)
     }
   }
 

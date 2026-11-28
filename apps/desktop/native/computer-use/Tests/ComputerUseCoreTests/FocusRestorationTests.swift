@@ -3,6 +3,16 @@ import XCTest
 @testable import ComputerUseCore
 
 final class FocusRestorationTests: XCTestCase {
+  func testOwnerRestorationStillHasTimeAfterTheFirstBatchExpires() {
+    let time = Locked<TimeInterval>(10)
+    let firstBatch = OwnerInputAXBudget(deadline: 9, now: { time.current }, check: {})
+    XCTAssertNil(firstBatch.timeout())
+    let restoration = FocusEnforcer.ownerRestorationBudget(started: 10, now: firstBatch.now)
+    XCTAssertEqual(restoration.timeout(), 0.1)
+    time.withLock { $0 = 12 }
+    XCTAssertNil(restoration.timeout())
+  }
+
   func testVerifiedAgentRestorationDoesNotRequireBothAppKitNotices() {
     XCTAssertTrue(FocusEnforcer.restorationAcknowledged(
       restored: true, originalActivated: true, targetDeactivated: false, afterAgentInput: true))

@@ -28,6 +28,35 @@ struct MacOwnerInputMap: Sendable {
   }
 }
 
+struct OwnerInputAXBudget: Sendable {
+  @TaskLocal static var current: OwnerInputAXBudget?
+
+  let deadline: TimeInterval
+  var limit: Float = axMessagingTimeout
+  var effects: Locked<Bool>? = nil
+  var timedOut = Locked(false)
+  var now: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+  var check: @Sendable () throws -> Void
+
+  func timeout(maximum: Float? = nil) -> Float? {
+    guard !timedOut.current, (try? check()) != nil else { return nil }
+    let remaining = deadline - now()
+    guard remaining > 0 else { return nil }
+    return Float(min(Double(min(limit, maximum ?? limit)), remaining))
+  }
+
+  static func prepare(_ element: AXUIElement, maximum: Float? = nil) -> Bool {
+    guard let current else { return true }
+    guard let timeout = current.timeout(maximum: maximum) else { return false }
+    return AXUIElementSetMessagingTimeout(element, timeout) == .success
+  }
+
+  static func received(_ status: AXError) -> AXError {
+    if status == .cannotComplete { current?.timedOut.withLock { $0 = true } }
+    return status
+  }
+}
+
 /// Person input contains no observation, action descriptions or task receipts.
 /// Only explicitly requested, nonsecure copy can carry text back to its source.
 enum MacOwnerInput {
@@ -108,6 +137,13 @@ enum MacOwnerInput {
       }
     }
   }
+  static func releasesOnly(_ events: [Event]) -> Bool {
+    !events.isEmpty && events.allSatisfy {
+      ($0.kind == "key" && $0.action == "up")
+        || ($0.kind == "mouse" && ($0.phase == "up" || $0.phase == "cancel"))
+    }
+  }
+
   static func changesEditing(_ events: [Event], buttonsHeld: Bool) -> Bool {
     // tickOwnerInput's idle publication still observes hover-driven focus/caret changes.
     buttonsHeld || !events.allSatisfy { $0.kind == "mouse" && $0.phase == "move" }
@@ -277,7 +313,6 @@ final class OwnerShortcutPolicy {
       index.invalidate()
     }
     let app = AXUIElementCreateApplication(pid)
-    AXUIElementSetMessagingTimeout(app, 0.1)
 
     func resolve(_ lookup: MenuShortcutIndex.Lookup) throws -> Resolution? {
       switch lookup {
@@ -334,6 +369,7 @@ final class MacOwnerInputWorker {
   private var keys: [String: HeldKey] = [:]
   private var buttons: [String: HeldButton] = [:]
   private var generation: Int?
+  private var focusAfterClickUntil: TimeInterval = 0
   private var contextRevision = -1
   /// The field's editing contexts, governed by the shared editing-admission rule
   /// (`docs/editing-admission.md`, `OwnerEditingContexts`).
@@ -342,7 +378,6 @@ final class MacOwnerInputWorker {
   private var focusedField: (element: AXUIElement, role: String, secure: Bool, id: String)?
   private var nextFieldID = 0
   private var selection: CFRange?
-  private var contextUnpublished = false
   /// True while an unconfirmed text-mutating edit is in flight, so AX offsets at `predictedState`
   /// may not match live document offsets yet (A1).
   private var pendingTextMutation = false
@@ -354,6 +389,7 @@ final class MacOwnerInputWorker {
     let keys = keys, buttons = buttons
     self.keys.removeAll(); self.buttons.removeAll()
     if forgetField {
+      focusAfterClickUntil = 0
       focusedField = nil; selection = nil
       pendingTextMutation = false
       shortcutPolicy.invalidate()
@@ -362,13 +398,15 @@ final class MacOwnerInputWorker {
     lease.heldDeadline.withLock { $0 = nil }
     defer { lease.mutations.setHeld(false, attachment: lease.id) }
     guard lease.binding.target.process.isCurrent else { return }
+    // The retained AX token prevents reuse of the window number. Cleanup only asks WindowServer.
     for key in keys.values where !key.menuHandled {
-      guard KeyWindow.windowID(of: key.token.element) == key.target.windowID else { continue }
+      guard KeyWindow.captureState(key.target.windowID, processIdentifier: key.target.processIdentifier) != nil
+      else { continue }
       try? await SyntheticEvents.ownerKey(down: false, virtualKey: key.code, flags: [], text: nil, repeatKey: false, target: key.target, modifier: key.modifier)
     }
     for (name, held) in buttons {
       let target = held.target
-      guard let button = MouseButton(rawValue: name), KeyWindow.windowID(of: held.token.element) == target.windowID else { continue }
+      guard let button = MouseButton(rawValue: name), KeyWindow.captureState(target.windowID, processIdentifier: target.processIdentifier) != nil else { continue }
       let types = await SyntheticEvents.mouseTypes(button)
       try? await SyntheticEvents.postMouse(type: types.up, target: target, button: button, clickCount: 1, pressure: 0)
     }
@@ -387,34 +425,55 @@ final class MacOwnerInputWorker {
       var enteredFocus = false
       do {
         guard lease.active.current, lease.admission.isCurrent(batch.reservation) else { throw MacOwnerInput.Refusal("unavailable") }
-        // Checked while this batch holds the app's lane, where contacts change.
         guard !lease.mutations.heldByOther(lease.id) else { throw MacOwnerInput.Refusal("contended") }
+        guard ProcessInfo.processInfo.systemUptime < batch.deadline
+        else { throw MacOwnerInput.Refusal("unavailable") }
         try await lease.verifyPath()
         guard lease.active.current, lease.admission.isCurrent(batch.reservation) else { throw MacOwnerInput.Refusal("unavailable") }
+        if MacOwnerInput.releasesOnly(batch.params.events) {
+          let result = await run(batch, lease: lease, proceed: {})
+          batch.reply.resume(returning: result)
+          lease.burstActive.withLock { $0 = false }
+          lease.mutations.endPerson()
+          await publishUnlessPending(lease)
+          continue
+        }
         guard let map = lease.producer.inputMap,
           let enforcer = lease.focus.personEnforcer(for: lease.binding.target.process.processIdentifier)
         else { throw MacOwnerInput.Refusal("stale") }
         guard lease.active.current, lease.admission.isCurrent(batch.reservation) else { throw MacOwnerInput.Refusal("unavailable") }
         try lease.check(map)
         enteredFocus = true
+        let preparation = OwnerInputAXBudget(deadline: batch.deadline, check: {
+          guard lease.active.current else { throw MacOwnerInput.Refusal("unavailable") }
+        })
         _ = try await enforcer.guardedPerson(window: lease.binding.window.element, prepare: true, keys: true,
-          finalCheck: { try lease.check(map) }, check: { try lease.check(map) },
+          axBudget: preparation, finalCheck: { try lease.check(map) }, check: {
+            try lease.check(map)
+            guard preparation.timeout() != nil else { throw MacOwnerInput.Refusal("unavailable") }
+          },
           hasPendingInput: {
             lease.active.current && !lease.guardFailed.current
               && !lease.mutations.hasWaitingInput
               && burst.current.acceptsInput(at: ProcessInfo.processInfo.systemUptime)
               && lease.mailbox.hasPending
+          },
+          releaseIfStopped: {
+            if !lease.active.current, !self.keys.isEmpty || !self.buttons.isEmpty {
+              await self.cleanup(lease)
+            }
           }
         ) { proceed in
           if current.current == nil { current.withLock { $0 = lease.mailbox.pop() } }
           await self.consumeBurst(lease, current: current, burst: burst, proceed: proceed)
         }
-        // The quiet wait and focus watch can include an external caret change.
-        await publishUnlessPending(lease)
       } catch {
         let refusal = error as? MacOwnerInput.Refusal
         MacVideoDiagnostic.write(["event": "owner-input-preparation-refused", "streamId": lease.streamID,
           "reason": refusal?.reason ?? "focus-guard", "focusEntered": enteredFocus])
+        // Map/security refusals are safe after restoration; focus errors are fatal.
+        if refusal == nil { lease.guardFailed.withLock { $0 = true } }
+        await cleanup(lease, forgetField: refusal == nil)
         if let pending = current.withLock({ value in defer { value = nil }; return value }) {
           let reason = !lease.active.current || !lease.admission.isCurrent(pending.reservation)
             ? "unavailable" : (error as? MacOwnerInput.Refusal)?.reason ?? "unsupported"
@@ -422,12 +481,10 @@ final class MacOwnerInputWorker {
           pending.reply.resume(returning: .init(sequence: pending.params.sequence,
             outcome: reason == "stale" ? "stale" : "refused", reason: reason))
         }
-        // Map/security refusals are safe after restoration; focus errors are fatal.
-        if refusal == nil { lease.guardFailed.withLock { $0 = true } }
-        await cleanup(lease, forgetField: refusal == nil)
       }
       lease.burstActive.withLock { $0 = false }
       lease.mutations.endPerson()
+      await publishUnlessPending(lease)
     } while !lease.mailbox.finishIfEmpty()
   }
 
@@ -435,13 +492,8 @@ final class MacOwnerInputWorker {
                             burst: Locked<OwnerInputBurst>,
                             proceed: @escaping @Sendable () throws -> Void) async {
     while let batch = current.withLock({ value in defer { value = nil }; return value }) {
-      let gate: @Sendable () throws -> Void = {
-        guard ProcessInfo.processInfo.systemUptime < batch.deadline else { throw MacOwnerInput.Refusal("unsupported") }
-        try proceed()
-      }
-      let result = await run(batch.params, lease: lease, reservation: batch.reservation, proceed: gate)
+      let result = await run(batch, lease: lease, proceed: proceed)
       batch.reply.resume(returning: result)
-      if contextUnpublished { await publishUnlessPending(lease) }
       if result.outcome != "dispatched" { burst.withLock { $0.end() }; return }
       guard lease.active.current, !lease.guardFailed.current,
         burst.current.acceptsInput(at: ProcessInfo.processInfo.systemUptime) else {
@@ -458,10 +510,19 @@ final class MacOwnerInputWorker {
     }
   }
 
-  func run(_ params: MacOwnerInput.InputParams, lease: MacOwnerAttachment,
-           reservation: OwnerInputAdmission.Reservation,
+  func run(_ batch: MacOwnerInput.Batch, lease: MacOwnerAttachment,
            proceed: @escaping @Sendable () throws -> Void) async -> MacOwnerInput.Result {
+    let params = batch.params, reservation = batch.reservation
     defer { lease.admission.complete(reservation) }
+    let effects = Locked(false)
+    let timedOut = Locked(false)
+    let check: @Sendable () throws -> Void = {
+      guard !timedOut.current, lease.active.current, lease.admission.isCurrent(reservation),
+        ProcessInfo.processInfo.systemUptime < batch.deadline
+      else { throw MacOwnerInput.Refusal("unavailable") }
+    }
+    let gate: @Sendable () throws -> Void = { try check(); try proceed() }
+    let budget = OwnerInputAXBudget(deadline: batch.deadline, effects: effects, timedOut: timedOut, check: check)
     do {
       guard lease.active.current, lease.admission.isCurrent(reservation) else { throw MacOwnerInput.Refusal("unavailable") }
       guard lease.admission.isCurrent(reservation), let map = lease.producer.inputMap,
@@ -472,34 +533,33 @@ final class MacOwnerInputWorker {
       MacVideoDiagnostic.write(["event": "owner-input-admitted", "streamId": lease.streamID,
         "inputSequence": params.sequence, "generation": map.generation,
         "uptimeUs": DispatchTime.now().uptimeNanoseconds / 1000])
-      try proceed()
+      try gate()
       let changesEditing = MacOwnerInput.changesEditing(params.events, buttonsHeld: !buttons.isEmpty)
-      try await dispatch(params, lease: lease, map: map, proceed: proceed)
-      if changesEditing {
-        lease.mutations.notePersonEdit()
-        // A context changes only when the live field or its selection changes (observed in
-        // publishContext/refresh), never unconditionally on every event.
-        contextUnpublished = true
+      defer {
+        if changesEditing && effects.current { lease.mutations.notePersonEdit() }
       }
+      try await OwnerInputAXBudget.$current.withValue(budget) {
+        try await dispatch(params, lease: lease, map: map, proceed: gate)
+      }
+      try gate()
       lease.count("outcome.dispatched")
       return MacOwnerInput.Result(sequence: params.sequence, outcome: "dispatched")
     } catch let refusal as MacOwnerInput.Refusal {
-      lease.count("refused." + refusal.reason)
+      let reason = timedOut.current ? "unavailable" : refusal.reason
+      lease.count("refused." + reason)
       // Release held contacts without forgetting earlier contexts or rotating on refusal.
       await cleanup(lease, forgetField: false)
-      if let map = lease.producer.inputMap { await publishContext(lease, map: map) }
       return MacOwnerInput.Result(sequence: params.sequence,
-        outcome: refusal.reason == "stale" ? "stale" : "refused", reason: refusal.reason)
+        outcome: effects.current ? "unknown" : reason == "stale" ? "stale" : "refused", reason: reason)
     } catch {
       await cleanup(lease, forgetField: false)
-      return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "unsupported")
+      return MacOwnerInput.Result(sequence: params.sequence, outcome: effects.current ? "unknown" : "refused",
+        reason: timedOut.current ? "unavailable" : "unsupported")
     }
   }
 
   /// P2 (Rule 2 dependency): events in one `display.input` batch run strictly in order and the
-  /// batch stops at its FIRST refusal (any thrown `MacOwnerInput.Refusal` immediately aborts the
-  /// loop and returns `refused`/`stale` from `run(_:...)`, so dependent compensating moves and
-  /// replacement paste/edit events never run after a refused selection removal).
+  /// batch stops at its first refusal. Anything that may already have taken effect is unknown.
   private func dispatch(_ params: MacOwnerInput.InputParams, lease: MacOwnerAttachment,
                         map: MacOwnerInputMap, proceed: @escaping @Sendable () throws -> Void) async throws {
     for event in params.events {
@@ -513,10 +573,10 @@ final class MacOwnerInputWorker {
       case "scroll":
         let target = try map.target(x: event.x!, y: event.y!, process: lease.binding.target.process.processIdentifier)
         try await SyntheticEvents.ownerScroll(dx: event.dx! * map.crop.width, dy: event.dy! * map.crop.height,
-          target: target, gate: { try proceed(); try lease.check(map) })
+          target: target, gate: { try Self.beginEffect { try proceed(); try lease.check(map) } })
       case "key": try await key(event, lease: lease, map: map, proceed: proceed)
       case "command":
-        let focused = try keyboard(lease, map: map)
+        let focused = try await keyboardAfterClick(lease, map: map, proceed: proceed)
         guard !focused.secure else { throw MacOwnerInput.Refusal("sensitive") }
         refresh(focused, agentRevision: lease.mutations.agentRevision)
         let kind: OwnerEditingContexts.AdmissionKind =
@@ -530,7 +590,7 @@ final class MacOwnerInputWorker {
         predictCommand(event.command!, prepared: prepared)
       case "edit": try await edit(event.edit!, lease: lease, map: map, proceed: proceed)
       case "paste":
-        let focused = try keyboard(lease, map: map)
+        let focused = try await keyboardAfterClick(lease, map: map, proceed: proceed)
         guard !focused.secure else { throw MacOwnerInput.Refusal("sensitive") }
         refresh(focused, agentRevision: lease.mutations.agentRevision)
         guard contexts.admits(event.contextId!, kind: .relative, collapsed: selection?.length == 0) else {
@@ -539,7 +599,7 @@ final class MacOwnerInputWorker {
         try await insert(event.text!, focused: focused, lease: lease, map: map, proceed: proceed)
         predictInsertion(event.text!)
       case "copy":
-        do { try copy(contextId: event.contextId!, sequence: params.sequence, lease: lease, map: map) }
+        do { try await copy(contextId: event.contextId!, sequence: params.sequence, lease: lease, map: map, proceed: proceed) }
         catch {
           lease.count("clipboard.refused")
           lease.emit(.init(type: "display.clipboard", sequence: params.sequence,
@@ -560,7 +620,7 @@ final class MacOwnerInputWorker {
     let phase = event.phase!
     let name = phase == "move" && event.button == "none"
       ? (["left", "right", "middle"].first { buttons[$0] != nil } ?? "none") : event.button!
-    if phase == "cancel" { await cleanup(lease, forgetField: false); return }
+    if phase == "cancel" { try Self.beginEffect(proceed); await cleanup(lease, forgetField: false); return }
     let held = buttons[name]
     if phase == "up", held == nil { throw MacOwnerInput.Refusal("stale") }
     if phase == "down", held != nil { throw MacOwnerInput.Refusal("stale") }
@@ -578,9 +638,12 @@ final class MacOwnerInputWorker {
     }
     try await SyntheticEvents.postMouse(type: type, target: target, button: button,
       clickCount: event.clickCount ?? 1, pressure: phase == "up" || name == "none" ? 0 : 1,
-      flags: event.flags, gate: { try proceed(); try lease.check(map) })
+      flags: event.flags, gate: { try Self.beginEffect { try proceed(); try lease.check(map) } })
     if phase == "down", let retained { buttons[name] = HeldButton(target: target, token: retained) }
-    if phase == "up" { buttons[name] = nil }
+    if phase == "up" {
+      buttons[name] = nil
+      if button == .left { focusAfterClickUntil = ProcessInfo.processInfo.systemUptime + 0.5 }
+    }
     if phase == "move", let held { buttons[name] = HeldButton(target: target, token: held.token) }
   }
 
@@ -590,13 +653,13 @@ final class MacOwnerInputWorker {
     if !down {
       guard let held = keys[identity] else { return }
       if held.menuHandled { keys[identity] = nil; return }
-      guard KeyWindow.windowID(of: held.token.element) == held.target.windowID else { throw MacOwnerInput.Refusal("stale") }
+      guard KeyWindow.captureState(held.target.windowID, processIdentifier: held.target.processIdentifier) != nil else { throw MacOwnerInput.Refusal("stale") }
       try await SyntheticEvents.ownerKey(down: false, virtualKey: held.code, flags: event.flags, text: held.characters,
-        repeatKey: false, target: held.target, modifier: held.modifier, gate: { try proceed(); try lease.check(map) })
+        repeatKey: false, target: held.target, modifier: held.modifier, gate: { try Self.beginEffect { try proceed(); try lease.check(map) } })
       keys[identity] = nil
       return
     }
-    let focused = try keyboard(lease, map: map)
+    let focused = try await keyboardAfterClick(lease, map: map, proceed: proceed)
     guard !focused.secure else { throw MacOwnerInput.Refusal("sensitive") }
     let right = event.location == 2 || event.code?.hasSuffix("Right") == true
     let modifierCode: CGKeyCode?
@@ -611,7 +674,7 @@ final class MacOwnerInputWorker {
       if keys[identity] != nil, event.repeat != true { throw MacOwnerInput.Refusal("stale") }
       try await SyntheticEvents.ownerKey(down: true, virtualKey: code, flags: event.flags, text: nil,
         repeatKey: false, target: focused.target, modifier: true,
-        gate: { try proceed(); try lease.check(map) })
+        gate: { try Self.beginEffect { try proceed(); try lease.check(map) } })
       keys[identity] = HeldKey(code: code, target: focused.target, token: focused.token, modifier: true)
       return
     }
@@ -639,7 +702,7 @@ final class MacOwnerInputWorker {
     }
     try await SyntheticEvents.ownerKey(down: true, virtualKey: code, flags: event.flags,
       text: event.text ?? VirtualKeys.characters(for: combo), repeatKey: event.repeat ?? false,
-      target: target, gate: { try proceed(); try lease.check(map) })
+      target: target, gate: { try Self.beginEffect { try proceed(); try lease.check(map) } })
     if let text = event.text, modifiers.isSubset(of: [.shift]) {
       predictInsertion(text)
     }
@@ -652,7 +715,7 @@ final class MacOwnerInputWorker {
     if try await menuShortcut(combo, target: target, lease: lease, map: map, proceed: proceed) { return }
     guard let code = await VirtualKeys.code(for: combo) else { throw MacOwnerInput.Refusal("unsupported") }
     try await SyntheticEvents.press(virtualKey: code, flags: combo.flags, characters: VirtualKeys.characters(for: combo),
-      target: target, gate: { try proceed(); try lease.check(map) })
+      target: target, gate: { try Self.beginEffect { try proceed(); try lease.check(map) } })
   }
 
   private func menuShortcut(_ combo: KeyCombo, target: EventTarget, lease: MacOwnerAttachment,
@@ -668,11 +731,15 @@ final class MacOwnerInputWorker {
       try proceed(); try lease.check(map)
       let status: AXError
       if target.processIdentifier == getpid() {
+        let token = AXWindowToken(element: item)
         status = try await MainActor.run {
-          try proceed(); try lease.check(map)
-          return AXUIElementPerformAction(item, kAXPressAction as CFString)
+          try Self.beginAXWrite(token.element) { try proceed(); try lease.check(map) }
+          return AXUIElementPerformAction(token.element, kAXPressAction as CFString)
         }
-      } else { status = AXUIElementPerformAction(item, kAXPressAction as CFString) }
+      } else {
+        try Self.beginAXWrite(item) { try proceed(); try lease.check(map) }
+        status = AXUIElementPerformAction(item, kAXPressAction as CFString)
+      }
       if let error = ActionRunner.pressOutcome(status, whatMayHaveHappened: "the shortcut ran",
         failure: "This app's menu did not accept that shortcut.") { throw error }
       MacVideoDiagnostic.write(["event": "owner-menu-shortcut-hit", "streamId": lease.streamID,
@@ -698,13 +765,34 @@ final class MacOwnerInputWorker {
     }
   }
 
+  private struct FocusPending: Error {}
+
+  private func keyboardAfterClick(_ lease: MacOwnerAttachment, map: MacOwnerInputMap,
+                                  proceed: () throws -> Void) async throws -> Focused {
+    while true {
+      try proceed()
+      do {
+        let focused = try keyboard(lease, map: map,
+          waitsForClick: ProcessInfo.processInfo.systemUptime < focusAfterClickUntil)
+        focusAfterClickUntil = 0
+        return focused
+      } catch is FocusPending {
+        // Safari can publish AX focus after its page has already received the click.
+        try await Task.sleep(nanoseconds: 10_000_000)
+      }
+    }
+  }
+
   private struct Focused { let element: AXUIElement; let target: EventTarget; let secure: Bool; let role: String; let token: AXWindowToken }
-  private func keyboard(_ lease: MacOwnerAttachment, map: MacOwnerInputMap, secureMetadata: Bool = false) throws -> Focused {
+  private func keyboard(_ lease: MacOwnerAttachment, map: MacOwnerInputMap, secureMetadata: Bool = false,
+                        waitsForClick: Bool = false) throws -> Focused {
     try lease.check(map, secureMetadata: secureMetadata)
     let app = AXUIElementCreateApplication(lease.binding.target.process.processIdentifier)
-    AXUIElementSetMessagingTimeout(app, 0.1)
-    guard let field = AXValueReader.copyElement(app, kAXFocusedUIElementAttribute) else { throw MacOwnerInput.Refusal("no-field") }
-    AXUIElementSetMessagingTimeout(field, 0.1)
+    guard OwnerInputAXBudget.prepare(app) else { throw MacOwnerInput.Refusal("unavailable") }
+    var value: CFTypeRef?
+    let status = OwnerInputAXBudget.received(
+      AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &value))
+    let field = try Self.focusedElement(status, value: value, waitsForClick: waitsForClick)
     var pid: pid_t = 0
     guard AXUIElementGetPid(field, &pid) == .success, pid == lease.binding.target.process.processIdentifier,
       let window = AXValueReader.copyElement(field, kAXWindowAttribute), let id = KeyWindow.windowID(of: window),
@@ -715,10 +803,18 @@ final class MacOwnerInputWorker {
       secure: ActionReceipt.isSecure(role: role, subrole: subrole), role: role, token: AXWindowToken(element: window))
   }
 
+  nonisolated static func focusedElement(_ status: AXError, value: CFTypeRef?, waitsForClick: Bool) throws -> AXUIElement {
+    if status == .cannotComplete { throw MacOwnerInput.Refusal("unavailable") }
+    if status == .noValue, waitsForClick { throw FocusPending() }
+    guard status == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+      throw MacOwnerInput.Refusal("no-field")
+    }
+    return unsafeBitCast(value, to: AXUIElement.self)
+  }
+
   private func token(for target: EventTarget, lease: MacOwnerAttachment) throws -> AXWindowToken {
     if target.windowID == lease.binding.target.windowID { return AXWindowToken(element: lease.binding.window.element) }
     let app = AXUIElementCreateApplication(target.processIdentifier)
-    AXUIElementSetMessagingTimeout(app, 0.1)
     let roots = AXValueReader.copyElements(app, kAXWindowsAttribute)
     let candidates = roots + roots.flatMap { AXValueReader.copyElements($0, kAXChildrenAttribute) }
     guard let window = candidates.prefix(128).first(where: { KeyWindow.windowID(of: $0) == target.windowID }) else { throw MacOwnerInput.Refusal("unsupported") }
@@ -760,12 +856,12 @@ final class MacOwnerInputWorker {
     var slice = CFRange(location: location, length: length)
     guard let parameter = AXValueCreate(.cfRange, &slice) else { return nil }
     var value: CFTypeRef?
-    guard AXUIElementCopyParameterizedAttributeValue(
+    guard OwnerInputAXBudget.prepare(field), OwnerInputAXBudget.received(AXUIElementCopyParameterizedAttributeValue(
       field,
       kAXStringForRangeParameterizedAttribute as CFString,
       parameter,
       &value
-    ) == .success, let text = value as? String, text.utf16.count == length else {
+    )) == .success, let text = value as? String, text.utf16.count == length else {
       return nil
     }
     return text
@@ -919,13 +1015,18 @@ final class MacOwnerInputWorker {
   /// is never offered while that or later input is still queued, nor while an
   /// agent mutation holds the app lane.
   func publishUnlessPending(_ lease: MacOwnerAttachment, idle: Bool = false) async {
-    guard lease.admission.pendingBatches == 0,
+    guard lease.admission.pendingBatches == 0, keys.isEmpty, buttons.isEmpty,
       !idle || (!lease.burstActive.current && !lease.mutations.agentActive),
       let map = lease.producer.inputMap else { return }
-    contextUnpublished = false
     await publishContext(lease, map: map)
   }
   func publishContext(_ lease: MacOwnerAttachment, map: MacOwnerInputMap) async {
+    let budget = OwnerInputAXBudget(deadline: ProcessInfo.processInfo.systemUptime + 0.1, limit: 0.1,
+      check: { guard lease.active.current else { throw MacOwnerInput.Refusal("unavailable") } })
+    OwnerInputAXBudget.$current.withValue(budget) { readContext(lease, map: map) }
+  }
+
+  private func readContext(_ lease: MacOwnerAttachment, map: MacOwnerInputMap) {
     guard lease.active.current else { return }
     do {
       let focused = try keyboard(lease, map: map, secureMetadata: true)
@@ -935,7 +1036,8 @@ final class MacOwnerInputWorker {
         selected.length = 0
         if let parameter = AXValueCreate(.cfRange, &selected) {
           var value: CFTypeRef?
-          if AXUIElementCopyParameterizedAttributeValue(focused.element, kAXBoundsForRangeParameterizedAttribute as CFString, parameter, &value) == .success,
+          if OwnerInputAXBudget.prepare(focused.element),
+            OwnerInputAXBudget.received(AXUIElementCopyParameterizedAttributeValue(focused.element, kAXBoundsForRangeParameterizedAttribute as CFString, parameter, &value)) == .success,
             let value, CFGetTypeID(value) == AXValueGetTypeID() {
             let ax = unsafeBitCast(value, to: AXValue.self)
             var rect = CGRect.zero
@@ -966,11 +1068,22 @@ final class MacOwnerInputWorker {
     guard CFEqual(current.element, focused.element), current.role == focused.role,
       current.secure == focused.secure, !current.secure else { throw MacOwnerInput.Refusal("stale") }
   }
+  nonisolated static func beginEffect(_ proceed: () throws -> Void) throws {
+    try proceed()
+    OwnerInputAXBudget.current?.effects?.withLock { $0 = true }
+  }
+
+  nonisolated static func beginAXWrite(_ element: AXUIElement, proceed: () throws -> Void) throws {
+    try proceed()
+    guard OwnerInputAXBudget.prepare(element) else { throw MacOwnerInput.Refusal("unavailable") }
+    try beginEffect { try OwnerInputAXBudget.current?.check() }
+  }
+
   private enum InsertRoute { case accessibility, unicode }
   private func insertionRoute(_ focused: Focused, lease: MacOwnerAttachment) throws -> InsertRoute {
     let chromium = ChromiumDetection.isChromiumLike(bundlePath: lease.path, bundleId: lease.binding.target.app.bundleId)
     var settable: DarwinBoolean = false
-    let ax = !chromium && AXUIElementIsAttributeSettable(focused.element, kAXSelectedTextAttribute as CFString, &settable) == .success && settable.boolValue
+    let ax = !chromium && OwnerInputAXBudget.prepare(focused.element) && OwnerInputAXBudget.received(AXUIElementIsAttributeSettable(focused.element, kAXSelectedTextAttribute as CFString, &settable)) == .success && settable.boolValue
     guard ax || chromium else { throw MacOwnerInput.Refusal("unsupported") }
     return ax ? .accessibility : .unicode
   }
@@ -979,6 +1092,7 @@ final class MacOwnerInputWorker {
     let chosen = try route ?? insertionRoute(focused, lease: lease)
     try verifyFocus(focused, lease: lease, map: map); try proceed(); try lease.check(map)
     if chosen == .accessibility {
+      try Self.beginAXWrite(focused.element) { try proceed(); try lease.check(map) }
       guard AXUIElementSetAttributeValue(focused.element, kAXSelectedTextAttribute as CFString, text as CFString) == .success else { throw MacOwnerInput.Refusal("unsupported") }
     } else if text.isEmpty {
       try await chord(try KeyComboParser.parse("delete"), target: focused.target, lease: lease, map: map, proceed: proceed)
@@ -988,13 +1102,14 @@ final class MacOwnerInputWorker {
       for chunk in TextChunker.chunks(text, limit: 64) {
         try verifyFocus(focused, lease: lease, map: map)
         try await SyntheticEvents.typeUnicode(chunk, target: focused.target,
-          gate: { try proceed(); try lease.check(map) })
+          gate: { try Self.beginEffect { try proceed(); try lease.check(map) } })
       }
     }
   }
   /// Bounded wait for a text-naming edit when an app (such as Electron) renders a prior keystroke
   /// after dispatch returns (Rule 3, up to `OwnerEditingContexts.namedTextWait` = 0.5 s).
   nonisolated static func waitForNamedText<Match>(
+    isolation: isolated (any Actor)? = #isolation,
     pollIntervalNanoseconds: UInt64 = 10_000_000,
     now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     checkGate: () throws -> Void = {},
@@ -1028,7 +1143,7 @@ final class MacOwnerInputWorker {
 
   private func edit(_ edit: MacOwnerInput.Edit, lease: MacOwnerAttachment, map: MacOwnerInputMap,
                     proceed: @escaping @Sendable () throws -> Void) async throws {
-    let focused = try keyboard(lease, map: map)
+    let focused = try await keyboardAfterClick(lease, map: map, proceed: proceed)
     guard !focused.secure else { throw MacOwnerInput.Refusal("sensitive") }
     refresh(focused, agentRevision: lease.mutations.agentRevision)
     // Choose and qualify the insertion route before selecting any range.
@@ -1053,7 +1168,8 @@ final class MacOwnerInputWorker {
             var replacement = CFRange(location: selected.location - before, length: before + after)
             if let parameter = AXValueCreate(.cfRange, &replacement) {
               var value: CFTypeRef?
-              if AXUIElementCopyParameterizedAttributeValue(focused.element, kAXStringForRangeParameterizedAttribute as CFString, parameter, &value) == .success,
+              if OwnerInputAXBudget.prepare(focused.element),
+                OwnerInputAXBudget.received(AXUIElementCopyParameterizedAttributeValue(focused.element, kAXStringForRangeParameterizedAttribute as CFString, parameter, &value)) == .success,
                 let actual = value as? String, Array(actual.utf16) == expected,
                 self.range(focused.element)?.location == selected.location,
                 self.range(focused.element)?.length == 0 {
@@ -1081,6 +1197,7 @@ final class MacOwnerInputWorker {
         prefix = stringSlice(focused.element, location: replaceStart - prefixCount, length: prefixCount)
       }
       namedPrediction = (replaceStart: replaceStart, prefix: prefix)
+      try Self.beginAXWrite(focused.element) { try proceed(); try lease.check(map) }
       guard AXUIElementSetAttributeValue(focused.element, kAXSelectedTextRangeAttribute as CFString, matched.parameter) == .success else {
         pendingTextMutation = false
         contexts.mismatch()
@@ -1098,8 +1215,9 @@ final class MacOwnerInputWorker {
       predictInsertion(edit.text)
     }
   }
-  private func copy(contextId: String, sequence: Int, lease: MacOwnerAttachment, map: MacOwnerInputMap) throws {
-    let focused = try keyboard(lease, map: map)
+  private func copy(contextId: String, sequence: Int, lease: MacOwnerAttachment, map: MacOwnerInputMap,
+                    proceed: () throws -> Void) async throws {
+    let focused = try await keyboardAfterClick(lease, map: map, proceed: proceed)
     guard !focused.secure else {
       throw MacOwnerInput.Refusal("sensitive")
     }
@@ -1108,12 +1226,14 @@ final class MacOwnerInputWorker {
       throw MacOwnerInput.Refusal("stale")
     }
     guard let selected = range(focused.element) else { throw MacOwnerInput.Refusal("unsupported") }
+    try proceed(); try lease.check(map)
     if selected.length == 0 { lease.emit(.init(type: "display.clipboard", sequence: sequence, outcome: "empty")); return }
     guard selected.length <= 30_000 else {
       throw MacOwnerInput.Refusal("too-large")
     }
     guard let text = AXValueReader.copyString(focused.element, kAXSelectedTextAttribute), text.utf16.count <= 30_000 else { throw MacOwnerInput.Refusal("unsupported") }
     try verifyFocus(focused, lease: lease, map: map)
+    try proceed(); try lease.check(map)
     lease.count(text.isEmpty ? "clipboard.empty" : "clipboard.copied")
     lease.emit(.init(type: "display.clipboard", sequence: sequence, outcome: text.isEmpty ? "empty" : "copied", text: text.isEmpty ? nil : text))
   }

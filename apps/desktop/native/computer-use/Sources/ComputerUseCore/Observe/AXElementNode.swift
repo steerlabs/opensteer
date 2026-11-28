@@ -159,16 +159,17 @@ enum AXValueReader {
     return CGRect(origin: origin, size: size)
   }
 
-  static func copy(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+  static func copy(_ element: AXUIElement, _ attribute: String, maximum: Float? = nil) -> CFTypeRef? {
+    guard OwnerInputAXBudget.prepare(element, maximum: maximum) else { return nil }
     var value: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
+    guard OwnerInputAXBudget.received(AXUIElementCopyAttributeValue(element, attribute as CFString, &value)) == .success else {
       return nil
     }
     return value
   }
 
-  static func copyElement(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
-    guard let value = copy(element, attribute), CFGetTypeID(value) == AXUIElementGetTypeID()
+  static func copyElement(_ element: AXUIElement, _ attribute: String, maximum: Float? = nil) -> AXUIElement? {
+    guard let value = copy(element, attribute, maximum: maximum), CFGetTypeID(value) == AXUIElementGetTypeID()
     else { return nil }
     return unsafeBitCast(value, to: AXUIElement.self)
   }

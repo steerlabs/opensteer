@@ -46,6 +46,36 @@ final class OwnerInputAttachmentTests: XCTestCase {
     }
   }
 
+  @MainActor func testExpiredReleaseBatchClearsHeldInputBeforeRefusing() async throws {
+    let runtime = hostRuntime(helperVersion: "test", peerRequirement: .sameUser)
+    defer { runtime.stop() }
+    var pair: [Int32] = [0, 0]
+    XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+    let connection = IPCConnection(id: 71, fileDescriptor: pair[0], onFrame: { _, _ in }, onClose: { _ in })
+    connection.markGreeted(protocolVersion: 11, ownerInputVersion: 2)
+    defer { connection.close(); Darwin.close(pair[1]) }
+    let binding = await Task { @WorkActor in
+      MacVideoBinding(OwnerViewWindow.Binding(target: CaptureTarget(observationId: "fixture",
+        app: AppIdentity(bundleId: "fixture", displayName: "Fixture", teamId: nil),
+        process: ProcessStamp.of(getpid())!, windowID: 1), element: AXUIElementCreateApplication(getpid())))
+    }.value
+    let producer = MacWindowVideoProducer(id: "stream", binding: binding, operations: SerialTaskChain(),
+      authority: { true }, onState: { _ in })
+    defer { producer.stop() }
+    let source = MacVideoSource(kind: "owner-view", sessionId: nil, appKey: nil, viewId: "view", generation: 1)
+    let lease = try XCTUnwrap(runtime.installOwnerAttachment(streamID: "stream", source: source,
+      connection: connection, binding: binding, producer: producer, path: "/Fixture.app"))
+    lease.mutations.setHeld(true, attachment: lease.id)
+    let frame = Data(#"{"id":1,"method":"display.input","params":{"streamId":"stream","source":{"kind":"owner-view","viewId":"view","generation":1},"geometry":1,"sequence":1,"events":[{"kind":"key","action":"up","key":"Shift","code":"ShiftLeft","modifiers":[]}]}}"#.utf8)
+    let envelope = try JSONCoding.decoder.decode(RequestEnvelope.self, from: frame)
+    let reply = try await runtime.ownerInput(envelope, connection: connection, budget: WorkBudget(requestEnd: .distantPast))
+    XCTAssertEqual(reply.outcome, "refused")
+    XCTAssertEqual(reply.reason, "unavailable")
+    XCTAssertFalse(lease.active.current)
+    XCTAssertFalse(lease.mutations.heldByOther("another view"))
+    XCTAssertNil(runtime.ownerAttachments[lease.id])
+  }
+
   @MainActor
   func testResetInvalidatesBatchesDuringFirstVerificationAndDrainsBeforeNextAttachment() async throws {
     let runtime = hostRuntime(helperVersion: "test", peerRequirement: .sameUser)

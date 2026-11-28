@@ -121,8 +121,9 @@ final class MenuShortcutIndex {
   /// element sends the lookup back to the live menu bar before anything is
   /// pressed; the route is still chosen once.
   private static func exists(_ element: AXUIElement) -> Bool {
+    guard OwnerInputAXBudget.prepare(element) else { return false }
     var value: CFTypeRef?
-    return AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value)
+    return OwnerInputAXBudget.received(AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value))
       != .invalidUIElement
   }
 
@@ -132,8 +133,9 @@ final class MenuShortcutIndex {
   /// element vanished or could not be read (e.g. Electron replaced its menu bar).
   nonisolated static func isEnabled(_ element: AXUIElement) -> Bool? {
     AXUIElementSetMessagingTimeout(element, 0.1)
+    guard OwnerInputAXBudget.prepare(element, maximum: 0.1) else { return nil }
     var value: CFTypeRef?
-    let status = AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString, &value)
+    let status = OwnerInputAXBudget.received(AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString, &value))
     switch status {
     case .success:
       return (value as? NSNumber)?.boolValue ?? true
@@ -149,9 +151,10 @@ final class MenuShortcutIndex {
   }
 
   private static func build(applicationElement: AXUIElement) -> Built<AXUIElement> {
+    guard OwnerInputAXBudget.prepare(applicationElement) else { return Self.withoutMenuBar(.cannotComplete) }
     var value: CFTypeRef?
-    let status = AXUIElementCopyAttributeValue(
-      applicationElement, kAXMenuBarAttribute as CFString, &value)
+    let status = OwnerInputAXBudget.received(AXUIElementCopyAttributeValue(
+      applicationElement, kAXMenuBarAttribute as CFString, &value))
     guard status == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
       return Self.withoutMenuBar(status)
     }
@@ -167,8 +170,12 @@ final class MenuShortcutIndex {
         missed = true
         return false
       }
-      AXUIElementSetMessagingTimeout(
-        element, Float(min(Double(axMessagingTimeout), remaining)))
+      let limit = Float(min(Double(axMessagingTimeout), remaining))
+      AXUIElementSetMessagingTimeout(element, limit)
+      guard OwnerInputAXBudget.prepare(element, maximum: limit) else {
+        missed = true
+        return false
+      }
       return true
     }
     var built = Self.collect(
@@ -205,7 +212,7 @@ final class MenuShortcutIndex {
   /// children says so; one that timed out or went away does not.
   nonisolated static func children(of element: AXUIElement) -> ([AXUIElement], Bool) {
     var value: CFTypeRef?
-    let status = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value)
+    let status = OwnerInputAXBudget.received(AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value))
     switch status {
     case .success:
       return ((value as? [AXUIElement]) ?? [], true)
@@ -360,8 +367,8 @@ final class MenuShortcutIndex {
       ] as CFArray
     var values: CFArray?
     guard
-      AXUIElementCopyMultipleAttributeValues(
-        item, names, AXCopyMultipleAttributeOptions(rawValue: 0), &values) == .success,
+      OwnerInputAXBudget.received(AXUIElementCopyMultipleAttributeValues(
+        item, names, AXCopyMultipleAttributeOptions(rawValue: 0), &values)) == .success,
       let list = values as? [AnyObject], list.count == 5
     else { return nil }
     let rawModifiers = (list[0] as? NSNumber)?.intValue

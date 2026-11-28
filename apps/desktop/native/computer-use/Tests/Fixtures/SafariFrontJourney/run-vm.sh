@@ -1,12 +1,15 @@
 #!/bin/bash
 # The person's front app through an agent's work in Safari, on a real Mac (pnpm test:vm).
-#   pnpm test:vm -- [--inputs DIR] bash native/computer-use/Tests/Fixtures/SafariFrontJourney/run-vm.sh
+#   pnpm test:vm -- [--inputs DIR] bash native/computer-use/Tests/Fixtures/SafariFrontJourney/run-vm.sh [owner-input]
 # With --inputs holding a FocusEnforcer.swift, a second journey is built with that file in
 # place of the checkout's and runs first, for comparison (OPENSTEER_SAFARI_FRONT_RED_CASES).
 # Include ActionRunner.swift from the same revision if the FocusGuard interface differs.
+# In owner-input mode, an input directory with the six baseline owner-input sources runs first.
 set -euo pipefail
 fixtures=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$fixtures/../../../../.."
+owner_cases=owner-burst,owner-stall,owner-expired-release
+suite_mode=${1:-}
 default_cases=front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control,type-into
 
 compile() {
@@ -14,7 +17,7 @@ compile() {
   local sources=()
   while IFS= read -r file; do
     case "$file" in
-      */Focus/FocusEnforcer.swift|*/Act/ActionRunner.swift)
+      */Focus/FocusEnforcer.swift|*/Act/ActionRunner.swift|*/Act/MacOwnerInput.swift|*/Act/MenuShortcuts.swift|*/Observe/AXElementNode.swift|*/Observe/WindowIdentity.swift|*/Session/HelperRuntime.swift)
         if [[ -n "$replacements" && -f "$replacements/${file##*/}" ]]; then
           file="$replacements/${file##*/}"
         fi ;;
@@ -26,6 +29,10 @@ compile() {
     flags=(-typecheck -I "$modules")
   else
     flags=(-I "$build" -L "$build" -lOpensteerAppleData -lMacOSSigning -o "$output")
+  fi
+  if [[ "$output" == --typecheck || "${suite_mode:-}" == owner-input ]]; then
+    flags+=(-D SAFARI_OWNER_STALL_FIXTURE)
+    if [[ -z "$replacements" ]]; then flags+=(-D SAFARI_OWNER_RELEASE_FIXTURE); fi
   fi
   xcrun swiftc -parse-as-library -module-name ComputerUseCore -swift-version 5 \
     "${flags[@]}" "${sources[@]}" "$fixtures/Journey.swift" "$fixtures/Reminders.swift"
@@ -78,16 +85,19 @@ red_sources="/Volumes/My Shared Files/inputs"
 compile "$work/Green" &
 green_build=$!
 if [[ -f "$red_sources/FocusEnforcer.swift" ]]; then
-  mkdir -p "$work/red"
-  cp "$red_sources/FocusEnforcer.swift" "$work/red/"
-  if [[ -f "$red_sources/ActionRunner.swift" ]]; then
-    cp "$red_sources/ActionRunner.swift" "$work/red/"
+  mkdir -p "$work/baseline-sources"
+  if [[ "${1:-}" == owner-input ]]; then
+    for file in FocusEnforcer.swift MacOwnerInput.swift MenuShortcuts.swift AXElementNode.swift WindowIdentity.swift HelperRuntime.swift; do
+      cp "$red_sources/$file" "$work/baseline-sources/"
+    done
+  else
+    cp "$red_sources/FocusEnforcer.swift" "$work/baseline-sources/"
+    if [[ -f "$red_sources/ActionRunner.swift" ]]; then
+      cp "$red_sources/ActionRunner.swift" "$work/baseline-sources/"
+    fi
   fi
-  shasum -a 256 "$work/red/FocusEnforcer.swift" > "$out/red-source.sha256"
-  if [[ -f "$work/red/ActionRunner.swift" ]]; then
-    shasum -a 256 "$work/red/ActionRunner.swift" >> "$out/red-source.sha256"
-  fi
-  compile "$work/Red" "$work/red"
+  shasum -a 256 "$work/baseline-sources/"*.swift > "$out/red-source.sha256"
+  compile "$work/Red" "$work/baseline-sources"
 fi
 wait "$green_build"
 echo "built at $((SECONDS - began)) s"
@@ -140,6 +150,22 @@ run_journey() {
 # The suite has 30 minutes: the churn case stops early, and says so, past this.
 deadline=$(( $(date +%s) * 1000 + (1620 - (SECONDS - began)) * 1000 ))
 result=0
+if [[ "${1:-}" == owner-input ]]; then
+  for build_name in Red Green; do
+    [[ -x "$work/$build_name" ]] || continue
+    for each in ${owner_cases//,/ }; do
+      [[ "$build_name" != Red || "$each" != owner-expired-release ]] || continue
+      name="$build_name-$each"
+      export OPENSTEER_VIDEO_DIAGNOSTICS="$out/$name/video.jsonl"
+      OPENSTEER_SAFARI_FRONT_URL="$OPENSTEER_SAFARI_FRONT_URL$each" \
+        run_journey "$name" "$work/$build_name" "$each"
+      if [[ "$build_name" == Green && "$(cat "$out/$name/exit-code.txt")" != 0 ]]; then
+        result=1
+      fi
+    done
+  done
+  exit "$result"
+fi
 if [[ -x "$work/Red" ]]; then
   run_journey red "$work/Red" "${OPENSTEER_SAFARI_FRONT_RED_CASES:-front,front-watch,stop-watch}"
 fi

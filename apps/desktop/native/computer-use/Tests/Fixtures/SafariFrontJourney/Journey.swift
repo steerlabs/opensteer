@@ -31,6 +31,9 @@ func sleepSeconds(_ seconds: Double) async { try? await Task.sleep(nanoseconds: 
 enum SafariFrontCase: String {
   case front, stop, typing, control, choice, churn, overlay
   case typeInto = "type-into"
+  case ownerBurst = "owner-burst"
+  case ownerStall = "owner-stall"
+  case ownerExpiredRelease = "owner-expired-release"
 
   static func parse(_ name: String) throws -> SafariFrontCase {
     let base = name.hasSuffix("-watch") ? String(name.dropLast("-watch".count)) : name
@@ -77,6 +80,43 @@ enum SafariFrontCase: String {
       exit(result["passed"] as? Bool == true ? 0 : 1)
     }
     app.run()
+  }
+}
+
+/// The page stalls WebContent. Pause our disposable Safari's app process too, so the next AX
+/// request really waits at the app's IPC boundary while the first key is already in the page.
+enum OwnerSafariStall {
+  struct Trigger: Sendable {
+    let process: ProcessStamp
+    let log: URL
+    let baseline: Int
+    let pauseMs = Locked(0)
+  }
+
+  static let armed = Locked<Trigger?>(nil)
+
+  static func afterFirstKeyUp(_ pid: pid_t) {
+    guard let trigger = armed.withLock({ value -> Trigger? in
+      guard value?.process.processIdentifier == pid else { return nil }
+      defer { value = nil }
+      return value
+    }), trigger.process.isCurrent else { return }
+    let until = DispatchTime.now().uptimeNanoseconds + 250_000_000
+    while DispatchTime.now().uptimeNanoseconds < until {
+      let rows = (try? String(contentsOf: trigger.log, encoding: .utf8))?.split(separator: "\n")
+        .dropFirst(trigger.baseline) ?? []
+      if rows.contains(where: { $0.contains("\"page\":\"/owner-stall\"")
+        && $0.contains("\"kind\":\"input\"") }) {
+        let began = DispatchTime.now().uptimeNanoseconds
+        guard kill(pid, SIGSTOP) == 0 else { return }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(300)) {
+          if trigger.process.isCurrent { kill(pid, SIGCONT) }
+          trigger.pauseMs.withLock { $0 = Int((DispatchTime.now().uptimeNanoseconds - began) / 1_000_000) }
+        }
+        return
+      }
+      usleep(1_000)
+    }
   }
 }
 
@@ -286,6 +326,7 @@ enum PersonInput {
   let view = "cvw_" + UUID().uuidString.lowercased()
   var stream = ""
   let frames = Locked(0)
+  let geometry = Locked<Int?>(nil)
   let stopped = Locked(false)
   var renewal: Task<Void, Never>?
 
@@ -293,8 +334,10 @@ enum PersonInput {
     control = try AgentWire(helper: helper)
     media = try AgentWire(helper: helper)
   }
-  func start(identity: Any, title: String) async throws {
-    _ = try await control.request("hello", ["protocolVersion": 11, "ownerViewVersion": 3, "videoProfile": 1])
+  func start(identity: Any, title: String, input: Bool = false) async throws {
+    var hello = ["protocolVersion": 11, "ownerViewVersion": 3, "videoProfile": 1]
+    if input { hello["ownerInputVersion"] = 2 }
+    _ = try await control.request("hello", hello)
     let listed = try await control.request("view.windows", ["app": identity])
     let windows = (listed["windows"] as? [[String: Any]]) ?? []
     let window = try windows.first { ($0["title"] as? String)?.contains(title) == true }.unwrap("watched window")
@@ -308,7 +351,7 @@ enum PersonInput {
       "sources": [source], "maxLongSide": 1280, "maxFps": 60, "maxBitrate": NSNull()])
     _ = try await media.request("hello", ["protocolVersion": 11, "ownerViewVersion": 3])
     _ = try await media.request("display.attach", ["token": started["attachmentToken"]!])
-    let client = media.client, decoder = media.decoder, frames = frames, stopped = stopped
+    let client = media.client, decoder = media.decoder, frames = frames, stopped = stopped, geometry = geometry
     Thread.detachNewThread {
       var bytes = [UInt8](repeating: 0, count: 262_144)
       while !stopped.current {
@@ -320,6 +363,9 @@ enum PersonInput {
             let sequence = (header["sequence"] as? NSNumber)?.intValue,
             let ack = try? Frame.encode(JSONSerialization.data(withJSONObject: ["type": "display.ack", "sequence": sequence]))
           else { continue }
+          if header["key"] as? Bool == true, let generation = header["generation"] as? Int {
+            geometry.withLock { $0 = generation }
+          }
           frames.withLock { $0 += 1 }
           _ = ack.withUnsafeBytes { Darwin.write(client, $0.baseAddress, $0.count) }
         }
@@ -442,6 +488,8 @@ final class FrontSampler {
         case .choice: row = try await choiceCase(caseOut)
         case .churn: row = try await churnCase(caseOut)
         case .overlay: row = try await overlayCase(caseOut)
+        case .ownerBurst, .ownerStall, .ownerExpiredRelease:
+          row = try await ownerBurstCase(caseOut, kind: kind)
         }
       } catch {
         row = ["met": false, "error": String(describing: error)]
@@ -460,6 +508,112 @@ final class FrontSampler {
   }
 
   // MARK: - Fixture handling
+
+  func ownerBurstCase(_ caseOut: URL, kind: SafariFrontCase) async throws -> [String: Any] {
+    let path = kind.rawValue, stall = kind == .ownerStall
+    let expiredRelease = kind == .ownerExpiredRelease
+    let title = "Sol fixture \(path)"
+    let baseline = lineCount(fixtureLog)
+    try require(fixtureURL.lastPathComponent == path, "Run the owner-input fixture mode")
+    try await makeFront(front, at: point("field"))
+    let watch = try Watch(helper: helper)
+    do {
+      try await watch.start(identity: safariIdentity, title: title, input: true)
+      for _ in 0..<150 where watch.geometry.current == nil { await sleepSeconds(0.05) }
+      let source: [String: Any] = ["kind": "owner-view", "viewId": watch.view, "generation": 1]
+      let expected = String(String(repeating: "abcdefghijklmnopqrstuvwxyz", count: 8).prefix(200))
+      var batches = ["down", "up"].map { phase -> [[String: Any]] in
+        [["kind": "mouse", "phase": phase, "button": "left", "modifiers": [],
+          "x": 0.5, "y": 0.5]]
+      }
+      if expiredRelease {
+        batches += [
+          [["kind": "key", "action": "down", "code": "ShiftLeft", "key": "Shift", "modifiers": ["shift"]]],
+          [["kind": "key", "action": "up", "code": "ShiftLeft", "key": "Shift", "modifiers": []]],
+        ]
+      } else {
+        let events = expected.flatMap { character -> [[String: Any]] in
+          let key = String(character), code = "Key" + key.uppercased()
+          return [["kind": "key", "action": "down", "code": code, "key": key, "text": key, "modifiers": []],
+                  ["kind": "key", "action": "up", "code": code, "key": key, "modifiers": []]]
+        }
+        for start in stride(from: 0, to: events.count, by: 64) {
+          batches.append(Array(events[start..<min(start + 64, events.count)]))
+        }
+      }
+      let trigger: OwnerSafariStall.Trigger?
+      if stall {
+        trigger = try OwnerSafariStall.Trigger(
+          process: ProcessStamp.of(safari.processIdentifier).unwrap("owned Safari process"),
+          log: fixtureLog, baseline: baseline)
+        OwnerSafariStall.armed.withLock { $0 = trigger }
+      } else { trigger = nil }
+      defer { OwnerSafariStall.armed.withLock { $0 = nil } }
+      var replies: [[String: Any]] = []
+      let began = wallMs()
+      for (sequence, batch) in batches.enumerated() {
+        let geometry = try watch.geometry.current.unwrap("owner video generation")
+        let params: [String: Any] = ["streamId": watch.stream, "source": source,
+          "sequence": sequence, "geometry": geometry, "events": batch]
+        if expiredRelease, sequence == batches.count - 1 {
+          #if SAFARI_OWNER_RELEASE_FIXTURE
+          let frame = try JSONSerialization.data(withJSONObject: ["id": sequence, "method": "display.input", "params": params])
+          let envelope = try JSONCoding.decoder.decode(RequestEnvelope.self, from: frame)
+          let result = try await helper.ownerInput(envelope, connection: watch.control.connection,
+            budget: WorkBudget(requestEnd: .distantPast))
+          replies.append(["outcome": result.outcome, "reason": result.reason ?? ""])
+          #endif
+          break
+        }
+        let id = try watch.control.send("display.input", params, timeoutMs: 8_000)
+        let envelope = try await watch.control.reply(id, seconds: 10)
+        let result = (envelope["result"] as? [String: Any]) ?? ["error": envelope["error"] ?? NSNull()]
+        replies.append(result)
+        if result["outcome"] as? String != "dispatched" { break }
+      }
+      let batchMs = wallMs() - began
+      func pageRows() -> [[String: Any]] {
+        lines(fixtureLog, after: baseline).filter { $0["page"] as? String == "/" + path }
+      }
+      if expiredRelease {
+        func shifts(_ kind: String) -> Int {
+          pageRows().filter { $0["kind"] as? String == kind && $0["key"] as? String == "Shift" }.count
+        }
+        for _ in 0..<20 where shifts("keyup") == 0 { await sleepSeconds(0.05) }
+        let releasedBeforeClose = shifts("keyup")
+        let frames = await watch.stop()
+        let pressed = shifts("keydown"), released = shifts("keyup")
+        return ["met": replies.count == 4 && replies.prefix(3).allSatisfy { $0["outcome"] as? String == "dispatched" }
+          && replies.last?["outcome"] as? String == "refused" && replies.last?["reason"] as? String == "unavailable"
+          && pressed == 1 && releasedBeforeClose == 1 && released == 1,
+          "shiftDown": pressed, "shiftUpBeforeClose": releasedBeforeClose, "shiftUp": released,
+          "replies": replies, "elapsedMs": batchMs, "watchFrames": frames]
+      }
+      for _ in 0..<20 where pageRows().last(where: { $0["kind"] as? String == "input" })?["value"] as? String != expected {
+        await sleepSeconds(0.05)
+      }
+      for _ in 0..<20 where stall && trigger?.pauseMs.current == 0 { await sleepSeconds(0.05) }
+      let rows = pageRows()
+      let inputs = rows.filter { $0["kind"] as? String == "input" }.sorted {
+        ($0["count"] as? Int ?? 0) < ($1["count"] as? Int ?? 0)
+      }
+      let actual = inputs.compactMap { $0["data"] as? String }.joined()
+      let stallMs = rows.first { $0["kind"] as? String == "owner-stall" }?["ms"] as? Int ?? 0
+      let nativePauseMs = trigger?.pauseMs.current ?? 0
+      let clicked = rows.contains { $0["kind"] as? String == "click" && $0["target"] as? String == "field" }
+      let frames = await watch.stop()
+      return ["met": replies.count == batches.count && clicked && actual == expected
+          && inputs.last?["value"] as? String == expected && (!stall || (stallMs >= 300 && nativePauseMs >= 300))
+          && replies.allSatisfy { $0["outcome"] as? String == "dispatched" },
+        "sent": expected.count, "received": actual.count, "text": actual, "expected": expected,
+        "batchSizes": batches.map(\.count), "replies": replies, "elapsedMs": batchMs,
+        "clicked": clicked, "stallMs": stallMs, "nativePauseMs": nativePauseMs, "watchFrames": frames]
+    } catch {
+      await screenshot(caseOut, "owner-input-error")
+      _ = await watch.stop()
+      throw error
+    }
+  }
 
   func waitForWindow(pid: pid_t, title: String, seconds: Double) async throws {
     let app = AXUIElementCreateApplication(pid)
