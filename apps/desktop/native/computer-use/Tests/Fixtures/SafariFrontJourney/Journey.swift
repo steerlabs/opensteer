@@ -56,6 +56,7 @@ enum SafariFrontCase: String {
     if arguments.count >= 4, arguments[1] == "--person-click",
       let x = Double(arguments[2]), let y = Double(arguments[3])
     { PersonInput.click(x: x, y: y) }
+    if arguments.count == 2, arguments[1] == "--person-escape" { PersonInput.escape() }
     if arguments.count == 4, arguments[1] == "--person-move",
       let x = Double(arguments[2]), let y = Double(arguments[3])
     { PersonInput.move(x: x, y: y) }
@@ -144,6 +145,16 @@ enum PersonInput {
       event.setIntegerValueField(.mouseEventClickState, value: 1)
       event.post(tap: .cghidEventTap)
       usleep(40_000)
+    }
+    exit(0)
+  }
+  /// The Escape key, as the person presses it.
+  static func escape() -> Never {
+    guard CGPreflightPostEventAccess() else { exit(3) }
+    for down in [true, false] {
+      guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down) else { exit(4) }
+      event.post(tap: .cghidEventTap)
+      usleep(30_000)
     }
     exit(0)
   }

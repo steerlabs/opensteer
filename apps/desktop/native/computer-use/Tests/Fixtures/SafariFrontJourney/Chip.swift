@@ -36,6 +36,17 @@ extension SafariFront {
     }
   }
 
+  /// The person presses Escape: Safari's address field closes the Favorites it opened, so a
+  /// click on the page lands on the page.
+  func escape() async throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+    process.arguments = ["--person-escape"]
+    try process.run()
+    while process.isRunning { await sleepSeconds(0.02) }
+    await sleepSeconds(0.3)
+  }
+
   func move(_ point: CGPoint) async throws {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
@@ -372,6 +383,7 @@ extension SafariFront {
     checks["f-click-below-the-notch-reaches-safari"] = !focusBefore.0 && focusBelow.0
       && helper.registry.sessions[c.session] != nil
     // The page takes the focus back, so the next click is seen to move it again.
+    try await escape()
     try await personClick(CGPoint(x: safariFrame.midX, y: safariFrame.midY + 120))
     await sleepSeconds(0.5)
     let focusPage = safariAddressFieldFocused()
@@ -396,6 +408,7 @@ extension SafariFront {
     let focusBeside = safariAddressFieldFocused()
     checks["f-click-beside-the-open-notch-reaches-safari"] = !focusPage.0 && focusBeside.0
       && helper.registry.sessions[c.session] != nil
+    try await escape()
     try await personClick(CGPoint(x: safariFrame.midX, y: safariFrame.midY + 120))
     row["addressField"] = ["before": focusBefore.1, "belowRestingNotch": focusBelow.1, "page": focusPage.1,
       "besideOpenNotch": focusBeside.1]
