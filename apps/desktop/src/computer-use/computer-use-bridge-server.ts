@@ -909,6 +909,7 @@ export class ComputerUseBridgeServer {
 
   async #handle(socket: WebSocket, owner: BridgeOwner, data: RawData): Promise<void> {
     const receivedAt = this.#now();
+    const inputReceivedAt = performance.now();
     this.#pruneViews();
     let frame: unknown;
     try {
@@ -925,7 +926,9 @@ export class ComputerUseBridgeServer {
     const { id, method, params } = parsed.data;
     // One instant, fixed as the frame arrives: installing, connecting and the
     // helper frame all spend from it, and the helper frame carries what is left.
-    const deadline = receivedAt + (parsed.data.timeoutMs ?? defaultBridgeTimeoutMs);
+    const timeoutMs = parsed.data.timeoutMs ?? defaultBridgeTimeoutMs;
+    const deadline = receivedAt + timeoutMs;
+    const ownerInputDeadline = inputReceivedAt + timeoutMs;
     const answer = (result: unknown): void => {
       if (owner.alive) send(socket, { id, kind: "response", result });
     };
@@ -1141,7 +1144,18 @@ export class ComputerUseBridgeServer {
             forwarded = demand;
           }
         }
-        const result = await this.#helper.request(method, forwarded, { deadline });
+        const result = await this.#helper.request(
+          method,
+          forwarded,
+          method === "display.input" ? { ownerInputDeadline } : { deadline },
+        );
+        if (method === "display.input" && performance.now() >= ownerInputDeadline) {
+          refuse(
+            "outcome-unknown",
+            "The Mac answered after the input deadline. Check what arrived.",
+          );
+          return;
+        }
         if (streamId && method === "display.start" && "attachmentToken" in result) {
           const entry = this.#videos.get(streamId);
           if (!entry || entry !== startingVideo || !owner.alive || this.#now() >= deadline) {

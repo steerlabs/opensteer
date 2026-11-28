@@ -22,6 +22,7 @@ export interface OrderedInputLaneOptions<T> {
   readonly now?: () => number;
   /** Sends one batch and answers it, refused included; settles when it is answered. */
   readonly send: (value: T) => Promise<void>;
+  readonly interruptOnReset?: boolean;
   readonly reset: (source: string) => Promise<void>;
   /** Answers a batch that never reached the helper. */
   readonly notSent: (value: T) => void;
@@ -46,7 +47,7 @@ export function inputBytes(events: readonly DisplayInputEvent[]): number {
 
 type Queued<T> =
   | { readonly kind: "input"; readonly batch: OrderedInputBatch<T>; readonly arrived: number }
-  | { readonly kind: "reset"; readonly source: string };
+  | { readonly kind: "reset"; readonly source: string; readonly started?: Promise<void> };
 
 /**
  * Relays one stream's input to the Mac's helper one batch at a time, in arrival order. The
@@ -101,11 +102,11 @@ export class OrderedInputLane<T> {
     return true;
   }
 
-  /** The source lets go: what it still has queued never leaves, and the reset follows the batch in flight. */
+  /** The source lets go: what it still has queued never leaves, and the reset can interrupt the batch in flight. */
   reset(source: string): void {
     if (this.#ended) return;
     if (!this.#queue.some((entry) => entry.kind === "reset" && entry.source === source))
-      this.#queue.push({ kind: "reset", source });
+      this.#queueReset(source);
     this.#answerQueued((batch) => batch.source === source);
     void this.#pump();
   }
@@ -124,8 +125,17 @@ export class OrderedInputLane<T> {
     this.#ended = true;
     this.#answerQueued(() => true);
     this.#queue.length = 0;
-    this.#queue.push({ kind: "reset", source });
+    this.#queueReset(source);
     void this.#pump();
+  }
+
+  #queueReset(source: string): void {
+    const started = this.#options.interruptOnReset
+      ? Promise.resolve()
+          .then(() => this.#options.reset(source))
+          .catch(() => undefined)
+      : undefined;
+    this.#queue.push({ kind: "reset", source, ...(started && { started }) });
   }
 
   #answerQueued(matches: (batch: OrderedInputBatch<T>) => boolean): void {
@@ -153,7 +163,7 @@ export class OrderedInputLane<T> {
     try {
       for (let next = this.#queue.shift(); next; next = this.#queue.shift()) {
         if (next.kind === "reset") {
-          await this.#options.reset(next.source).catch(() => undefined);
+          await (next.started ?? this.#options.reset(next.source)).catch(() => undefined);
           continue;
         }
         this.#take(next.batch);

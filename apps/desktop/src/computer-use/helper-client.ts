@@ -18,6 +18,7 @@ import {
   computerUseHelperResults,
   computerUseRequestMayHaveEffect,
   computerUseMaxTimeoutMs,
+  macOwnerInputHelperReplyMs,
   computerUseOutOfTimeSentence,
   type LoginReceiverKey,
   type ComputerUseErrorCode,
@@ -243,6 +244,8 @@ export interface ComputerUseHelperRequestOptions {
    * none left the frame is never written.
    */
   readonly deadline?: number;
+  /** The local monotonic deadline for a relayed owner-input batch. */
+  readonly ownerInputDeadline?: number;
   readonly signal?: AbortSignal;
   /**
    * Read in the same turn as the frame's write: false means it is never
@@ -354,8 +357,17 @@ export class ComputerUseHelperClient {
     if (options.signal?.aborted) {
       throw new ComputerUseHelperFailure("failed", "The computer use request was cancelled.");
     }
-    const deadline = options.deadline ?? this.#defaultDeadline();
-    const connection = await this.#connect(deadline);
+    const inputDeadline = options.ownerInputDeadline;
+    const now = inputDeadline === undefined ? this.#now : () => performance.now();
+    const deadline = inputDeadline ?? options.deadline ?? this.#defaultDeadline();
+    const connection =
+      inputDeadline === undefined
+        ? await this.#connect(deadline)
+        : await untilComputerUseDeadline(
+            this.#connect(this.#now() + deadline - now()),
+            deadline,
+            now,
+          );
     if (connection.videoProfile !== 1 && method === "display.start") {
       const { maxBitrate: _cap, ...start } = macWindowVideoParams["display.start"].parse(params);
       params = { ...start, maxFps: Math.min(30, start.maxFps) };
@@ -388,6 +400,7 @@ export class ComputerUseHelperClient {
       { at: deadline },
       options.signal,
       options.admitted,
+      now,
     )) as ComputerUseHelperResult<Method>;
   }
 
@@ -832,6 +845,7 @@ export class ComputerUseHelperClient {
     due: ComputerUseDeadline,
     signal?: AbortSignal,
     admitted?: () => boolean,
+    now = this.#now,
   ): Promise<unknown> {
     if (signal?.aborted) {
       throw new ComputerUseHelperFailure("failed", "The computer use request was cancelled.");
@@ -852,7 +866,12 @@ export class ComputerUseHelperClient {
       }
       // Read in the same turn as the write below, so the frame carries the
       // time the request has left as it leaves, and none left means no frame.
-      const timeoutMs = Math.min(computerUseMaxTimeoutMs, Math.floor(due.at - this.#now()));
+      const left = Math.floor(due.at - now());
+      const ownerInput = method === "display.input";
+      const timeoutMs = Math.min(
+        computerUseMaxTimeoutMs,
+        left - (ownerInput ? macOwnerInputHelperReplyMs : 0),
+      );
       if (timeoutMs <= 0) {
         rejectPromise(outOfTime());
         return;
@@ -871,11 +890,14 @@ export class ComputerUseHelperClient {
       // Past its deadline the helper owes an answer, so a wait longer than the
       // grace means it is wedged on this one request. The request is given up
       // and the connection kept: every other session on it is healthy.
-      const timer = setTimeout(() => {
-        this.#pending.delete(id);
-        settle();
-        rejectPromise(new ComputerUseHelperDeadlineFailure(method, params));
-      }, timeoutMs + computerUseHelperAnswerGraceMs);
+      const timer = setTimeout(
+        () => {
+          this.#pending.delete(id);
+          settle();
+          rejectPromise(new ComputerUseHelperDeadlineFailure(method, params));
+        },
+        ownerInput ? left : timeoutMs + computerUseHelperAnswerGraceMs,
+      );
       timer.unref?.();
       const abort = (): void => {
         this.#pending.delete(id);
@@ -903,6 +925,10 @@ export class ComputerUseHelperClient {
         resolve: (value) => {
           if (method === "hello") {
             resolvePromise(value);
+            return;
+          }
+          if (ownerInput && now() >= due.at) {
+            rejectPromise(new ComputerUseHelperDeadlineFailure(method, params));
             return;
           }
           const parsed = computerUseHelperResults[method].safeParse(value);

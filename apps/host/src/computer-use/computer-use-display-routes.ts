@@ -40,7 +40,7 @@ export function registerComputerUseDisplayRoutes(
     login: AuthenticatedSession,
   ) => {
     installWebSocketLiveness(socket);
-    const pending: { bytes: Buffer; binary: boolean }[] = [];
+    const pending: { bytes: Buffer; binary: boolean; receivedAt: number }[] = [];
     let pendingBytes = 0;
     let attachment: Awaited<ReturnType<DisplayStreamHub["attachViewer"]>> | undefined;
     let checking = false;
@@ -92,7 +92,7 @@ export function registerComputerUseDisplayRoutes(
     };
     socket.once("close", (code) => cleanup("socket-close", code));
     socket.once("error", () => cleanup("socket-error"));
-    const handle = (bytes: Buffer, binary: boolean) => {
+    const handle = (bytes: Buffer, binary: boolean, receivedAt: number) => {
       let message;
       try {
         if (binary) throw new Error("JSON commands required");
@@ -104,12 +104,13 @@ export function registerComputerUseDisplayRoutes(
         return;
       }
       try {
-        attachment?.handle(message);
+        attachment?.handle(message, receivedAt);
       } catch (error) {
         closeForError(error);
       }
     };
     socket.on("message", (raw, binary) => {
+      const receivedAt = performance.now();
       const bytes = rawDataBuffer(raw);
       if (bytes.byteLength > maxViewerMessageBytes) {
         socket.close(displayViewerCloseCodes.tooLarge, "Display input too large");
@@ -118,14 +119,14 @@ export function registerComputerUseDisplayRoutes(
       // Once attached, all messages are synchronous. Acks never queue behind
       // input or an authority read; the bounded inbox covers admission only.
       if (attachment) {
-        handle(bytes, binary);
+        handle(bytes, binary, receivedAt);
         return;
       }
       if (pending.length >= 64 || pendingBytes + bytes.byteLength > maxViewerMessageBytes) {
         socket.close(displayViewerCloseCodes.tryAgain, "Display input queue exceeded");
         return;
       }
-      pending.push({ bytes, binary });
+      pending.push({ bytes, binary, receivedAt });
       pendingBytes += bytes.byteLength;
     });
     void (async () => {
@@ -149,7 +150,7 @@ export function registerComputerUseDisplayRoutes(
         return;
       }
       // Drain messages received during admission before accepting live ones.
-      for (const item of pending.splice(0)) handle(item.bytes, item.binary);
+      for (const item of pending.splice(0)) handle(item.bytes, item.binary, item.receivedAt);
       pendingBytes = 0;
     })().catch(closeForError);
   };

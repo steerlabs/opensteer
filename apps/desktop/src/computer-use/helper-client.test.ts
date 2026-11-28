@@ -137,6 +137,49 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
     },
   );
 
+  it("sends the remaining native owner input budget and rejects a late receipt", async () => {
+    const h = await helperHarness({
+      hello: {
+        helperVersion: "test",
+        minProtocolVersion: 11,
+        protocolVersion: 11,
+        routes: { windowLocation: true, windowGroups: true },
+        permissions: { accessibility: "granted", screenRecording: "granted" },
+        ownerInputVersion: 2,
+      },
+    });
+    await h.client.request("permissions.get", {});
+    const clock = vi.spyOn(performance, "now").mockReturnValue(100);
+    const ownerInputDeadline = 5_100;
+    h.reply("display.input", () => {
+      h.clock.at -= 9_000;
+      clock.mockReturnValue(ownerInputDeadline + 1);
+      return { sequence: 0, outcome: "dispatched" };
+    });
+    try {
+      await expect(
+        h.client.request(
+          "display.input",
+          {
+            streamId: "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            source: {
+              kind: "owner-view",
+              viewId: "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              generation: 1,
+            },
+            geometry: 1,
+            sequence: 0,
+            events: [{ kind: "key", action: "down", key: "a", code: "KeyA", modifiers: [] }],
+          },
+          { ownerInputDeadline },
+        ),
+      ).rejects.toMatchObject({ code: "outcome-unknown" });
+      expect(h.received.at(-1)).toMatchObject({ method: "display.input", timeoutMs: 4_500 });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it.each([undefined, 1, 2] as const)(
     "projects video for helper profile %s",
     async (videoProfile) => {

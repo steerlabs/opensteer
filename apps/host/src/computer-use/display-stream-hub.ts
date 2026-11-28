@@ -8,6 +8,8 @@ import { randomUUID } from "node:crypto";
 import { OpensteerError, type RunnerId, DeviceIdSchema, type UserId } from "@opensteer/core";
 import {
   displayFirstFrameTimeoutMs,
+  displayInputPatienceMs,
+  macOwnerInputViewerReplyMs,
   macDisplayMaxWindows,
   macDisplayMaxWarmWindows,
   macDisplayWarmMs,
@@ -164,6 +166,7 @@ interface PendingInput {
   readonly viewer: Viewer;
   readonly sequence: number;
   readonly geometry: number;
+  readonly inputDeadline?: number;
   result: boolean;
   copy: boolean;
   readonly cut: boolean;
@@ -305,7 +308,7 @@ export class DisplayStreamHub {
       readonly displayWindow?: boolean;
     } = {},
   ): Promise<{
-    handle: (message: DisplayViewerClientMessage) => void;
+    handle: (message: DisplayViewerClientMessage, receivedAt?: number) => void;
     close: (trigger?: string, code?: number) => void;
   }> {
     const deadline = this.#now() + displayFirstFrameTimeoutMs;
@@ -624,7 +627,11 @@ export class DisplayStreamHub {
     };
     socket.once("close", (code) => close("socket-close", code));
     socket.once("error", () => close("socket-error"));
-    return { handle: (message) => this.#viewerMessage(attached, viewer, message), close };
+    return {
+      handle: (message, receivedAt = performance.now()) =>
+        this.#viewerMessage(attached, viewer, message, receivedAt),
+      close,
+    };
   }
 
   claimDataSocket(ticket: string): DisplayDataTicketClaims {
@@ -1043,7 +1050,12 @@ export class DisplayStreamHub {
     });
   }
 
-  #viewerMessage(stream: Stream, viewer: Viewer, message: DisplayViewerClientMessage): void {
+  #viewerMessage(
+    stream: Stream,
+    viewer: Viewer,
+    message: DisplayViewerClientMessage,
+    receivedAt: number,
+  ): void {
     if (
       viewer.socket.readyState !== viewer.socket.OPEN ||
       !stream.viewers.has(viewer) ||
@@ -1182,7 +1194,9 @@ export class DisplayStreamHub {
       return;
     }
     if (message.type === "display.input-reset") {
-      if (stream.holder === viewer) this.#resetInput(stream);
+      if (viewer.sharedInput && stream.target && viewer.source.kind === "owner-view")
+        this.#resetInput(stream, viewer);
+      else if (stream.holder === viewer) this.#resetInput(stream);
       return;
     }
     if (message.type !== "display.input" || "controlId" in message) return;
@@ -1193,6 +1207,15 @@ export class DisplayStreamHub {
     );
     const editing =
       viewer.editing && (stream.editingVersion === 1 || stream.target?.editingVersion === 1);
+    const inputDeadline =
+      stream.target && viewer.source.kind === "owner-view"
+        ? receivedAt + (message.timeoutMs ?? displayInputPatienceMs)
+        : undefined;
+    const timeoutMs =
+      inputDeadline === undefined
+        ? undefined
+        : Math.floor(inputDeadline - performance.now() - macOwnerInputViewerReplyMs);
+    const expired = timeoutMs !== undefined && timeoutMs <= 0;
     const releaseOnly = message.events.length > 0 && message.events.every(releasesHeldInput);
     if (
       releaseOnly &&
@@ -1204,7 +1227,10 @@ export class DisplayStreamHub {
       this.#resetInput(stream);
     }
     const reason =
-      stream.inputClosed || !this.#inputAvailable(stream, viewer) || stream.state.state !== "live"
+      stream.inputClosed ||
+      !this.#inputAvailable(stream, viewer) ||
+      stream.state.state !== "live" ||
+      expired
         ? "unavailable"
         : message.geometry !== stream.generation
           ? "stale"
@@ -1241,6 +1267,7 @@ export class DisplayStreamHub {
         viewer,
         sequence: message.sequence,
         geometry: message.geometry,
+        ...(inputDeadline === undefined ? {} : { inputDeadline }),
         result: true,
         copy: message.events.some((event) => event.kind === "copy" || event.kind === "cut"),
         cut: message.events.some((event) => event.kind === "cut"),
@@ -1256,6 +1283,7 @@ export class DisplayStreamHub {
       this.#send(stream, {
         ...stream.fence,
         type: "host.integrations.mac-owner.input",
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
         streamId: stream.streamId,
         source: viewer.source,
         geometry: message.geometry,
@@ -1337,26 +1365,27 @@ export class DisplayStreamHub {
     }
   }
 
-  #resetInput(stream: Stream): void {
-    const holder = stream.holder;
-    if (!holder) return;
-    stream.holder = null;
-    stream.held.clear();
-    if (stream.target && holder.source.kind === "owner-view")
+  #resetInput(stream: Stream, viewer = stream.holder): void {
+    if (!viewer) return;
+    if (stream.holder && this.#sameSource(stream.holder.source, viewer.source)) {
+      stream.holder = null;
+      stream.held.clear();
+    }
+    if (stream.target && viewer.source.kind === "owner-view")
       this.#send(stream, {
         ...stream.fence,
         type: "host.integrations.mac-owner.input-reset",
         streamId: stream.streamId,
-        source: holder.source,
+        source: viewer.source,
       });
     else
       this.#send(stream, {
         ...stream.fence,
         type: "host.integrations.display.input-reset",
         ...(stream.phoneOwnerControl === 1
-          ? { source: holder.source }
-          : holder.source.kind === "task-session"
-            ? { sessionId: holder.source.sessionId }
+          ? { source: viewer.source }
+          : viewer.source.kind === "task-session"
+            ? { sessionId: viewer.source.sessionId }
             : {}),
         streamId: stream.streamId,
       });
@@ -1409,15 +1438,22 @@ export class DisplayStreamHub {
       stream.pending.delete(message.sequence);
       return;
     }
+    const late = pending.inputDeadline !== undefined && performance.now() >= pending.inputDeadline;
     if (message.type === "display.input.result") {
       if (!pending.result) return;
       pending.result = false;
-      if (message.outcome !== "dispatched") pending.copy = false;
+      if (late || message.outcome !== "dispatched") pending.copy = false;
+      this.#json(
+        pending.viewer.socket,
+        late
+          ? { type: "display.input.result", sequence: pending.sequence, outcome: "unknown" }
+          : { ...message, sequence: pending.sequence },
+      );
     } else {
       if (!pending.copy || (message.outcome === "cut" && !pending.cut)) return;
       pending.copy = false;
+      if (!late) this.#json(pending.viewer.socket, { ...message, sequence: pending.sequence });
     }
-    this.#json(pending.viewer.socket, { ...message, sequence: pending.sequence });
     if (!pending.result && !pending.copy) stream.pending.delete(message.sequence);
   }
 
@@ -1881,7 +1917,13 @@ export class DisplayStreamHub {
     reason?: string,
   ): void {
     const source = viewer.source;
-    if (stream.holder === viewer) this.#resetInput(stream);
+    if (
+      stream.holder === viewer ||
+      (stream.target &&
+        source.kind === "owner-view" &&
+        [...stream.pending.values()].some((pending) => pending.viewer === viewer && pending.result))
+    )
+      this.#resetInput(stream, viewer);
     for (const [sequence, pending] of stream.pendingPower)
       if (pending.viewer === viewer) stream.pendingPower.delete(sequence);
     for (const [sequence, pending] of stream.pending)

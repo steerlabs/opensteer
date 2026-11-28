@@ -1095,6 +1095,90 @@ describe("display editing receipt adapter", () => {
     hold(socket);
     return { lease, socket, editing };
   }
+  const shift = (action: "down" | "up"): DisplayInputEvent => ({
+    kind: "key",
+    action,
+    code: "ShiftLeft",
+    key: "Shift",
+    modifiers: action === "down" ? ["shift"] : [],
+  });
+
+  it("resets after timing out a balanced batch that holds no keys", async () => {
+    const { socket, editing } = await editingFixture();
+    const sent = editing.input(1, [shift("down"), shift("up")]);
+    const stop = expect(sent).rejects.toMatchObject({ name: "DisplayEditingStopped" });
+    expect(socket.messages("display.input")).toHaveLength(1);
+    vi.advanceTimersByTime(10_000);
+    await stop;
+    expect(socket.messages("display.input-reset")).toHaveLength(1);
+    editing.dispose();
+  });
+
+  it("resets a sent batch when a live socket loses input availability", async () => {
+    const { socket, editing } = await editingFixture();
+    const sent = editing.input(1, [shift("down"), shift("up")]);
+    const stopped = expect(sent).rejects.toMatchObject({ name: "DisplayEditingStopped" });
+    socket.json({
+      type: "display.state",
+      state: "live",
+      generation: 1,
+      width: 720,
+      height: 1280,
+      editingVersion: 1,
+    });
+    await stopped;
+    expect(socket.messages("display.input-reset")).toHaveLength(1);
+    editing.dispose();
+  });
+
+  it("resets after a refused release even though the held set already dropped the key", async () => {
+    const { socket, editing } = await editingFixture();
+    const down = editing.input(1, [shift("down")]);
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+    await down;
+    const up = editing.input(1, [shift("up")]);
+    const refused = expect(up).rejects.toMatchObject({ name: "DisplayEditingRefusal" });
+    socket.json({
+      type: "display.input.result",
+      sequence: 1,
+      outcome: "refused",
+      reason: "unavailable",
+    });
+    await refused;
+    expect(socket.messages("display.input-reset")).toHaveLength(1);
+    editing.dispose();
+  });
+
+  it.each(["atomic channel drop", "single unknown"] as const)(
+    "stops with an unknown outcome after a sent %s",
+    async (kind) => {
+      const { socket, editing } = await editingFixture();
+      const edit = {
+        kind: "edit" as const,
+        edit: {
+          contextId: "00000000-0000-4000-8000-000000000001",
+          before: "",
+          after: "",
+          text: "a",
+        },
+      };
+      const sent =
+        kind === "atomic channel drop" ? editing.sendBatch([edit, edit]) : editing.send(edit);
+      const stopped = expect(sent).rejects.toMatchObject({
+        name: "DisplayEditingStopped",
+        message: "Typing stopped. Some of it may not have arrived: check the text.",
+      });
+      expect(socket.messages("display.input")).toHaveLength(1);
+      if (kind === "atomic channel drop") socket.drop();
+      else socket.json({ type: "display.input.result", sequence: 0, outcome: "unknown" });
+      await stopped;
+      expect(editing.getSnapshot().receipt).toBe(
+        "Typing stopped. Some of it may not have arrived: check the text.",
+      );
+      editing.dispose();
+    },
+  );
+
   it("paces continuous batches by receipts and settles merged callers together", async () => {
     const { socket, editing } = await editingFixture();
     const first = editing.input(1, [pointer(0.1)]);
@@ -1471,8 +1555,8 @@ describe("display editing receipt adapter", () => {
       return { lease, socket, editing };
     }
 
-    // Q1(b): 10 s timeout — sent paste resolves unknown with non-retry wording; sent cut too;
-    // copy still rejects with Try again; queued unsent paste behind a timed-out batch is not sent.
+    // Q1(b): 10 s timeout — sent mutations stop with an unknown outcome.
+    // Pure copy keeps its retry wording.
     for (const kind of ["paste", "batch-paste", "cut", "copy"] as const) {
       const { socket, editing } = await cutCapableFixture();
       const op =
@@ -1499,12 +1583,15 @@ describe("display editing receipt adapter", () => {
         vi.advanceTimersByTime(10_000);
         await copyFailed;
       } else {
+        const stopped = expect(op).rejects.toMatchObject({
+          name: "DisplayEditingStopped",
+          message: "Typing stopped. Some of it may not have arrived: check the text.",
+        });
         vi.advanceTimersByTime(10_000);
-        expect(await op).toEqual({ outcome: "unknown", items: [] });
-        if (kind === "paste")
-          expect(editing.getSnapshot().receipt).toBe(
-            "May have been pasted: check before pasting again.",
-          );
+        await stopped;
+        expect(editing.getSnapshot().receipt).toBe(
+          "Typing stopped. Some of it may not have arrived: check the text.",
+        );
       }
       editing.dispose();
     }
@@ -1533,8 +1620,8 @@ describe("display editing receipt adapter", () => {
       editing.dispose();
     }
 
-    // Q1(c): resize / geometry change / dispose — sent paste & cut resolve unknown (never Try again);
-    // paste & cut attempted after resize (NOT yet sent) reject with "The display changed. Try again.".
+    // Q1(c): resize and dispose preserve a sent mutation's unknown outcome.
+    // Edits refused before sending after the resize keep their retry wording.
     for (const trigger of ["geometry", "generation", "dispose"] as const) {
       for (const kind of ["paste", "cut", "copy"] as const) {
         const { socket, editing } = await cutCapableFixture();
@@ -1546,8 +1633,13 @@ describe("display editing receipt adapter", () => {
                 contextId,
               })
             : editing.send({ kind, contextId });
-        const copyRejected =
-          kind === "copy" ? expect(op).rejects.toThrow("The display changed. Try again.") : null;
+        const stopped =
+          kind === "copy"
+            ? expect(op).rejects.toThrow("The display changed. Try again.")
+            : expect(op).rejects.toMatchObject({
+                name: "DisplayEditingStopped",
+                message: "Typing stopped. Some of it may not have arrived: check the text.",
+              });
         expect(socket.messages("display.input")).toHaveLength(1);
 
         if (trigger === "geometry") editing.setGeometry(null);
@@ -1564,10 +1656,11 @@ describe("display editing receipt adapter", () => {
             sharedInput: 1,
           });
 
-        if (copyRejected) await copyRejected;
-        else expect(await op).toEqual({ outcome: "unknown", items: [] });
+        await stopped;
         if (trigger !== "dispose" && kind !== "copy") {
-          expect(editing.getSnapshot().receipt).not.toContain("Try again");
+          expect(editing.getSnapshot().receipt).toBe(
+            "Typing stopped. Some of it may not have arrived: check the text.",
+          );
           // Now attempt a paste NOT yet sent after the resize: must reject with "Try again." and send nothing.
           await expect(
             editing.send({
@@ -1599,16 +1692,27 @@ describe("display editing receipt adapter", () => {
     const editing = new DisplayEditingSession(lease);
     editing.setGeometry(1);
     const originalSend = socket.send.bind(socket);
-    socket.send = () => {
-      throw new Error("WebSocket is still connecting");
+    socket.send = (data) => {
+      if (
+        typeof data === "string" &&
+        (JSON.parse(data) as { type: string }).type === "display.input"
+      )
+        throw new Error("The socket could not confirm the send");
+      originalSend(data);
     };
     await expect(
       editing.sendBatch([
         { kind: "edit", edit: { contextId, before: "x", after: "", text: "" } },
         { kind: "command", command: "moveBackward", contextId, follows: true },
       ]),
-    ).rejects.toThrow("This edit couldn’t be sent. Try again.");
-    expect(editing.getSnapshot().receipt).toBe("This edit couldn’t be sent. Try again.");
+    ).rejects.toMatchObject({
+      name: "DisplayEditingStopped",
+      message: "Typing stopped. Some of it may not have arrived: check the text.",
+    });
+    expect(editing.getSnapshot().receipt).toBe(
+      "Typing stopped. Some of it may not have arrived: check the text.",
+    );
+    expect(socket.messages("display.input-reset")).toHaveLength(1);
     expect(editing.diagnostics.refusals["too-large"]).toBeUndefined();
 
     // A genuinely over-limit atomic group still reports "This edit is too large.".
