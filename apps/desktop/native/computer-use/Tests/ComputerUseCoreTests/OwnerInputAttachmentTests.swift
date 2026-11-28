@@ -31,7 +31,7 @@ final class OwnerInputAttachmentTests: XCTestCase {
       format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
     let catalog = AppCatalog(roots: [root], bundles: [bundle])
     let app = try await catalog.resolve(query: identity).identity
-    let overlay = OverlayController(drawsWindows: false, onStop: {})
+    let overlay = OverlayController(drawsWindows: false, onStop: { _ in })
     let runtime = hostRuntime(helperVersion: "test", peerRequirement: .sameUser, catalog: catalog,
       overlay: overlay)
     defer { runtime.stop() }
@@ -95,28 +95,64 @@ final class OwnerInputAttachmentTests: XCTestCase {
       runtime.videoProducerFactory = { id, binding, _, _ in
         OwnerViewTestProducer(id: id, binding: binding, onStart: { started.fulfill() })
       }
-      XCTAssertNil(overlay.presentation(at: Date()).pill)
+      XCTAssertEqual(overlay.presentation(at: Date()).chips, [:])
       _ = try await request(runtime, agent, "session.open", ["sessionId": "task", "threadTitle": "Fixture task"])
       let session = try XCTUnwrap(runtime.registry.sessions["task"])
-      let state = AppSessionState(identity: app, path: "/Fixture.app")
-      session.add(state, access: .readWrite)
-      try runtime.registry.claim(state, for: session)
-      _ = try await request(runtime, agent, "session.open", ["sessionId": "task", "threadTitle": "Fixture task"])
+      let state = try await runtime.appState(
+        session, SessionApp(access: .readWrite, identity: app), needsControl: false)
       // The act marks this before running on the work executor. Leave the receipt outstanding.
       overlay.workStarted(on: state)
       agent.0.close()
       runtime.connectionClosed(agent.0)
-      XCTAssertEqual(overlay.presentation(at: Date()).pill?.status, "Connection lost · last action unconfirmed")
+      XCTAssertEqual(overlay.presentation(at: Date()).chips[state.key]?.look, .connectionLost)
 
       let source = try await openView(runtime, peer: control, app: app)
-      XCTAssertNil(overlay.presentation(at: Date()).pill)
+      XCTAssertEqual(overlay.presentation(at: Date()).chips, [:])
       let token = try await startViewStream(runtime, peer: control, source: source,
         stream: "dsp_\(UUID().uuidString)")
       _ = try await request(runtime, media, "display.attach", ["token": token])
       await fulfillment(of: [started], timeout: 1)
       XCTAssertTrue(runtime.ownerAttachments.isEmpty, "A passive viewer never gets an input attachment")
-      XCTAssertNil(overlay.presentation(at: Date()).pill)
-      XCTAssertNil(overlay.presentation(at: Date().addingTimeInterval(61)).pill)
+      XCTAssertEqual(overlay.presentation(at: Date()).chips, [:])
+      XCTAssertEqual(overlay.presentation(at: Date().addingTimeInterval(61)).chips, [:])
+    }
+  }
+
+  /// The person typing into a Mac app through Opensteer draws nothing on the
+  /// Mac; an agent working in that same app still shows its chip, and that
+  /// chip's `Stop` releases the person's input as every `Stop` here has.
+  @MainActor
+  func testThePersonsOwnInputShowsNothingAndAnAgentInTheSameAppStillDoes() async throws {
+    try await withOwnerViewRuntime { runtime, overlay, app in
+      let person = try peer(1, input: 2), agent = try peer(2)
+      defer { for peer in [person, agent] { peer.0.close(); Darwin.close(peer.1) } }
+      let producer = Locked<OwnerViewTestProducer?>(nil)
+      runtime.videoProducerFactory = { id, binding, _, _ in
+        let created = OwnerViewTestProducer(id: id, binding: binding)
+        producer.withLock { $0 = created }
+        return created
+      }
+      let stream = "dsp_\(UUID().uuidString)"
+      let source = try await openView(runtime, peer: person, app: app)
+      _ = try await startViewStream(runtime, peer: person, source: source, stream: stream)
+      let picture = try XCTUnwrap(producer.current)
+      let lease = try XCTUnwrap(runtime.installOwnerAttachment(streamID: stream,
+        source: .init(kind: "owner-view", sessionId: nil, appKey: nil, viewId: "view", generation: 1),
+        connection: person.0, binding: picture.binding, producer: picture, path: "/Fixture.app"))
+      XCTAssertTrue(lease.active.current)
+      XCTAssertEqual(overlay.presentation(at: Date()).chips, [:], "No chip, no Sharing.")
+
+      _ = try await request(runtime, agent, "session.open", ["sessionId": "task", "threadTitle": NSNull()])
+      let session = try XCTUnwrap(runtime.registry.sessions["task"])
+      let state = try await runtime.appState(
+        session, SessionApp(access: .readWrite, identity: app), needsControl: false)
+      XCTAssertEqual(
+        overlay.presentation(at: Date()).chips[state.key]?.look, .agents(dots: [.still], more: 0))
+
+      runtime.stopFromOverlay(app: state.key)
+      XCTAssertEqual(session.cancellation.reason, .stoppedByUser)
+      XCTAssertFalse(lease.active.current, "The person's own input is released too.")
+      XCTAssertEqual(overlay.presentation(at: Date()).chips, [:])
     }
   }
 

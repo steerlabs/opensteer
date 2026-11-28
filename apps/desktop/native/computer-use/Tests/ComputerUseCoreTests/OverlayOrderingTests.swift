@@ -36,7 +36,7 @@ final class OverlayOrderingTests: XCTestCase {
       WindowSnapshot.isDirectlyAbove(panel: 50, window: 10, frontToBack: stack, own: own)
     }
     XCTAssertTrue(above([1, 50, 10, 2]))
-    XCTAssertTrue(above([50, 51, 10]), "The outline between the pointer and its window.")
+    XCTAssertTrue(above([50, 51, 10]), "A click ring between the chip and its window.")
     XCTAssertFalse(above([50, 10, 2].reversed()), "The window was raised over it.")
     XCTAssertFalse(above([50, 3, 10]), "Another window came between them.")
     XCTAssertFalse(above([50, 2]), "The window is not on screen.")
@@ -57,9 +57,8 @@ final class OverlayOrderingTests: XCTestCase {
   }
 
   func testTheBreathAsksForALowFrameRate() {
-    for animation in Breath.animations() + Breath.animations(opacity: (0.35, 0.9), scale: nil) {
-      XCTAssertLessThanOrEqual(animation.preferredFrameRateRange.maximum, 15)
-      XCTAssertGreaterThan(animation.preferredFrameRateRange.minimum, 0)
-    }
+    let animation = Breath.animation(low: OverlayStyle.stillDotOpacity, high: 1)
+    XCTAssertLessThanOrEqual(animation.preferredFrameRateRange.maximum, 15)
+    XCTAssertGreaterThan(animation.preferredFrameRateRange.minimum, 0)
   }
 }

@@ -976,7 +976,7 @@ export class ComputerUseHelperClient {
   /**
    * Starts the helper through LaunchServices, never as a child of this app:
    * `-g` leaves the person's foreground alone while allowing the helper's
-   * pill and cursor windows to appear. Going through `open` makes the helper
+   * window chips to appear. Going through `open` makes the helper
    * its own responsible process, so macOS attributes the two grants to it
    * rather than to Opensteer.
    */
