@@ -406,8 +406,7 @@ export class DisplayEditingSession {
         recordReceipt: true,
       });
     } else {
-      this.#cancelStoppedReceiptTimer();
-      this.#set({ receipt: null });
+      if (this.#stoppedReceiptTimer === null) this.#set({ receipt: null });
       if (pending.copy) {
         pending.dispatched = true;
         const refusal = pending.clipboardRefusal;
