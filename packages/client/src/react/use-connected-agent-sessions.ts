@@ -154,7 +154,7 @@ export function useConnectedAgentWork(
         current.set(id, {
           grant: { kind: "browser-profile", profileId: tab.profile.profileId },
           name: tab.profile.name,
-          device: null,
+          device: { id: tab.computer.computerId, name: tab.computer.name },
         });
     }
     return current;

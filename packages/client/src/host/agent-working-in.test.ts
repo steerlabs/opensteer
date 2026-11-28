@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { DeviceIdSchema, type AgentWorkingIn } from "@opensteer/core";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
 import { readTaskActivity } from "./agent-work.js";
@@ -31,9 +32,15 @@ async function harness() {
     host.dispose();
   });
   await client.load();
-  const tell = (tabId: string | null) => {
+  const tell = (tabId: string | null, device?: Pick<AgentWorkingIn, "computerId" | "target">) => {
     for (const socket of host.sockets)
-      socket.deliver({ type: "host.agent-working-in", threadId, sessionId, tabId } as never);
+      socket.deliver({
+        type: "host.agent-working-in",
+        threadId,
+        sessionId,
+        tabId,
+        ...device,
+      } as never);
   };
   const held = () => client.getSnapshot().agentWorkingIn?.[threadId]?.tabId;
   const reattach = async () => {
@@ -68,4 +75,19 @@ it("keeps a null notice: no activity read, however late, names the tab again", a
   const operations = await late.catch(() => []);
   expect(JSON.stringify(operations)).not.toContain("tab_a");
   expect(held()).toBeUndefined();
+});
+
+it("keeps the current record when the socket repeats the same device place", async () => {
+  const { client, tell, reattach } = await harness();
+  const computerId = DeviceIdSchema.parse("rnr_00000000-0000-4000-8000-000000000001");
+  const target = { grant: { kind: "device" as const }, name: "Studio Mac", device: null };
+  const place = () => client.getSnapshot().agentWorkingIn?.[threadId];
+  await reattach();
+  tell(null, { computerId, target });
+  await vi.waitFor(() => expect(place()?.target).toEqual(target));
+  const first = place();
+  tell(null, { computerId, target: structuredClone(target) });
+  expect(place()).toBe(first);
+  tell(null, { computerId, target: { ...target, name: "Notes" } });
+  expect(place()?.target?.name).toBe("Notes");
 });

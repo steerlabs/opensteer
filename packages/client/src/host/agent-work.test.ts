@@ -1,4 +1,8 @@
-import type { AgentCommandActivity, AgentOperationView } from "@opensteer/core";
+import {
+  AgentOperationEndingSchema,
+  type AgentCommandActivity,
+  type AgentOperationView,
+} from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { mockAgentWork, mockAgentWorkThreads } from "../mock/mock-agent-work.js";
@@ -316,6 +320,60 @@ describe("why an operation ended, as the person reads it", () => {
     state: "unknown",
     ...(ending === undefined ? {} : { ending }),
   });
+
+  const endingSentences = {
+    stopped: ["You stopped this while it ran.", "You stopped this before anything was sent."],
+    "task-done": [
+      "The task was marked Done while this was running.",
+      "The task was marked Done before anything was sent.",
+    ],
+    disconnected: [
+      "You disconnected this agent while this ran.",
+      "You disconnected this agent before anything was sent.",
+    ],
+    expired: ["Its access expired while this ran.", "Its access expired before anything was sent."],
+    narrowed: [
+      "You changed its access while this ran.",
+      "You changed its access before anything was sent.",
+    ],
+    "tab-closed": [
+      "You closed this tab while it ran",
+      "You closed the tab before anything was sent.",
+    ],
+    "profile-deleted": [
+      "You deleted the browser profile while this ran.",
+      "You deleted the browser profile before anything was sent.",
+    ],
+    "contact-lost": [
+      "Opensteer lost contact before it heard back",
+      "Opensteer lost contact before anything was sent.",
+    ],
+  } as const;
+
+  it.each(AgentOperationEndingSchema.options)(
+    "explains %s both after hand-off and before a send",
+    (ending) => {
+      const [sent, unsent] = endingSentences[ending];
+      expect(operationRow(unknown(ending)).detail).toContain(sent);
+      expect(
+        operationRow({
+          ...unknown(ending),
+          tool: "browser_use",
+          state: "refused",
+          outcome: "refused",
+          handedOffAt: null,
+          decision: {
+            by: "refused",
+            reason: "authority",
+            message: "The operation could not start.",
+          },
+        }),
+      ).toMatchObject({
+        outcome: { label: "Not sent", tone: "warn" },
+        detail: unsent,
+      });
+    },
+  );
 
   it("says the person's Stop ended it, never that contact was lost", () => {
     const row = operationRow(unknown("stopped"));
