@@ -258,7 +258,7 @@ it("keeps the last operations for a task whose activity refresh fails", async ()
   expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");
 });
 
-it("removes a deleted profile from Now and offers neither Watch nor Stop for that work", async () => {
+it("removes a deleted profile from Now while keeping the running session and its Stop", async () => {
   await mount("/", options("one"));
   const dialog = await openPanel();
   const shopping = client.getSnapshot().browserProfiles.find(({ name }) => name === "Shopping")!;
@@ -270,9 +270,13 @@ it("removes a deleted profile from Now and offers neither Watch nor Stop for tha
       idempotencyKey: "delete-now-profile",
     });
   });
-  await vi.waitFor(() => expect(trigger()).toBeNull());
+  await vi.waitFor(() => expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working"));
+  expect(panel()?.textContent).not.toContain("Shopping");
   expect(button("Watch ChatGPT")).toBeUndefined();
-  expect(button("Stop ChatGPT")).toBeUndefined();
+  const stop = button("Stop ChatGPT", panel()!);
+  expect(stop).toBeDefined();
+  await act(async () => stop!.click());
+  await vi.waitFor(() => expect(trigger()).toBeNull());
 });
 
 it("quotes and isolates a self-declared product name on the row, its actions and Stop warning", async () => {

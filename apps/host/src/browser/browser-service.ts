@@ -5150,6 +5150,7 @@ export class BrowserService {
                     surfaceId,
                     actor.authority.agentBindingId,
                     { ownerId: actor.authority.ownerId, threadId: actor.threadId },
+                    actor.signal,
                   );
               },
               ...(actor.browserSend ? { browserSend: actor.browserSend } : {}),
@@ -5438,7 +5439,7 @@ export class BrowserService {
         );
         const { backend } = await this.#admitAgentBackend({ ...agent, sessionId: session.id });
         await this.#recordAgentTabPlace(agent, session, row.id);
-        this.#noteBoundTabFor(signal, session.id, row.id, agent.agentBindingId, holder);
+        this.#noteBoundTab(session.id, row.id, agent.agentBindingId, holder, true, signal);
         return { tabId: row.id, sessionId: session.id, backend, reloaded: true };
       }
       const session = await this.#usableAgentSession(agent, old.sessionId, false);
@@ -5455,7 +5456,7 @@ export class BrowserService {
       // V5: a pooled bind records the agent's tab like every other bind, so the tab is the
       // agent's (slept last) from the bind, not from its first input.
       await this.#recordAgentTabPlace(agent, session, row.id);
-      this.#noteBoundTabFor(signal, session.id, row.id, agent.agentBindingId, holder);
+      this.#noteBoundTab(session.id, row.id, agent.agentBindingId, holder, true, signal);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: false };
     }
     const found =
@@ -5561,7 +5562,7 @@ export class BrowserService {
       await this.pageTabs.admitted!(fresh);
       await this.admitAgentBrowser(agent, "read-write", [session]);
       await this.#recordAgentTabPlace(agent, session, row.id);
-      this.#noteBoundTabFor(signal, session.id, row.id, agent.agentBindingId, holder);
+      this.#noteBoundTab(session.id, row.id, agent.agentBindingId, holder, true, signal);
       return {
         tabId: row.id,
         sessionId: session.id,
@@ -8333,25 +8334,15 @@ export class BrowserService {
     BrowserSessionId,
     Map<BrowserSurfaceId, Map<string, BoundHolder>>
   >();
-  /** A bind of work that has ended meanwhile (a narrowing, a Stop) records no hold: it fails. */
-  #noteBoundTabFor(
-    signal: AbortSignal | undefined,
-    sessionId: BrowserSessionId,
-    surfaceId: BrowserSurfaceId,
-    binding: string,
-    holder: BoundHolder,
-  ): void {
-    signal?.throwIfAborted();
-    this.#noteBoundTab(sessionId, surfaceId, binding, holder);
-  }
   #holdPageForOpen(
     sessionId: BrowserSessionId,
     surfaceId: BrowserSurfaceId,
     binding: string,
     holder: NonNullable<BoundHolder>,
+    signal?: AbortSignal,
   ): (() => void) | undefined {
     if (this.#endedBindings.has(binding)) return undefined;
-    const entry = this.#noteBoundTab(sessionId, surfaceId, binding, holder, false);
+    const entry = this.#noteBoundTab(sessionId, surfaceId, binding, holder, false, signal);
     if (!entry) return undefined;
     return () => {
       const tabs = this.#boundTabs.get(sessionId);
@@ -8370,7 +8361,10 @@ export class BrowserService {
     binding: string,
     holder: BoundHolder = null,
     notify = true,
+    signal?: AbortSignal,
   ): BoundHolder {
+    // A call aborted while opening or taking up a page may no longer publish a hold.
+    signal?.throwIfAborted();
     const tabs =
       this.#boundTabs.get(sessionId) ?? new Map<BrowserSurfaceId, Map<string, BoundHolder>>();
     this.#boundTabs.set(sessionId, tabs);
@@ -8395,15 +8389,19 @@ export class BrowserService {
   tabTakenUp(
     authority: { readonly agentBindingId: string; readonly ownerId: UserId },
     tabId: string,
+    signal?: AbortSignal,
   ) {
-    for (const tabs of this.#boundTabs.values()) {
+    for (const [sessionId, tabs] of this.#boundTabs) {
       const holder = tabs.get(tabId as BrowserSurfaceId)?.get(authority.agentBindingId);
       if (!holder || holder.ownerId !== authority.ownerId) continue;
-      tabs.get(tabId as BrowserSurfaceId)!.set(authority.agentBindingId, {
-        ...holder,
-        at: this.#activityClock.now(),
-      });
-      this.#onTabsChanged(undefined, [tabId as BrowserSurfaceId]);
+      this.#noteBoundTab(
+        sessionId,
+        tabId as BrowserSurfaceId,
+        authority.agentBindingId,
+        holder,
+        true,
+        signal,
+      );
     }
   }
 

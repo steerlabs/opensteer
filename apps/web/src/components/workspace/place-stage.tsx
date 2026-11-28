@@ -35,7 +35,7 @@ import { useListedBrowserPresentations } from "./identity.js";
 import { OwnerView } from "./owner-view.js";
 import { StartPage } from "./start-page.js";
 import { TaskAppWatchPane } from "./task-app-watch.js";
-import { useWatchWaiting } from "./watch-follow.js";
+import { useWatchPlaceWait } from "./watch-follow.js";
 import {
   destinationPlaceKey,
   startPageLink,
@@ -149,7 +149,7 @@ function SelectedPlace({
   const presentations = useListedBrowserPresentations(hostClient);
   const pageVisible = usePageVisible();
   const { pathname, state: entryState } = useLocation();
-  const watching = useWatchWaiting(hostClient, conversationAt(pathname));
+  const watchPlaceWait = useWatchPlaceWait(hostClient, conversationAt(pathname));
   const known = useRef(new Map<string, PlaceItem>());
   const placeKey = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
   const live = usePlace(hostClient, placeKey) ?? null;
@@ -351,7 +351,7 @@ function SelectedPlace({
   }
   if (selection.kind === "talk") return null;
   if (selection.kind === "launcher") {
-    if (watching && startPageOpening(entryState) === "") {
+    if (watchPlaceWait && startPageOpening(entryState) === "") {
       return (
         <section aria-label="Watch" className="place place--page">
           <div className="browser-toolbar surface-row">
@@ -360,7 +360,9 @@ function SelectedPlace({
           </div>
           <div className="browser-stage">
             <div className="place-state" role="status">
-              Waiting for the agent’s page…
+              {watchPlaceWait === "waiting"
+                ? "Waiting for the agent’s page…"
+                : "The agent’s work ended before anything was available to watch."}
             </div>
           </div>
         </section>

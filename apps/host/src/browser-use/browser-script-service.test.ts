@@ -3,6 +3,47 @@ import type { TabRecord } from "@opensteer/database";
 import { expect, it, vi } from "vitest";
 import { BrowserScriptService } from "./browser-script-service.js";
 
+it("does not tell the owner about a page whose bind returns after abort", async () => {
+  const ownerId = createId("user");
+  const tabId = createId("tab");
+  const abort = new AbortController();
+  const entered = Promise.withResolvers<void>();
+  const bound = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  const workingIn = vi.fn();
+  const openPage = vi.fn(async () => {
+    entered.resolve();
+    await bound.promise;
+    return { tabId, targetId: "target", sessionId: "channel" };
+  });
+  const service = new BrowserScriptService({
+    browser: { browserBindingEnded: () => false },
+    store: { admitExecution: async () => ({ agentConnection: { grantRevision: 1 } }) },
+    sharedChromeTabs: { browserUsePort: () => ({ openPage, release: () => released.resolve() }) },
+    workingIn,
+  } as unknown as ConstructorParameters<typeof BrowserScriptService>[0]);
+  const result = service
+    .runBrowserScript({
+      authority: { ownerId, agentBindingId: `session:${createId("agentSession")}` },
+      sharedChromeTabId: tabId,
+      contextKey: "returning-bind",
+      code: `await openPage(${JSON.stringify(tabId)});`,
+      signal: abort.signal,
+    })
+    .catch(() => undefined);
+  try {
+    await entered.promise;
+    abort.abort(new Error("The person narrowed the grant."));
+    bound.resolve();
+    await released.promise;
+    expect(workingIn).not.toHaveBeenCalled();
+  } finally {
+    bound.resolve();
+    await result;
+    await service.close();
+  }
+});
+
 it("keeps Guest and ungranted profiles out of a selected binding's script", async () => {
   const ownerId = createId("user");
   const threadId = createId("thread");

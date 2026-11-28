@@ -37,7 +37,11 @@ export function ConnectedAgentsSection({
             threadId={threadId}
             sessionId={sessionId}
             onOpen={() => onOpen(threadId, row.requestId)}
-            openLabel={phoneSentence(sessionActionParts(row.primaryAction, agent, distinction))}
+            openLabel={
+              row.primaryAction
+                ? phoneSentence(sessionActionParts(row.primaryAction, agent, distinction))
+                : undefined
+            }
             title={phoneSentence(row.nameParts, { quoteNames: true })}
             detail={phoneSentence(row.detailParts, { quoteNames: false })}
             needsYou={row.needsYou}

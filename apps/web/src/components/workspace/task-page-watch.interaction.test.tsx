@@ -1,7 +1,11 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { expect, it, vi } from "vitest";
-import { mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
+import {
+  mockAgentWorkThreads,
+  mockConnectedAgents,
+  mockIphoneScreenDeviceId,
+} from "@opensteer/client/mock";
 import { threadAgentPage } from "@opensteer/client/host";
 import {
   click,
@@ -154,6 +158,59 @@ it("keeps a cold Watch waiting longer than five seconds and opens the page when 
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("says when cold work ends without a page", async () => {
+  await watch("cold-tab");
+  const threadId = mockAgentWorkThreads.shopping;
+  const sessionId = client.getSnapshot().threads.find(({ id }) => id === threadId)!.externalWork!
+    .sessionId;
+  expect(document.querySelector('[aria-label="Watch"]')?.textContent).toContain(
+    "Waiting for the agent’s page",
+  );
+  await act(async () => {
+    client.stopAgentSession(threadId, sessionId);
+  });
+  expect(document.querySelector('[aria-label="Watch"]')?.textContent).toContain(
+    "The agent’s work ended before anything was available to watch.",
+  );
+  expect(shownTab()).toBeNull();
+});
+
+it("follows a late phone screen from a computer operation", async () => {
+  const threadId = mockAgentWorkThreads.shopping;
+  await watch("cold-tab", undefined, (source) => {
+    const activity = source.rpc["threads.activity"];
+    Object.defineProperty(source.rpc, "threads.activity", {
+      configurable: true,
+      value: async (...args: Parameters<typeof activity>) => {
+        const result = await activity(...args);
+        if (!result.ok) return result;
+        return {
+          ...result,
+          data: {
+            ...result.data,
+            operations: result.data.operations.map((op) =>
+              op.tool === "browser_use" ? { ...op, tool: "computer_use" } : op,
+            ),
+          },
+        };
+      },
+    });
+  });
+  await settle();
+  expect(document.querySelector('[aria-label="Watch"]')?.textContent).toContain(
+    "Waiting for the agent’s page",
+  );
+  await act(async () => {
+    client.mockAgentWorksIn(threadId, null, mockIphoneScreenDeviceId);
+  });
+  expect(shownTab()).toBeNull();
+  let tabId: string | undefined;
+  await act(async () => {
+    tabId = (await client.openTab({ kind: "phone", computerId: mockIphoneScreenDeviceId })).tabId;
+  });
+  expect(shownTab()).toBe(tabId);
 });
 
 it("follows the task's work to its next tab while the person chooses nothing else, and never after they do", async () => {

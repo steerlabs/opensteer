@@ -3787,70 +3787,89 @@ it("records no hold for a bind that a narrowing ended while it ran", async () =>
   }
 });
 
-it("drops a retained pooled tab's badge when access narrows while a browser call is still unwinding", async () => {
-  const { site, origin } = await pagesSite();
-  const j = await journey("direct-running-holder-narrowed", { profile: true });
-  const reached = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  let running: Promise<unknown> | undefined;
-  try {
-    const home = await j.startHome();
-    const work = await directWork(j, () => home, {
-      grant: { scope: "everything" },
-    });
-    const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
-    const { threadId, id: sessionId } = await sessionOf(j);
-    const holders = async () =>
-      (await home.service.pageTabs.state!(j.task.userId, await row(j, tab))).usedBy;
-    expect(await holders()).toEqual([{ taskId: threadId, since: expect.any(String) }]);
-    const run = work.sessions.run.bind(work.sessions);
-    vi.spyOn(work.sessions, "run").mockImplementationOnce((operation) =>
-      run({
-        ...operation,
-        execute: async (context) => {
-          const result = await operation.execute(context);
-          reached.resolve();
-          await release.promise;
-          return result;
+it.each([false, true])(
+  "resets a retained pooled place after settlement unless a new-grant call has started (%s)",
+  async (newCall) => {
+    const { site, origin } = await pagesSite();
+    const j = await journey("direct-running-holder-narrowed", { profile: true });
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let running: Promise<unknown> | undefined;
+    try {
+      const home = await j.startHome();
+      const work = await directWork(j, () => home, {
+        grant: { scope: "everything" },
+      });
+      const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+      const { threadId, id: sessionId } = await sessionOf(j);
+      const holders = async () =>
+        (await home.service.pageTabs.state!(j.task.userId, await row(j, tab))).usedBy;
+      expect(await holders()).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+      const run = work.sessions.run.bind(work.sessions);
+      vi.spyOn(work.sessions, "run").mockImplementationOnce((operation) =>
+        run({
+          ...operation,
+          execute: async (context) => {
+            const result = await operation.execute(context);
+            reached.resolve();
+            await release.promise;
+            return result;
+          },
+        }),
+      );
+      running = work.useTab(
+        `const page = await openPage(${JSON.stringify(tab)}); return await page.title();`,
+        tab,
+      );
+      await reached.promise;
+      const connection = commands(j.fixture, j.task.userId, {
+        afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
+      });
+      await connection.update(work.agent.id, {
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
         },
-      }),
-    );
-    running = work.useTab(
-      `const page = await openPage(${JSON.stringify(tab)}); return await page.title();`,
-      tab,
-    );
-    await reached.promise;
-    const connection = commands(j.fixture, j.task.userId, {
-      afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
-    });
-    await connection.update(work.agent.id, {
-      grant: {
-        scope: "selected",
-        tasks: false,
-        resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
-      },
-    });
-    expect(await holders()).toEqual([]);
-    expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
-    release.resolve();
-    await running;
-    expect(await holders()).toEqual([]);
-    expect(
-      (
-        await work.useTab(
-          `const page = await openPage(${JSON.stringify(tab)}); return await page.title();`,
-          tab,
-        )
-      ).isError,
-    ).not.toBe(true);
-    expect(await holders()).toEqual([{ taskId: threadId, since: expect.any(String) }]);
-  } finally {
-    release.resolve();
-    await running?.catch(() => undefined);
-    await j.close();
-    site.close();
-  }
-});
+      });
+      // The abort has cut off sends, but its executor still owns the old presentation until it ends.
+      expect.soft(await holders()).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+      expect.soft(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: tab });
+      const openAgain = () => work.use(`return (await newPage("${origin}/next")).tabId;`);
+      const nextTab = newCall ? tabOf(await openAgain()) : null;
+      release.resolve();
+      await running;
+      await work.sessions.drain();
+      if (nextTab) {
+        expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
+          { threadId, sessionId, tabId: nextTab },
+        ]);
+        expect(
+          (await home.service.pageTabs.state!(j.task.userId, await row(j, nextTab))).usedBy,
+        ).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+        return;
+      }
+      await work.untilWorking(async () => {
+        expect(await holders()).toEqual([]);
+        expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
+      });
+      expect(
+        (
+          await work.useTab(
+            `const page = await openPage(${JSON.stringify(tab)}); return await page.title();`,
+            tab,
+          )
+        ).isError,
+      ).not.toBe(true);
+      expect(await holders()).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+    } finally {
+      release.resolve();
+      await running?.catch(() => undefined);
+      await j.close();
+      site.close();
+    }
+  },
+);
 
 it("clears where an agent works and its holds when its browser session ends, as a profile's deletion ends it", async () => {
   // The narrow look, finding 4: a deleted profile ends its browser sessions, and their holds

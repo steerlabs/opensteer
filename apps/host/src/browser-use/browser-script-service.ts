@@ -12,7 +12,11 @@ import type { BrowserService } from "../browser/browser-service.js";
 import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
 import type { BrowserBindingTabActor } from "../tabs/ports.js";
 import type { TabService } from "../tabs/tab-service.js";
-import { BrowserReplService, type BrowserUsePort } from "./browser-repl-service.js";
+import {
+  BrowserReplService,
+  type BrowserUseCall,
+  type BrowserUsePort,
+} from "./browser-repl-service.js";
 import { createBrowserUsePort, type BrowserUseTabAccess } from "./browser-use-port.js";
 
 type Services = {
@@ -156,9 +160,11 @@ export class BrowserScriptService {
       if (!port) throw refused("forbidden", "This browser task has ended.");
       return port;
     };
-    const working = (contextKey: string, tabId: string) => {
-      const binding = this.#bindingOf.get(contextKey);
+    const working = (call: BrowserUseCall, tabId: string) => {
+      if (call.signal.aborted) return false;
+      const binding = this.#bindingOf.get(call.contextKey);
       if (binding !== undefined) services.workingIn?.(binding, tabId as TabId);
+      return true;
     };
     this.#repl = new BrowserReplService({
       ...(services.workerEntry ? { workerEntry: services.workerEntry } : {}),
@@ -173,28 +179,27 @@ export class BrowserScriptService {
             "shared" in port
               ? { ...(await port.value.openPage(tabId, call)), port: port.value }
               : await port.openPage(tabId, call);
-          working(call.contextKey, target.tabId);
+          working(call, target.tabId);
           return target;
         },
         // A page its script holds a handle for, taken up again: its own port says so.
-        tookUp: (tabId, contextKey) => {
-          const port = this.#ports.get(contextKey);
-          if (!port) return;
-          working(contextKey, tabId);
-          if (!("shared" in port)) port.tookUp?.(tabId, contextKey);
+        tookUp: (tabId, call) => {
+          const port = this.#ports.get(call.contextKey);
+          if (!port || !working(call, tabId)) return;
+          if (!("shared" in port)) port.tookUp?.(tabId, call);
         },
         newPage: async (input, call) => {
           const port = byContext(call.contextKey);
           if ("shared" in port)
             throw refused("forbidden", "A shared Chrome tab cannot create a new tab.");
           const target = await port.newPage(input, call);
-          working(call.contextKey, target.tabId);
+          working(call, target.tabId);
           return target;
         },
         // The REPL rechecked access before this command: where it goes is where the work is.
         command: (target, method, params, sessionId, call) => {
           byContext(call.contextKey);
-          working(call.contextKey, target.tabId);
+          if (!working(call, target.tabId)) call.signal.throwIfAborted();
           if ("share" in target)
             return target.port.command(target, method, params, sessionId, call);
           return target.port.command(target, method, params, sessionId, call);

@@ -131,7 +131,7 @@ export interface BrowserUsePort<Target extends BrowserUseTarget = BrowserUseTarg
    * The script took up a page it already holds a handle for (`openPage` of it again): where its
    * work is now. Grants and checks nothing; the next command rechecks access as always.
    */
-  tookUp?(tabId: string, contextKey: string): void;
+  tookUp?(tabId: string, call: BrowserUseCall): void;
   newPage(input: { url: string; profileId?: string }, call: BrowserUseCall): Promise<Target>;
   command(
     target: Target,
@@ -530,7 +530,7 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     const { tabId } = request.args;
     const existing = state.byTab.get(tabId);
     if (existing) {
-      this.#port.tookUp?.(tabId, call.contextKey);
+      this.#port.tookUp?.(tabId, call);
       return Promise.resolve({ value: existing.value });
     }
     const pending = state.opens.get(tabId);

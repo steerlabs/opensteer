@@ -33,6 +33,7 @@ export interface ConnectedAgentNow {
   readonly places: readonly AgentOperationTarget[];
   readonly action: string | null;
   readonly actionParts: readonly SentencePart[];
+  readonly watchUnavailable?: boolean;
   readonly waiting: WaitingRequestView | null;
 }
 
@@ -76,22 +77,23 @@ export function connectedAgentsNow(input: {
       target.grant.kind !== "browser-profile" ||
       !input.profileIds ||
       input.profileIds.has(target.grant.profileId);
-    const targets = [
+    const activeTargets = [
       waiting?.request.agentOperation?.target,
       ...operations.filter(({ outcome }) => outcome === null).map(({ target }) => target),
-    ].filter((target): target is AgentOperationTarget => target !== undefined && exists(target));
+    ].filter((target): target is AgentOperationTarget => target !== undefined);
+    const targets = activeTargets.filter(exists);
     // When no action is in flight, the latest recorded action is the only place we can name.
-    if (targets.length === 0 && latest) {
-      if (!exists(latest.target) && !waiting) continue;
-      if (exists(latest.target) && latest.ending !== "narrowed") targets.push(latest.target);
-    }
+    if (!activeTargets.length && latest && exists(latest.target) && latest.ending !== "narrowed")
+      targets.push(latest.target);
+    const watchUnavailable =
+      !targets.length && (activeTargets.length > 0 || (!!latest && !exists(latest.target)));
     const question = waiting
       ? (needsYouAgentRequest(waiting.request, sessionSlotFromHome(work))?.question ??
         waiting.request.presentation.title)
       : null;
     const actionParts = question
       ? [question]
-      : latest && exists(latest.target) && latest.ending !== "narrowed"
+      : !watchUnavailable && latest && exists(latest.target) && latest.ending !== "narrowed"
         ? operationActionParts(latest)
         : [];
     const entry: ConnectedAgentNow = {
@@ -104,6 +106,7 @@ export function connectedAgentsNow(input: {
       action: actionParts.length ? plainSentence(actionParts, { quoteNames: false }) : null,
       actionParts,
       waiting,
+      ...(watchUnavailable ? { watchUnavailable } : {}),
     };
     (entry.state === "needs-you" ? needsYou : working).push(entry);
   }
@@ -202,7 +205,11 @@ export function connectedAgentNowRow(
     nameParts: [connectedAgentNamePart(entry.agent)],
     placeLines,
     status,
-    primaryAction: needsYou ? ("work.review" as const) : ("work.watch" as const),
+    primaryAction: needsYou
+      ? ("work.review" as const)
+      : entry.watchUnavailable
+        ? null
+        : ("work.watch" as const),
     needsYou,
     detailParts: joinSentenceParts([
       [status],

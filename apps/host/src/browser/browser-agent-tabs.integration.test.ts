@@ -31,6 +31,7 @@ import { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import { BrowserService, type BrowserRuntimeConnection } from "./browser-service.js";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
+import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
 
 class RuntimeConnection extends EventEmitter implements BrowserRuntimeConnection {
   readyState = 1;
@@ -544,6 +545,9 @@ integration("page tab adapter", () => {
     };
     return {
       f,
+      store,
+      connections,
+      connection,
       profile,
       personProfile,
       session,
@@ -560,6 +564,87 @@ integration("page tab adapter", () => {
       errors,
     };
   }
+
+  it("aborts a standalone bind before a narrowing can reset and lose its holder", async () => {
+    const {
+      f,
+      store,
+      connections,
+      connection,
+      profile,
+      session,
+      browser,
+      tabService,
+      agentActor,
+      tabsStore,
+    } = await createConnectedTabFixture("standalone-narrowed-holder");
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const sessions = new AgentSessionService({
+      store,
+      releaseBindingPlaces: (binding) => browser.releaseHolds(binding),
+    });
+    const opened = await tabService.open(
+      agentActor,
+      { kind: "page", profileId: profile.id, url: "https://example.com/retained" },
+      "open-retained",
+    );
+    const tabId = opened.tab.tabId;
+    const record = (await tabsStore.get(f.userId, tabId))!;
+    const holder = async () => (await browser.pageTabs.state!(f.userId, record)).usedBy;
+    const running = sessions.run({
+      ownerUserId: f.userId,
+      agentConnectionId: connection.id,
+      taskId: session.threadId,
+      operationKey: "retained-standalone-bind",
+      tool: "browser_use",
+      input: {},
+      calls: "openPage on the retained tab",
+      target: {
+        grant: { kind: "browser-profile", profileId: profile.id },
+        device: null,
+        name: profile.name,
+      },
+      effect: "read",
+      execute: async ({ bindingId, signal }) => {
+        sessions.workingIn.note(bindingId, tabId);
+        reached.resolve();
+        await release.promise;
+        await browser.pageTabs.bindBrowserScript!({ ...agentActor, signal }, record);
+        sessions.workingIn.note(bindingId, tabId);
+        return "bound";
+      },
+    });
+    const settled = running.catch(() => undefined);
+    try {
+      await Promise.race([
+        reached.promise,
+        running.then(() => {
+          throw new Error("The standalone call returned before binding.");
+        }),
+      ]);
+      expect(await holder()).toEqual([{ taskId: session.threadId, since: expect.any(String) }]);
+      const current = (await connections.list(f.userId)).find(({ id }) => id === connection.id)!;
+      await connections.update(f.userId, {
+        connectionId: connection.id,
+        expectedRevision: current.grantRevision,
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: profile.id }],
+        },
+      });
+      await sessions.closeConnection(connection.id, false);
+      release.resolve();
+      await settled;
+      expect(await holder()).toEqual([]);
+      expect(sessions.workingIn.current(f.userId)).toEqual([]);
+    } finally {
+      release.resolve();
+      await settled;
+      sessions.stop();
+    }
+  });
 
   it("carries a connected agent session's holder on the very first tabs.state publish of a new page", async () => {
     const {

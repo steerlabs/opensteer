@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { mockAgentWork, mockAgentWorkThreads } from "../mock/mock-agent-work.js";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import type { ThreadSummary, WaitingRequestView } from "./client.js";
-import { connectedAgentsNow, distinctAgentPlaces } from "./connected-agents-now.js";
+import {
+  connectedAgentNowRow,
+  connectedAgentsNow,
+  distinctAgentPlaces,
+} from "./connected-agents-now.js";
 
 const now = new Date("2026-11-20T12:00:00.000Z");
 const { connections } = mockConnectedAgents("seeded", now);
@@ -120,6 +124,30 @@ describe("connected agents working now", () => {
     });
     expect(result.headline).toBe("ChatGPT is working in Shopping");
     expect(result.agents[0]?.places).toEqual([target]);
+  });
+
+  it("keeps other live work when the latest completed place was deleted", () => {
+    const active = operations.find(
+      ({ taskId, outcome }) => taskId === chatgpt.id && outcome === null,
+    )!;
+    const live = {
+      ...active,
+      target: {
+        ...active.target,
+        grant: { kind: "browser-profile" as const, profileId: "travel" },
+        name: "Travel",
+      },
+    };
+    const deleted = { ...active, completedAt: now.toISOString(), outcome: "completed" as const };
+    const result = connectedAgentsNow({
+      tasks: [chatgpt],
+      waitingRequests: [],
+      operations: [deleted, live],
+      profileIds: new Set(["travel"]),
+    });
+    expect(result.headline).toBe("ChatGPT is working in Travel");
+    expect(result.agents[0]?.places).toEqual([live.target]);
+    expect(connectedAgentNowRow(result.agents[0]!).primaryAction).toBe("work.watch");
   });
 
   it("uses the resource and device IDs regardless of grant property order", () => {

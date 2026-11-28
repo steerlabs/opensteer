@@ -351,7 +351,10 @@ export class AgentSessionService {
    * it left open elsewhere (a tab it holds, a script context, a raw CDP client) outlives its
    * calls, so a connection's change closes it even when no call is running.
    */
-  readonly #worked = new Map<AgentSessionId, string>();
+  readonly #worked = new Map<
+    AgentSessionId,
+    { readonly connectionId: string; readonly grantRevision: number }
+  >();
   /** Operations executing or waiting on pooled admission, joined by concurrent resumes. */
   readonly #running = new Map<
     AgentOperationId,
@@ -360,10 +363,11 @@ export class AgentSessionService {
       readonly result: Promise<DirectOperationResult<unknown>>;
       readonly taskId: ThreadId;
       readonly sessionId: AgentSessionId;
+      readonly connectionId: string;
       /** The grant revision it was admitted under: a narrowing stops it only when it is older. */
       readonly grantRevision: number;
       readonly mode: ThreadAccessMode;
-      readonly pooled?: { readonly sessionId: AgentSessionId; readonly connectionId: string };
+      readonly pooled?: true;
     }
   >();
   readonly #decisions = new EventEmitter();
@@ -374,7 +378,7 @@ export class AgentSessionService {
     minimumGrantRevision?: number,
   ) => void | Promise<void>;
   readonly #releaseBindingPlaces: (bindingId: string) => void;
-  readonly #placeResetRevision = new Map<AgentSessionId, number>();
+  readonly #resetRevision = new Map<AgentSessionId, number>();
   readonly #holdMs: number;
   readonly #executionMs: number;
   readonly #sweeper: DeadlineDrain;
@@ -392,14 +396,13 @@ export class AgentSessionService {
     /** Tells the person who owns the Home where a session is working now, when that changes. */
     readonly onWorkingIn?: (ownerUserId: UserId, notice: AgentWorkingIn) => void;
     /**
-     * After a narrowing, for a session it leaves running: does at once what its next call does
-     * on the grant revision change (its script contexts disposed, every page attachment closed).
+     * After older work settles on a narrowing: dispose the old script contexts and attachments.
      */
     readonly resetBinding?: (
       bindingId: string,
       minimumGrantRevision?: number,
     ) => void | Promise<void>;
-    /** A narrowed session stops presenting its old places before the interrupted work settles. */
+    /** Release a retained session's old tab holds once its interrupted work has settled. */
     readonly releaseBindingPlaces?: (bindingId: string) => void;
   }) {
     this.#store = options.store;
@@ -454,7 +457,7 @@ export class AgentSessionService {
       this.#sessions.delete(id);
     }
     this.#worked.clear();
-    this.#placeResetRevision.clear();
+    this.#resetRevision.clear();
     this.workingIn.clear();
   }
 
@@ -636,13 +639,20 @@ export class AgentSessionService {
             .where("id", "=", connectionId as never)
             .executeTakeFirst()
         : undefined;
-    for (const [id, attempt] of this.#running)
-      if (
-        attempt.pooled?.connectionId === connectionId &&
-        (current === undefined || attempt.grantRevision < current.grantRevision)
-      )
-        await this.stopDirectOperation(id, ending);
-    const live = [...this.#worked].filter(([, connection]) => connection === connectionId);
+    const revision = current?.grantRevision;
+    const older = [...this.#running].filter(
+      ([, attempt]) =>
+        attempt.connectionId === connectionId &&
+        (revision === undefined || attempt.grantRevision < revision),
+    );
+    // A narrowing aborts every older executor before its places can be reset. For an ending
+    // connection, keep aborting queued pooled attempts here and end the sessions below.
+    await Promise.all(
+      older
+        .filter(([, attempt]) => ending === "narrowed" || attempt.pooled)
+        .map(([id]) => this.stopDirectOperation(id, ending)),
+    );
+    const live = [...this.#worked].filter(([, work]) => work.connectionId === connectionId);
     if (!live.length) return;
     const ended = all
       ? live.map(([id]) => id)
@@ -660,32 +670,30 @@ export class AgentSessionService {
         ).map(({ id }) => id);
     await Promise.all(ended.map((id) => this.#abort(id, ending)));
     if (all) return;
-    // A session the narrowing leaves running starts afresh, as its next call would on the grant
-    // revision change: its work admitted under an older revision ends as narrowed (the cleanup
-    // stops exactly that set). Its holds and Watch place go when authority changes. Its
-    // script contexts are disposed once the older executor returns, and the next command
-    // is admitted again by the rule and takes its hold again.
+    // The receipt waits for the older executor. A newer call may start before this callback
+    // runs, so it must keep the places it has taken up under its own grant.
     await Promise.all(
       live
         .filter(([id]) => !ended.includes(id))
         .map(async ([id]) => {
-          const running = [...this.#running].filter(
-            ([, attempt]) =>
-              attempt.sessionId === id &&
-              (current === undefined || attempt.grantRevision < current.grantRevision),
-          );
-          const revision = current?.grantRevision;
+          const running = older.filter(([, attempt]) => attempt.sessionId === id);
           const binding = `session:${id}`;
-          if (revision === undefined || (this.#placeResetRevision.get(id) ?? -1) < revision) {
-            if (revision !== undefined) this.#placeResetRevision.set(id, revision);
+          const releasePlaces = () => {
             this.workingIn.clearSession(id);
             this.#releaseBindingPlaces(binding);
-          }
-          const reset = () => this.#resetBinding(binding, revision);
-          // With nothing older running it starts afresh now. Older work is stopped by the cleanup
-          // itself (pooled in the pass above, the rest right after this step) and is not waited
-          // for here: an executor that does not return at once keeps the cleanup Stopping until
-          // it does. Script disposal follows its end. A bind that finishes meanwhile records no hold.
+          };
+          if (ending !== "narrowed") releasePlaces();
+          const reset = async () => {
+            if (revision !== undefined) {
+              const work = this.#worked.get(id);
+              if (!work || (this.#resetRevision.get(id) ?? -1) >= revision) return;
+              this.#resetRevision.set(id, revision);
+              if (work.grantRevision < revision) releasePlaces();
+            } else if (ending === "narrowed" && this.#worked.has(id)) {
+              releasePlaces();
+            }
+            await this.#resetBinding(binding, revision);
+          };
           if (!running.length) await reset();
           else
             void Promise.allSettled(running.map(([, attempt]) => attempt.result))
@@ -717,11 +725,11 @@ export class AgentSessionService {
   async #abort(sessionId: AgentSessionId, ending: AgentOperationEnding | null): Promise<void> {
     const error = endedBy(ending);
     for (const attempt of this.#running.values())
-      if (attempt.pooled?.sessionId === sessionId) attempt.controller.abort(error);
+      if (attempt.pooled && attempt.sessionId === sessionId) attempt.controller.abort(error);
     const entry = this.#sessions.get(sessionId);
     entry?.controller.abort(error);
     this.#worked.delete(sessionId);
-    this.#placeResetRevision.delete(sessionId);
+    this.#resetRevision.delete(sessionId);
     this.workingIn.close(sessionId);
     await this.#closeBinding(`session:${sessionId}`, error.message);
     if (this.#sessions.get(sessionId) === entry) this.#sessions.delete(sessionId);
@@ -950,9 +958,10 @@ export class AgentSessionService {
         result,
         taskId,
         sessionId: row.sessionId,
+        connectionId: row.connectionId,
         grantRevision: row.grantRevision,
         mode: row.mode,
-        pooled: { sessionId: row.sessionId, connectionId: row.connectionId },
+        pooled: true,
       });
       const forget = () => this.#running.delete(row.id);
       void result.then(forget, forget);
@@ -980,6 +989,7 @@ export class AgentSessionService {
       result: running,
       taskId,
       sessionId: handed.sessionId,
+      connectionId: handed.connectionId,
       grantRevision: handed.grantRevision,
       mode: handed.mode,
     });
@@ -1160,7 +1170,12 @@ export class AgentSessionService {
       work: 0,
     };
     this.#sessions.set(row.sessionId, entry);
-    this.#worked.set(row.sessionId, row.connectionId);
+    const previousWork = this.#worked.get(row.sessionId);
+    if (!previousWork || previousWork.grantRevision < row.grantRevision)
+      this.#worked.set(row.sessionId, {
+        connectionId: row.connectionId,
+        grantRevision: row.grantRevision,
+      });
     entry.work++;
     const deadline = pooled?.deadline ?? Date.now() + (operation.timeoutMs ?? this.#executionMs);
     const closing = this.#closingSessions.get(row.sessionId);
@@ -1251,7 +1266,7 @@ export class AgentSessionService {
             ? {
                 computerSubmitted: () => {
                   submitted++;
-                  if (operation.target?.device)
+                  if (!signal.aborted && operation.target?.device)
                     this.workingIn.noteComputer(row.sessionId, operation.target.device.id);
                 },
                 computerStopped: () =>

@@ -322,17 +322,19 @@ function ActiveAgents({
                     {connected ? <div>{connected}</div> : null}
                   </div>
                   <div className="agents-now-panel__actions">
-                    <button
-                      aria-label={actionLabel(row.primaryAction)}
-                      className={`btn btn--small${waiting ? " btn--primary" : ""}`}
-                      onClick={() => {
-                        leave();
-                        openSessionTask(entry.threadId, waiting);
-                      }}
-                      type="button"
-                    >
-                      {action}
-                    </button>
+                    {row.primaryAction ? (
+                      <button
+                        aria-label={actionLabel(row.primaryAction)}
+                        className={`btn btn--small${waiting ? " btn--primary" : ""}`}
+                        onClick={() => {
+                          leave();
+                          openSessionTask(entry.threadId, waiting);
+                        }}
+                        type="button"
+                      >
+                        {action}
+                      </button>
+                    ) : null}
                     <button
                       aria-label={actionLabel("work.stop")}
                       className="btn btn--small"

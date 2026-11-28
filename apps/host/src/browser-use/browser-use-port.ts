@@ -298,8 +298,8 @@ export function createBrowserUsePort({
       }
       return pages;
     },
-    tookUp(tabId) {
-      browser.tabTakenUp?.(authority, tabId);
+    tookUp(tabId, call) {
+      browser.tabTakenUp?.(authority, tabId, call.signal);
     },
     async openPage(tabId, call) {
       if (!TabIdSchema.safeParse(tabId).success) throw refused("not_found", "Tab not found.");
