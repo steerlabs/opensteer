@@ -1,5 +1,6 @@
 import { DeviceIdSchema } from "@opensteer/core";
 import { DisplayEditingSession, DisplayStreams } from "@opensteer/client/integrations";
+import { OrderedInputLane, inputBytes, releaseOnly } from "@opensteer/runner";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { on, once } from "node:events";
 import { createConnection } from "node:net";
@@ -21,6 +22,7 @@ import {
   type HostIntegrationsOperation,
   type HostIntegrationsDisplayStart,
   macDisplayProfileHysteresisMs,
+  macWindowVideoParams,
 } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -3243,6 +3245,228 @@ describe("Mac owner input over authenticated display sockets", () => {
       (message) => message.type === "host.integrations.mac-owner.input",
     );
     expect(inputBatches.length).toBeLessThanOrEqual(8);
+  });
+
+  async function fullHopMacFixture() {
+    const f = await fixture(true, { mac: true });
+    const receivedKeys: string[] = [];
+    const receivedPastes: string[] = [];
+    const batchKinds: string[][] = [];
+    const maxWireBytes = { value: 0 };
+    // Exact Mac helper OwnerInputAdmission (OwnerInputState.swift:47-81, HelperRuntime.swift:1343-1358):
+    // maxBatches = 4, maxBytes = 131_072 measured on serialized MacOwnerInput.InputParams (including
+    // streamId + source), 1..64 events, strictly increasing sequences.
+    const helperMaxBytes = 131_072;
+    let helperLastSequence = -1;
+    let helperPendingBatches = 0;
+    let helperPendingBytes = 0;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    type MacOwnerInputMsg = Extract<
+      HostIntegrationsOperation,
+      { type: "host.integrations.mac-owner.input" }
+    >;
+    const lane = new OrderedInputLane<MacOwnerInputMsg>({
+      maxBatches: 128,
+      maxBytes: 4 * 1_048_576,
+      maxReleaseBatches: 32,
+      maxReleaseBytes: 64 * 1_024,
+      maxAgeMs: 8_000,
+      send: async (message) => {
+        const wireParams = {
+          streamId: message.streamId,
+          source: message.source,
+          geometry: message.geometry,
+          sequence: message.sequence,
+          events: message.events,
+        };
+        // Real Desktop bridge Zod schema check.
+        const parsed = macWindowVideoParams["display.input"].safeParse(wireParams);
+        const paramBytes = Buffer.byteLength(JSON.stringify(wireParams), "utf8");
+        maxWireBytes.value = Math.max(maxWireBytes.value, paramBytes);
+        const admitted =
+          parsed.success &&
+          message.events.length >= 1 &&
+          message.events.length <= 64 &&
+          message.sequence > helperLastSequence &&
+          helperPendingBatches < 4 &&
+          paramBytes > 0 &&
+          paramBytes <= helperMaxBytes - helperPendingBytes;
+        if (!admitted) {
+          void f.apps.handleMessage(f.peer, f.stream, {
+            ...f.fence,
+            type: "runner.integrations.mac-owner.event",
+            streamId: message.streamId,
+            source: f.macSource,
+            message: {
+              type: "display.input.result",
+              sequence: message.sequence,
+              outcome: "refused",
+              reason: "unavailable",
+            },
+          });
+          return;
+        }
+        helperLastSequence = message.sequence;
+        helperPendingBatches += 1;
+        helperPendingBytes += paramBytes;
+        await new Promise<void>((resolve) => {
+          timers.push(
+            setTimeout(() => {
+              batchKinds.push(
+                message.events.map((event) =>
+                  event.kind === "mouse"
+                    ? `mouse:${event.phase}`
+                    : event.kind === "key"
+                      ? `key:${event.action}`
+                      : event.kind,
+                ),
+              );
+              for (const event of message.events) {
+                if (event.kind === "key" && event.action === "down" && event.text)
+                  receivedKeys.push(event.text);
+                else if (event.kind === "paste" && "text" in event) receivedPastes.push(event.text);
+              }
+              helperPendingBatches -= 1;
+              helperPendingBytes -= paramBytes;
+              void f.apps.handleMessage(f.peer, f.stream, {
+                ...f.fence,
+                type: "runner.integrations.mac-owner.event",
+                streamId: message.streamId,
+                source: f.macSource,
+                message: {
+                  type: "display.input.result",
+                  sequence: message.sequence,
+                  outcome: "dispatched",
+                },
+              });
+              resolve();
+            }, 3),
+          );
+        });
+      },
+      reset: async () => undefined,
+      notSent: (message) => {
+        void f.apps.handleMessage(f.peer, f.stream, {
+          ...f.fence,
+          type: "runner.integrations.mac-owner.event",
+          streamId: message.streamId,
+          source: f.macSource,
+          message: {
+            type: "display.input.result",
+            sequence: message.sequence,
+            outcome: "refused",
+            reason: "unavailable",
+          },
+        });
+      },
+    });
+
+    const originalPeerSend = f.peer.send;
+    f.peer.send = async (message: HostIntegrationsOperation) => {
+      await originalPeerSend(message);
+      if (message.type === "host.integrations.mac-owner.input") {
+        lane.input({
+          source: `owner:${message.source.viewId}:${message.source.generation}`,
+          bytes: inputBytes(message.events),
+          value: message,
+          release: releaseOnly(message.events),
+        });
+      } else if (message.type === "host.integrations.mac-owner.input-reset") {
+        lane.reset(`owner:${message.source.viewId}:${message.source.generation}`);
+      }
+    };
+
+    const sockets: WebSocket[] = [];
+    const streams = new DisplayStreams({
+      connect: () => {
+        const socket = new WebSocket(
+          `${f.base}/v1/computer-use/views/${f.macSource.viewId}/${f.macSource.generation}/display?sharedInput=1&editing=1`,
+          { headers: { authorization: "Bearer owner" } },
+        );
+        sockets.push(socket);
+        return socket as never;
+      },
+    });
+    const lease = streams.retain({ scope: "burst-full-hop", source: f.macSource, editing: 1 });
+    const editing = new DisplayEditingSession(lease);
+    cleanups.push(async () => {
+      lane.end();
+      for (const timer of timers) clearTimeout(timer);
+      editing.dispose();
+      lease.release();
+      streams.dispose();
+      for (const socket of sockets) socket.terminate();
+    });
+    await until(() => f.sent.some((message) => message.type === "host.integrations.display.start"));
+    await f.state();
+    await until(() => lease.getSnapshot().input === "available");
+    editing.setGeometry(1);
+    return { editing, receivedKeys, receivedPastes, batchKinds, maxWireBytes };
+  }
+
+  it("delivers click + 200-key burst in order with mouse release isolated from keys through Home, Runner lane, Bridge schema and Mac helper admission", async () => {
+    const { editing, receivedKeys, batchKinds } = await fullHopMacFixture();
+    const first200 = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(6).slice(0, 200);
+    const clickDown = editing.input(1, [
+      { kind: "mouse", phase: "move", button: "none", modifiers: [], x: 0.2, y: 0.2 },
+      {
+        kind: "mouse",
+        phase: "down",
+        button: "left",
+        clickCount: 1,
+        modifiers: [],
+        x: 0.2,
+        y: 0.2,
+      },
+    ]);
+    const clickUp = editing.input(1, [
+      { kind: "mouse", phase: "up", button: "left", clickCount: 1, modifiers: [], x: 0.2, y: 0.2 },
+    ]);
+    const keyCalls: Promise<unknown>[] = [];
+    for (const ch of first200) {
+      const code = ch >= "0" && ch <= "9" ? `Digit${ch}` : `Key${ch.toUpperCase()}`;
+      keyCalls.push(
+        editing.send({
+          kind: "key",
+          keystroke: {
+            action: "down",
+            key: ch,
+            code,
+            modifiers: [],
+            location: 0,
+            repeat: false,
+            text: ch,
+          },
+        }),
+        editing.send({
+          kind: "key",
+          keystroke: { action: "up", key: ch, code, modifiers: [], location: 0, repeat: false },
+        }),
+      );
+    }
+    await Promise.all([clickDown, clickUp, ...keyCalls]);
+    expect(receivedKeys.join("")).toBe(first200);
+    expect(editing.getSnapshot().receipt).toBeNull();
+    // Click release settles in its own batch before the key burst begins so an older Mac helper
+    // does not run per-key AX queries in the same batch as mouseup.
+    expect(batchKinds[0]).toEqual(["mouse:move", "mouse:down"]);
+    expect(batchKinds[1]).toEqual(["mouse:up"]);
+    expect(batchKinds[2]?.every((kind) => kind.startsWith("key:"))).toBe(true);
+  });
+
+  it("keeps near-128 KiB escaped pastes within Mac helper OwnerInputAdmission through Home and Runner", async () => {
+    const { editing, receivedPastes, maxWireBytes } = await fullHopMacFixture();
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    const escapedPaste = "\u0001".repeat(30_000);
+    await editing.send({
+      kind: "paste",
+      items: [{ type: "text/plain", bytes: new TextEncoder().encode(escapedPaste) }],
+      contextId,
+    });
+    expect(receivedPastes.join("")).toBe(escapedPaste);
+    expect(maxWireBytes.value).toBeLessThanOrEqual(131_072);
+    expect(editing.getSnapshot().receipt).toBeNull();
   });
 });
 

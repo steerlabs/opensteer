@@ -547,3 +547,128 @@ it.each([
     }
   },
 );
+
+it("relays a packed 200-key burst with an 8 s helper budget matching the lane age bound", async () => {
+  const desktop = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  const host = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  let handler: ComputerUseHandler | undefined;
+  let relay: MacWindowVideoRelay | undefined;
+  const inputTimeouts: number[] = [];
+  const receivedChars: string[] = [];
+  const events: MacVideoEvent[] = [];
+  try {
+    await Promise.all([once(desktop, "listening"), once(host, "listening")]);
+    const desktopAddress = desktop.address();
+    const hostAddress = host.address();
+    if (
+      !desktopAddress ||
+      typeof desktopAddress === "string" ||
+      !hostAddress ||
+      typeof hostAddress === "string"
+    )
+      throw Error("Missing test ports");
+    desktop.on("connection", (socket, request) => {
+      if (request.url?.startsWith("/computer-use/display/")) return;
+      socket.on("message", (raw) => {
+        const frame = ComputerUseBridgeRequestSchema.parse(JSON.parse(String(raw)));
+        const answer = (result: unknown) =>
+          socket.send(JSON.stringify({ kind: "response", id: frame.id, result }));
+        if (frame.method === "permissions.get") {
+          answer({
+            computerUseVersion: 2,
+            ownerViewVersion: 3,
+            ownerInputVersion: 2,
+            videoProfile: 1,
+            permissions: { accessibility: "granted", screenRecording: "granted" },
+          });
+        } else if (frame.method === "display.start") {
+          answer({ attachmentToken });
+        } else if (frame.method === "display.input") {
+          const parsed = macWindowVideoParams["display.input"].parse(frame.params);
+          inputTimeouts.push(frame.timeoutMs ?? 0);
+          for (const ev of parsed.events) {
+            if (ev.kind === "key" && ev.action === "down" && ev.text) receivedChars.push(ev.text);
+          }
+          answer({ sequence: parsed.sequence, outcome: "dispatched" });
+        } else if (frame.method === "display.stop") {
+          answer({});
+        }
+      });
+    });
+    handler = new ComputerUseHandler({
+      bridge: {
+        token: "fixture-only",
+        url: new URL(`http://127.0.0.1:${desktopAddress.port}/computer-use`),
+      },
+    });
+    relay = new MacWindowVideoRelay(
+      handler,
+      { hostOrigin: new URL(`http://127.0.0.1:${hostAddress.port}`), mode: "development" },
+      async (event) => {
+        events.push(event);
+      },
+    );
+    relay.handle(
+      HostIntegrationsDisplayStartSchema.parse({
+        ...fence,
+        type: "host.integrations.display.start",
+        display: "main",
+        revision: 0,
+        streamId,
+        target: { kind: "mac-window", bindingId },
+        sources: [source],
+        maxLongSide: 1280,
+        maxFps: 30,
+        displayProfile: 1,
+        maxBitrate: null,
+        dataTicket: "fixture.ticket.value",
+        timeoutMs: 5_000,
+      }),
+    );
+    await vi.waitFor(() => expect(host.clients.size).toBe(1));
+
+    const first200 = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(6).slice(0, 200);
+    const allEvents = [...first200].flatMap((ch) => {
+      const code = ch >= "0" && ch <= "9" ? `Digit${ch}` : `Key${ch.toUpperCase()}`;
+      return [
+        { kind: "key" as const, action: "down" as const, key: ch, code, modifiers: [], text: ch },
+        { kind: "key" as const, action: "up" as const, key: ch, code, modifiers: [] },
+      ];
+    });
+    let sequence = 0;
+    for (let i = 0; i < allEvents.length; i += 64) {
+      relay.handle(
+        HostIntegrationsMacOwnerInputSchema.parse({
+          ...fence,
+          type: "host.integrations.mac-owner.input",
+          streamId,
+          source,
+          geometry: 1,
+          sequence: sequence++,
+          events: allEvents.slice(i, i + 64),
+        }),
+      );
+    }
+    await vi.waitFor(() =>
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "runner.integrations.mac-owner.event" &&
+            event.message.type === "display.input.result" &&
+            event.message.outcome === "dispatched",
+        ),
+      ).toHaveLength(sequence),
+    );
+    expect(receivedChars.join("")).toBe(first200);
+    expect(inputTimeouts.every((timeout) => timeout > 5_000 && timeout <= 8_000)).toBe(true);
+  } finally {
+    relay?.close();
+    handler?.close();
+    for (const server of [desktop, host]) {
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  }
+});

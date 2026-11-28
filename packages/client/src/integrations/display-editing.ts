@@ -593,6 +593,16 @@ export class DisplayEditingSession {
       let takenBytes = 0;
       while (taken < entry.events.length && batchEvents.length < maxDisplayInputEvents) {
         const event = entry.events[taken]!;
+        // Keep mouse/pointer events out of keyboard/edit batches so click focus settles before
+        // per-key Accessibility checks run (including on older Mac helpers).
+        if (batchEvents.length > 0) {
+          const prev = batchEvents[batchEvents.length - 1]!;
+          if (
+            (isPointerOrMouse(prev) && isKeyboardOrEdit(event)) ||
+            (isKeyboardOrEdit(prev) && isPointerOrMouse(event))
+          )
+            break;
+        }
         // Keep a key press paired with its immediately following release at the 64-event cap.
         if (
           batchEvents.length === maxDisplayInputEvents - 1 &&
@@ -711,6 +721,17 @@ export class DisplayEditingSession {
   }
 }
 
+function isPointerOrMouse(event: DisplayInputEvent): boolean {
+  return event.kind === "mouse" || event.kind === "pointer";
+}
+function isKeyboardOrEdit(event: DisplayInputEvent): boolean {
+  return (
+    event.kind === "key" ||
+    event.kind === "command" ||
+    event.kind === "edit" ||
+    event.kind === "paste"
+  );
+}
 function isMove(event: DisplayInputEvent): boolean {
   return (event.kind === "mouse" || event.kind === "pointer") && event.phase === "move";
 }

@@ -586,6 +586,34 @@ describe("browser editing transport", () => {
       vi.useRealTimers();
     }
   });
+
+  it("emits 400 unbatched input.key commands in order for a 200-key burst over the browser socket", async () => {
+    const { store, target, commands } = setup();
+    const first200 = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(6).slice(0, 200);
+    for (const ch of first200) {
+      const code = ch >= "0" && ch <= "9" ? `Digit${ch}` : `Key${ch.toUpperCase()}`;
+      await target.send({
+        kind: "key",
+        keystroke: { action: "down", key: ch, code, modifiers: [], text: ch },
+      });
+      await target.send({
+        kind: "key",
+        keystroke: { action: "up", key: ch, code, modifiers: [] },
+      });
+    }
+    const keyCommands = commands.filter(
+      (command): command is Extract<BrowserCommand, { type: "input.key" }> =>
+        command.type === "input.key",
+    );
+    expect(keyCommands).toHaveLength(400);
+    expect(
+      keyCommands
+        .filter((command) => command.action === "down")
+        .map((command) => command.text ?? "")
+        .join(""),
+    ).toBe(first200);
+    store.dispose();
+  });
 });
 
 describe("browser autofill offers", () => {

@@ -238,4 +238,12 @@ final class OwnerInputStateTests: XCTestCase {
     XCTAssertThrowsError(try map.target(x: 0.5, y: 0.5, process: 123))
   }
 
+  func testOwnerInputAXTimeoutUsesStandardMessagingBudgetClampedToDeadline() {
+    XCTAssertEqual(MacOwnerInput.inputAXTimeout(until: nil, now: 10), axMessagingTimeout)
+    XCTAssertEqual(MacOwnerInput.inputAXTimeout(until: 18, now: 10), axMessagingTimeout)
+    XCTAssertEqual(MacOwnerInput.inputAXTimeout(until: 10.4, now: 10), 0.4, accuracy: 0.001)
+    XCTAssertEqual(MacOwnerInput.inputAXTimeout(until: 10.0, now: 10), 0.01, accuracy: 0.001)
+    XCTAssertGreaterThan(MacOwnerInput.inputAXTimeout(until: 18, now: 10), 0.1)
+  }
+
 }
