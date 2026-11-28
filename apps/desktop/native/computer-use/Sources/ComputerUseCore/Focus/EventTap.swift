@@ -36,34 +36,8 @@ final class EventTap: @unchecked Sendable {
     _ scope: Scope, place: CGEventTapPlacement, options: CGEventTapOptions,
     types: [UInt32], handler: @escaping Handler
   ) {
-    #if SAFARI_FRONT_KEY_TRACE
-    if case .process(let pid) = scope, types.contains(CGEventType.keyDown.rawValue) {
-      let lane = "process-\(place.rawValue)-\(options.rawValue)"
-      ops = PortOps(
-        enable: { port, enabled in
-          SafariKeyTapTrace.record(lane + (enabled ? ".enable" : ".disable"), pid: pid)
-          CGEvent.tapEnable(tap: port, enable: enabled)
-        },
-        invalidate: { port in
-          SafariKeyTapTrace.record(lane + ".invalidate", pid: pid)
-          CFMachPortInvalidate(port)
-        })
-      context = Context({ type, event in
-        let result = handler(type, event)
-        if type == .keyDown {
-          SafariKeyTapTrace.record(lane + (result == nil ? ".drop" : ".pass"),
-            pid: pid, stamp: event.timestamp)
-        }
-        return result
-      }, ops: ops)
-    } else {
-      ops = PortOps()
-      context = Context(handler, ops: ops)
-    }
-    #else
     ops = PortOps()
     context = Context(handler, ops: ops)
-    #endif
     let mask = types.reduce(CGEventMask(0)) { $0 | (1 << CGEventMask($1)) }
     // The registration, not the EventTap owner, keeps callbacks alive until
     // their run-loop source is removed after any callback already executing.

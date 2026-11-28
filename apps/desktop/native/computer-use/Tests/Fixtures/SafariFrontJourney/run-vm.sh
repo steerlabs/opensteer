@@ -27,9 +27,6 @@ compile() {
   else
     flags=(-I "$build" -L "$build" -lOpensteerAppleData -lMacOSSigning -o "$output")
   fi
-  if [[ "${OPENSTEER_SAFARI_FRONT_TRACE_KEYS:-0}" == 1 ]]; then
-    flags+=(-D SAFARI_FRONT_KEY_TRACE)
-  fi
   xcrun swiftc -parse-as-library -module-name ComputerUseCore -swift-version 5 \
     "${flags[@]}" "${sources[@]}" "$fixtures/Journey.swift" "$fixtures/Reminders.swift"
 }
@@ -148,13 +145,6 @@ if [[ -x "$work/Red" ]]; then
 fi
 run_journey green "$work/Green" "${OPENSTEER_SAFARI_FRONT_CASES:-$default_cases}"
 [[ "$(cat "$out/green/exit-code.txt")" == 0 ]] || result=1
-if [[ "${OPENSTEER_SAFARI_FRONT_TRACE_KEYS:-0}" == 1 ]]; then
-  repeats=${OPENSTEER_SAFARI_FRONT_TRACE_CONTROLS:-0}
-  [[ "$repeats" =~ ^[0-9]$ ]] || exit 2
-  for ((trial=1; trial<=repeats; trial++)); do
-    run_journey "key-trace-$trial" "$work/Green" control
-  done
-fi
 
 # Item i: Calendar and Reminders set up through the real helper app built from this checkout.
 if [[ "${OPENSTEER_SAFARI_FRONT_REMINDERS:-1}" == 1 ]]; then
