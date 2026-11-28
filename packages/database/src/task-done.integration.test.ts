@@ -117,6 +117,11 @@ integration.sequential("Shared task Done", () => {
   it("ends a session with two pending operations under the ordered Done locks", async () => {
     const f = await fixture("connection-pending");
     const { connection, session } = await connected(f, "pending");
+    const { grantRevision } = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", connection.id)
+      .executeTakeFirstOrThrow();
     for (const key of ["one", "two"]) {
       const { operation } = await admitAgentOperation(database, {
         userId: f.userId,
@@ -127,7 +132,7 @@ integration.sequential("Shared task Done", () => {
         argumentDigest: key,
         target: { grant: { kind: "device" }, name: "Browser", device: null },
         targetGeneration: null,
-        grantRevision: connection.grantRevision,
+        grantRevision,
         mode: "approval-required",
         effect: "write",
         calls: "browser_use",

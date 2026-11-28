@@ -1480,18 +1480,15 @@ export async function withAgentOperationReceipt<Result>(
       throw error;
     const current = await readAgentOperation(database, row.id).catch(() => null);
     const state = current?.state;
-    const done = state === "refused" && current.ending === "task-done";
-    throw new AgentOperationFailure(
-      done ? agentOperationRefusal(current.decision, current.ending) : error,
-      {
-        taskId,
-        operationId: row.id,
-        ...(done ? { ending: "task-done" as const } : {}),
-        ...(state === "refused" || state === "failed" || state === "unknown"
-          ? { status: state }
-          : {}),
-      },
-    );
+    const done = current?.state === "refused" && current.ending === "task-done";
+    throw new AgentOperationFailure(done ? endedBy("task-done") : error, {
+      taskId,
+      operationId: row.id,
+      ...(done ? { ending: "task-done" as const } : {}),
+      ...(state === "refused" || state === "failed" || state === "unknown"
+        ? { status: state }
+        : {}),
+    });
   }
 }
 
