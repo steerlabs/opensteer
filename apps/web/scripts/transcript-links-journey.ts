@@ -71,10 +71,7 @@ try {
       url: request.url(),
     });
   });
-  // Nothing leaves the machine: anything outside the app answers here, and app assets are fulfilled
-  // directly from the build so Docker `veth` churn on Linux cannot abort loopback dynamic imports
-  // with `net::ERR_NETWORK_CHANGED`.
-  await web.routeBuild(context);
+  // Supply a local stand-in for pages outside the app.
   await context.route(
     (url) => url.origin !== origin,
     (route) =>

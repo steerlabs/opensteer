@@ -29,7 +29,6 @@ async function openPage(
   before?: BrowserSleepScene,
 ): Promise<{ page: Page; tabId: string }> {
   const context = await web.browser.newContext({ viewport: width.viewport, deviceScaleFactor: 2 });
-  await web.routeBuild(context);
   await context.route(
     (url) => url.origin !== web.origin,
     (route) => route.fulfill({ body: "", status: 204 }),

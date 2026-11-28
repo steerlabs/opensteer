@@ -1,6 +1,6 @@
 /**
  * What every web journey stands on: the production web build against the mock
- * Host, served the way a Host serves it, driven in headless Chromium, and
+ * Host, served from the build by Playwright, driven in headless Chromium, and
  * checks that keep what they observed for `result.json`. Chromium is
  * Playwright's (`playwright-core install chromium`) unless
  * OPENSTEER_CHROMIUM_EXECUTABLE names another, or WebKit with
@@ -17,10 +17,8 @@ import { build } from "vite";
 const webRoot = path.resolve(import.meta.dirname, "..");
 
 export interface MockWeb {
-  readonly browser: Browser;
+  readonly browser: Pick<Browser, "newContext" | "newPage">;
   readonly origin: string;
-  /** Serves built app assets directly to `context`, avoiding Linux `veth` `ERR_NETWORK_CHANGED` aborts on loopback. */
-  routeBuild(context: BrowserContext): Promise<void>;
   /** Closes the browser and the server, and removes the build. */
   close(): Promise<void>;
 }
@@ -57,10 +55,9 @@ export async function openMockWeb(
             ...(executablePath ? { executablePath } : {}),
           });
     const origin = `http://127.0.0.1:${address.port}`;
-    return {
-      browser,
-      origin,
-      async routeBuild(context) {
+    // Linux network changes can abort even loopback script loads in Chromium.
+    async function routeBuild(context: BrowserContext): Promise<void> {
+      try {
         await context.route(
           (url) => url.origin === origin,
           async (route) => {
@@ -68,7 +65,25 @@ export async function openMockWeb(
             await route.fulfill(served);
           },
         );
+      } catch (error) {
+        await context.close().catch(() => {});
+        throw error;
+      }
+    }
+    return {
+      browser: {
+        async newContext(contextOptions) {
+          const context = await browser.newContext(contextOptions);
+          await routeBuild(context);
+          return context;
+        },
+        async newPage(contextOptions) {
+          const page = await browser.newPage(contextOptions);
+          await routeBuild(page.context());
+          return page;
+        },
       },
+      origin,
       async close() {
         await browser.close();
         server.close();
