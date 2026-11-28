@@ -30,6 +30,8 @@ import { ViewerClipboard } from "./viewer-clipboard.js";
 import "./remote-editing.css";
 
 export interface RemoteEditingWire {
+  /** The display receipt is shown by the surface that owns all of its input. */
+  readonly showsInputReceipts?: boolean;
   send(operation: EditingOperation): Promise<ViewerClipboardResult | undefined>;
   /** P2: sends a dependent operation group in one atomic batch on display targets. */
   sendBatch?(operations: readonly EditingOperation[]): Promise<ViewerClipboardResult | undefined>;
@@ -166,6 +168,7 @@ export function RemoteEditingProxy({
   const failure = useCallback(
     (reason: unknown) => {
       if (reason instanceof DisplayEditingRefusal || reason instanceof DisplayEditingStopped) {
+        if (current.current.wire.showsInputReceipts) return;
         refusalShown.current = reason instanceof DisplayEditingRefusal ? reason.message : null;
         refuse(reason.message);
       } else refuse(presentFailure(reason, "edit remotely"));

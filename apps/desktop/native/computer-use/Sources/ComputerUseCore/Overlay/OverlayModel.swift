@@ -286,10 +286,15 @@ struct OverlayModel {
   }
 
   mutating func dismiss() {
-    guard notice == .connectionLost else { return }
+    _ = connectionRestored()
+  }
+
+  mutating func connectionRestored() -> Bool {
+    guard notice == .connectionLost else { return false }
     notice = nil
     noticeTitles = []
     noticeIcons = []
+    return true
   }
 
   /// The person minimized or expanded the pill: whichever it shows, it

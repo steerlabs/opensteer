@@ -478,6 +478,7 @@ export function ComputerDisplayScreen({
   const [caret, setCaret] = useState<RemoteCaretPosition | null>(null);
   const wire = useMemo(
     () => ({
+      showsInputReceipts: true,
       send: (operation: Parameters<DisplayEditingSession["send"]>[0]) => {
         input?.flush();
         return display.editing

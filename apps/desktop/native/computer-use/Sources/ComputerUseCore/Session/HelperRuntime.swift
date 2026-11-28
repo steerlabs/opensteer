@@ -61,6 +61,13 @@ public final class HelperRuntime {
   private var appMutations: [String: AppMutationCoordinator] = [:]
   private(set) var ownerAttachments: [String: MacOwnerAttachment] = [:]
   var videoProducerFactory: MacWindowVideoRegistry.ProducerFactory?
+  var openOwnerWindow: @WorkActor (AppBundleRecord, String, SessionCancellation, WorkBudget) async throws
+    -> (OwnerViewWindow.Binding, Wire.ViewStateResult.OwnerWindowSummary) = {
+      record, windowID, cancellation, budget in
+      let binding = try await OwnerViewWindow.open(
+        record: record, windowID: windowID, cancellation: cancellation, budget: budget)
+      return (binding, try binding.summary())
+    }
   private lazy var video = MacWindowVideoRegistry(
     makeProducer: videoProducerFactory,
     retainBinding: { [unowned self] target in
@@ -119,10 +126,12 @@ public final class HelperRuntime {
     appRunning: @escaping @Sendable (String, String) -> Bool = {
       AppProcess.anyInstanceRunning(bundleId: $0, path: $1)
     },
+    overlay: OverlayController? = nil,
     terminate: @escaping @MainActor () -> Void = { NSApplication.shared.terminate(nil) }
   ) {
     self.permissions = permissions
     self.appRunning = appRunning
+    self.overlay = overlay
     self.terminate = terminate
     self.helperVersion = helperVersion
     self.peerRequirement = peerRequirement
@@ -437,9 +446,12 @@ public final class HelperRuntime {
     case "display.input":
       return try await ownerInput(envelope, connection: connection, budget: budget)
     case "display.start":
-      return try await video.start(envelope, connection: connection, budget: budget)
+      let result = try await video.start(envelope, connection: connection, budget: budget)
+      overlay?.connectionRestored()
+      return result
     case "display.resolve", "display.demand", "display.refresh", "display.stop", "display.attach":
       let result = try video.perform(envelope, connection: connection)
+      if method == "display.attach" || method == "display.demand" { overlay?.connectionRestored() }
       tickOwnerInput()
       for attachment in ownerAttachments.values where !attachment.active.current {
         await waitForOwnerCleanup(attachment)
@@ -993,10 +1005,15 @@ public final class HelperRuntime {
         window: closed ? nil : view.windowSummary)
     }
     func opened(_ view: OwnerViewRegistry.View) -> any Encodable {
-      guard view.target != nil else {
+      guard let target = view.target else {
         return Wire.ViewUnavailableResult(
           viewId: view.id, generation: view.generation, kind: "unavailable",
           reason: view.unavailableReason)
+      }
+      if method == "view.open", target.process.isCurrent,
+        view.window?.unavailableReason != "window-closed"
+      {
+        overlay?.connectionRestored()
       }
       return state(view)
     }
@@ -1032,9 +1049,8 @@ public final class HelperRuntime {
       else { throw HelperError(.noSession, "That owner view ended while opening.") }
       let cancellation = view.cancellation
       do {
-        let binding = try await OwnerViewWindow.open(
-          record: record, windowID: target.windowId, cancellation: cancellation, budget: budget)
-        let summary = try await binding.summary()
+        let (binding, summary) = try await openOwnerWindow(
+          record, target.windowId, cancellation, budget)
         view.window = binding
         view.target = binding.target
         view.windowSummary = summary
@@ -1325,6 +1341,23 @@ public final class HelperRuntime {
     }
   }
 
+  private func waitForOwnerCleanup(_ attachment: MacOwnerAttachment, budget: WorkBudget) async -> Bool {
+    let remaining = budget.remaining()
+    guard remaining > 0 else { return false }
+    let wait = QueuedWork()
+    return await withCheckedContinuation { continuation in
+      let timeout = Task {
+        do { try await Task.sleep(for: .seconds(remaining)) } catch { return }
+        if wait.expire() { continuation.resume(returning: false) }
+      }
+      attachment.queue.enqueue {
+        guard wait.start() else { return }
+        timeout.cancel()
+        continuation.resume(returning: true)
+      }
+    }
+  }
+
   func ownerInput(_ envelope: RequestEnvelope, connection: IPCConnection, budget: WorkBudget)
     async throws -> MacOwnerInput.Result {
     let params = try envelope.decodeParams(MacOwnerInput.InputParams.self, method: envelope.method)
@@ -1344,8 +1377,14 @@ public final class HelperRuntime {
     do {
       try budget.check()
       tickOwnerInput()
-      if let previous = ownerAttachments[id], previous.connection === connection, !previous.active.current {
-        await waitForOwnerCleanup(previous)
+      if let previous = ownerAttachments[id], !previous.active.current,
+        previous.connection === connection || previous.connection.closedFlag
+          || closedConnectionIDs.contains(previous.connection.id)
+      {
+        // Cleanup still owns the key. A replacement waits for that release, within its own budget.
+        guard await waitForOwnerCleanup(previous, budget: budget) else {
+          return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "unavailable")
+        }
         try budget.check()
       }
       try Self.requireUnlocked()

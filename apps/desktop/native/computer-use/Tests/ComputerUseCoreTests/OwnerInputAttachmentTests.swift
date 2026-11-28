@@ -17,6 +17,169 @@ final class OwnerInputAttachmentTests: XCTestCase {
   }
 
   @MainActor
+  private func withOwnerViewRuntime(
+    _ body: (HelperRuntime, OverlayController, AppIdentity) async throws -> Void
+  ) async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let bundle = root.appendingPathComponent("Fixture.app")
+    let contents = bundle.appendingPathComponent("Contents")
+    try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+    let identity = "example.owner-view"
+    try PropertyListSerialization.data(
+      fromPropertyList: ["CFBundleIdentifier": identity, "CFBundleName": "Fixture", "CFBundleExecutable": "Fixture"],
+      format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
+    let catalog = AppCatalog(roots: [root], bundles: [bundle])
+    let app = try await catalog.resolve(query: identity).identity
+    let overlay = OverlayController(drawsWindows: false, onStop: {})
+    let runtime = hostRuntime(helperVersion: "test", peerRequirement: .sameUser, catalog: catalog,
+      overlay: overlay)
+    defer { runtime.stop() }
+    runtime.openOwnerWindow = { record, id, _, _ in
+      let binding = OwnerViewWindow.Binding(target: CaptureTarget(observationId: id, app: record.identity,
+        process: ProcessStamp.of(getpid())!, windowID: 1), element: AXUIElementCreateApplication(getpid()))
+      return (binding, .init(windowId: id, title: "Fixture"))
+    }
+    try await body(runtime, overlay, app)
+  }
+
+  private func peer(_ id: Int, input: Int? = nil) throws -> (IPCConnection, Int32) {
+    var pair: [Int32] = [0, 0]
+    XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+    let connection = IPCConnection(id: id, fileDescriptor: pair[0], onFrame: { _, _ in }, onClose: { _ in })
+    connection.markGreeted(protocolVersion: 11, ownerViewVersion: 3, ownerInputVersion: input)
+    return (connection, pair[1])
+  }
+
+  @MainActor
+  private func request(_ runtime: HelperRuntime, _ peer: (IPCConnection, Int32),
+    _ method: String, _ params: [String: Any]) async throws -> [String: Any]
+  {
+    let data = try JSONSerialization.data(withJSONObject: ["id": 1, "method": method, "params": params])
+    await runtime.handle(connection: peer.0, frame: data)
+    let result = try readResponse(peer.1)
+    return try XCTUnwrap(result["result"] as? [String: Any], "\(method): \(result)")
+  }
+
+  @MainActor
+  private func openView(_ runtime: HelperRuntime, peer: (IPCConnection, Int32), app: AppIdentity)
+    async throws -> [String: Any] {
+    let view = try await request(runtime, peer, "view.open", [
+      "viewId": "view", "generation": 1, "leaseDurationMs": 120_000,
+      "target": ["kind": "app", "app": ["bundleId": app.bundleId, "displayName": app.displayName],
+        "windowId": "fixture-window"],
+    ])
+    XCTAssertEqual(view["state"] as? String, "ready")
+    return ["kind": "owner-view", "viewId": "view", "generation": 1]
+  }
+
+  @MainActor
+  private func startViewStream(_ runtime: HelperRuntime, peer: (IPCConnection, Int32),
+    source: [String: Any], stream: String) async throws -> String {
+    let resolved = try await request(runtime, peer, "display.resolve", ["source": source])
+    let target = try XCTUnwrap(resolved["target"] as? [String: Any])
+    let started = try await request(runtime, peer, "display.start", [
+      "streamId": stream, "target": target, "sources": [source], "maxLongSide": 640, "maxFps": 15,
+    ])
+    return try XCTUnwrap(started["attachmentToken"] as? String)
+  }
+
+  @MainActor
+  func testPassiveViewClearsConnectionLostAfterAnActWasInterrupted() async throws {
+    try await withOwnerViewRuntime { runtime, overlay, app in
+      let agent = try peer(1), control = try peer(2), media = try peer(3)
+      defer {
+        for peer in [agent, control, media] { peer.0.close(); Darwin.close(peer.1) }
+      }
+      let started = expectation(description: "replacement stream is live")
+      runtime.videoProducerFactory = { id, binding, _, _ in
+        OwnerViewTestProducer(id: id, binding: binding, onStart: { started.fulfill() })
+      }
+      XCTAssertNil(overlay.presentation(at: Date()).pill)
+      _ = try await request(runtime, agent, "session.open", ["sessionId": "task", "threadTitle": "Fixture task"])
+      let session = try XCTUnwrap(runtime.registry.sessions["task"])
+      let state = AppSessionState(identity: app, path: "/Fixture.app")
+      session.add(state, access: .readWrite)
+      try runtime.registry.claim(state, for: session)
+      _ = try await request(runtime, agent, "session.open", ["sessionId": "task", "threadTitle": "Fixture task"])
+      // The act marks this before running on the work executor. Leave the receipt outstanding.
+      overlay.workStarted(on: state)
+      agent.0.close()
+      runtime.connectionClosed(agent.0)
+      XCTAssertEqual(overlay.presentation(at: Date()).pill?.status, "Connection lost · last action unconfirmed")
+
+      let source = try await openView(runtime, peer: control, app: app)
+      XCTAssertNil(overlay.presentation(at: Date()).pill)
+      let token = try await startViewStream(runtime, peer: control, source: source,
+        stream: "dsp_\(UUID().uuidString)")
+      _ = try await request(runtime, media, "display.attach", ["token": token])
+      await fulfillment(of: [started], timeout: 1)
+      XCTAssertTrue(runtime.ownerAttachments.isEmpty, "A passive viewer never gets an input attachment")
+      XCTAssertNil(overlay.presentation(at: Date()).pill)
+      XCTAssertNil(overlay.presentation(at: Date().addingTimeInterval(61)).pill)
+    }
+  }
+
+  @MainActor
+  func testReplacementInputWaitsForDisconnectedAttachmentWithinItsBudget() async throws {
+    for disconnectDelivered in [true, false] {
+      try await assertReplacementWaits(disconnectDelivered: disconnectDelivered)
+    }
+  }
+
+  @MainActor
+  private func assertReplacementWaits(disconnectDelivered: Bool) async throws {
+    try await withOwnerViewRuntime { runtime, _, app in
+      let oldPeer = try peer(1, input: 2), newPeer = try peer(2, input: 2)
+      defer { for peer in [oldPeer, newPeer] { peer.0.close(); Darwin.close(peer.1) } }
+      let producer = Locked<OwnerViewTestProducer?>(nil)
+      runtime.videoProducerFactory = { id, binding, _, _ in
+        let created = OwnerViewTestProducer(id: id, binding: binding)
+        producer.withLock { $0 = created }
+        return created
+      }
+      let stream = "dsp_\(UUID().uuidString)"
+      let source = try await openView(runtime, peer: newPeer, app: app)
+      _ = try await startViewStream(runtime, peer: newPeer, source: source, stream: stream)
+      let picture = try XCTUnwrap(producer.current)
+      let old = try XCTUnwrap(runtime.installOwnerAttachment(streamID: stream,
+        source: .init(kind: "owner-view", sessionId: nil, appKey: nil, viewId: "view", generation: 1),
+        connection: oldPeer.0, binding: picture.binding, producer: picture, path: "/Fixture.app"))
+      let gate = Locked<CheckedContinuation<Void, Never>?>(nil)
+      let entered = expectation(description: "old input is still releasing")
+      old.queue.enqueue {
+        await withCheckedContinuation { done in
+          gate.withLock { $0 = done }
+          entered.fulfill()
+        }
+      }
+      await fulfillment(of: [entered], timeout: 1)
+      defer { gate.withLock { done in done?.resume(); done = nil } }
+      oldPeer.0.close()
+      if disconnectDelivered { runtime.connectionClosed(oldPeer.0) }
+      func input(geometry: Int) throws -> RequestEnvelope {
+        let data = try JSONSerialization.data(withJSONObject: ["id": 1, "method": "display.input",
+          "params": ["streamId": stream, "source": source, "geometry": geometry, "sequence": 1,
+            "events": [["kind": "key", "action": "up", "key": "Shift", "code": "ShiftLeft", "modifiers": []]]]])
+        return try JSONCoding.decoder.decode(RequestEnvelope.self, from: data)
+      }
+      let reply = try await runtime.ownerInput(input(geometry: 2), connection: newPeer.0,
+        budget: WorkBudget(requestEnd: Date().addingTimeInterval(0.05)))
+      XCTAssertEqual(reply.reason, "unavailable", "The deadline expires while the old attachment is releasing")
+      XCTAssertTrue(runtime.ownerAttachments[old.id] === old)
+      let release = Task {
+        try await Task.sleep(for: .milliseconds(30))
+        gate.withLock { done in done?.resume(); done = nil }
+      }
+      _ = try await runtime.ownerInput(input(geometry: 1), connection: newPeer.0,
+        budget: WorkBudget(requestEnd: Date().addingTimeInterval(2)))
+      try await release.value
+      XCTAssertTrue(runtime.ownerAttachments[old.id]?.connection === newPeer.0,
+        "The replacement gets its own attachment after cleanup, even without live AX in this test")
+    }
+  }
+
+  @MainActor
   func testLegacyDesktopOfferKeepsComputerUseWithoutOwnerInput() async throws {
     for offer in [nil, 1, 2] as [Int?] {
       let runtime = hostRuntime(helperVersion: "test", peerRequirement: .sameUser)
@@ -227,4 +390,39 @@ final class OwnerInputAttachmentTests: XCTestCase {
       held.mutations.endAgent()
     } catch { XCTFail("Disconnect stranded the app mutation lane: \(error)") }
   }
+}
+
+
+/// No capture, focus or input posting. Start and attach still pass through the real video registry.
+private final class OwnerViewTestProducer: MacVideoProducing {
+  let id: String
+  let binding: MacVideoBinding
+  private let onStart: @Sendable () -> Void
+  private let stopped = Locked(false)
+  var ended: Bool { stopped.current }
+  var resourcesSettled: Bool { ended }
+  var hasFrame: Bool { !ended }
+  var needsResume: Bool { false }
+  var canResume: Bool { false }
+  var inputVisible: Bool { true }
+  var inputMap: MacOwnerInputMap? { .init(generation: 1, crop: .zero, windows: [], revision: 1) }
+
+  init(id: String, binding: MacVideoBinding, onStart: @escaping @Sendable () -> Void = {}) {
+    self.id = id
+    self.binding = binding
+    self.onStart = onStart
+  }
+  func start(maxLongSide: Int, maxFps: Int) async { onStart() }
+  func resume(maxLongSide: Int, maxFps: Int) async {}
+  func configureRate(maxFps: Int, mode: MacVideoRate.Mode) {}
+  func setLinkCap(_ cap: Int?) {}
+  func attach(_ connection: IPCConnection) throws {}
+  func acknowledge(_ sequence: Int) {}
+  func refresh() {}
+  func setVisible(_ visible: Bool) {}
+  func checkLifecycle() {}
+  func invalidateProfile() {}
+  func suppress(reason: String) {}
+  func fail(_ reason: String) { stop(reason: reason, failed: true) }
+  func stop(reason: String, failed: Bool) { stopped.withLock { $0 = true } }
 }

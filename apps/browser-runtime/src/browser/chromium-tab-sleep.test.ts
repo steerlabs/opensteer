@@ -2363,7 +2363,9 @@ it.skipIf(!existsSync(brandedChrome))(
     const lookMs = performance.now() - launchedAt;
     process.stdout.write(`${JSON.stringify({ event: "r9.look-ended", lookMs })}\n`);
     expect(internal.contextHandle.lifecycle).toBeUndefined();
-    expect(lookMs).toBeLessThan(1_000);
+    // "At once" is against the look's own bound of ten seconds: a refusal ends it, the bound does
+    // not. It takes about 0.55 s on a quiet Mac and read 1.07 s once at a load of 20.
+    expect(lookMs).toBeLessThan(5_000);
     const ledger = new SurfaceLedger(launched.context);
     await ledger.start();
     cleanup.push(() => ledger.close());

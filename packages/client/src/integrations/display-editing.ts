@@ -24,6 +24,8 @@ const batchEnvelopeOverheadBytes = 128;
 const maxQueuedEvents = 8_192;
 const maxQueuedBytes = 2 * 1_024 * 1_024;
 const stoppedWords = "Typing stopped. Some of it may not have arrived: check the text.";
+// Match the time a browser tab shows its input receipt.
+const stoppedReceiptShownMs = 4_000;
 
 /** Phone and Mac producers insert only literal text. */
 export const displayEditingAbilities: EditingTargetAbilities = {
@@ -124,6 +126,7 @@ export class DisplayEditingSession {
   readonly #held = new Set<string>();
   readonly #unsubscribe: readonly (() => void)[];
   #state: DisplayEditingSnapshot = { context: null, receipt: null };
+  #stoppedReceiptTimer: ReturnType<typeof setTimeout> | null = null;
   #scope: string | null = null;
   #geometry: number | null = null;
   #disposed = false;
@@ -167,11 +170,18 @@ export class DisplayEditingSession {
     const preservedReceipt = this.#stop("changed", "The display changed. Try again.", {
       releaseGeometry: null,
     });
-    this.#set({ context: null, ...(preservedReceipt ? {} : { receipt: null }) });
+    this.#set({
+      context: null,
+      ...(preservedReceipt || this.#stoppedReceiptTimer !== null ? {} : { receipt: null }),
+    });
   }
   #set(patch: Partial<DisplayEditingSnapshot>): void {
     this.#state = { ...this.#state, ...patch };
     for (const listener of this.#listeners) listener();
+  }
+  #cancelStoppedReceiptTimer(): void {
+    if (this.#stoppedReceiptTimer !== null) clearTimeout(this.#stoppedReceiptTimer);
+    this.#stoppedReceiptTimer = null;
   }
   #count(record: Record<string, number>, kind: string): void {
     record[kind] = (record[kind] ?? 0) + 1;
@@ -295,6 +305,11 @@ export class DisplayEditingSession {
         options.reason ??
         (cause === "bound" ? "capacity" : cause === "timeout" ? "timeout" : undefined);
       if (diag) this.#count(this.diagnostics.refusals, diag);
+      this.#cancelStoppedReceiptTimer();
+      this.#stoppedReceiptTimer = setTimeout(() => {
+        this.#stoppedReceiptTimer = null;
+        this.#set({ receipt: null });
+      }, stoppedReceiptShownMs);
       this.#set({ receipt: stoppedWords });
       preservedReceipt = true;
       error = new DisplayEditingStopped(stoppedWords);
@@ -319,7 +334,8 @@ export class DisplayEditingSession {
   /** A refusal of input that never happened says so in its own words; `settled` false is unknown. */
   #refuse(reason: string, message: string, settled = true): Error {
     this.#count(this.diagnostics.refusals, reason);
-    this.#set({ receipt: message });
+    // A refused retry does not resolve what may have happened in the earlier burst.
+    if (this.#stoppedReceiptTimer === null) this.#set({ receipt: message });
     return settled ? new DisplayEditingRefusal(reason, message) : new Error(message);
   }
   #message(message: DisplayEditingMessage): void {
@@ -390,7 +406,7 @@ export class DisplayEditingSession {
         recordReceipt: true,
       });
     } else {
-      this.#set({ receipt: null });
+      if (this.#stoppedReceiptTimer === null) this.#set({ receipt: null });
       if (pending.copy) {
         pending.dispatched = true;
         const refusal = pending.clipboardRefusal;
@@ -753,6 +769,7 @@ export class DisplayEditingSession {
   dispose(): void {
     this.#stop("dispose", "The display changed. Try again.");
     this.#disposed = true;
+    this.#cancelStoppedReceiptTimer();
     for (const unsubscribe of this.#unsubscribe) unsubscribe();
     this.#listeners.clear();
   }

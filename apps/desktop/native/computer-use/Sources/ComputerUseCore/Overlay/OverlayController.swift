@@ -35,11 +35,21 @@ public final class OverlayController: ActionFeedback {
   private var appInstances: [String: ObjectIdentifier] = [:]
   private var timer: Timer?
   private let tracker = WindowTracker()
+  private let drawsWindows: Bool
 
-  public init(onStop: @escaping @MainActor () -> Void) {
+  public convenience init(onStop: @escaping @MainActor () -> Void) {
+    self.init(drawsWindows: true, onStop: onStop)
+  }
+
+  init(drawsWindows: Bool, onStop: @escaping @MainActor () -> Void) {
+    self.drawsWindows = drawsWindows
     self.onStop = onStop
     tracker.refresh = { [weak self] ordering in self?.placeOverWindows(ordering) ?? false }
     tracker.onWorkspaceEvent = { [weak self] event in self?.workspaceChanged(event) }
+  }
+
+  func presentation(at now: Date) -> OverlayModel.Presentation {
+    model.presentation(at: now)
   }
 
   // MARK: - What the runtime reports
@@ -73,6 +83,10 @@ public final class OverlayController: ActionFeedback {
     model.update(
       sessions: next, ending: ending, at: Date(), pointerNear: pill?.pointerIsNear() ?? false)
     render()
+  }
+
+  func connectionRestored() {
+    if model.connectionRestored() { render() }
   }
 
   /// The live sessions in the order they opened, each with only the apps it
@@ -195,6 +209,7 @@ public final class OverlayController: ActionFeedback {
   // MARK: - Drawing
 
   private func render() {
+    guard drawsWindows else { return }
     let now = Date()
     let presentation = model.presentation(at: now)
     if let state = presentation.pill {
