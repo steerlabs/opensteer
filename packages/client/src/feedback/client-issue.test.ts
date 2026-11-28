@@ -376,4 +376,19 @@ describe("safe client issues", () => {
       expect(browserPoolRefusalWords(undefined)).toBeUndefined();
     },
   );
+
+  it("words a cloud-tab typing overload stop as a single standalone sentence", () => {
+    expect(
+      presentClientIssue({
+        code: "rejected",
+        action: "send that to the page",
+        done: "sent",
+        reason: "browser-typing-overload",
+      }),
+    ).toEqual({
+      title: "Typing stopped. Some of it may not have arrived: check the text.",
+      detail: null,
+      action: null,
+    });
+  });
 });

@@ -1,5 +1,6 @@
 import { presentClientIssue } from "../feedback/client-issue.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BrowserEditingStore } from "./browser-editing.js";
 import { BrowserWatchStore, browserInputRefusalShownMs } from "./browser-watch.js";
 import type { WebSocketClient } from "./host-session-client.js";
 import { healthySocketMs } from "./realtime-frames.js";
@@ -1103,3 +1104,188 @@ it.each([false, true])(
     }
   },
 );
+
+it("stops a cloud-tab typing burst on browser-input-overload, keeps an ordered prefix and held releases, and shows one typing sentence", async () => {
+  vi.useFakeTimers();
+  const socket = new TargetSocket();
+  const watch = new BrowserWatchStore(
+    () => socket,
+    "control",
+    (sid, message, srf) => editing.receive(sid, message, srf),
+    () => 0,
+  );
+  const editing = new BrowserEditingStore((sid, srf, command) => watch.send(sid, srf, command));
+  const release = watch.retain(sessionId, surfaceId);
+  const statusIssues: (string | null)[] = [];
+  const unsubscribeStatus = watch.subscribeStatus(sessionId, surfaceId, () => {
+    const issue = watch.status(sessionId, surfaceId).inputError;
+    statusIssues.push(issue ? presentClientIssue(issue).title : null);
+  });
+
+  // Model the runtime's 128-entry BrowserInputLane + reserved cleanup releases:
+  // ordinary presses saturate past 128 pending entries and emit browser-input-overload;
+  // releases for already-admitted presses always bypass ordinary capacity.
+  const queueLimit = 128;
+  const admittedKeys: {
+    readonly action: string;
+    readonly code?: string;
+    readonly text?: string;
+  }[] = [];
+  const reservedReleases = new Set<string>();
+  const pending: { readonly action: string; readonly code?: string; readonly text?: string }[] = [];
+  let freedAfterOverload = false;
+  const originalSend = socket.send.bind(socket);
+  socket.send = (raw: string) => {
+    originalSend(raw);
+    const frame = JSON.parse(raw) as {
+      type: string;
+      action?: string;
+      code?: string;
+      text?: string;
+      inputSequence?: number;
+      inputGeneration?: number;
+    };
+    if (frame.type !== "input.key") return;
+    const isRelease = frame.action === "up";
+    const isReserved = isRelease && frame.code !== undefined && reservedReleases.has(frame.code);
+    if (isRelease && !isReserved) return;
+    if (!isReserved && pending.length >= queueLimit) {
+      socket.receive({
+        type: "browser.error",
+        inputSequence: frame.inputSequence,
+        inputGeneration: frame.inputGeneration,
+        error: {
+          code: "conflict",
+          reason: "browser-input-overload",
+          message: "Browser input was not applied. Try the action again.",
+          retryable: false,
+        },
+      });
+      // Free a queue slot right after the first overload refusal: if the viewer kept sending
+      // trailing keys, they would land past the gap and break the ordered prefix invariant.
+      if (!freedAfterOverload && pending.length > 0) {
+        freedAfterOverload = true;
+        admittedKeys.push(pending.shift()!);
+      }
+      return;
+    }
+    if (!isRelease && frame.code) reservedReleases.add(frame.code);
+    if (isReserved && frame.code) reservedReleases.delete(frame.code);
+    pending.push({ action: frame.action ?? "", code: frame.code, text: frame.text });
+  };
+
+  try {
+    socket.open();
+    socket.admit();
+    editing.negotiate(sessionId, 2, surfaceId, true);
+    socket.subscribed();
+    socket.picture();
+    statusIssues.length = 0;
+
+    const target = editing.target(sessionId, surfaceId);
+    const first200 = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(6).slice(0, 200);
+
+    // Hold Shift down first so we also prove its reserved release still goes out after overload.
+    await target.send({
+      kind: "key",
+      keystroke: { action: "down", key: "Shift", code: "ShiftLeft", modifiers: ["shift"] },
+    });
+    for (const ch of first200) {
+      const code = ch >= "0" && ch <= "9" ? `Digit${ch}` : `Key${ch.toUpperCase()}`;
+      await target.send({
+        kind: "key",
+        keystroke: { action: "down", key: ch, code, modifiers: ["shift"], text: ch },
+      });
+      await target.send({
+        kind: "key",
+        keystroke: { action: "up", key: ch, code, modifiers: ["shift"] },
+      });
+    }
+    await target.send({
+      kind: "key",
+      keystroke: { action: "up", key: "Shift", code: "ShiftLeft", modifiers: [] },
+    });
+
+    // Simulate duplicate in-flight overload replies arriving from keys already on the wire.
+    const sentKeyFrames = socket.sent
+      .map((raw) => JSON.parse(raw) as { type: string; action?: string; inputSequence?: number })
+      .filter((frame) => frame.type === "input.key");
+    const lastSentKeySeq = sentKeyFrames.at(-1)?.inputSequence;
+    socket.receive({
+      type: "browser.error",
+      inputSequence: lastSentKeySeq,
+      error: {
+        code: "conflict",
+        reason: "browser-input-overload",
+        message: "Browser input was not applied. Try the action again.",
+        retryable: false,
+      },
+    });
+
+    // Drain the admitted queue to see exactly what arrived at the page.
+    while (pending.length > 0) admittedKeys.push(pending.shift()!);
+    const arrivedText = admittedKeys
+      .filter((entry) => entry.action === "down" && entry.text)
+      .map((entry) => entry.text!)
+      .join("");
+
+    // Exact prefix in order, stopped right after the lane saturated (no tail keys sent after refusal).
+    expect(arrivedText.length).toBeGreaterThan(0);
+    expect(arrivedText.length).toBeLessThan(first200.length);
+    expect(first200.startsWith(arrivedText)).toBe(true);
+    // Held Shift release was still delivered via the reserved cleanup slot.
+    expect(admittedKeys.at(-1)).toMatchObject({ action: "up", code: "ShiftLeft" });
+    // Client stopped sending key-down commands right after the first refusal instead of sending all 200.
+    const sentDowns = sentKeyFrames.filter((frame) => frame.action === "down");
+    expect(sentDowns.length).toBeLessThan(100);
+
+    // One typing sentence in the product's voice, shown once per burst (not once per refused key).
+    const sentence = "Typing stopped. Some of it may not have arrived: check the text.";
+    const shown = watch.get(sessionId, surfaceId).inputError;
+    expect(shown ? presentClientIssue(shown).title : null).toBe(sentence);
+    expect(statusIssues.filter((title) => title === sentence)).toHaveLength(1);
+
+    // After the burst goes quiet, fresh typing resumes cleanly.
+    vi.advanceTimersByTime(350);
+    const countBeforeResume = socket.sent.length;
+    await target.send({
+      kind: "key",
+      keystroke: { action: "down", key: "z", code: "KeyZ", modifiers: [], text: "z" },
+    });
+    expect(socket.sent.length).toBe(countBeforeResume + 1);
+
+    // A non-key overload refusal still says "Couldn't send that to the page." rather than "Typing stopped".
+    watch.send(sessionId, surfaceId, {
+      type: "input.pointer",
+      surfaceId: BrowserSurfaceIdSchema.parse(surfaceId),
+      action: "down",
+      button: "left",
+      geometryRevision: 1,
+      x: 0.5,
+      y: 0.5,
+      viewportWidth: 800,
+      viewportHeight: 600,
+      modifiers: [],
+    });
+    const clickSeq = (JSON.parse(socket.sent.at(-1)!) as { inputSequence: number }).inputSequence;
+    socket.receive({
+      type: "browser.error",
+      inputSequence: clickSeq,
+      error: {
+        code: "conflict",
+        reason: "browser-input-overload",
+        message: "Browser input was not applied.",
+        retryable: false,
+      },
+    });
+    expect(presentClientIssue(watch.get(sessionId, surfaceId).inputError!).title).toBe(
+      "Couldn't send that to the page.",
+    );
+  } finally {
+    unsubscribeStatus();
+    release();
+    editing.dispose();
+    watch.dispose();
+    vi.useRealTimers();
+  }
+});
