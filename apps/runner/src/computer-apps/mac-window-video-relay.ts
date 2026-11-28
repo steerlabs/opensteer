@@ -463,9 +463,7 @@ export class MacWindowVideoRelay {
               sequence: message.sequence,
               events: message.events,
             },
-            // Match the lane's 8 s age bound so a packed 64-event batch on a sluggish app finishes
-            // within the client's 10 s batch timeout instead of cutting off at 5 s.
-            Date.now() + ownerInputLane.maxAgeMs,
+            Date.now() + 5_000,
           )
           .then(
             (answer) => ({ type: "display.input.result" as const, ...answer }),
