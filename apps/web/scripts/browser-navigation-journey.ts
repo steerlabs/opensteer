@@ -13,6 +13,7 @@ const { checks, check, abort } = journeyChecks();
 const web = await openMockWeb("opensteer-navigation-web");
 try {
   const context = await web.browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await web.routeBuild(context);
   await context.route(
     (url) => url.origin !== web.origin,
     (route) => route.fulfill({ body: "", status: 204 }),
