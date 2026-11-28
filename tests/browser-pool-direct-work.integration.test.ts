@@ -67,6 +67,9 @@ async function directWork(
     readonly endsBrowserWork?: boolean;
     /** Each call's own bound (two minutes). */
     readonly executionMs?: number;
+    readonly onPooledBrowserUseTiming?: ConstructorParameters<
+      typeof AgentSessionService
+    >[0]["onPooledBrowserUseTiming"];
     /**
      * The Home's holder record for each tab a script opens or binds is filed under the binding
      * this names (another session's), and a kept handle taken up again refreshes none: the task
@@ -136,6 +139,9 @@ async function directWork(
   const sessions = new AgentSessionService({
     store: j.store,
     holdMs: 0,
+    ...(options.onPooledBrowserUseTiming
+      ? { onPooledBrowserUseTiming: options.onPooledBrowserUseTiming }
+      : {}),
     onWorkingIn: (ownerUserId, notice) => {
       workingIn.push({ ownerUserId, notice });
       workingChanged();
@@ -685,7 +691,13 @@ it("runs a connected agent's script on a parked browser after one wake, and rebi
     const [tab] = await home.service.savedPages(j.task.userId, session.id);
     if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
     const page = await j.draft();
-    const work = await directWork(j, () => home);
+    type Timing = Parameters<
+      NonNullable<ConstructorParameters<typeof AgentSessionService>[0]["onPooledBrowserUseTiming"]>
+    >[0];
+    const timings: Timing[] = [];
+    const work = await directWork(j, () => home, {
+      onPooledBrowserUseTiming: (trace) => timings.push(trace),
+    });
     const read = `return await page.js("document.querySelector('input').value")`;
     const first = await work.use(
       `globalThis.page = await openPage(${JSON.stringify(tab.id)}); ${read}`,
@@ -709,6 +721,35 @@ it("runs a connected agent's script on a parked browser after one wake, and rebi
     const second = await parkedCall;
     expect(second.isError, text(second)).not.toBe(true);
     expect(text(second)).toContain("unsent draft");
+    expect(timings).toHaveLength(2);
+    expect(timings[0]).toMatchObject({ waited: false, target: { epoch: 1 } });
+    expect(timings[1]).toMatchObject({
+      waited: true,
+      operationId: expect.stringMatching(/^aop_/u),
+      target: { epoch: 2 },
+    });
+    const {
+      reservingMs,
+      reservedMs,
+      handedOffMs,
+      firstFrameMs,
+      firstReplyMs,
+      lastReplyMs,
+      scriptFinishedMs,
+      totalMs,
+    } = timings[1]!;
+    const marks = [
+      reservingMs,
+      reservedMs,
+      handedOffMs,
+      firstFrameMs,
+      firstReplyMs,
+      lastReplyMs,
+      scriptFinishedMs,
+      totalMs,
+    ];
+    expect(marks).toEqual(Array.from({ length: marks.length }, () => expect.any(Number)));
+    expect(marks).toEqual([...marks].sort((a, b) => a! - b!));
     expect(j.controller.effects).toEqual(["start", "pause", "resume"]);
     expect(await j.slot()).toMatchObject({ phase: "running", epoch: 2 });
     expect(await page.value()).toBe('["unsent draft",99]');

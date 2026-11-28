@@ -172,6 +172,33 @@ export interface PooledDirectBrowser {
   recheckTarget(afterSubmit?: boolean): Promise<void>;
 }
 
+interface PooledBrowserUseMarks {
+  reservingMs?: number;
+  reservedMs?: number;
+  handedOffMs?: number;
+  firstFrameMs?: number;
+  firstReplyMs?: number;
+  lastReplyMs?: number;
+  scriptFinishedMs?: number;
+}
+
+interface PooledBrowserUseTrace extends PooledBrowserUseMarks {
+  readonly operationId: AgentOperationId;
+  readonly operationCreatedAt: string;
+  readonly target?: BrowserPoolTargetIdentity;
+  readonly waited?: boolean;
+  readonly totalMs: number;
+}
+
+type PooledBrowserUseTiming = {
+  readonly started: number;
+  readonly marks: PooledBrowserUseMarks;
+};
+
+function elapsed(started: number): number {
+  return Math.round((performance.now() - started) * 10) / 10;
+}
+
 /** An executor's way to say it cannot tell whether its effect happened. */
 export class OperationOutcomeUnknown extends Error {
   /** Why, where the Home knows it (the standing a recheck read); else its words may name it. */
@@ -392,6 +419,7 @@ export class AgentSessionService {
   ) => void | Promise<void>;
   readonly #releaseBindingPlaces: (bindingId: string) => void;
   readonly #pruneBindingTabs: PruneBindingTabs;
+  readonly #onPooledBrowserUseTiming: ((trace: PooledBrowserUseTrace) => void) | undefined;
   readonly #resetRevision = new Map<AgentSessionId, number>();
   readonly #holdMs: number;
   readonly #executionMs: number;
@@ -420,12 +448,14 @@ export class AgentSessionService {
     readonly releaseBindingPlaces?: (bindingId: string) => void;
     /** Release unreachable tabs; returns whether Watch lost its tab, or null if deferred. */
     readonly pruneBindingTabs?: PruneBindingTabs;
+    readonly onPooledBrowserUseTiming?: (trace: PooledBrowserUseTrace) => void;
   }) {
     this.#store = options.store;
     this.workingIn = new AgentWorkingInRegistry(options.onWorkingIn ?? (() => {}));
     this.#resetBinding = options.resetBinding ?? (() => {});
     this.#releaseBindingPlaces = options.releaseBindingPlaces ?? (() => {});
     this.#pruneBindingTabs = options.pruneBindingTabs ?? (async () => false);
+    this.#onPooledBrowserUseTiming = options.onPooledBrowserUseTiming;
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
     this.#executionMs = options.executionMs ?? defaultExecutionMs;
     this.#closeBinding = options.closeBinding ?? (() => {});
@@ -1077,6 +1107,11 @@ export class AgentSessionService {
     stop: AbortSignal,
   ): Promise<DirectOperationResult<Result>> {
     const bindingId = `session:${row.sessionId}` as const;
+    const timing: PooledBrowserUseTiming | undefined =
+      operation.tool === "browser_use" && this.#onPooledBrowserUseTiming
+        ? { started: performance.now(), marks: {} }
+        : undefined;
+    let target: BrowserPoolTargetIdentity | undefined;
     const deadline = Date.now() + (operation.timeoutMs ?? this.#executionMs);
     const signal = AbortSignal.any([stop, AbortSignal.timeout(Math.max(0, deadline - Date.now()))]);
     let reservation: BrowserPoolReservation | undefined;
@@ -1086,7 +1121,9 @@ export class AgentSessionService {
       // first, before the reserve, and again after it, where it stays the authority.
       await pool.recheckTarget();
       signal.throwIfAborted();
+      if (timing) timing.marks.reservingMs = elapsed(timing.started);
       reservation = await pool.reserve(signal);
+      if (timing) timing.marks.reservedMs = elapsed(timing.started);
       // Between here and the execution's own settler (registered once its send counters exist),
       // a restart that can wait no longer records this holder too: refused while nothing is
       // handed off, and refused as unsent once it is, since no command can have left before the
@@ -1140,6 +1177,7 @@ export class AgentSessionService {
           ])
         : signal;
       const identity = pool.identity();
+      if (timing) target = identity;
       await pool.recheckTarget();
       held.throwIfAborted();
       handed = await handOffAgentOperation(this.#store.database, {
@@ -1150,11 +1188,13 @@ export class AgentSessionService {
         pool: { target: identity, signal: held },
       });
       if (!handed) throw refused("forbidden", "The connected agent's access changed or ended.");
+      if (timing) timing.marks.handedOffMs = elapsed(timing.started);
       return await this.#execute(operation, handed, taskId, bindingId, held, {
         deadline,
         identity,
         pool,
         reservation,
+        ...(timing ? { timing } : {}),
       });
     } catch (error) {
       // Nothing was handed off, so nothing reached the browser: a definite refusal, under the
@@ -1186,6 +1226,20 @@ export class AgentSessionService {
       throw error;
     } finally {
       reservation?.release();
+      if (timing) {
+        try {
+          this.#onPooledBrowserUseTiming?.({
+            operationId: row.id,
+            operationCreatedAt: row.createdAt.toISOString(),
+            ...(target ? { target } : {}),
+            ...(reservation ? { waited: reservation.waited === true } : {}),
+            ...timing.marks,
+            totalMs: elapsed(timing.started),
+          });
+        } catch {
+          // Diagnostics must never change an operation's result.
+        }
+      }
     }
   }
 
@@ -1233,6 +1287,7 @@ export class AgentSessionService {
       identity: BrowserPoolTargetIdentity;
       pool: PooledDirectBrowser;
       reservation?: BrowserPoolReservation;
+      timing?: PooledBrowserUseTiming;
     },
   ): Promise<DirectOperationResult<Result>> {
     const entry = this.#sessions.get(row.sessionId) ?? {
@@ -1367,10 +1422,17 @@ export class AgentSessionService {
                     signal.throwIfAborted();
                   },
                   submitted: () => {
+                    if (pooled.timing && submitted === 0)
+                      pooled.timing.marks.firstFrameMs = elapsed(pooled.timing.started);
                     outstanding++;
                     submitted++;
                   },
                   acknowledged: () => {
+                    if (pooled.timing) {
+                      const reply = elapsed(pooled.timing.started);
+                      pooled.timing.marks.firstReplyMs ??= reply;
+                      pooled.timing.marks.lastReplyMs = reply;
+                    }
                     outstanding--;
                   },
                   hasSubmitted: () => submitted > 0,
@@ -1378,6 +1440,7 @@ export class AgentSessionService {
               }
             : {}),
         });
+        if (pooled?.timing) pooled.timing.marks.scriptFinishedMs = elapsed(pooled.timing.started);
         // The REPL can return normally even when a script caught a failed authority check.
         // A cut never releases buffered output, and an unsent refusal never becomes unknown.
         if (authorityEnded) throw authorityEnded;
