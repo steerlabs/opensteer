@@ -3247,15 +3247,20 @@ describe("Mac owner input over authenticated display sockets", () => {
     expect(inputBatches.length).toBeLessThanOrEqual(8);
   });
 
+  // Covers the real client DisplayEditingSession + DisplayStreams, Home DisplayStreamHub,
+  // Runner OrderedInputLane, Bridge display.input Zod schema, and a local copy of the Mac
+  // helper's OwnerInputAdmission bounds (maxBatches = 4, maxBytes = 131_072 on serialized
+  // MacOwnerInput.InputParams). Does NOT cover the Runner's production MacWindowVideoRelay,
+  // the Desktop bridge process, or the Mac helper's Swift admission and dispatch.
   async function fullHopMacFixture() {
     const f = await fixture(true, { mac: true });
     const receivedKeys: string[] = [];
     const receivedPastes: string[] = [];
     const batchKinds: string[][] = [];
     const maxWireBytes = { value: 0 };
-    // Exact Mac helper OwnerInputAdmission (OwnerInputState.swift:47-81, HelperRuntime.swift:1343-1358):
-    // maxBatches = 4, maxBytes = 131_072 measured on serialized MacOwnerInput.InputParams (including
-    // streamId + source), 1..64 events, strictly increasing sequences.
+    // Copied Mac helper OwnerInputAdmission bounds (OwnerInputState.swift:47-81,
+    // HelperRuntime.swift:1343-1358): maxBatches = 4, maxBytes = 131_072 on serialized
+    // MacOwnerInput.InputParams (streamId + source), 1..64 events, strictly increasing sequences.
     const helperMaxBytes = 131_072;
     let helperLastSequence = -1;
     let helperPendingBatches = 0;
@@ -3405,7 +3410,7 @@ describe("Mac owner input over authenticated display sockets", () => {
     return { editing, receivedKeys, receivedPastes, batchKinds, maxWireBytes };
   }
 
-  it("delivers click + 200-key burst in order with mouse release isolated from keys through Home, Runner lane, Bridge schema and Mac helper admission", async () => {
+  it("delivers click + 200-key burst with mouse release isolated from keys through client, Home hub, Runner lane, Bridge schema and copied helper bounds (excludes relay, bridge process and Swift helper)", async () => {
     const { editing, receivedKeys, batchKinds } = await fullHopMacFixture();
     const first200 = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(6).slice(0, 200);
     const clickDown = editing.input(1, [
@@ -3455,7 +3460,7 @@ describe("Mac owner input over authenticated display sockets", () => {
     expect(batchKinds[2]?.every((kind) => kind.startsWith("key:"))).toBe(true);
   });
 
-  it("keeps near-128 KiB escaped pastes within Mac helper OwnerInputAdmission through Home and Runner", async () => {
+  it("keeps near-128 KiB escaped pastes within copied Mac helper OwnerInputAdmission bounds through client, Home hub and Runner lane (excludes relay, bridge process and Swift helper)", async () => {
     const { editing, receivedPastes, maxWireBytes } = await fullHopMacFixture();
     const contextId = "00000000-0000-4000-8000-000000000001";
     const escapedPaste = "\u0001".repeat(30_000);

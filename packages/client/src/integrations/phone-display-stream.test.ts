@@ -2187,6 +2187,189 @@ describe("display editing receipt adapter", () => {
     }
     editing.dispose();
   });
+
+  it("keeps mouse-up separate from queued keys even when a scroll sits between them", async () => {
+    const { socket, editing } = await editingFixture();
+    const down = editing.input(1, [
+      {
+        kind: "mouse",
+        phase: "down",
+        button: "left",
+        clickCount: 1,
+        modifiers: [],
+        x: 0.2,
+        y: 0.2,
+      },
+    ]);
+    const up = editing.input(1, [
+      { kind: "mouse", phase: "up", button: "left", clickCount: 1, modifiers: [], x: 0.2, y: 0.2 },
+    ]);
+    const scroll = editing.input(1, [{ kind: "scroll", x: 0.2, y: 0.2, dx: 0, dy: 0.1 }]);
+    const keyDown = editing.send({
+      kind: "key",
+      keystroke: {
+        action: "down",
+        key: "a",
+        code: "KeyA",
+        modifiers: [],
+        location: 0,
+        repeat: false,
+        text: "a",
+      },
+    });
+    const keyUp = editing.send({
+      kind: "key",
+      keystroke: {
+        action: "up",
+        key: "a",
+        code: "KeyA",
+        modifiers: [],
+        location: 0,
+        repeat: false,
+      },
+    });
+
+    expect(socket.messages("display.input")).toHaveLength(1);
+    expect(socket.messages("display.input")[0]!.events).toEqual([
+      expect.objectContaining({ kind: "mouse", phase: "down" }),
+    ]);
+
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+    expect(socket.messages("display.input")).toHaveLength(2);
+    expect(socket.messages("display.input")[1]!.events).toEqual([
+      expect.objectContaining({ kind: "mouse", phase: "up" }),
+      expect.objectContaining({ kind: "scroll" }),
+    ]);
+
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "dispatched" });
+    expect(socket.messages("display.input")).toHaveLength(3);
+    expect(socket.messages("display.input")[2]!.events).toEqual([
+      expect.objectContaining({ kind: "key", action: "down", code: "KeyA" }),
+      expect.objectContaining({ kind: "key", action: "up", code: "KeyA" }),
+    ]);
+
+    socket.json({ type: "display.input.result", sequence: 2, outcome: "dispatched" });
+    await Promise.all([down, up, scroll, keyDown, keyUp]);
+    editing.dispose();
+  });
+
+  it("preserves order across click, keys, click while isolating both clicks from keys", async () => {
+    const { socket, editing } = await editingFixture();
+    const click1Down = editing.input(1, [
+      { kind: "mouse", phase: "move", button: "none", modifiers: [], x: 0.2, y: 0.2 },
+      {
+        kind: "mouse",
+        phase: "down",
+        button: "left",
+        clickCount: 1,
+        modifiers: [],
+        x: 0.2,
+        y: 0.2,
+      },
+    ]);
+    const click1Up = editing.input(1, [
+      { kind: "mouse", phase: "up", button: "left", clickCount: 1, modifiers: [], x: 0.2, y: 0.2 },
+    ]);
+    const keyCalls: Promise<unknown>[] = [];
+    for (const ch of "abc") {
+      const code = `Key${ch.toUpperCase()}`;
+      keyCalls.push(
+        editing.send({
+          kind: "key",
+          keystroke: {
+            action: "down",
+            key: ch,
+            code,
+            modifiers: [],
+            location: 0,
+            repeat: false,
+            text: ch,
+          },
+        }),
+        editing.send({
+          kind: "key",
+          keystroke: { action: "up", key: ch, code, modifiers: [], location: 0, repeat: false },
+        }),
+      );
+    }
+    const click2Move = editing.input(1, [
+      { kind: "mouse", phase: "move", button: "none", modifiers: [], x: 0.7, y: 0.7 },
+    ]);
+    const click2Down = editing.input(1, [
+      {
+        kind: "mouse",
+        phase: "down",
+        button: "left",
+        clickCount: 1,
+        modifiers: [],
+        x: 0.7,
+        y: 0.7,
+      },
+    ]);
+    const click2Up = editing.input(1, [
+      { kind: "mouse", phase: "up", button: "left", clickCount: 1, modifiers: [], x: 0.7, y: 0.7 },
+    ]);
+
+    for (let seq = 0; seq < 4; seq++) {
+      expect(socket.messages("display.input")).toHaveLength(seq + 1);
+      socket.json({ type: "display.input.result", sequence: seq, outcome: "dispatched" });
+    }
+    await Promise.all([click1Down, click1Up, ...keyCalls, click2Move, click2Down, click2Up]);
+
+    const batches = socket
+      .messages("display.input")
+      .map((message) =>
+        (message.events as { kind: string; phase?: string; action?: string; text?: string }[]).map(
+          (event) =>
+            event.kind === "mouse"
+              ? `mouse:${event.phase}`
+              : event.kind === "key"
+                ? `key:${event.action}${event.text ? `:${event.text}` : ""}`
+                : event.kind,
+        ),
+      );
+    expect(batches).toEqual([
+      ["mouse:move", "mouse:down"],
+      ["mouse:up"],
+      ["key:down:a", "key:up", "key:down:b", "key:up", "key:down:c", "key:up"],
+      ["mouse:move", "mouse:down", "mouse:up"],
+    ]);
+    editing.dispose();
+  });
+
+  it("sends mouse-up and display.input-reset when a mouse drag is interrupted by a refusal", async () => {
+    const { socket, editing } = await editingFixture();
+    const down = editing.input(1, [
+      {
+        kind: "mouse",
+        phase: "down",
+        button: "left",
+        clickCount: 1,
+        modifiers: [],
+        x: 0.2,
+        y: 0.2,
+      },
+    ]);
+    socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+    await down;
+
+    const move = editing.input(1, [
+      { kind: "mouse", phase: "move", button: "left", modifiers: [], x: 0.5, y: 0.5 },
+    ]);
+    const up = editing.input(1, [
+      { kind: "mouse", phase: "up", button: "left", clickCount: 1, modifiers: [], x: 0.5, y: 0.5 },
+    ]);
+    const settled = Promise.allSettled([move, up]);
+    socket.json({ type: "display.input.result", sequence: 1, outcome: "refused", reason: "stale" });
+    await settled;
+
+    const sentEvents = socket.messages("display.input").flatMap((m) => m.events as unknown[]);
+    expect(sentEvents).toContainEqual(
+      expect.objectContaining({ kind: "mouse", phase: "up", button: "left" }),
+    );
+    expect(socket.sent.at(-1)).toEqual({ type: "display.input-reset" });
+    editing.dispose();
+  });
 });
 
 describe("phone power and explicit-open intent", () => {
