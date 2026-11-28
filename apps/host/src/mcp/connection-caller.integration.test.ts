@@ -189,6 +189,25 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(await steer(bold)).toEqual(idle);
     expect(await steer(cautious)).toEqual(idle);
     expect(JSON.stringify(idle)).not.toContain("access mode");
+    const { session } = await beginAgentSession(storeFixture.database, {
+      userId: f.userId,
+      agentConnectionId: other.id,
+    });
+    const done = (taskId: string) =>
+      bold.client.callTool({ name: "opensteer_task_update", arguments: { taskId, done: true } });
+    const absent = await done(createId("thread"));
+    expect(absent).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "not_found" } },
+    });
+    expect(await done(session.threadId)).toEqual(absent);
+    expect(
+      await storeFixture.database
+        .selectFrom("agentSessions")
+        .select("status")
+        .where("id", "=", session.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "active" });
   });
 
   it("shows a disconnected agent no task in a tab's users, not even its own task's", async ({

@@ -100,15 +100,15 @@ const decided: Readonly<Record<string, string>> = {
   "machine.rename / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.done.set / everything":
-    "a connection's task tool accepts Done only on its own direct-work task; the command door can ask the person to mark other reachable tasks Done",
+    "A connection's task tool accepts Done on its own direct-work task. The command door can ask the person to mark other reachable tasks Done.",
   "thread.done.set / selected-covering":
-    "a connection's task tool accepts Done only on its own direct-work task; the command door can ask the person to mark other reachable tasks Done",
+    "A connection's task tool accepts Done on its own direct-work task. The command door can ask the person to mark other reachable tasks Done.",
   "thread.rename / everything":
-    "a connection's task tool accepts only Done; the command door can ask the person to rename a reachable task",
+    "A connection's task tool accepts only Done. The command door can ask the person to rename a reachable task.",
   "thread.execution.update / selected-covering":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.rename / selected-covering":
-    "a connection's task tool accepts only Done; the command door can ask the person to rename a reachable task",
+    "A connection's task tool accepts only Done. The command door can ask the person to rename a reachable task.",
   "trigger.create / selected-covering":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.open (guest) / everything":
