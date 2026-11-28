@@ -215,6 +215,9 @@ export async function journey(
     readonly probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
     /** Each time the Home republishes the person's tab rows (all of them, or these). */
     readonly onTabsChanged?: ConstructorParameters<typeof BrowserService>[0]["onTabsChanged"];
+    readonly onProfileArchived?: ConstructorParameters<
+      typeof BrowserService
+    >[0]["onProfileArchived"];
     readonly onHoldsDropped?: ConstructorParameters<typeof BrowserService>[0]["onHoldsDropped"];
     readonly requireAgentAccess?: ConstructorParameters<
       typeof BrowserService
@@ -388,6 +391,7 @@ export async function journey(
         tabsChanged();
       },
       ...(options.onHoldsDropped ? { onHoldsDropped: options.onHoldsDropped } : {}),
+      ...(options.onProfileArchived ? { onProfileArchived: options.onProfileArchived } : {}),
       ...(options.detachRunnerAgents ? { detachRunnerAgents: options.detachRunnerAgents } : {}),
       ...(profile
         ? {

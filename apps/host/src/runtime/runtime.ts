@@ -1391,7 +1391,10 @@ export async function createHostRuntime(
           ...(options?.tabs === false ? [] : (["tab"] as const)),
         ),
       onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
-      onProfileArchived: () => realtime.refreshObservedBrowserUsage(),
+      onProfileArchived: (profileId) => {
+        agentSessionsLate?.profileDeleted(profileId);
+        realtime.refreshObservedBrowserUsage();
+      },
       onError: (error) => reportBrowserUsageError(error),
 
       repository: store,

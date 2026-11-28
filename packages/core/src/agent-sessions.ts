@@ -150,6 +150,7 @@ export const AgentWorkingInSchema = z.object({
   sessionId: AgentSessionIdSchema,
   tabId: TabIdSchema.nullable(),
   computerId: DeviceIdSchema.optional(),
+  target: AgentOperationTargetViewSchema.optional(),
 });
 export type AgentWorkingIn = z.infer<typeof AgentWorkingInSchema>;
 

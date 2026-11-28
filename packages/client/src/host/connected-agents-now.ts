@@ -42,6 +42,8 @@ export function connectedAgentsNow(input: {
   readonly waitingRequests: readonly WaitingRequestView[];
   /** The task activity the client has read. */
   readonly operations?: readonly AgentOperationView[] | undefined;
+  /** The place the Home says the current session took up. */
+  readonly currentPlaces?: ReadonlyMap<string, AgentOperationTarget>;
   /** Once read, the profile inventory is authority on which browser targets still exist. */
   readonly profileIds?: ReadonlySet<string> | undefined;
 }): {
@@ -81,9 +83,17 @@ export function connectedAgentsNow(input: {
       waiting?.request.agentOperation?.target,
       ...operations.filter(({ outcome }) => outcome === null).map(({ target }) => target),
     ].filter((target): target is AgentOperationTarget => target !== undefined);
-    const targets = activeTargets.filter(exists);
+    const current = input.currentPlaces?.get(task.id);
+    const targets =
+      current && exists(current) && !waiting ? [current] : activeTargets.filter(exists);
     // When no action is in flight, the latest recorded action is the only place we can name.
-    if (!activeTargets.length && latest && exists(latest.target) && latest.ending !== "narrowed")
+    if (
+      !targets.length &&
+      !activeTargets.length &&
+      latest &&
+      exists(latest.target) &&
+      latest.ending !== "narrowed"
+    )
       targets.push(latest.target);
     const watchUnavailable =
       !targets.length && (activeTargets.length > 0 || (!!latest && !exists(latest.target)));

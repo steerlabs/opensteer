@@ -5245,8 +5245,13 @@ export class MockHostClient implements HostClient {
    * For tests and journeys: the Home says the task's connected agent works in this tab now, or,
    * with null, that it works in none (its session ended, or the tab closed).
    */
-  mockAgentWorksIn(threadId: string, tabId: string | null, computerId?: string): void {
-    this.#state.mockAgentWorksIn(threadId, tabId, computerId);
+  mockAgentWorksIn(
+    threadId: string,
+    tabId: string | null,
+    computerId?: string,
+    target?: import("@opensteer/core").AgentOperationTarget,
+  ): void {
+    this.#state.mockAgentWorksIn(threadId, tabId, computerId, target);
   }
 
   /** Ends one of the preview's direct operations and publishes its task again, as the Home does. */
@@ -8136,7 +8141,12 @@ class MockHostState {
     this.update({ ...this.snapshot, browserSessions });
   }
 
-  mockAgentWorksIn(threadId: string, tabId: string | null, computerId?: string): void {
+  mockAgentWorksIn(
+    threadId: string,
+    tabId: string | null,
+    computerId?: string,
+    target?: import("@opensteer/core").AgentOperationTarget,
+  ): void {
     const thread = this.snapshot.threads.find(({ id }) => id === threadId);
     const sessionId = thread?.externalWork?.sessionId;
     if (!sessionId) throw new Error("No connected agent works this mock task.");
@@ -8145,6 +8155,7 @@ class MockHostState {
       sessionId,
       tabId,
       computerId,
+      target,
     });
     const { [threadId]: _previous, ...rest } = this.snapshot.agentWorkingIn ?? {};
     this.update({

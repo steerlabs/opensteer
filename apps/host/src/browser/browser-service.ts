@@ -879,7 +879,7 @@ interface BrowserServiceOptions {
    */
   readonly onUsageChanged?: (credits: readonly BrowserUsageCredit[]) => void;
   /** A committed profile archive dropped that profile's sessions from every task's browser usage. */
-  readonly onProfileArchived?: () => void;
+  readonly onProfileArchived?: (profileId: BrowserProfileId) => void;
   /** A best-effort write that failed after the agent was already answered. */
   readonly onError?: (error: unknown) => void;
   /** Drives activity expiry and place coalescing; browser commands and connection deadlines use real time. */
@@ -2252,7 +2252,7 @@ export class BrowserService {
       this.#onHoldsDropped(input.ownerId, retiredTabIds);
       this.#onTabsChanged(input.ownerId, retiredTabIds);
     }
-    this.#onProfileArchived();
+    this.#onProfileArchived(input.profileId);
     for (const [id, group] of this.#personUseGroups)
       if (group.profileId === input.profileId) this.#endPersonUse(id);
     this.invalidatePlaceAuthority();
@@ -8352,7 +8352,7 @@ export class BrowserService {
       if (!bindings.size) tabs!.delete(surfaceId);
       if (!tabs!.size) this.#boundTabs.delete(sessionId);
       this.#brokers.get(sessionId)?.refreshSessionState();
-      this.#onTabsChanged(undefined, [surfaceId]);
+      this.#onTabsChanged(holder.ownerId, [surfaceId], true);
     };
   }
   #noteBoundTab(
@@ -8378,7 +8378,7 @@ export class BrowserService {
     bindings.set(binding, entry);
     if (added) this.#brokers.get(sessionId)?.refreshSessionState();
     // Who holds the tab, or since when, changed: the person's row for it says it.
-    if (holder && notify) this.#onTabsChanged(undefined, [surfaceId]);
+    if (holder && notify) this.#onTabsChanged(holder.ownerId, [surfaceId], true);
     return added ? entry : null;
   }
   /**
@@ -8428,18 +8428,25 @@ export class BrowserService {
    * The binding is not ended; its next command binds again under the rule and holds afresh.
    */
   releaseHolds(agentBindingId: string): void {
+    const changed = new Set<BrowserSurfaceId>();
+    let holdersChanged = false;
     for (const [sessionId, tabs] of this.#boundTabs) {
-      const released: BrowserSurfaceId[] = [];
-      for (const [surfaceId, bindings] of tabs)
-        if (bindings.delete(agentBindingId)) {
-          released.push(surfaceId);
-          if (!bindings.size) tabs.delete(surfaceId);
-        }
+      let released = false;
+      for (const [surfaceId, bindings] of tabs) {
+        if (!bindings.has(agentBindingId)) continue;
+        holdersChanged ||= !!bindings.get(agentBindingId);
+        changed.add(surfaceId);
+        bindings.delete(agentBindingId);
+        released = true;
+        if (!bindings.size) tabs.delete(surfaceId);
+      }
       if (!tabs.size) this.#boundTabs.delete(sessionId);
-      if (!released.length) continue;
-      this.#brokers.get(sessionId)?.refreshSessionState();
-      this.#onTabsChanged(undefined, released);
+      if (released) {
+        this.#brokers.get(sessionId)?.refreshSessionState();
+        this.#shadows.get(sessionId)?.inventoryChanged();
+      }
     }
+    if (changed.size) this.#onTabsChanged(undefined, [...changed], holdersChanged);
   }
 
   /** The tasks live bindings were bound for in this tab, as the person `ownerId` reads them. */
@@ -10395,19 +10402,7 @@ export class BrowserService {
       if (attachment.binding === agentBindingId) attachment.close();
     for (const actor of this.#actors.values())
       if (actor.binding === agentBindingId) this.#clearActor(actor);
-    for (const [sessionId, tabs] of this.#boundTabs) {
-      let changed = false;
-      for (const [surfaceId, bindings] of tabs)
-        if (bindings.delete(agentBindingId)) {
-          changed = true;
-          if (!bindings.size) tabs.delete(surfaceId);
-        }
-      if (!tabs.size) this.#boundTabs.delete(sessionId);
-      if (changed) {
-        this.#brokers.get(sessionId)?.refreshSessionState();
-        this.#invalidatePageSessions([sessionId]);
-      }
-    }
+    this.releaseHolds(agentBindingId);
     const now = this.#activityClock.now();
     this.#endedBindings.delete(agentBindingId);
     this.#endedBindings.set(agentBindingId, now);

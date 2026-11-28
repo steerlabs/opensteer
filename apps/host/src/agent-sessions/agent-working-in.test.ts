@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { AgentSessionId, AgentWorkingIn, TabId, ThreadId, UserId } from "@opensteer/core";
+import type {
+  AgentOperationTarget,
+  AgentSessionId,
+  AgentWorkingIn,
+  DeviceId,
+  TabId,
+  ThreadId,
+  UserId,
+} from "@opensteer/core";
 import { AgentWorkingInRegistry } from "./agent-working-in.js";
 
 const session = "ags_00000000-0000-4000-8000-000000000001" as AgentSessionId;
@@ -56,6 +64,29 @@ describe("where a connected agent's session works now", () => {
     expect(working.current(owner)).toHaveLength(1);
     working.clearSession(other);
     expect(working.current(owner)).toEqual([]);
+  });
+
+  it("publishes a different app on the same device once", () => {
+    const { working, told } = registry();
+    const computerId = "dev_test" as DeviceId;
+    const target = (name: string): AgentOperationTarget => ({
+      name,
+      device: { id: computerId, name: "Mac" },
+      grant: {
+        kind: "computer-app",
+        deviceId: computerId,
+        approvalId: name,
+        app: { kind: "mac-app", bundleId: `com.apple.${name}`, teamId: null },
+      },
+    });
+    working.begin(session, task, owner);
+    working.noteComputer(session, computerId, target("Safari"));
+    working.noteComputer(session, computerId, target("Notes"));
+    working.noteComputer(session, computerId, target("Notes"));
+    expect(told.map(({ ownerUserId, notice }) => [ownerUserId, notice.target?.name])).toEqual([
+      [owner, "Safari"],
+      [owner, "Notes"],
+    ]);
   });
 
   it("ignores a Run's binding and a session it does not know, and forgets a session at its end", () => {

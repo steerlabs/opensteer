@@ -1,4 +1,5 @@
 import type {
+  AgentOperationTarget,
   AgentSessionId,
   AgentWorkingIn,
   DeviceId,
@@ -12,7 +13,11 @@ interface SessionWork {
   readonly taskId: ThreadId;
   place:
     | { readonly tabId: TabId; readonly computerId?: never }
-    | { readonly tabId: null; readonly computerId: DeviceId }
+    | {
+        readonly tabId: null;
+        readonly computerId: DeviceId;
+        readonly target?: AgentOperationTarget;
+      }
     | null;
 }
 
@@ -52,10 +57,23 @@ export class AgentWorkingInRegistry {
   }
 
   /** A submitted device command replaces the browser place, even while a client awaits its app or screen. */
-  noteComputer(sessionId: AgentSessionId, computerId: DeviceId): void {
+  noteComputer(
+    sessionId: AgentSessionId,
+    computerId: DeviceId,
+    target?: AgentOperationTarget,
+  ): void {
     const work = this.#sessions.get(sessionId);
-    if (!work || work.place?.computerId === computerId) return;
-    work.place = { tabId: null, computerId };
+    if (!work) return;
+    const before = work.place?.computerId === computerId ? work.place.target : undefined;
+    const approval = (place: AgentOperationTarget | undefined) =>
+      place?.grant.kind === "computer-app" ? place.grant.approvalId : undefined;
+    if (
+      work.place?.computerId === computerId &&
+      approval(before) === approval(target) &&
+      before?.name === target?.name
+    )
+      return;
+    work.place = { tabId: null, computerId, ...(target ? { target } : {}) };
     this.#publish(work.ownerUserId, this.#notice(sessionId, work));
   }
 

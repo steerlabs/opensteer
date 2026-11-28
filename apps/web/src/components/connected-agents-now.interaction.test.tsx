@@ -258,6 +258,36 @@ it("keeps the last operations for a task whose activity refresh fails", async ()
   expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");
 });
 
+it("follows a device place in Now before Watch or another activity read", async () => {
+  await mount("/", options("one"));
+  expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");
+  const threadId = mockAgentWorkThreads.shopping;
+  const refresh = vi.fn(async () => {
+    throw new Error("Activity is still from the browser call");
+  });
+  Object.defineProperty(client.rpc, "threads.activity", { value: refresh, configurable: true });
+  await act(async () => {
+    client.mockComputerUseSessionTask(threadId, { actingAppKeys: [] });
+    const machine = client
+      .getSnapshot()
+      .machines.find(({ computerUse }) =>
+        computerUse?.sessions.some((session) => session.threadId === threadId),
+      )!;
+    client.mockAgentWorksIn(threadId, null, machine.id, {
+      grant: {
+        kind: "computer-app",
+        deviceId: machine.id,
+        approvalId: "approval-safari",
+        app: { kind: "mac-app", bundleId: "com.apple.Safari", teamId: null },
+      },
+      name: "Safari",
+      device: { id: machine.id, name: machine.name },
+    });
+  });
+  expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Safari");
+  expect(refresh).not.toHaveBeenCalled();
+});
+
 it("removes a deleted profile from Now while keeping the running session and its Stop", async () => {
   await mount("/", options("one"));
   const dialog = await openPanel();
