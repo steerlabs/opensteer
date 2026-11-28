@@ -234,7 +234,7 @@ describe("a task a connected agent works itself", () => {
         thread: { status: "idle", agentSessionId: session.sessionId },
         slot: { ...session, endReason: "done" },
       }),
-    ).toMatchObject({ state: "ended", statusLine: "You marked this task Done", stop: null });
+    ).toMatchObject({ state: "ended", statusLine: "Task marked Done", stop: null });
   });
 
   it("names the agent and what it is using in Tasks", () => {
