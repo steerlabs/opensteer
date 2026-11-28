@@ -4025,7 +4025,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     await world.close();
   });
 
-  it("reports an act the phone's stream dropped as unknown, an observe as a failure to try again, and an offline phone as offline", async () => {
+  it("reports a dropped act or first observation as unknown, an established observation as failed, and an offline phone as offline", async () => {
     const world = await createWorld(database, { phone: true });
     const { fakePhone } = phoneOf(world);
     const run = await world.startRun("Text the driver");
@@ -4064,11 +4064,22 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     await fakePhone.reached("observe", 3);
     expect(fakePhone.received("observe")).toBe(3);
     fakePhone.detach();
-    expect(await observing).toEqual(refusal("failed: That computer went offline."));
+    expect(await observing).toEqual(
+      refusal(
+        "outcome-unknown: That computer went offline. The actions may already have taken effect. Do not repeat them. Observe the phone before deciding the next action.",
+      ),
+    );
     release();
     fakePhone.gate = null;
     await fakePhone.attach();
     expect(text(await phoneCode(gateway, "await p.observe()"))).toContain(`Looked at ${phone}`);
+    const held = Promise.withResolvers<void>();
+    fakePhone.gate = held.promise;
+    const reading = phoneCode(gateway, "await p.observe()");
+    await fakePhone.reached("observe", 5);
+    fakePhone.detach();
+    expect(await reading).toEqual(refusal("failed: That computer went offline."));
+    held.resolve();
     await world.close();
   });
 
@@ -4270,6 +4281,7 @@ class FakeMac {
   actReceivedCount = 0;
   completedActions = 0;
   actGate: Promise<void> | null = null;
+  windowAnswer: (() => Promise<void>) | null = null;
   partialActGate: Promise<void> | null = null;
   partialReceipt = "Clicked element 1";
   actFailure: { code: ComputerUseErrorCode; message: string; performed: string[] } | null = null;
@@ -4584,6 +4596,8 @@ class FakeMac {
           this.completedActions += (message.params.actions as unknown[]).length;
         }
         result = { kind: "ok", value: this.#perform(message) };
+        if (message.operation === "bind" || message.operation === "windows")
+          await this.windowAnswer?.();
       }
     } catch (error) {
       if (!(error instanceof MacError)) throw error;
@@ -7162,6 +7176,83 @@ integration.sequential("Computer use for a connected agent, through its session"
         expect(s.fake.received("observe")).toBe(0);
         expect(s.fake.received("act")).toBe(0);
       } finally {
+        await s.world.close();
+      }
+    },
+  );
+
+  it.each(["bind", "windows"] as const)(
+    "keeps a dispatched Mac %s unknown after its reply is lost",
+    async (operation) => {
+      const s = await connectedAgent("full-access", { target: "mac" });
+      const sent = Promise.withResolvers<void>();
+      const held = Promise.withResolvers<void>();
+      s.world.fakeMac.windowAnswer = () => {
+        sent.resolve();
+        return held.promise;
+      };
+      try {
+        const command = operation === "bind" ? "window" : "windows";
+        const running = s.call(
+          { code: `try { await (await target).${command}(); } catch {} print("continued");` },
+          "lost-mac-launch",
+        );
+        await Promise.race([sent.promise, running]);
+        expect(s.world.fakeMac.frames.some((frame) => frame.operation === operation)).toBe(true);
+        s.world.fakeMac.detach();
+        expect(await running).toMatchObject({
+          status: "unknown",
+          error: {
+            code: "outcome-unknown",
+            method: operation,
+            message:
+              "That computer went offline. The actions may already have taken effect. Do not repeat them. Observe the app before deciding the next action.",
+          },
+        });
+        expect(await s.operation("lost-mac-launch")).toMatchObject({ outcome: "unknown" });
+      } finally {
+        held.resolve();
+        await s.world.close();
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "accounts for an Android read-only bind at the script deadline (answered: %s)",
+    async (answered) => {
+      const sleeping = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      const clock = new ManualClock();
+      const s = await connectedAgent("full-access", {
+        computerReplTime: {
+          clock,
+          wait: (ms, signal) => {
+            sleeping.resolve();
+            return clock.wait(ms, signal);
+          },
+        },
+      });
+      try {
+        if (!answered) s.fake.gate = gate.promise;
+        const running = s.call(
+          { code: "await target; await sleep(100000)", readOnly: true },
+          "bind-deadline",
+        );
+        await Promise.race([answered ? sleeping.promise : s.fake.reached("observe"), running]);
+        expect(s.fake.received("observe")).toBe(1);
+        clock.advanceBy(100_000);
+        expect(await running).toMatchObject({
+          status: answered ? "failed" : "unknown",
+          error: {
+            code: answered ? "deadline" : "outcome-unknown",
+            message: answered
+              ? "Computer code reached its 100 second deadline. 1 action completed. The last was bind."
+              : "Computer code reached its 100 second deadline. A dispatched action may already have happened; observe before deciding what to do next.",
+          },
+          ...(answered ? { next: "Check the current state before trying again." } : {}),
+        });
+      } finally {
+        gate.resolve();
         await s.world.close();
       }
     },

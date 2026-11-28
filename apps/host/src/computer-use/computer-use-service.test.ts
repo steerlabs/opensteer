@@ -229,6 +229,7 @@ function harness(
       machinesFor: () => machines,
       sendComputerUse: async (input) => {
         sent.push(input);
+        input.submitted?.();
         const gate = pending.shift();
         // A phone answers in a phone's shapes, exactly as its app does.
         const observed =
@@ -1389,6 +1390,36 @@ describe("ComputerUseService call lifecycle", () => {
     await test.service.shutdown();
   });
 
+  it.each(["bind", "windows"] as const)(
+    "keeps an abandoned Mac %s that could launch unknown",
+    async (operation) => {
+      const fixture = harness();
+      try {
+        fixture.outcomes.push({
+          abandoned: "deadline",
+          code: "failed",
+          kind: "error",
+          message: "That computer did not answer in time.",
+          retryable: true,
+        });
+        const lease = await fixture.service.prepare(callable, context);
+        const sent = await fixture.service.sendWindowOperation(
+          lease,
+          callable,
+          operation,
+          operation === "bind" ? { windowId: null } : {},
+        );
+        await expect(sent.settle()).rejects.toMatchObject({
+          code: "outcome-unknown",
+          message: "That computer did not answer in time.",
+          retryable: false,
+        });
+      } finally {
+        await fixture.service.shutdown();
+      }
+    },
+  );
+
   it("asks for a fresh observation when a read is given up on", async () => {
     const test = harness();
     test.outcomes.push({
@@ -1907,12 +1938,12 @@ describe("display sessions on an Android phone", () => {
     await test.service.shutdown();
   });
 
-  it("refuses a Mac-shaped answer from a phone rather than reading it as one", async () => {
+  it("leaves the first phone hold unknown when its answer has the Mac's shape", async () => {
     const test = harness();
     test.outcomes.push({ kind: "ok", value: { observation: observation() } });
 
     await expect(observePhone(test.service, context)).rejects.toMatchObject({
-      code: "failed",
+      code: "outcome-unknown",
       message:
         "That phone answered with an observation this Host cannot read. Update the Opensteer Agent Phone app there.",
     });
@@ -2469,6 +2500,17 @@ describe("iPhone agent readiness", () => {
       f.setStatus({ ...f.status, actions: ["wait"] });
       expect((await f.act([{ type: "tap", target: { x: 10, y: 20 } }])).error).toBeNull();
       expect(f.host.sent).toHaveLength(3);
+    } finally {
+      await f.host.service.shutdown();
+    }
+  });
+
+  it("marks only the first iPhone observation as capable of taking a hold", async () => {
+    const f = iphone();
+    try {
+      expect((await f.observe()).error).toBeNull();
+      expect((await f.observe()).error).toBeNull();
+      expect(f.host.sent.map(({ phoneHold }) => phoneHold)).toEqual([true, undefined]);
     } finally {
       await f.host.service.shutdown();
     }

@@ -1,6 +1,7 @@
 import { DeviceAccessRefusal } from "../../administration/device-access.js";
 import { deviceRefusalSentence } from "../../devices/target-blocked.js";
 import { agentOperationEndingOf, utf8Prefix, OpensteerError } from "@opensteer/core";
+import { computerUseRequestMayHaveEffect } from "@opensteer/protocol";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { delay } from "@opensteer/shared/delay";
 import type { z } from "zod";
@@ -34,6 +35,8 @@ export interface ComputerReplContext {
   readonly reportUnknownEffects?: true;
   /** A connected agent's own session runs this code: it reads its own sentences. */
   readonly connectedAgent?: true;
+  readonly tracksScriptSends?: true;
+  readonly readOnly?: true;
 }
 export type ComputerReplInvocation = ReplInvocation<ReplRequest>;
 export type ReplInvocation<Request> = Request & {
@@ -41,6 +44,7 @@ export type ReplInvocation<Request> = Request & {
   readonly signal: AbortSignal;
   readonly deadline: number;
   readonly replyBudget?: { maxBytes: number; maxImageBytes?: number };
+  readonly markSubmitted?: () => void;
 };
 export type ComputerReplResult = ReplResult;
 export type ReplResult = {
@@ -62,6 +66,9 @@ interface Call<Request> {
   readonly cleanup: () => void;
   started: boolean;
   readonly mutationsInFlight: Map<number, string | undefined>;
+  actionsCompleted?: number;
+  lastAction?: string;
+  actionFailed?: true;
   uncertainty: ReplFailure | undefined;
   operationsInFlight: number;
   abandonedRead: boolean;
@@ -99,7 +106,14 @@ type ReplEvents = {
   acknowledge: (context: ComputerReplContext) => void;
   dispose: (context: ComputerReplContext) => void;
   error: (error: unknown) => ReplFailure;
+  reads: (request: AnyReplRequest) => boolean;
 };
+
+const settledDeadlineErrors = new WeakSet<ReplFailure>();
+
+export function isSettledScriptDeadline(error: ReplFailure): boolean {
+  return settledDeadlineErrors.has(error);
+}
 
 export class ReplService<Request extends AnyReplRequest> {
   readonly #request: z.ZodType<Request>;
@@ -226,15 +240,7 @@ export class ReplService<Request extends AnyReplRequest> {
           message: `${this.#label} code was cancelled. A dispatched action may already have happened; observe before deciding what to do next.`,
           performed: [],
         });
-      const cancelDeadline = this.#clock.schedule(
-        () =>
-          this.#finish(call, {
-            code: call.mutationsInFlight.size ? "outcome-unknown" : "deadline",
-            message: `${this.#label} code reached its 100 second deadline. A dispatched action may already have happened; observe before deciding what to do next.`,
-            performed: [],
-          }),
-        limits.wallMs,
-      );
+      const cancelDeadline = this.#clock.schedule(() => this.#deadline(call), limits.wallMs);
       const call: Call<Request> = {
         id: randomUUID(),
         key,
@@ -367,10 +373,22 @@ export class ReplService<Request extends AnyReplRequest> {
     }
     if (this.#events) return;
     const request = this.#request.parse(message.request);
-    const mutation = ["click", "type", "key", "setValue", "scroll", "act"].includes(
-      request.operation,
-    );
-    if (mutation) call.mutationsInFlight.set(message.id, request.operation);
+    const windowOperation = request.operation === "bind" || request.operation === "windows";
+    const mutation = windowOperation
+      ? call.context.connectedAgent &&
+        computerUseRequestMayHaveEffect(
+          request.operation,
+          call.context.readOnly ? { noLaunch: true } : request.args,
+        )
+      : computerUseRequestMayHaveEffect(request.operation, request.args) ||
+        (call.context.connectedAgent && !call.context.readOnly && request.operation === "release");
+    const markSubmitted =
+      call.context.tracksScriptSends &&
+      request.operation !== "release" &&
+      (mutation || request.operation === "observe" || request.operation === "bind")
+        ? () => call.mutationsInFlight.set(message.id, request.operation)
+        : undefined;
+    if (mutation && !markSubmitted) call.mutationsInFlight.set(message.id, request.operation);
     try {
       const result =
         request.operation === "sleep"
@@ -381,9 +399,27 @@ export class ReplService<Request extends AnyReplRequest> {
                 context: call.context,
                 signal: call.cancellation.signal,
                 deadline: call.deadline,
+                ...(markSubmitted ? { markSubmitted } : {}),
               }),
             );
       if (this.#contexts.get(call.key)?.call !== call) return;
+      if (
+        (mutation || markSubmitted) &&
+        call.mutationsInFlight.delete(message.id) &&
+        call.context.connectedAgent
+      ) {
+        // A release answers whether the Home relinquished a hold. Its device cleanup settles
+        // separately, and an answer of false means there was no hold to relinquish.
+        if (
+          request.operation !== "release" ||
+          (result.value !== null &&
+            typeof result.value === "object" &&
+            "released" in result.value &&
+            result.value.released === true)
+        ) {
+          this.#completedAction(call, request.operation);
+        }
+      }
       const json = JSON.stringify(result.value);
       if (Buffer.byteLength(json) > limits.bridgeBytes)
         throw Object.assign(new Error(`${this.#label} result exceeds 1 MiB.`), {
@@ -399,6 +435,8 @@ export class ReplService<Request extends AnyReplRequest> {
       });
     } catch (error) {
       if (this.#contexts.get(call.key)?.call !== call) return;
+      if (call.context.connectedAgent && call.mutationsInFlight.has(message.id))
+        call.actionFailed = true;
       const record = typeof error === "object" && error !== null ? error : {};
       const failure: ReplFailure = {
         code:
@@ -449,7 +487,7 @@ export class ReplService<Request extends AnyReplRequest> {
         ...(value?.success ? { value: value.data } : {}),
       });
     } finally {
-      if (mutation) call.mutationsInFlight.delete(message.id);
+      if (mutation || markSubmitted) call.mutationsInFlight.delete(message.id);
     }
   }
   async #browserRequest(call: Call<Request>, message: { id: number; json: string }): Promise<void> {
@@ -486,11 +524,16 @@ export class ReplService<Request extends AnyReplRequest> {
         : request.operation,
     ).data;
     const housekeeping = method === browserScriptHousekeepingMethod;
+    const command = request.operation === "browser.command";
     const mutation =
       request.operation === "browser.open" ||
       request.operation === "browser.new" ||
-      (request.operation === "browser.command" && !housekeeping);
-    const portOperation = mutation || housekeeping || request.operation === "browser.pages";
+      (command && !housekeeping && (!call.context.connectedAgent || !this.#events!.reads(request)));
+    const portOperation =
+      command ||
+      request.operation === "browser.open" ||
+      request.operation === "browser.new" ||
+      request.operation === "browser.pages";
     const capture =
       request.operation === "browser.command" &&
       typeof request.args === "object" &&
@@ -544,19 +587,23 @@ export class ReplService<Request extends AnyReplRequest> {
       reject("bridge-limit", "Too many browser operations are still pending.");
       return;
     }
+    const markSubmitted =
+      mutation && call.context.tracksScriptSends
+        ? () => call.mutationsInFlight.set(message.id, method)
+        : undefined;
     if (portOperation) {
       this.#browserPendingByContext.set(call.key, pending + 1);
       this.#browserPendingByBinding.set(call.bindingKey, bindingPending + 1);
       this.#browserPending++;
       if (!housekeeping) call.operationsInFlight++;
-      if (mutation) call.mutationsInFlight.set(message.id, method);
+      if (mutation && !markSubmitted) call.mutationsInFlight.set(message.id, method);
     }
     call.reservedReplyBytes += maxBytes;
     if (capture) {
       call.capturesInFlight++;
       call.reservedImageBytes += maxImageBytes;
     }
-    let result: ReplReply;
+    let result: ReplReply | undefined;
     try {
       try {
         result = await call.invoke({
@@ -565,6 +612,7 @@ export class ReplService<Request extends AnyReplRequest> {
           signal: call.cancellation.signal,
           deadline: call.deadline,
           replyBudget: { maxBytes, ...(capture ? { maxImageBytes } : {}) },
+          ...(markSubmitted ? { markSubmitted } : {}),
         });
       } finally {
         call.reservedReplyBytes -= maxBytes;
@@ -582,7 +630,14 @@ export class ReplService<Request extends AnyReplRequest> {
           else this.#browserPendingByBinding.set(call.bindingKey, bindingCount - 1);
           this.#browserPending--;
           if (!housekeeping) call.operationsInFlight--;
-          if (mutation) call.mutationsInFlight.delete(message.id);
+          if (
+            mutation &&
+            call.mutationsInFlight.delete(message.id) &&
+            call.context.connectedAgent
+          ) {
+            if (result) this.#completedAction(call, method);
+            else call.actionFailed = true;
+          }
         }
       }
       if (this.#contexts.get(call.key)?.call !== call || call.cancellation.signal.aborted) return;
@@ -646,6 +701,50 @@ export class ReplService<Request extends AnyReplRequest> {
     )
       call.uncertainty = { ...failure, ...(method ? { method } : {}) };
   }
+  #completedAction(call: Call<Request>, method: string | undefined): void {
+    call.actionsCompleted = (call.actionsCompleted ?? 0) + 1;
+    if (method) call.lastAction = method;
+    else delete call.lastAction;
+  }
+  #deadline(call: Call<Request>): void {
+    const message = `${this.#label} code reached its 100 second deadline.`;
+    if (call.mutationsInFlight.size || call.uncertainty) {
+      this.#finish(call, {
+        code: "outcome-unknown",
+        message: `${message} A dispatched action may already have happened; observe before deciding what to do next.`,
+        performed: [],
+      });
+      return;
+    }
+    if (!call.context.connectedAgent) {
+      this.#finish(call, {
+        code: "deadline",
+        message: `${message} A dispatched action may already have happened; observe before deciding what to do next.`,
+        performed: [],
+      });
+      return;
+    }
+    const count = call.actionsCompleted ?? 0;
+    const last = call.lastAction ? ` The last was ${call.lastAction}.` : "";
+    const detail =
+      count || call.actionFailed
+        ? `${count} ${count === 1 ? "action" : "actions"} completed.${last}${call.actionFailed ? " An action failed." : ""}`
+        : "It changed nothing. It is safe to try again.";
+    this.#finish(
+      call,
+      {
+        code: "deadline",
+        message: `${message} ${detail}`,
+        next:
+          count || call.actionFailed
+            ? "Check the current state before trying again."
+            : "It is safe to try again.",
+        performed: [],
+      },
+      true,
+      true,
+    );
+  }
   #pendingUncertainty(call: Call<Request>, error?: ReplFailure): ReplFailure {
     const method =
       call.mutationsInFlight.size === 1 ? call.mutationsInFlight.values().next().value : undefined;
@@ -661,7 +760,7 @@ export class ReplService<Request extends AnyReplRequest> {
       performed: [],
     };
   }
-  #finish(call: Call<Request>, error?: ReplFailure, reset = true): void {
+  #finish(call: Call<Request>, error?: ReplFailure, reset = true, settledDeadline = false): void {
     const resident = this.#contexts.get(call.key);
     if (resident?.call !== call) return;
     if (
@@ -714,6 +813,7 @@ export class ReplService<Request extends AnyReplRequest> {
     }
     if (call.started) this.#executing--;
     const failure = error ? boundedReplFailure(error) : undefined;
+    if (settledDeadline && failure?.code === "deadline") settledDeadlineErrors.add(failure);
     call.resolve({
       content: call.content,
       ...(failure

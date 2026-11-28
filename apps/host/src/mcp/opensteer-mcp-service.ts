@@ -61,7 +61,7 @@ import {
   agentOperationRefusal,
   assertOperationArguments,
   operationArgumentDigest,
-  scriptFailedNext,
+  failedScriptNext,
   storedScriptError,
   unknownOperationNext,
   withAgentOperationReceipt,
@@ -931,7 +931,10 @@ export class OpensteerMcpService {
                   ...base,
                   status,
                   ...(grant.kind === "browser-profile" ? { profileId: grant.profileId } : {}),
-                  next: status === "unknown" ? unknownOperationNext(row.ending) : scriptFailedNext,
+                  next:
+                    status === "unknown"
+                      ? unknownOperationNext(row.ending)
+                      : failedScriptNext(row.resultSummary, error),
                 },
                 error,
               );

@@ -15,6 +15,7 @@ import {
 import {
   computerReplLimits as limits,
   ReplReplySchema,
+  type AnyReplRequest,
   type ReplFailure,
   type ReplReply,
 } from "../computer-use/computer-repl/messages.js";
@@ -28,6 +29,52 @@ import {
   decodedBase64Bytes,
   type BrowserReplRequest,
 } from "./browser-repl-messages.js";
+import { browserGuestModules } from "./browser-guest-source.js";
+
+let pageFunctionSource: string | undefined;
+
+function readsBrowser(request: AnyReplRequest): boolean {
+  if (request.operation !== "browser.command") return false;
+  const { method, params } = request.args;
+  switch (method) {
+    case "Accessibility.queryAXTree":
+    case "DOM.resolveNode":
+    case "Runtime.getProperties":
+    case "Target.getTargetInfo":
+    case "Page.captureScreenshot":
+    case "Page.enable":
+    case "Network.enable":
+      return true;
+    case "Runtime.evaluate":
+      return params?.expression === "document" || params?.expression === "document.readyState";
+    case "Runtime.callFunctionOn": {
+      const args = params?.arguments;
+      if (!Array.isArray(args)) return false;
+      const command = args[0];
+      const data = args[1];
+      if (
+        !command ||
+        typeof command !== "object" ||
+        Object.keys(command).length !== 1 ||
+        !("value" in command) ||
+        typeof command.value !== "string" ||
+        !["resolve", "filter", "read", "validate", "describe"].includes(command.value) ||
+        !data ||
+        typeof data !== "object" ||
+        Object.keys(data).length !== 1 ||
+        !("value" in data)
+      )
+        return false;
+      if (pageFunctionSource === undefined) {
+        const module = browserGuestModules()["page-functions.mjs"]!;
+        pageFunctionSource = module.slice(module.indexOf("export function ") + 7).trimEnd();
+      }
+      return params?.functionDeclaration === pageFunctionSource;
+    }
+    default:
+      return false;
+  }
+}
 
 export type BrowserUsePage = z.infer<typeof browserPageSchema>;
 export type BrowserUseTarget = z.infer<typeof browserTargetSchema> & {
@@ -240,6 +287,7 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
         },
         dispose: ({ runId }) => this.#dispose(runId),
         error: publicFailure,
+        reads: readsBrowser,
       },
     });
   }
@@ -253,13 +301,31 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     browserSend?: PooledBrowserSend,
   ): Promise<ReplResult> {
     return this.#repl.execute(
-      { runId: contextKey, generation: 0 },
+      {
+        runId: contextKey,
+        generation: 0,
+        ...(recheck
+          ? { connectedAgent: true, ...(browserSend ? { tracksScriptSends: true } : {}) }
+          : {}),
+      },
       code,
       signal,
       recheck || browserSend
         ? async (request) => {
             await recheck?.();
-            return this.#invoke(request, browserSend);
+            const submitted = request.markSubmitted;
+            return this.#invoke(
+              request,
+              submitted && browserSend
+                ? {
+                    ...browserSend,
+                    submitted: () => {
+                      browserSend.submitted();
+                      submitted();
+                    },
+                  }
+                : browserSend,
+            );
           }
         : undefined,
       bindingKey,

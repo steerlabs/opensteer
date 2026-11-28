@@ -30,6 +30,7 @@ import {
 } from "@opensteer/integration-core/computer-app";
 import { type IntegrationAccess } from "@opensteer/integration-core/access";
 import {
+  computerUseRequestMayHaveEffect,
   getPhoneDisplayCodec,
   PhoneDisplayActParamsSchema,
   PhoneDisplayDispatchActParamsSchema,
@@ -282,7 +283,7 @@ export interface ComputerUseSessionAuthority {
   /** Throws a `forbidden` refusal once the session ended or no longer reaches this target. */
   readonly assertActive: () => Promise<void>;
   readonly assertDispatch?: () => Promise<void>;
-  readonly submitted?: () => void;
+  readonly submitted?: (mayHaveEffect?: boolean) => void;
   readonly driver?: DeviceDriverIdentity;
 }
 
@@ -860,6 +861,7 @@ export class ComputerUseService {
       }
     }
     let sent;
+    let mayHaveEffect = false;
     let timeoutMs: number = Math.max(
       1,
       Math.min(
@@ -1068,12 +1070,15 @@ export class ComputerUseService {
         if (!session.agentHold) session.dispatched = true;
         if (target.kind === "app") this.#noteActing(session, computerAppIdentityKey(target.app));
 
+        const phoneHold = target.kind === "display" && !session.confirmed;
+        mayHaveEffect = computerUseRequestMayHaveEffect(operation, params, phoneHold);
         return this.#hub.sendComputerUse({
           access: target.access,
           app: target.kind === "app" ? target.app : null,
           // Only a display names its definition: a frame to a Mac stays the
           // frame every Mac already reads.
           ...(target.kind === "display" ? { definitionId: target.definitionId } : {}),
+          ...(phoneHold ? { phoneHold: true } : {}),
           operation,
           params,
           requestId,
@@ -1084,7 +1089,7 @@ export class ComputerUseService {
           signal: AbortSignal.any([session.cancellation.signal, ...(signal ? [signal] : [])]),
           submitted: () => {
             session.dispatched = true;
-            connected?.submitted?.();
+            connected?.submitted?.(mayHaveEffect);
           },
           threadTitle: session.threadTitle,
           timeoutMs,
@@ -1105,7 +1110,7 @@ export class ComputerUseService {
     const audit = (sent.audit ?? sent.outcome).then((outcome) => {
       if (outcome.kind !== "ok") return [];
       return sanitizeReceipts(
-        parseComputerUseResult(target, operation, outcome.value).performed ?? [],
+        parseComputerUseResult(target, operation, outcome.value, mayHaveEffect).performed ?? [],
       );
     });
     // A malformed late result must remain an unknown audit, not an unhandled rejection.
@@ -1120,7 +1125,15 @@ export class ComputerUseService {
         } finally {
           session.inFlight -= 1;
         }
-        let result = this.#settle(session, target, operation, addedApp, outcome, params);
+        let result = this.#settle(
+          session,
+          target,
+          operation,
+          addedApp,
+          outcome,
+          params,
+          mayHaveEffect,
+        );
         if (saved.size > 0 && result.performed)
           result = {
             ...result,
@@ -1165,6 +1178,7 @@ export class ComputerUseService {
     addedApp: boolean,
     outcome: ComputerUseOutcome,
     params: ComputerUseFrameParams,
+    mayHaveEffect: boolean,
   ): ComputerUseDispatchResult {
     const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
     const words = scopeWords(target);
@@ -1187,11 +1201,11 @@ export class ComputerUseService {
         // the Mac again, which a Stop would not allow.
         if (this.#sessions.get(key) === session) void this.#forget(session, { close: true });
         throw new ComputerUseError(
-          operation === "act" ? "outcome-unknown" : "failed",
-          operation === "act"
+          mayHaveEffect ? "outcome-unknown" : "failed",
+          mayHaveEffect
             ? outcome.message
             : `${outcome.message} Observe the ${words.subject} again before deciding what to do next.`,
-          operation !== "act",
+          !mayHaveEffect,
         );
       }
       if (outcome.code === "busy") releaseApp();
@@ -1206,12 +1220,11 @@ export class ComputerUseService {
       if (this.#stopped.has(stopKey(session.runId, session.deviceId)))
         throw stoppedByUser(session.deviceName);
       // The answer arrived after the session ended here, so its observation
-      // may already be stale and an act may or may not have happened.
-      // The gateway adds the outcome-unknown instructions to an act.
+      // may already be stale, and a request that could change something may have done so.
       throw new ComputerUseError(
-        operation === "act" ? "outcome-unknown" : "failed",
+        mayHaveEffect ? "outcome-unknown" : "failed",
         `Computer use for this task on ${session.deviceName} ended before this answer arrived.${
-          operation === "act"
+          mayHaveEffect
             ? ""
             : ` Observe the ${words.subject} again before deciding what to do next.`
         }`,
@@ -1219,7 +1232,7 @@ export class ComputerUseService {
     }
     let result: ComputerUseDispatchResult;
     try {
-      result = parseComputerUseResult(target, operation, outcome.value);
+      result = parseComputerUseResult(target, operation, outcome.value, mayHaveEffect);
       if (
         operation === "bind" &&
         !result.error &&
@@ -2474,6 +2487,7 @@ function parseComputerUseResult(
   scope: ComputerUseScope,
   operation: "act" | ComputerReadOperation,
   value: ComputerUseValue,
+  mayHaveEffect: boolean,
 ): ComputerUseDispatchResult {
   if (scope.kind === "display") {
     if (operation === "observe") {
@@ -2482,7 +2496,7 @@ function parseComputerUseResult(
           ? IphoneScreenObservationResultSchema
           : PhoneDisplayObservationResultSchema;
       const parsed = schema.safeParse(decodePhoneResult(scope.definitionId, "observe", value));
-      if (!parsed.success) throw unreadableObservation("observe", scope);
+      if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
       return {
         error: null,
         kind: "display",
@@ -2496,7 +2510,7 @@ function parseComputerUseResult(
         ? IphoneScreenActResultSchema
         : PhoneDisplayActResultSchema;
     const parsed = schema.safeParse(decodePhoneResult(scope.definitionId, "act", value));
-    if (!parsed.success) throw unreadableObservation("act", scope);
+    if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
     const status =
       "status" in parsed.data
         ? IphoneScreenStatusSchema.optional().parse(parsed.data.status)
@@ -2513,7 +2527,7 @@ function parseComputerUseResult(
   }
   if (operation === "windows") {
     const parsed = ComputerUseWindowsResultSchema.safeParse(value);
-    if (!parsed.success) throw unreadableObservation(operation, scope);
+    if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
     return {
       kind: "app",
       error: null,
@@ -2524,7 +2538,7 @@ function parseComputerUseResult(
   }
   if (operation === "bind") {
     const parsed = ComputerUseBindResultSchema.safeParse(value);
-    if (!parsed.success) throw unreadableObservation(operation, scope);
+    if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
     return {
       kind: "app",
       error: null,
@@ -2535,11 +2549,11 @@ function parseComputerUseResult(
   }
   if (operation === "observe") {
     const parsed = ComputerUseObservationResultSchema.safeParse(value);
-    if (!parsed.success) throw unreadableObservation("observe", scope);
+    if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
     return { error: null, kind: "app", observation: parsed.data.observation, performed: null };
   }
   const parsed = ComputerUseActResultSchema.safeParse(value);
-  if (!parsed.success) throw unreadableObservation("act", scope);
+  if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
   return {
     error: parsed.data.error
       ? new ComputerUseError(parsed.data.error.code, parsed.data.error.message)
@@ -2551,11 +2565,11 @@ function parseComputerUseResult(
 }
 
 function unreadableObservation(
-  operation: "act" | ComputerReadOperation,
+  mayHaveEffect: boolean,
   scope: Pick<ComputerUseScope, "kind">,
 ): ComputerUseError {
   return new ComputerUseError(
-    operation === "act" ? "outcome-unknown" : "failed",
+    mayHaveEffect ? "outcome-unknown" : "failed",
     scope.kind === "app"
       ? "That Mac answered with an observation this Host cannot read. Update Opensteer there."
       : "That phone answered with an observation this Host cannot read. Update the Opensteer Agent Phone app there.",

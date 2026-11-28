@@ -1,6 +1,21 @@
 import { expect, it, vi } from "vitest";
 // @ts-expect-error The standalone Harness runs directly as JavaScript.
 import { createPage } from "./page.mjs";
+// @ts-expect-error The standalone Harness runs directly as JavaScript.
+import { pageFunction } from "./page-functions.mjs";
+
+it.each([
+  ["button:visible", "Use locator(css).filter({ visible: true }) instead of :visible."],
+  ['button:has-text("Save")', "Use locator(css).filter({ hasText: text }) instead of :has-text()."],
+  ["text=Save", "Use getByText(text) instead of text=."],
+])("explains the supported alternative for %s", (selector, message) => {
+  const scope = {
+    querySelectorAll: vi.fn(() => {
+      throw new DOMException("Invalid CSS selector", "SyntaxError");
+    }),
+  };
+  expect(() => pageFunction("resolve", { kind: "css", selector }, scope)).toThrow(message);
+});
 
 it("reports a missing heading only after its CDP object group is released", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });

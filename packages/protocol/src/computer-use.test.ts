@@ -1,7 +1,28 @@
 import { TabCommandSchema } from "./tabs.js";
-import { computerUseBridgePasswordsResults } from "./computer-use.js";
+import {
+  computerUseBridgePasswordsResults,
+  computerUseRequestMayHaveEffect,
+} from "./computer-use.js";
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
+it.each([
+  ["windows", {}, false, true],
+  ["bind", { windowId: null }, false, true],
+  ["windows", { noLaunch: true }, false, false],
+  ["bind", { windowId: null, noLaunch: true }, false, false],
+  ["session.windows", {}, false, true],
+  ["session.bind", {}, false, true],
+  ["session.windowsExisting", {}, false, false],
+  ["session.bindExisting", {}, false, false],
+  ["observe", {}, true, true],
+  ["observe", {}, false, false],
+  ["iphone.session.open", {}, false, true],
+] as const)(
+  "classifies the possible effect of %s %j (phone hold: %s)",
+  (method, params, hold, expected) => {
+    expect(computerUseRequestMayHaveEffect(method, params, hold)).toBe(expected);
+  },
+);
 import {
   ComputerAppIdentitySchema,
   ComputerUseActParamsSchema,

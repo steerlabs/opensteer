@@ -223,7 +223,7 @@ export interface ComputerSessionCaller {
   readonly readOnly: boolean;
   /** Re-admits the operation's session and target; called before every command. */
   readonly recheck: () => Promise<void>;
-  readonly submitted?: () => void;
+  readonly submitted?: (mayHaveEffect?: boolean) => void;
   readonly stopped?: () => never;
 }
 
@@ -2193,12 +2193,34 @@ export class DeviceService {
     const work = this.#beginConnectedComputerWork(session.deviceId, session.driver, signal);
     try {
       const result = await this.computerRepl.execute(
-        { runId: key, generation: 0, reportUnknownEffects: true, connectedAgent: true },
+        {
+          runId: key,
+          generation: 0,
+          reportUnknownEffects: true,
+          connectedAgent: true,
+          ...(session.readOnly ? { readOnly: true } : {}),
+          ...(session.submitted ? { tracksScriptSends: true } : {}),
+        },
         code,
         work.signal,
         async (request) => {
           try {
-            return await this.#invokeComputerRepl(caller, request);
+            const submitted = request.markSubmitted;
+            return await this.#invokeComputerRepl(
+              submitted
+                ? {
+                    ...caller,
+                    session: {
+                      ...session,
+                      submitted: (mayHaveEffect) => {
+                        session.submitted?.();
+                        if (mayHaveEffect) submitted();
+                      },
+                    },
+                  }
+                : caller,
+              request,
+            );
           } catch (error) {
             // The device Stop is scoped to this Mac. Latch its ending at the operation door
             // even if the script catches the device's legacy error and returns normally.

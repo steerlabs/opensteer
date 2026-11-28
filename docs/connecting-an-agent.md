@@ -339,6 +339,8 @@ Runs one sandboxed JavaScript script (**up to 18,956 UTF-16 characters**; 120-se
 
 Call **`help()`** inside a script to print the full API. Core globals: `pages()`, `openPage(tabId)`, `newPage(url, { profileId })` and `page.close()` (granted browser profiles only; shared Chrome tabs can follow popups but cannot create or close tabs), `print(...values)`, `printImage(base64Data, mimeType?)`, `sleep(ms)`, `help()`. `page` follows Playwright names where supported (`goto`, `locator`, `getByRole`, `getByText`, `getByLabel`, `evaluate`, `url`, `title`, `waitForURL`, `waitForFunction`, `waitForTimeout`, `screenshot()` without a path, `ariaSnapshot()`, `keyboard`, `mouse`), plus `js(expression)`, `cdp(method, params, sessionId?)`, `currentTab()`, `pageInfo()`, `drainEvents()`, `respondDialog({ accept, promptText? })`, `waitForElement`, `waitForLoad`, and `waitForNetworkIdle`.
 
+`locator(css)` uses standard CSS. For `:visible`, use `locator(css).filter({ visible: true })`. For `:has-text("Save")`, use `locator(css).filter({ hasText: "Save" })`. For `text=Save`, use `getByText("Save")`.
+
 ```ts
 const res = await client.callTool({
   name: "browser_use",

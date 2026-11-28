@@ -57,6 +57,7 @@ import {
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { DeadlineDrain } from "../runtime/deadline-drain.js";
 import { AgentWorkingInRegistry } from "./agent-working-in.js";
+import { isSettledScriptDeadline } from "../computer-use/computer-repl/computer-repl-service.js";
 import { ReplFailureSchema, type ReplFailure } from "../computer-use/computer-repl/messages.js";
 import type { BrowserPoolReservation } from "../browser/browser-pool-gate.js";
 
@@ -258,6 +259,13 @@ export const pendingNext = `Call the same tool again with the same arguments and
 export const unknownNext = agentOperationEndingSentence("contact-lost");
 export const scriptFailedNext =
   "Earlier steps may have taken effect. Check the current state before trying again.";
+
+export function failedScriptNext(
+  summary: Readonly<Record<string, unknown>> | null,
+  error: ReplFailure,
+): string {
+  return (summary?.settledScriptDeadline === true && error.next) || scriptFailedNext;
+}
 
 function keepsScriptDiagnostics(ending: AgentOperationEnding | null): boolean {
   return ending === null || ending === "contact-lost";
@@ -765,7 +773,12 @@ export class AgentSessionService {
         case "failed": {
           const scriptError = storedScriptError(row);
           return scriptError
-            ? { status: "failed", ...base, scriptError, next: scriptFailedNext }
+            ? {
+                status: "failed",
+                ...base,
+                scriptError,
+                next: failedScriptNext(row.resultSummary, scriptError),
+              }
             : { status: "failed", ...base, next: "It failed. Check the current state." };
         }
         case "unknown": {
@@ -1154,7 +1167,9 @@ export class AgentSessionService {
         ...(current.state === "failed"
           ? {
               status: "failed" as const,
-              next: scriptError ? scriptFailedNext : "It failed. Check the current state.",
+              next: scriptError
+                ? failedScriptNext(current.resultSummary, scriptError)
+                : "It failed. Check the current state.",
             }
           : { status: "unknown" as const, next: unknownOperationNext(current.ending) }),
         ...(scriptError ? { scriptError } : {}),
@@ -1338,7 +1353,7 @@ export class AgentSessionService {
         this.#onError(error);
       }
       if (
-        outstanding > 0 ||
+        (outstanding > 0 && (!scriptError || !isSettledScriptDeadline(scriptError))) ||
         scriptError?.code === "outcome-unknown" ||
         (operation.scriptFailure && signal.aborted)
       ) {
@@ -1370,11 +1385,23 @@ export class AgentSessionService {
         this.#store.database,
         row.id,
         scriptError ? "failed" : "completed",
-        scriptError ? { ...summary, scriptError } : summary,
+        scriptError
+          ? {
+              ...summary,
+              scriptError,
+              ...(isSettledScriptDeadline(scriptError) ? { settledScriptDeadline: true } : {}),
+            }
+          : summary,
       );
       if (!settled) return recorded();
       if (scriptError)
-        return { status: "failed", ...base, result, scriptError, next: scriptFailedNext };
+        return {
+          status: "failed",
+          ...base,
+          result,
+          scriptError,
+          next: (isSettledScriptDeadline(scriptError) && scriptError.next) || scriptFailedNext,
+        };
       return { status: "completed", ...base, result, summary };
     } finally {
       if (--entry.work === 0 && this.#sessions.get(row.sessionId) === entry)

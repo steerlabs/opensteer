@@ -296,6 +296,7 @@ Object.assign(globalThis, {
     "Page input: keyboard.press(key), keyboard.type(text), keyboard.insertText(text), mouse.click(x, y, options), clickAt(x, y, options), fillInput(selector, value, options), pressKey(key, options), typeText(text), scroll(x, y, options).",
     "Page details and CDP: js(expression), cdp(method, params, sessionId), currentTab(), ensureRealTab(), pageInfo(), gotoUrl(url), captureScreenshot(), drainEvents(), respondDialog(options), waitForElement(selector, options), waitForLoad(options), waitForNetworkIdle(options).",
     "Locator: locator(css), getByRole(role, options), getByText(text, options), getByLabel(text, options), first(), last(), nth(index), filter(options), click(options), dblclick(options), fill(value, options), clear(options), press(key, options), check(options), uncheck(options), setChecked(value, options), selectOption(values, options), count(), textContent(), innerText(), allInnerTexts(), inputValue(), isVisible(), isChecked(), isEnabled(), getAttribute(name), waitFor(options), evaluate(fn, arg), ariaSnapshot().",
+    "locator(css) uses standard CSS. For :visible use filter({ visible: true }); for :has-text() use filter({ hasText: text }); for text= use getByText(text).",
     "Open and close tabs only in a browser profile. A Chrome tab the person shared can follow its popups but cannot create or close tabs. Screenshots appear in tool output.",
   ].join("\n")),
 });
