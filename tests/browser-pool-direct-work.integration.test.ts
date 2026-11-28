@@ -2137,48 +2137,57 @@ it("lists, in its next call, a page a connected agent's script opened and left b
 });
 
 it("lets a connected agent reach the page-handle limit with pages its scripts left, then list and close them all and go on", async () => {
-  const site = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "text/html" });
-    response.end("<!doctype html><title>Left open</title><p>left</p>");
-  });
-  site.listen(0, "127.0.0.1");
-  await once(site, "listening");
-  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
   const j = await journey("direct-pages-limit", { profile: true });
   try {
     const home = await j.startHome();
     await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
     const work = await directWork(j, () => home);
     const left: string[] = [];
-    // Scripts that each open a page and fail before closing it, until the limit refuses one.
-    for (let index = 0; index < 20; index++) {
-      const result = await work.use(
-        `const page = await newPage(${JSON.stringify(`${origin}/left-${index}`)}); print(page.tabId); throw new Error("before its close");`,
-      );
-      const tabId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(result))?.[0];
-      if (!tabId) {
-        expect(text(result)).toContain("At most 16 page handles");
-        // The limit says how to get out.
-        expect(text(result)).toContain("pages()");
-        break;
-      }
-      left.push(tabId);
+    // Each call leaves its real Chromium pages open when it throws. Blank pages and batches
+    // exercise accumulation across failed calls without navigating or serially opening 16 pages.
+    for (let batch = 0; batch < 4; batch++) {
+      const result = await work.use(`
+        const opened = await Promise.all(Array.from({ length: 4 }, () => newPage("about:blank")));
+        for (const page of opened) print(page.tabId);
+        throw new Error("before its close");
+      `);
+      expect(result.isError, text(result)).toBe(true);
+      expect(text(result)).toContain("before its close");
+      const tabIds = text(result).match(/(?:tab|surface)_[A-Za-z0-9-]+/gu) ?? [];
+      expect(tabIds, text(result)).toHaveLength(4);
+      left.push(...tabIds);
     }
-    expect(left).toHaveLength(16);
-    // The next call lists every page it left, and closes them.
-    const cleared = await work.use(
-      `const left = new Set(${JSON.stringify(left)}); for (const listed of await pages()) if (left.has(listed.tabId)) await (await openPage(listed.tabId)).close(); await sleep(500); return (await pages()).map((page) => page.tabId);`,
+    expect(new Set(left).size).toBe(16);
+
+    const refused = await work.use('return (await newPage("about:blank")).tabId;');
+    expect(refused.isError, text(refused)).toBe(true);
+    expect(text(refused)).toContain(
+      "At most 16 page handles may be open in a browser context, and pages your earlier scripts opened stay open until they are closed.",
     );
+    expect(text(refused)).toContain(
+      "List them with pages(), and close each one you no longer need with (await openPage(tabId)).close().",
+    );
+
+    const cleared = await work.use(`
+      const left = new Set(${JSON.stringify(left)});
+      const listed = (await pages()).filter(({ tabId }) => left.has(tabId));
+      if (listed.length !== left.size) throw new Error("Some of the pages left open were missing from pages().");
+      await Promise.all(listed.map(async ({ tabId }) => {
+        const page = await openPage(tabId);
+        await page.close();
+      }));
+      return (await pages()).map(({ tabId }) => tabId);
+    `);
     expect(cleared.isError, text(cleared)).not.toBe(true);
     for (const tabId of left) expect(text(cleared)).not.toContain(tabId);
+
     // Closed pages count no more: the agent opens a new one.
     const next = await work.use(
-      `const page = await newPage(${JSON.stringify(`${origin}/next`)}); const id = page.tabId; await page.close(); return id;`,
+      'const page = await newPage("about:blank"); const id = page.tabId; await page.close(); return id;',
     );
     expect(next.isError, text(next)).not.toBe(true);
   } finally {
     await j.close();
-    site.close();
   }
 });
 
