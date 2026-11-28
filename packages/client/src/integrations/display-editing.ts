@@ -573,6 +573,8 @@ export class DisplayEditingSession {
     let batchCopy = false;
     let batchAtomic = false;
     let batchMutatesClipboard: "paste" | "cut" | undefined;
+    let hasPointerOrMouse = false;
+    let hasKeyboardOrEdit = false;
 
     while (this.#queue.length) {
       const entry = this.#queue[0]!;
@@ -593,6 +595,14 @@ export class DisplayEditingSession {
       let takenBytes = 0;
       while (taken < entry.events.length && batchEvents.length < maxDisplayInputEvents) {
         const event = entry.events[taken]!;
+        // Keep mouse/pointer events out of keyboard/edit batches across the entire batch (even
+        // with neutral events such as scroll in between) so click focus settles before per-key
+        // Accessibility checks run, leaving the next class at the head of `#queue`.
+        if (
+          (hasPointerOrMouse && isKeyboardOrEdit(event)) ||
+          (hasKeyboardOrEdit && isPointerOrMouse(event))
+        )
+          break;
         // Keep a key press paired with its immediately following release at the 64-event cap.
         if (
           batchEvents.length === maxDisplayInputEvents - 1 &&
@@ -616,6 +626,8 @@ export class DisplayEditingSession {
         )
           break;
         batchEvents.push(event);
+        if (isPointerOrMouse(event)) hasPointerOrMouse = true;
+        else if (isKeyboardOrEdit(event)) hasKeyboardOrEdit = true;
         batchBytes += bytes;
         takenBytes += bytes;
         taken += 1;
@@ -711,6 +723,17 @@ export class DisplayEditingSession {
   }
 }
 
+function isPointerOrMouse(event: DisplayInputEvent): boolean {
+  return event.kind === "mouse" || event.kind === "pointer";
+}
+function isKeyboardOrEdit(event: DisplayInputEvent): boolean {
+  return (
+    event.kind === "key" ||
+    event.kind === "command" ||
+    event.kind === "edit" ||
+    event.kind === "paste"
+  );
+}
 function isMove(event: DisplayInputEvent): boolean {
   return (event.kind === "mouse" || event.kind === "pointer") && event.phase === "move";
 }

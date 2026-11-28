@@ -1156,10 +1156,12 @@ public final class HelperRuntime {
       publicationFailure = HelperError(
         .failed, "The input completed but its view could not be updated.")
     }
+    let reason = cancellation.reason
+    let failure = reason == .stoppedByUser
+      ? reason?.error : (run.error ?? reason?.error ?? publicationFailure)
     return Wire.ActResult(
       performed: run.performed,
-      error: (run.error ?? cancellation.reason?.error ?? publicationFailure).map(
-        Wire.ActResult.Failure.init))
+      error: failure.map(Wire.ActResult.Failure.init))
   }
 
   private func publishCurrent(

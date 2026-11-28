@@ -34,6 +34,20 @@ const openFailed: ClientIssue = { code: "open-failed", resource: "this page" };
  * before they could be read at typing speed.
  */
 export const browserInputRefusalShownMs = 4_000;
+/**
+ * Quiet interval after a `browser-input-overload` key refusal before typing resumes, so the rest of
+ * an in-progress burst stops cleanly instead of sending trailing keys past a dropped prefix.
+ */
+export const browserTypingBurstQuietMs = 300;
+const maxTrackedTypingSequences = 512;
+function isTypingCommand(command: BrowserCommand): boolean {
+  return (
+    command.type === "input.key" ||
+    command.type === "input.text" ||
+    command.type === "input.command" ||
+    command.type === "input.compose"
+  );
+}
 /** A Host or Browser Runtime too old for targeted viewing: refused for good, until it updates. */
 class TargetedViewingUnsupported extends Error {}
 const empty: BrowserWatchState = { frame: null, status: "unavailable", error: null };
@@ -77,6 +91,14 @@ interface Watch {
   generation: number;
   /** Ends the shown refusal of the person's input. */
   refusalTimer: ReturnType<typeof setTimeout> | null;
+  /** Physical key codes whose press left this viewer and whose release has not yet gone out. */
+  readonly heldKeys: Set<string>;
+  /** Recent typing command sequences so overload replies map accurately back to typing. */
+  readonly typingSequences: Set<number>;
+  lastInputKind: "typing" | "other" | null;
+  /** True after a typing overload refusal until the burst goes quiet or a new pointer/cancel runs. */
+  typingStopped: boolean;
+  typingQuietTimer: ReturnType<typeof setTimeout> | null;
 }
 /** One producer per exact target, with newest-frame storage and Watch credit. */
 export class BrowserWatchStore {
@@ -183,16 +205,73 @@ export class BrowserWatchStore {
       throw new Error("The targeted browser control is not synchronized.");
     }
     if (target.state.input === "basic" && !browserBasicInputAllows(command)) return;
+    if (target.typingStopped && isTypingCommand(command)) {
+      this.#holdTypingStop(target);
+      // Keep reserved releases for keys already sent before overload so no key stays stuck down.
+      if (
+        command.type === "input.key" &&
+        command.action === "up" &&
+        command.code &&
+        target.heldKeys.has(command.code)
+      ) {
+        target.heldKeys.delete(command.code);
+      } else {
+        return;
+      }
+    } else if (command.type === "input.cancel") {
+      this.#clearTypingStop(target);
+      target.heldKeys.clear();
+      target.lastInputKind = "other";
+    } else if (command.type === "input.pointer" && command.action === "down") {
+      this.#clearTypingStop(target);
+      target.lastInputKind = "other";
+    } else if (isTypingCommand(command)) {
+      target.lastInputKind = "typing";
+      if (command.type === "input.key" && command.code) {
+        if (command.action === "down") target.heldKeys.add(command.code);
+        else if (command.action === "up") target.heldKeys.delete(command.code);
+      }
+    } else if (command.type.startsWith("input.")) {
+      target.lastInputKind = "other";
+    }
+    const sequence = ++target.sequence;
+    if (isTypingCommand(command)) this.#rememberTypingSequence(target, sequence);
     target.socket.send(
       JSON.stringify(
         TargetedBrowserClientMessageSchema.parse({
           ...command,
-          inputSequence: ++target.sequence,
+          inputSequence: sequence,
           inputGeneration: target.generation,
         }),
       ),
     );
     if (command.type === "input.cancel") target.generation++;
+  }
+  #rememberTypingSequence(target: Watch, sequence: number): void {
+    target.typingSequences.add(sequence);
+    if (target.typingSequences.size > maxTrackedTypingSequences) {
+      const oldest = target.typingSequences.values().next().value;
+      if (oldest !== undefined) target.typingSequences.delete(oldest);
+    }
+  }
+  #clearTypingStop(target: Watch): void {
+    if (target.typingQuietTimer) clearTimeout(target.typingQuietTimer);
+    target.typingQuietTimer = null;
+    target.typingStopped = false;
+  }
+  #holdTypingStop(target: Watch): void {
+    target.typingStopped = true;
+    if (target.typingQuietTimer) clearTimeout(target.typingQuietTimer);
+    target.typingQuietTimer = setTimeout(() => {
+      target.typingQuietTimer = null;
+      target.typingStopped = false;
+    }, browserTypingBurstQuietMs);
+  }
+  #clearTypingState(target: Watch): void {
+    this.#clearTypingStop(target);
+    target.heldKeys.clear();
+    target.typingSequences.clear();
+    target.lastInputKind = null;
   }
   #endRefusalLater(target: Watch): void {
     if (target.refusalTimer) clearTimeout(target.refusalTimer);
@@ -268,6 +347,11 @@ export class BrowserWatchStore {
         sequence: 0,
         generation: 0,
         refusalTimer: null,
+        heldKeys: new Set(),
+        typingSequences: new Set(),
+        lastInputKind: null,
+        typingStopped: false,
+        typingQuietTimer: null,
       };
       this.#targets.set(key, target);
     }
@@ -566,6 +650,7 @@ export class BrowserWatchStore {
     ) => {
       if (target.socket !== socket) return;
       this.#disconnect(target);
+      this.#clearTypingState(target);
       target.socket = null;
       target.synchronized = false;
       target.awaiting.clear();
@@ -675,16 +760,42 @@ export class BrowserWatchStore {
             )
               target.generation = Math.max(target.generation, message.inputGeneration + 1);
             if (this.mode === "control") {
-              this.#set(target, {
-                ...target.state,
-                inputError: {
-                  code: "rejected",
-                  action: "send that to the page",
-                  done: "sent",
-                  ...(message.error.reason ? { reason: message.error.reason } : {}),
-                },
-              });
-              this.#endRefusalLater(target);
+              const isTypingOverload =
+                message.error.reason === "browser-input-overload" &&
+                (message.inputSequence !== undefined
+                  ? target.typingSequences.has(message.inputSequence)
+                  : target.typingStopped ||
+                    target.heldKeys.size > 0 ||
+                    target.lastInputKind === "typing");
+              if (isTypingOverload) {
+                const alreadyStopped =
+                  target.typingStopped &&
+                  target.state.inputError?.reason === "browser-typing-overload";
+                this.#holdTypingStop(target);
+                if (!alreadyStopped) {
+                  this.#set(target, {
+                    ...target.state,
+                    inputError: {
+                      code: "rejected",
+                      action: "send that to the page",
+                      done: "sent",
+                      reason: "browser-typing-overload",
+                    },
+                  });
+                }
+                this.#endRefusalLater(target);
+              } else {
+                this.#set(target, {
+                  ...target.state,
+                  inputError: {
+                    code: "rejected",
+                    action: "send that to the page",
+                    done: "sent",
+                    ...(message.error.reason ? { reason: message.error.reason } : {}),
+                  },
+                });
+                this.#endRefusalLater(target);
+              }
             }
             this.onMessage?.(target.sessionId, message, target.surfaceId);
             return;
@@ -770,6 +881,7 @@ export class BrowserWatchStore {
           event.code === 4003 ? "access-ended" : event.code === 4002 ? "protocol" : "transport",
       });
       this.#disconnect(target);
+      this.#clearTypingState(target);
       target.socket = null;
       target.synchronized = false;
       target.awaiting.clear();
@@ -819,6 +931,7 @@ export class BrowserWatchStore {
   }
   #close(target: Watch): void {
     this.#disconnect(target);
+    this.#clearTypingState(target);
     if (target.timer) clearTimeout(target.timer);
     target.timer = null;
     const socket = target.socket;

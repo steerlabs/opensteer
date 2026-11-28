@@ -54,18 +54,26 @@ final class SavedTextDeliveryTests: XCTestCase {
     focusMoves: Bool = false, keyboard: Bool = false,
     moveBeforeChunk: Bool = false, moveAfterChunk: Bool = false,
     posts: Locked<[UnicodePost]> = Locked([]),
-    trace: Locked<[String]> = Locked([])
+    trace: Locked<[String]> = Locked([]),
+    front: FakeFrontApp? = nil,
+    beforeGuard: @escaping @Sendable (ActKeeper) -> Void = { _ in },
+    afterDelivery: @escaping @Sendable (ActKeeper) throws -> Void = { _ in },
+    onWrite: @escaping @Sendable (String) -> Void = { _ in }
   ) async -> (result: Result<String, Error>, writes: [Write]) {
     let field = AXUIElementCreateApplication(getpid())
     let username = AXUIElementCreateApplication(1)
     let moved = Locked(false)
     let focus = FocusSlot(make: { pid in
-      FakeFocusGuard(
+      let fake = FakeFocusGuard(
         pid: pid,
         onGuard: {
           trace.withLock { $0.append("guard") }
           if moveBeforeChunk { moved.withLock { $0 = true } }
         })
+      fake.front = front
+      fake.beforeGuard = beforeGuard
+      fake.afterDelivery = afterDelivery
+      return fake
     })
     let app = hostApp(
       identity: AppIdentity(bundleId: "fixture", displayName: "Fixture", teamId: nil),
@@ -105,6 +113,7 @@ final class SavedTextDeliveryTests: XCTestCase {
       trace.withLock { $0.append(attribute) }
       writes.withLock { $0.append(Write(other: !CFEqual(element, field), attribute: attribute)) }
       if stopOnFocus, attribute == kAXFocusedAttribute { cancellation.cancel(.stoppedByUser) }
+      onWrite(attribute)
       return .success
     }
     var context = hostContext(
@@ -130,8 +139,11 @@ final class SavedTextDeliveryTests: XCTestCase {
       processIdentifier: getpid(), stamp: hostStamp(getpid()), windowID: 1,
       windowFrame: frame, onScreen: false)
     do {
-      let receipt = try await ActionRunner.type(
-        text: text, target: target, binding: binding, context, savedField: saved, savedCheck: {})
+      // As `perform` makes every act: one hold on the person's front app around it.
+      let receipt = try await ActionRunner.inAct(context, processIdentifier: getpid()) {
+        try await ActionRunner.type(
+          text: text, target: target, binding: binding, context, savedField: saved, savedCheck: {})
+      }
       return (.success(receipt), writes.current)
     } catch {
       return (.failure(error), writes.current)
@@ -157,6 +169,106 @@ final class SavedTextDeliveryTests: XCTestCase {
       let steps = trace.current.filter { $0 == "guard" || attributes.contains($0) }
       XCTAssertEqual(steps, ["guard", attributes[0], "guard", attributes[1]], name)
     }
+  }
+
+  // Simulate an activation that outlives the individual input guards.
+  func testAnAppThatTypingBringsForwardIsPutBackOrTheActIsNotCompleted() async {
+    let attributes = [kAXFocusedAttribute as String, kAXSelectedTextAttribute as String]
+    for canPutBack in [true, false] {
+      let person: pid_t = 4_242
+      let target = getpid()
+      let front = FakeFrontApp(person, canRestore: canPutBack)
+      let (result, writes) = await deliver(
+        observed: Self.plain, settable: Set(attributes), saved: nil, text: "abc",
+        focusIsTarget: true, front: front,
+        onWrite: { attribute in
+          if attribute == kAXFocusedAttribute { front.current.withLock { $0 = target } }
+        })
+      let name = canPutBack ? "put back" : "left in front"
+      // The failed recovery stops the next write.
+      XCTAssertEqual(writes.map(\.attribute), canPutBack ? attributes : [attributes[0]], name)
+      XCTAssertEqual(front.restores.current, [person], name)
+      if canPutBack {
+        guard case .success = result else { return XCTFail("\(name): \(result)") }
+        XCTAssertEqual(front.current.current, person)
+      } else {
+        guard case .failure(let error) = result else { return XCTFail("\(name): completed") }
+        XCTAssertEqual((error as? HelperError)?.code, .outcomeUnknown, name)
+        XCTAssertEqual((error as? HelperError)?.message, FocusEnforcer.leftInFront.message, name)
+      }
+    }
+  }
+
+  func testReviewLateActivationBeforeFirstWriteReportsNothingSent() async {
+    let person: pid_t = 4_242
+    let front = FakeFrontApp(person, canRestore: false)
+    let (result, writes) = await deliver(
+      observed: Self.plain, settable: [kAXFocusedAttribute, kAXSelectedTextAttribute],
+      saved: nil, focusIsTarget: true, front: front,
+      beforeGuard: { act in front.current.withLock { $0 = act.target } })
+    XCTAssertTrue(writes.isEmpty)
+    XCTAssertEqual(front.restores.current, [person])
+    guard case .failure(let error) = result else { return XCTFail("The write read completed.") }
+    XCTAssertEqual(error as? HelperError, FocusEnforcer.notRestored)
+  }
+
+  func testReviewClickChoosesAnAppThatWasNeverPrepared() async {
+    for addressedToTarget in [true, false] {
+      let person: pid_t = 4_242
+      let front = FakeFrontApp(person)
+      let target = getpid()
+      let (result, writes) = await deliver(
+        observed: Self.plain, settable: [kAXFocusedAttribute, kAXSelectedTextAttribute],
+        saved: nil, focusIsTarget: true, front: front,
+        afterDelivery: { act in
+          front.chooseTarget(act, addressedTo: addressedToTarget ? target : person)
+          front.current.withLock { $0 = target }
+        })
+      XCTAssertNotNil(try? result.get())
+      XCTAssertEqual(writes.count, 2)
+      XCTAssertEqual(front.restores.current, [])
+      XCTAssertEqual(front.current.current, target)
+    }
+  }
+
+  func testReviewSwitchToThirdAppSurvivesLateTargetActivation() async {
+    let front = FakeFrontApp(4_242)
+    let third: pid_t = 9_999
+    let target = getpid()
+    let (result, writes) = await deliver(
+      observed: Self.plain, settable: [kAXFocusedAttribute, kAXSelectedTextAttribute],
+      saved: nil, focusIsTarget: true, front: front,
+      afterDelivery: { act in
+        front.current.withLock { $0 = third }
+        XCTAssertEqual(act.observeFront(), third)
+        front.current.withLock { $0 = target }
+      })
+    XCTAssertNotNil(try? result.get())
+    XCTAssertEqual(writes.count, 2)
+    XCTAssertEqual(front.restores.current, [third, third])
+    XCTAssertEqual(front.current.current, third)
+  }
+
+  func testReviewStopDuringWatchEndsWithoutAnActivationAcknowledgement() async {
+    let person: pid_t = 4_242
+    let front = FakeFrontApp(person)
+    let (result, writes) = await deliver(
+      observed: Self.plain, settable: [kAXFocusedAttribute, kAXSelectedTextAttribute],
+      saved: nil, focusIsTarget: true, front: front,
+      afterDelivery: { act in
+        front.current.withLock { $0 = act.target }
+        try act.checkCancellation(front: act.target, original: person, attemptedRestore: false)
+        XCTAssertTrue(front.restore(act))
+        act.cancellation.cancel(.stoppedByUser)
+        let now = act.observeFront()
+        try act.checkCancellation(front: now, original: person, attemptedRestore: true)
+        XCTFail("The watch would keep waiting for a stopped activation tap.")
+        throw FocusEnforcer.leftInFront
+      })
+    guard case .failure(let error) = result else { return XCTFail("Stop read completed.") }
+    XCTAssertEqual(error as? HelperError, SessionCancelReason.stoppedByUser.error)
+    XCTAssertEqual(writes.map(\.attribute), [kAXFocusedAttribute])
+    XCTAssertEqual(front.restores.current, [person])
   }
 
   func refused(_ result: Result<String, Error>, _ case: String) {

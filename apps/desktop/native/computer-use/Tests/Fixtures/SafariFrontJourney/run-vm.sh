@@ -3,7 +3,49 @@
 #   pnpm test:vm -- [--inputs DIR] bash native/computer-use/Tests/Fixtures/SafariFrontJourney/run-vm.sh
 # With --inputs holding a FocusEnforcer.swift, a second journey is built with that file in
 # place of the checkout's and runs first, for comparison (OPENSTEER_SAFARI_FRONT_RED_CASES).
+# Include ActionRunner.swift from the same revision if the FocusGuard interface differs.
 set -euo pipefail
+fixtures=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "$fixtures/../../../../.."
+default_cases=front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control,type-into
+
+compile() {
+  local output=$1 replacements=${2:-}
+  local sources=()
+  while IFS= read -r file; do
+    case "$file" in
+      */Focus/FocusEnforcer.swift|*/Act/ActionRunner.swift)
+        if [[ -n "$replacements" && -f "$replacements/${file##*/}" ]]; then
+          file="$replacements/${file##*/}"
+        fi ;;
+    esac
+    sources+=("$file")
+  done < <(find native/computer-use/Sources/ComputerUseCore -name '*.swift' | sort)
+  local flags=()
+  if [[ "$output" == --typecheck ]]; then
+    flags=(-typecheck -I "$modules")
+  else
+    flags=(-I "$build" -L "$build" -lOpensteerAppleData -lMacOSSigning -o "$output")
+  fi
+  xcrun swiftc -parse-as-library -module-name ComputerUseCore -swift-version 5 \
+    "${flags[@]}" "${sources[@]}" "$fixtures/Journey.swift" "$fixtures/Reminders.swift"
+}
+
+if [[ "${1:-}" == --check ]]; then
+  case ",$default_cases," in
+    *,type-into,*) ;;
+    *) echo "Default Safari front cases must include type-into"; exit 1 ;;
+  esac
+  node --check "$fixtures/server.cjs"
+  node --check "$fixtures/front.cjs"
+  swift build --package-path native/computer-use
+  modules=$(swift build --package-path native/computer-use --show-bin-path)
+  if [[ -d "$modules/Modules" ]]; then modules="$modules/Modules"; fi
+  compile --typecheck
+  echo "Type-checked Safari front journey. Default cases: $default_cases"
+  exit
+fi
+
 [[ "$HOME" == /Users/admin && -d "$HOME/opensteer-job" ]] || { echo 'Use pnpm test:vm'; exit 2; }
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 began=$SECONDS
@@ -12,7 +54,6 @@ mkdir -p "$out" "$HOME/Applications"
 # A tee pipe could keep the VM command open after the result; the log is a file.
 exec > "$out/runner.log" 2>&1
 work=$(mktemp -d "$HOME/Applications/opensteer-safari-front.XXXXXX")
-fixtures=native/computer-use/Tests/Fixtures/SafariFrontJourney
 server_pid=''
 cleanup() {
   status=$?
@@ -33,22 +74,20 @@ ls "$HOME/Library/Logs/DiagnosticReports" > "$out/diagnostic-reports-before.txt"
 build="$work/build"
 mkdir -p "$build"
 bash scripts/test-support/build-apple-data-module.sh "$build"
-compile() {
-  local output=$1 replacement=${2:-}
-  local sources=()
-  while IFS= read -r file; do
-    if [[ -n "$replacement" && "$file" == */Focus/FocusEnforcer.swift ]]; then sources+=("$replacement"); else sources+=("$file"); fi
-  done < <(find native/computer-use/Sources/ComputerUseCore -name '*.swift' | sort)
-  xcrun swiftc -parse-as-library -module-name ComputerUseCore -swift-version 5 -I "$build" -L "$build" \
-    -lOpensteerAppleData -lMacOSSigning -o "$output" "${sources[@]}" "$fixtures/Journey.swift" "$fixtures/Reminders.swift"
-}
-red_source="/Volumes/My Shared Files/inputs/FocusEnforcer.swift"
+red_sources="/Volumes/My Shared Files/inputs"
 compile "$work/Green" &
 green_build=$!
-if [[ -f "$red_source" ]]; then
-  cp "$red_source" "$work/RedFocusEnforcer.swift"
-  shasum -a 256 "$work/RedFocusEnforcer.swift" > "$out/red-source.sha256"
-  compile "$work/Red" "$work/RedFocusEnforcer.swift"
+if [[ -f "$red_sources/FocusEnforcer.swift" ]]; then
+  mkdir -p "$work/red"
+  cp "$red_sources/FocusEnforcer.swift" "$work/red/"
+  if [[ -f "$red_sources/ActionRunner.swift" ]]; then
+    cp "$red_sources/ActionRunner.swift" "$work/red/"
+  fi
+  shasum -a 256 "$work/red/FocusEnforcer.swift" > "$out/red-source.sha256"
+  if [[ -f "$work/red/ActionRunner.swift" ]]; then
+    shasum -a 256 "$work/red/ActionRunner.swift" >> "$out/red-source.sha256"
+  fi
+  compile "$work/Red" "$work/red"
 fi
 wait "$green_build"
 echo "built at $((SECONDS - began)) s"
@@ -104,7 +143,7 @@ result=0
 if [[ -x "$work/Red" ]]; then
   run_journey red "$work/Red" "${OPENSTEER_SAFARI_FRONT_RED_CASES:-front,front-watch,stop-watch}"
 fi
-run_journey green "$work/Green" "${OPENSTEER_SAFARI_FRONT_CASES:-front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control}"
+run_journey green "$work/Green" "${OPENSTEER_SAFARI_FRONT_CASES:-$default_cases}"
 [[ "$(cat "$out/green/exit-code.txt")" == 0 ]] || result=1
 
 # Item i: Calendar and Reminders set up through the real helper app built from this checkout.
