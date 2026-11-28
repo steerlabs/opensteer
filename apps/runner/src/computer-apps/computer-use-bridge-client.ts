@@ -15,6 +15,7 @@ import {
   computerUseBridgeVideoProfileHeader,
   macWindowVideoParams,
   computerUseMaxTimeoutMs,
+  macOwnerInputDesktopReplyMs,
   computerUseOutOfTimeSentence,
   computerUseRequestMayHaveEffect,
   type ComputerUseBridgeEvent,
@@ -214,9 +215,12 @@ export class ComputerUseBridgeClient {
   ): Promise<unknown> {
     if (this.#closed) throw new ComputerUseBridgeError("failed", bridgeLostSentence);
     if (options.signal?.aborted) throw new ComputerUseBridgeError("failed", cancelledSentence);
+    const now = method === "display.input" ? () => performance.now() : this.#now;
     // A deadline further off than the protocol allows is held to what it allows.
-    const deadline = Math.min(options.deadline, this.#now() + computerUseMaxTimeoutMs);
-    if (Math.floor(deadline - this.#now()) <= 0) {
+    const deadline = Math.min(options.deadline, now() + computerUseMaxTimeoutMs);
+    const sendDeadline =
+      method === "display.input" ? deadline - macOwnerInputDesktopReplyMs : deadline;
+    if (Math.floor(sendDeadline - now()) <= 0) {
       throw new ComputerUseBridgeError("failed", computerUseOutOfTimeSentence);
     }
     // Checked with the largest `timeoutMs` a frame can carry, so the one
@@ -242,7 +246,9 @@ export class ComputerUseBridgeClient {
           settled = true;
           clearTimeout(timer);
           options.signal?.removeEventListener("abort", onAbort);
-          if ("error" in outcome) reject(outcome.error);
+          if (method === "display.input" && pending.written && now() >= deadline)
+            reject(new ComputerUseBridgeDeadlineError(method, true));
+          else if ("error" in outcome) reject(outcome.error);
           else resolve(outcome.value);
         },
         written: false,
@@ -271,6 +277,10 @@ export class ComputerUseBridgeClient {
             giveUp(new ComputerUseBridgeError("failed", computerUseOutOfTimeSentence));
             return;
           }
+          if (method === "display.input") {
+            giveUp(new ComputerUseBridgeDeadlineError(method, true));
+            return;
+          }
           timer = setTimeout(
             () =>
               giveUp(
@@ -283,11 +293,11 @@ export class ComputerUseBridgeClient {
           );
           timer.unref();
         },
-        Math.max(0, deadline - this.#now()),
+        Math.max(0, deadline - now()),
       );
       timer.unref();
       options.signal?.addEventListener("abort", onAbort, { once: true });
-      this.#send(pending, frame, deadline);
+      this.#send(pending, frame, sendDeadline, now);
     });
   }
 
@@ -323,7 +333,12 @@ export class ComputerUseBridgeClient {
     this.disconnect();
   }
 
-  #send(pending: PendingRequest, frame: NativeBridgeRequest, deadline: number): void {
+  #send(
+    pending: PendingRequest,
+    frame: NativeBridgeRequest,
+    deadline: number,
+    now: () => number,
+  ): void {
     const id = frame.id;
     this.#pending.set(id, pending);
     void this.#connect().then(
@@ -337,7 +352,7 @@ export class ComputerUseBridgeClient {
         }
         // Read in the same turn as the write, so the frame carries what is
         // left as it leaves: connecting spent the rest.
-        const timeoutMs = Math.min(computerUseMaxTimeoutMs, Math.floor(deadline - this.#now()));
+        const timeoutMs = Math.min(computerUseMaxTimeoutMs, Math.floor(deadline - now()));
         if (timeoutMs <= 0) {
           this.#pending.delete(id);
           pending.abandoned = true;

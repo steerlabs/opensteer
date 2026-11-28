@@ -10,6 +10,7 @@ import {
 } from "./mac-window-video.js";
 import {
   MacWindowTargetSchema,
+  DisplayInputTimeoutSchema,
   DisplaySourceSchema as MacVideoSourceSchema,
 } from "./display-stream.js";
 import {
@@ -659,6 +660,7 @@ export const HostIntegrationsMacOwnerInputSchema = z.strictObject({
   ...integrationsFrameBase,
   type: z.literal("host.integrations.mac-owner.input"),
   ...MacOwnerInputParamsSchema.shape,
+  timeoutMs: DisplayInputTimeoutSchema.optional(),
 });
 export const HostIntegrationsMacOwnerInputResetSchema = z.strictObject({
   ...integrationsFrameBase,

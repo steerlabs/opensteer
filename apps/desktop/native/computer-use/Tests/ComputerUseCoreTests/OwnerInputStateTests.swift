@@ -1,8 +1,50 @@
 import CoreGraphics
+import ApplicationServices
 import XCTest
 @testable import ComputerUseCore
 
 final class OwnerInputStateTests: XCTestCase {
+  func testTimedOutFocusedFieldReadIsUnavailable() {
+    XCTAssertThrowsError(try MacOwnerInputWorker.focusedElement(.cannotComplete, value: nil, waitsForClick: true)) {
+      XCTAssertEqual(($0 as? MacOwnerInput.Refusal)?.reason, "unavailable")
+    }
+  }
+
+  func testOwnerAXReadsSpendTheRemainingBatchBudget() {
+    let time = Locked<TimeInterval>(10)
+    let budget = OwnerInputAXBudget(deadline: 13, now: { time.current }, check: {})
+    XCTAssertEqual(budget.timeout(), 2)
+    time.withLock { $0 = 12.625 }
+    XCTAssertEqual(budget.timeout(), 0.375)
+    time.withLock { $0 = 13 }
+    XCTAssertNil(budget.timeout())
+  }
+
+  func testUnansweredOwnerAXReadEndsFurtherReadsWithinTheBatch() {
+    let budget = OwnerInputAXBudget(deadline: 13, now: { 10 }, check: {})
+    OwnerInputAXBudget.$current.withValue(budget) {
+      XCTAssertEqual(budget.timeout(), 2)
+      _ = OwnerInputAXBudget.received(.cannotComplete)
+      XCTAssertNil(budget.timeout())
+    }
+  }
+
+  func testStopDuringPreWriteReadFencesSelectionWrite() throws {
+    let stopped = Locked(false)
+    let effects = Locked(false)
+    let gate: @Sendable () throws -> Void = {
+      if stopped.current { throw MacOwnerInput.Refusal("unavailable") }
+    }
+    let budget = OwnerInputAXBudget(deadline: 13, effects: effects, now: { 10 }, check: gate)
+    let field = AXUIElementCreateApplication(getpid())
+    try OwnerInputAXBudget.$current.withValue(budget) {
+      XCTAssertEqual(budget.timeout(), 2)
+      stopped.withLock { $0 = true }
+      XCTAssertThrowsError(try MacOwnerInputWorker.beginAXWrite(field, proceed: gate))
+      XCTAssertFalse(effects.current)
+    }
+  }
+
   func testAgentWaitsForPersonBatchAndIdleAttachmentDoesNotExclude() async throws {
     let lane = AppMutationCoordinator()
     await lane.beginPerson()

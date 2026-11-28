@@ -1,5 +1,6 @@
 import {
   displayPasteTextMaxLength,
+  displayInputPatienceMs,
   trackHeldDisplayInput,
   type DisplayInputEvent,
   type DisplayInputRefusal,
@@ -10,6 +11,7 @@ import type { ViewerClipboardResult } from "../host/browser-editing.js";
 import { mergeDisplayInput } from "./display-input.js";
 import {
   DisplayInputTooLargeError,
+  displayInputFrame,
   maxDisplayInputBytes,
   maxDisplayInputEvents,
   type DisplayEditingMessage,
@@ -18,7 +20,6 @@ import {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
-const batchTimeoutMs = 10_000;
 const batchEnvelopeOverheadBytes = 128;
 const maxQueuedEvents = 8_192;
 const maxQueuedBytes = 2 * 1_024 * 1_024;
@@ -45,13 +46,8 @@ const refusalWords: Record<DisplayInputRefusal, string> = {
   unavailable: "This device isn’t taking input right now. Try again.",
   contended: "Another viewer is pressing. Try again.",
 };
-const unknownClipboardWords = {
-  paste: "May have been pasted: check before pasting again.",
-  cut: "May have been cut: check before cutting again.",
-} as const;
 interface Caller {
   readonly mutatesClipboard?: "paste" | "cut";
-  sent: boolean;
   remainingEvents: number;
   settled: boolean;
   readonly resolve: (result: ViewerClipboardResult | undefined) => void;
@@ -71,10 +67,14 @@ interface Pending {
   readonly atomic: boolean;
   readonly eventCount: number;
   readonly onlyMove: boolean;
+  readonly mayHaveEffect: boolean;
+  readonly affectsHold: boolean;
+  readonly deadline: number;
   readonly mutatesClipboard?: "paste" | "cut";
   /** True once `lease.input` registered a sequence and handed the batch to the socket. */
   sent: boolean;
   dispatched?: true;
+  clipboardResult?: ViewerClipboardResult;
   clipboardRefusal?: { readonly reason: string; readonly message: string };
   readonly sequences: Set<number>;
   readonly callers: readonly { readonly caller: Caller; readonly eventsTaken: number }[];
@@ -106,7 +106,8 @@ export class DisplayEditingStopped extends Error {
   }
 }
 
-type StopCause = "timeout" | "refused" | "send-failed" | "bound" | "changed" | "reset" | "dispose";
+type StopCause =
+  "unknown" | "timeout" | "refused" | "send-failed" | "bound" | "changed" | "reset" | "dispose";
 
 /** The lease owns input; this adapter fences its private context and receipt lifetimes. */
 export class DisplayEditingSession {
@@ -205,14 +206,23 @@ export class DisplayEditingSession {
       readonly recordReceipt?: boolean;
       readonly resetLease?: boolean;
       readonly releaseGeometry?: number | null;
+      readonly unregistered?: Pending;
     } = {},
   ): boolean {
     const pendingList = [...new Set(this.#pending.values())];
+    if (options.unregistered) pendingList.push(options.unregistered);
     for (const pending of pendingList) {
       clearTimeout(pending.timer);
       for (const sequence of pending.sequences) this.#pending.delete(sequence);
       pending.sequences.clear();
     }
+    const needsReset = pendingList.some(
+      (pending) => pending.sent && !pending.dispatched && pending.affectsHold,
+    );
+    const unknown = pendingList.some(
+      (pending) =>
+        pending.sent && pending.mayHaveEffect && (pending.dispatched || !options.settledRefusal),
+    );
     // Pure pointer/mouse moves with nothing held recover on a live refusal or timeout.
     if (
       (cause === "timeout" || cause === "refused") &&
@@ -259,7 +269,7 @@ export class DisplayEditingSession {
         /* `resetInput` follows whenever this view held anything down. */
       }
     }
-    if (wasHeld || options.resetLease) {
+    if (needsReset || wasHeld || options.resetLease) {
       this.#held.clear();
       this.#lease.resetInput();
     }
@@ -268,15 +278,11 @@ export class DisplayEditingSession {
     const nonMove =
       pendingList.some((pending) => !pending.onlyMove) ||
       dropped.some((entry) => entry.copy || entry.atomic || !entry.events.every(isMove));
-    const singleClipboard =
-      !packedMulti && dropped.length === 0 && cause !== "refused" && cause !== "bound"
-        ? pendingList.find((pending) => pending.sent && pending.mutatesClipboard)
-        : undefined;
     const isStoppedBurst =
+      unknown ||
       cause === "bound" ||
       (cause !== "reset" &&
         cause !== "dispose" &&
-        !singleClipboard &&
         nonMove &&
         (packedMulti ||
           dropped.length > 0 ||
@@ -292,11 +298,6 @@ export class DisplayEditingSession {
       this.#set({ receipt: stoppedWords });
       preservedReceipt = true;
       error = new DisplayEditingStopped(stoppedWords);
-    } else if (singleClipboard?.mutatesClipboard) {
-      this.#count(this.diagnostics.clipboard, "unknown");
-      this.#set({ receipt: unknownClipboardWords[singleClipboard.mutatesClipboard] });
-      preservedReceipt = true;
-      error = new Error(message);
     } else if (options.recordReceipt) {
       error = this.#refuse(
         options.reason ?? "unavailable",
@@ -308,11 +309,10 @@ export class DisplayEditingSession {
     }
 
     for (const pending of pendingList)
-      for (const { caller } of pending.callers)
-        if (caller.sent && caller.mutatesClipboard && cause !== "refused" && cause !== "bound") {
-          if (!singleClipboard) this.#count(this.diagnostics.clipboard, "unknown");
-          this.#settle(caller, undefined, { outcome: "unknown", items: [] });
-        } else this.#settle(caller, error);
+      for (const { caller } of pending.callers) {
+        if (unknown && caller.mutatesClipboard) this.#count(this.diagnostics.clipboard, "unknown");
+        this.#settle(caller, error);
+      }
     for (const entry of dropped) this.#settle(entry.caller, error);
     return preservedReceipt;
   }
@@ -332,6 +332,16 @@ export class DisplayEditingSession {
     }
     const pending = this.#pending.get(message.sequence);
     if (!pending) return;
+    if (
+      performance.now() >= pending.deadline ||
+      (message.type === "display.input.result" && message.outcome === "unknown")
+    ) {
+      this.#stop("unknown", "This device didn’t respond. Try again.", {
+        reason: "unknown",
+        recordReceipt: true,
+      });
+      return;
+    }
     if (message.type === "display.clipboard") {
       if (!pending.copy) return;
       this.#count(this.diagnostics.clipboard, message.outcome);
@@ -341,10 +351,18 @@ export class DisplayEditingSession {
         message.outcome === "empty"
       ) {
         const text = message.outcome !== "empty" ? message.text : undefined;
-        this.#finish(pending, {
+        const result: ViewerClipboardResult = {
           outcome: text ? message.outcome : "empty",
           items: text ? [{ type: "text/plain", bytes: encoder.encode(text) }] : [],
-        });
+        };
+        // Android sends the standalone Cut's authoritative clipboard result before its batch receipt.
+        const confirmsCut =
+          pending.eventCount === 1 &&
+          pending.mutatesClipboard === "cut" &&
+          (message.outcome === "cut" || message.outcome === "empty");
+        if (pending.mayHaveEffect && !pending.dispatched && !confirmsCut)
+          pending.clipboardResult = result;
+        else this.#finish(pending, result);
       } else {
         const refusal = {
           reason: message.outcome,
@@ -376,7 +394,8 @@ export class DisplayEditingSession {
       if (pending.copy) {
         pending.dispatched = true;
         const refusal = pending.clipboardRefusal;
-        if (refusal)
+        if (pending.clipboardResult) this.#finish(pending, pending.clipboardResult);
+        else if (refusal)
           this.#stop("refused", refusal.message, {
             reason: refusal.reason,
             settledRefusal: true,
@@ -535,7 +554,6 @@ export class DisplayEditingSession {
     return new Promise((resolve, reject) => {
       const caller: Caller = {
         ...(mutatesClipboard ? { mutatesClipboard } : {}),
-        sent: false,
         remainingEvents: merged ? 1 : events.length,
         settled: false,
         resolve,
@@ -661,11 +679,23 @@ export class DisplayEditingSession {
     atomic: boolean,
     mutatesClipboard: "paste" | "cut" | undefined,
   ): void {
+    const deadline = performance.now() + displayInputPatienceMs;
     const pending: Pending = {
+      deadline,
       copy,
       atomic,
       eventCount: events.length,
       onlyMove: events.length > 0 && events.every(isMove),
+      affectsHold:
+        this.#held.size > 0 ||
+        events.some(
+          (event) =>
+            event.kind === "key" ||
+            ((event.kind === "pointer" || event.kind === "mouse") && event.phase !== "move"),
+        ),
+      mayHaveEffect: events.some(
+        (event) => event.kind !== "copy" && (!isMove(event) || this.#held.size > 0),
+      ),
       ...(mutatesClipboard ? { mutatesClipboard } : {}),
       sent: false,
       sequences: new Set(),
@@ -676,7 +706,7 @@ export class DisplayEditingSession {
             reason: "timeout",
             recordReceipt: true,
           }),
-        batchTimeoutMs,
+        displayInputPatienceMs,
       ),
     };
     try {
@@ -688,16 +718,20 @@ export class DisplayEditingSession {
             if (!pending.sent) {
               pending.sent = true;
               for (const event of events) trackHeldDisplayInput(this.#held, event);
-              for (const { caller } of pending.callers) caller.sent = true;
             }
             pending.sequences.add(sequence);
             this.#pending.set(sequence, pending);
           },
-          atomic ? { atomic: true } : undefined,
+          { atomic, inputDeadline: deadline },
         )
       )
-        this.#stop("send-failed", "Input is unavailable.");
+        this.#stop(
+          "send-failed",
+          "Input is unavailable.",
+          pending.sent ? {} : { unregistered: pending },
+        );
     } catch (error) {
+      const unregistered = pending.sent ? {} : { unregistered: pending };
       if (pending.sent && pending.mutatesClipboard) {
         this.#stop("send-failed", "This edit couldn’t be sent.");
       } else if (error instanceof DisplayInputTooLargeError) {
@@ -705,12 +739,13 @@ export class DisplayEditingSession {
           reason: "too-large",
           settledRefusal: true,
           recordReceipt: true,
+          ...unregistered,
         });
       } else {
         this.#stop(
           "send-failed",
           pending.sent ? "This edit couldn’t be sent. Try again." : "This edit couldn’t be sent.",
-          { reason: "unavailable", recordReceipt: pending.sent },
+          { reason: "unavailable", recordReceipt: pending.sent, ...unregistered },
         );
       }
     }
@@ -754,12 +789,7 @@ function serializedEventBytes(event: DisplayInputEvent): number {
 }
 function serializedBatchBytes(geometry: number, events: readonly DisplayInputEvent[]): number {
   return encoder.encode(
-    JSON.stringify({
-      type: "display.input",
-      geometry,
-      sequence: Number.MAX_SAFE_INTEGER,
-      events,
-    }),
+    JSON.stringify(displayInputFrame(geometry, Number.MAX_SAFE_INTEGER, events)),
   ).byteLength;
 }
 function jsonStringCharBytes(ch: string): number {

@@ -52,6 +52,7 @@ it.each([
   "unsupported",
   "lost",
   "timeout",
+  "owner-budget",
   "readiness",
   "warm-readiness",
   "unchanged-readiness",
@@ -73,6 +74,17 @@ it.each([
     const events: MacVideoEvent[] = [];
     const received: Buffer[] = [];
     const credits: unknown[] = [];
+    const waitingInputs: { timeout: number | undefined; reply: () => void }[] = [];
+    let now = 10;
+    const wallOffset = Date.now() + 9_000;
+    const clock =
+      peer === "owner-budget"
+        ? vi.spyOn(performance, "now").mockImplementation(() => now)
+        : undefined;
+    const wallClock =
+      peer === "owner-budget"
+        ? vi.spyOn(Date, "now").mockImplementation(() => wallOffset)
+        : undefined;
     let supported = true;
     let readinessFailed = false;
     let permissionRevoked = false;
@@ -212,7 +224,14 @@ it.each([
             });
           } else if (frame.method === "display.start") answer({ attachmentToken });
           else if (frame.method === "display.input") {
-            if (peer === "lost") socket.terminate();
+            if (peer === "owner-budget") {
+              const { sequence } = macWindowVideoParams["display.input"].parse(frame.params);
+              // The fake helper may have delivered a prefix while its next read is stalled.
+              waitingInputs.push({
+                timeout: frame.timeoutMs,
+                reply: () => answer({ sequence, outcome: "dispatched" }),
+              });
+            } else if (peer === "lost") socket.terminate();
             else
               socket.send(
                 JSON.stringify({
@@ -368,6 +387,79 @@ it.each([
           .toHaveLength(1);
         expect(requests.filter((request) => request.method === "display.input")).toHaveLength(0);
       }
+      if (peer === "owner-budget") {
+        const began = now;
+        const input = (sequence: number, timeoutMs = 9_000) =>
+          relay!.handle(
+            HostIntegrationsMacOwnerInputSchema.parse({
+              ...fence,
+              type: "host.integrations.mac-owner.input",
+              streamId,
+              source,
+              geometry: 1,
+              sequence,
+              timeoutMs,
+              events: [
+                { kind: "key", action: "down", key: "a", code: "KeyA", modifiers: [], text: "a" },
+                { kind: "key", action: "up", key: "a", code: "KeyA", modifiers: [] },
+              ],
+            }),
+          );
+        const results = () =>
+          events.flatMap((event) =>
+            event.type === "runner.integrations.mac-owner.event" &&
+            event.message.type === "display.input.result"
+              ? [event.message]
+              : [],
+          );
+        input(0);
+        await vi.waitFor(() => expect(waitingInputs).toHaveLength(1));
+        input(1);
+        now = began + 3_000;
+        waitingInputs[0]!.reply();
+        await vi.waitFor(() => expect(waitingInputs).toHaveLength(2));
+        const timeouts = waitingInputs.map(({ timeout }) => timeout);
+        now = began + 11_000;
+        waitingInputs[1]!.reply();
+        await vi.waitFor(() => expect(results()).toHaveLength(2));
+        expect.soft(timeouts).toEqual([8_500, 5_500]);
+        expect(results()).toMatchObject([
+          { sequence: 0, outcome: "dispatched" },
+          { sequence: 1, outcome: "unknown" },
+        ]);
+        await vi.waitFor(() =>
+          expect(requests.filter(({ method }) => method === "display.input-reset")).toHaveLength(1),
+        );
+
+        input(2);
+        await vi.waitFor(() => expect(waitingInputs).toHaveLength(3));
+        relay.handle(
+          HostIntegrationsMacOwnerInputResetSchema.parse({
+            ...fence,
+            type: "host.integrations.mac-owner.input-reset",
+            streamId,
+            source,
+          }),
+        );
+        await vi.waitFor(() =>
+          expect(requests.filter(({ method }) => method === "display.input-reset")).toHaveLength(2),
+        );
+        expect(results()).toHaveLength(2);
+        waitingInputs[2]!.reply();
+        await vi.waitFor(() => expect(results()).toHaveLength(3));
+
+        input(3);
+        await vi.waitFor(() => expect(waitingInputs).toHaveLength(4));
+        input(4, 1_000);
+        now += 2_000;
+        waitingInputs[3]!.reply();
+        await vi.waitFor(() => expect(results()).toHaveLength(5));
+        expect(results().at(-1)).toMatchObject({ sequence: 4, outcome: "refused" });
+        expect(waitingInputs).toHaveLength(4);
+        await vi.waitFor(() =>
+          expect(requests.filter(({ method }) => method === "display.input-reset")).toHaveLength(3),
+        );
+      }
       if (["unsupported", "lost", "timeout"].includes(peer)) {
         if (peer === "timeout")
           vi.spyOn(handler, "videoRequest").mockRejectedValueOnce(
@@ -394,7 +486,7 @@ it.each([
           )
           .toMatchObject({
             message: {
-              outcome: "refused",
+              outcome: peer === "unsupported" ? "refused" : "unknown",
               reason: peer === "unsupported" ? "unsupported" : "unavailable",
             },
           });
@@ -536,6 +628,8 @@ it.each([
       );
       console.info(`Mac bridge compatibility evidence: ${out}/${peer}.json`);
     } finally {
+      clock?.mockRestore();
+      wallClock?.mockRestore();
       relay?.close();
       handler?.close();
       for (const server of [desktop, host]) {

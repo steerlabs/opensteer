@@ -343,6 +343,16 @@ export const DisplayInputRefusalSchema = z.enum([
   "contended",
 ]);
 export type DisplayInputRefusal = z.infer<typeof DisplayInputRefusalSchema>;
+// The viewer stops waiting after ten seconds, measured from submission.
+export const displayInputPatienceMs = 10_000;
+// The Home keeps a second for the reply to reach the viewer.
+export const macOwnerInputViewerReplyMs = 1_000;
+// The Runner keeps half a second for Desktop to reply.
+export const macOwnerInputDesktopReplyMs = 500;
+// Desktop keeps half a second to receive the helper's reply and hand it back.
+export const macOwnerInputHelperReplyMs = 500;
+export const DisplayInputTimeoutSchema = z.number().int().positive().max(displayInputPatienceMs);
+
 /**
  * What became of one `display.input` batch, for the viewer that sent it.
  * `dispatched` means the producer handed it to the target, never that the
@@ -351,7 +361,7 @@ export type DisplayInputRefusal = z.infer<typeof DisplayInputRefusalSchema>;
 export const DisplayInputResultSchema = z.strictObject({
   type: z.literal("display.input.result"),
   sequence: DisplaySequenceSchema,
-  outcome: z.enum(["dispatched", "refused", "stale"]),
+  outcome: z.enum(["dispatched", "refused", "stale", "unknown"]),
   reason: DisplayInputRefusalSchema.optional(),
 });
 export type DisplayInputResult = z.infer<typeof DisplayInputResultSchema>;
@@ -398,6 +408,7 @@ export const DisplayViewerClientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("display.input"),
     ...DisplayInputSchema.shape,
+    timeoutMs: DisplayInputTimeoutSchema.optional(),
     /** Sent only by a previous-release viewer; such a batch is never applied. */
     controlId: DisplayControlIdSchema.optional(),
   }),

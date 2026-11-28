@@ -74,9 +74,9 @@ public enum KeyWindow {
   /// The exact window server identity of an Accessibility window element. The
   /// helper never guesses one from matching bounds.
   public static func windowID(of window: AXUIElement) -> CGWindowID? {
-    guard let resolve = PrivateAPI.axUIElementGetWindow else { return nil }
+    guard OwnerInputAXBudget.prepare(window), let resolve = PrivateAPI.axUIElementGetWindow else { return nil }
     var identifier = CGWindowID(0)
-    guard resolve(window, &identifier) == .success, identifier != 0 else { return nil }
+    guard OwnerInputAXBudget.received(resolve(window, &identifier)) == .success, identifier != 0 else { return nil }
     return identifier
   }
 }

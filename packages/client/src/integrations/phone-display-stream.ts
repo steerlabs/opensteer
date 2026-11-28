@@ -5,6 +5,7 @@ import {
   DisplayInputEventSchema,
   trackHeldDisplayInput,
   displaySourceKey,
+  displayInputPatienceMs,
   DisplayClientDiagnosticSchema,
   type DisplayClientDiagnostic,
   DisplayViewerClientMessageSchema,
@@ -125,7 +126,7 @@ export interface DisplayLease {
     geometry: number,
     events: readonly DisplayInputEvent[],
     onSequence?: (sequence: number) => void,
-    options?: { readonly atomic?: boolean },
+    options?: { readonly atomic?: boolean; readonly inputDeadline?: number },
   ): boolean;
   /**
    * The decoder lost its state: asks the Host for a decodable start, and
@@ -826,12 +827,17 @@ export class DisplayStreams {
 
   #resetInput(entry: Entry): void {
     this.#forgetHeld(entry);
-    if (
-      entry.connection?.confirmed &&
-      entry.connection.socket.readyState === 1 &&
-      entry.snapshot.display?.sharedInput === 1
-    )
-      send(entry.connection, { type: "display.input-reset" });
+    const connection = entry.connection;
+    if (!connection?.confirmed || connection.socket.readyState !== 1) return;
+    try {
+      send(connection, { type: "display.input-reset" });
+    } catch {
+      // A broken channel must release this source at the Home on close.
+      connection.socket.close(
+        displayViewerCloseCodes.tryAgain,
+        "Display input reset could not be sent",
+      );
+    }
   }
 
   #power(entry: Entry, action: "wake" | "lock"): boolean {
@@ -850,7 +856,7 @@ export class DisplayStreams {
     geometry: number,
     events: readonly DisplayInputEvent[],
     onSequence?: (sequence: number) => void,
-    options?: { readonly atomic?: boolean },
+    options?: { readonly atomic?: boolean; readonly inputDeadline?: number },
   ): boolean {
     const connection = entry.connection;
     if (
@@ -886,16 +892,18 @@ export class DisplayStreams {
       (entry.target.editing !== 1 || entry.snapshot.display?.editingVersion !== 1)
     )
       return false;
+    const timeoutMs =
+      options?.inputDeadline === undefined
+        ? displayInputPatienceMs
+        : Math.floor(options.inputDeadline - performance.now());
+    if (timeoutMs <= 0) return false;
     const batches: string[] = [];
     let batch: DisplayInputEvent[] = [];
     const serialize = (items: DisplayInputEvent[]) =>
       JSON.stringify(
-        DisplayViewerClientMessageSchema.parse({
-          type: "display.input",
-          geometry,
-          sequence: entry.inputSequence + batches.length,
-          events: items,
-        }),
+        DisplayViewerClientMessageSchema.parse(
+          displayInputFrame(geometry, entry.inputSequence + batches.length, items, timeoutMs),
+        ),
       );
     for (const event of parsed) {
       const candidate = [...batch, event];
@@ -1007,6 +1015,15 @@ function read(connection: Connection, data: unknown): Received {
 function stopKeyframeRequests(connection: Connection): void {
   if (connection.keyframe?.timer) clearTimeout(connection.keyframe.timer);
   connection.keyframe = null;
+}
+
+export function displayInputFrame(
+  geometry: number,
+  sequence: number,
+  events: readonly DisplayInputEvent[],
+  timeoutMs = displayInputPatienceMs,
+) {
+  return { type: "display.input" as const, geometry, sequence, timeoutMs, events };
 }
 
 function send(connection: Connection, message: DisplayViewerClientMessage): void {

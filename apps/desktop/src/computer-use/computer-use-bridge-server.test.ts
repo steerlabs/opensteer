@@ -187,6 +187,68 @@ describe("ComputerUseBridgeServer", () => {
     },
   );
 
+  it("passes through the remaining owner input budget and reports an overdue helper answer as unknown", async () => {
+    const h = await bridgeHarness({ ownerInputVersion: 2 });
+    const socket = await h.connect(h.token, 2);
+    const source = MacOwnerSourceSchema.parse({
+      kind: "owner-view",
+      viewId: "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      generation: 1,
+    });
+    const streamId = DisplayStreamIdSchema.parse("dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    h.reply("view.open", () => ({
+      viewId: source.viewId,
+      generation: 1,
+      state: "ready",
+      captureTargetId: source.viewId,
+    }));
+    h.reply("display.start", () => ({ attachmentToken: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }));
+    await socket.call(1, "view.open", {
+      viewId: source.viewId,
+      generation: 1,
+      leaseDurationMs: 30_000,
+      target: {
+        kind: "app",
+        app: notes.identity,
+        windowId: "win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      },
+    });
+    await socket.call(2, "display.start", {
+      streamId,
+      target: { kind: "mac-window", bindingId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      sources: [source],
+      maxLongSide: 1280,
+      maxFps: 30,
+    });
+    h.reply("display.input", () => ({ sequence: 0, outcome: "dispatched" }));
+    const release = h.hold("display.input");
+    const receivedAt = 20;
+    const clock = vi.spyOn(performance, "now").mockReturnValue(receivedAt);
+    const result = socket.call(
+      3,
+      "display.input",
+      {
+        streamId,
+        source,
+        sequence: 0,
+        geometry: 1,
+        events: [{ kind: "key", action: "down", key: "a", code: "KeyA", modifiers: [], text: "a" }],
+      },
+      5_000,
+    );
+    try {
+      await expect
+        .poll(() => h.options("display.input")?.ownerInputDeadline)
+        .toBe(receivedAt + 5_000);
+      h.clock.at -= 9_000;
+      clock.mockReturnValue(receivedAt + 5_001);
+      release();
+      await expect(result).resolves.toMatchObject({ error: { code: "outcome-unknown" } });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("does not let a late old stream start tear down a reconnect's reused ID", async () => {
     const h = await bridgeHarness();
     h.reply("view.open", (raw) => {

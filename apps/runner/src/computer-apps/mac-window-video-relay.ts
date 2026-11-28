@@ -5,6 +5,9 @@ import {
   macDisplayMaxWindows,
   decodeDisplayMediaFrame,
   displayFirstFrameTimeoutMs,
+  displayInputPatienceMs,
+  macOwnerInputViewerReplyMs,
+  type DisplayInputResult,
   type HostIntegrationsOperation,
   type IntegrationsModuleEvent,
   type DisplayStreamId,
@@ -62,7 +65,8 @@ interface Entry {
   /** This stream's owner input, relayed to the helper one batch at a time in arrival order. */
   readonly input: OrderedInputLane<OwnerInput>;
 }
-type OwnerInput = Extract<VideoOperation, { type: "host.integrations.mac-owner.input" }>;
+type OwnerInputMessage = Extract<VideoOperation, { type: "host.integrations.mac-owner.input" }>;
+type OwnerInput = OwnerInputMessage & { readonly inputDeadline: number };
 /**
  * The Home holds at most 128 unanswered batches a stream; a lane as deep never refuses what it
  * admitted, and the byte bound keeps a run of large pastes from growing without end. Releases
@@ -75,7 +79,7 @@ const ownerInputLane = {
   maxBytes: 4 * 1_048_576,
   maxReleaseBatches: 32,
   maxReleaseBytes: 64 * 1_024,
-  maxAgeMs: 8_000,
+  maxAgeMs: displayInputPatienceMs - macOwnerInputViewerReplyMs,
 } as const;
 
 /** Binary media never enters the integrations or Desktop JSON request queues. */
@@ -234,12 +238,18 @@ export class MacWindowVideoRelay {
         !entry.input.input({
           source: displaySourceKey(message.source),
           bytes: inputBytes(message.events),
-          value: message,
+          value: {
+            ...message,
+            inputDeadline:
+              performance.now() +
+              (message.timeoutMs ?? displayInputPatienceMs - macOwnerInputViewerReplyMs),
+          },
           release: releaseOnly(message.events),
         })
-      )
-        // A full lane refuses as the helper's own full lane does: nothing was sent.
+      ) {
+        entry.input.reset(displaySourceKey(message.source));
         this.#answerOwnerInput(entry, message, "unavailable");
+      }
       return;
     }
     if (
@@ -452,8 +462,14 @@ export class MacWindowVideoRelay {
     const entry = () => this.#streams.get(streamId);
     return new OrderedInputLane<OwnerInput>({
       ...ownerInputLane,
+      now: () => performance.now(),
+      interruptOnReset: true,
       send: async (message) => {
-        const result = await this.#computerUse
+        const current = entry();
+        if (!current) return;
+        const deadline = message.inputDeadline;
+        const reset = () => current.input.reset(displaySourceKey(message.source));
+        const result: DisplayInputResult = await this.#computerUse
           .videoRequest(
             "display.input",
             {
@@ -463,16 +479,37 @@ export class MacWindowVideoRelay {
               sequence: message.sequence,
               events: message.events,
             },
-            Date.now() + 5_000,
+            deadline,
           )
           .then(
-            (answer) => ({ type: "display.input.result" as const, ...answer }),
-            (error: unknown) => ({
-              type: "display.input.result" as const,
-              sequence: message.sequence,
-              outcome: "refused" as const,
-              reason: inputFailure(error),
-            }),
+            (answer): DisplayInputResult => {
+              if (performance.now() >= deadline) {
+                reset();
+                return {
+                  type: "display.input.result",
+                  sequence: message.sequence,
+                  outcome: "unknown",
+                };
+              }
+              if (
+                answer.outcome === "unknown" ||
+                (answer.outcome !== "dispatched" && releaseOnly(message.events))
+              )
+                reset();
+              return { type: "display.input.result", ...answer };
+            },
+            (error: unknown): DisplayInputResult => {
+              reset();
+              return {
+                type: "display.input.result",
+                sequence: message.sequence,
+                outcome:
+                  error instanceof ComputerUseBridgeError && error.code !== "outcome-unknown"
+                    ? "refused"
+                    : "unknown",
+                reason: inputFailure(error),
+              };
+            },
           );
         await this.#emit({
           type: "runner.integrations.mac-owner.event",
@@ -499,14 +536,16 @@ export class MacWindowVideoRelay {
           )
           .catch(() => this.#close(current, "owner-input-reset-failed"));
       },
-      notSent: (message) => {
+      notSent: (message, expired) => {
         const current = entry();
-        if (current) this.#answerOwnerInput(current, message, "unavailable");
+        if (!current) return;
+        if (expired) current.input.reset(displaySourceKey(message.source));
+        this.#answerOwnerInput(current, message, "unavailable");
       },
     });
   }
   /** Answers a batch that never reached the helper. */
-  #answerOwnerInput(entry: Entry, message: OwnerInput, reason: DisplayInputRefusal): void {
+  #answerOwnerInput(entry: Entry, message: OwnerInputMessage, reason: DisplayInputRefusal): void {
     void this.#emit({
       type: "runner.integrations.mac-owner.event",
       streamId: message.streamId,
