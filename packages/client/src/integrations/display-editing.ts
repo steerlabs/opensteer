@@ -697,11 +697,7 @@ export class DisplayEditingSession {
       } else {
         this.#stop(
           "send-failed",
-          pending.sent
-            ? "This edit couldn’t be sent. Try again."
-            : error instanceof Error
-              ? error.message
-              : "This edit couldn’t be sent.",
+          pending.sent ? "This edit couldn’t be sent. Try again." : "This edit couldn’t be sent.",
           { reason: "unavailable", recordReceipt: pending.sent },
         );
       }

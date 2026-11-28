@@ -976,7 +976,7 @@ describe("phone display Host sockets", () => {
     }));
     expect(lease.input(1, events)).toBe(true);
     await until(
-      () => f.sent.filter((m) => m.type === "host.integrations.display.input").length === 2,
+      () => f.sent.filter((m) => m.type === "host.integrations.display.input").length === 4,
     );
     const input = f.sent.filter((m) => m.type === "host.integrations.display.input");
     expect(input.flatMap((m) => m.events)).toEqual(events);
