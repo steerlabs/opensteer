@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { ClientOperationError } from "@opensteer/client/connections";
-import { DeviceIdSchema } from "@opensteer/core";
+import { BrowserProfileIdSchema, DeviceIdSchema } from "@opensteer/core";
 import { placeList, readTaskActivity } from "@opensteer/client/host";
 import {
   mockAgentWorkThreads,
@@ -273,7 +273,7 @@ it("names one place and its device when two sessions use the same profile on tha
         row === tab
           ? {
               ...tab,
-              profile: { profileId: profile.id, name: profile.name },
+              profile: { profileId: BrowserProfileIdSchema.parse(profile.id), name: profile.name },
               computer: { computerId: id, name },
             }
           : row,
