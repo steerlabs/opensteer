@@ -3,6 +3,7 @@ import { refreshInputQueue } from "./waiting-inputs.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   lockThreadCaller,
+  lockLineageConnection,
   assertThreadCaller,
   callerAuthoritySource,
   type ThreadCallerAuthority,
@@ -54,6 +55,7 @@ import {
 } from "./thread-status.js";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
 import { threadIsQuiet } from "./quiet-tasks.js";
+import { bindingAgentConnectionId } from "./resource-access.js";
 export interface ThreadWriteActor {
   readonly authority?: ThreadCallerAuthority;
   readonly requestedBy: UserId;
@@ -242,17 +244,13 @@ export async function setThreadDone(
       )
         throw idempotencyConflict(input.idempotencyKey);
       const scope = await discoverDoneScope(transaction, input);
-      const personDone =
-        !existing &&
-        input.done &&
-        !input.quiet &&
-        !input.authority &&
-        !input.actorRunId &&
-        !input.admission;
+      const selfDone =
+        input.actorRunId &&
+        scope.runs.some((run) => run.id === input.actorRunId && run.threadId === input.threadId);
       const observed = await transaction
         .selectFrom("threads")
         .select("threads.id")
-        .$if(personDone, (query) =>
+        .$if(!existing && input.done && !selfDone, (query) =>
           query.select((eb) =>
             jsonArrayFrom(
               eb
@@ -271,20 +269,33 @@ export async function setThreadDone(
         .where("threads.id", "=", input.threadId)
         .executeTakeFirst();
       const sessions = observed?.activeSessions;
-      if (sessions?.length) {
-        // End authority in the Done transaction before its Run, thread and Request locks.
-        // The task's existing Request cancellation and projection below complete the transition.
-        const ended = await endAgentSessionRows(
-          transaction,
-          sessions.map(({ id }) => id),
-          "done",
-        );
-        mutation.sessionsEndedByDone(ended.map(({ id }) => id));
-      }
+      const checkedQuietAt = sessions?.length && input.quiet ? new Date() : undefined;
+      const quietWithSessions = checkedQuietAt
+        ? !input.actorRunId && (await threadIsQuiet(transaction, input.threadId, checkedQuietAt))
+        : undefined;
       await lockThreadCaller(
         transaction,
         input.authority,
         scope.runs.map((run) => run.id),
+        false,
+        undefined,
+        sessions?.length && quietWithSessions !== false
+          ? async () => {
+              // A Run tool brings its own admission, which also takes its lineage lock. Acquire
+              // that connection before the sessions so the later recheck holds the same lock.
+              if (input.admission && !input.authority)
+                await lockLineageConnection(
+                  transaction,
+                  await bindingAgentConnectionId(transaction, `run:${input.admission.runId}`),
+                );
+              const ended = await endAgentSessionRows(
+                transaction,
+                sessions.map(({ id }) => id),
+                "done",
+              );
+              mutation.sessionsEndedByDone(ended.map(({ id }) => id));
+            }
+          : undefined,
       );
       const runs = scope.runs.length
         ? await transaction
@@ -334,6 +345,15 @@ export async function setThreadDone(
         .forNoKeyUpdate()
         .execute();
       const thread = threads.find(({ id }) => id === input.threadId)!;
+      // The connected tool's self-Done is a database command. Its own call settles with this
+      // commit, so closing the direct session cuts only its other calls.
+      if (
+        input.authority?.kind === "connection" &&
+        (!input.done ||
+          thread.worker !== "external" ||
+          thread.originConnectionId !== input.authority.connectionId)
+      )
+        throw new OpensteerError({ code: "not_found", message: "Task is unavailable" });
       await requireThreadWriteAuthority(transaction, thread, input, input.done ? "done" : "reopen");
       const triggers = scope.triggers.length
         ? await transaction
@@ -375,7 +395,11 @@ export async function setThreadDone(
       const now = new Date();
       const stillQuiet =
         !input.quiet ||
-        (input.done && !input.actorRunId && (await threadIsQuiet(transaction, thread.id, now)));
+        (input.done &&
+          !input.actorRunId &&
+          (await threadIsQuiet(transaction, thread.id, checkedQuietAt ?? now)));
+      if (quietWithSessions !== undefined && quietWithSessions !== stillQuiet)
+        throw new TransactionScopeChanged("Task changed while being marked Done");
       const authoritySource = jsonValue(
         input.quiet
           ? {

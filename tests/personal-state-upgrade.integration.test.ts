@@ -284,6 +284,7 @@ test("carries a person's work from a database the released Home last migrated th
       "0123_agent_operation_endings",
       "0124_agent_session_device_holds",
       "0125_retire_archived_profile_tabs",
+      "0126_task_done_agent_session_endings",
     ]);
     await migrateToLatest(database, {
       async getMigrations() {

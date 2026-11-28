@@ -1,4 +1,4 @@
-import { requestOperationCallsMaxLength, type AgentGrant } from "@opensteer/core";
+import { requestOperationCallsMaxLength, ThreadIdSchema, type AgentGrant } from "@opensteer/core";
 import { z } from "zod";
 import type { AgentTool, AgentToolName } from "./tools/index.js";
 import { opensteer_task_create } from "./tools/threads.js";
@@ -26,6 +26,8 @@ const descriptions = {
     "Read messages or activity for a task run by the person's agent. Pass itemId for one full item.",
   opensteer_task_send:
     "Send context to a task run by one of the person's agents. report leaves context, queue requests a turn and waits if paused, and steer speaks to its current turn. freshContext applies only to queue. Accepted does not mean read.",
+  opensteer_task_update:
+    "Pass the taskId of your own direct-work task and done: true to finish it and release its session.",
   opensteer_task_interrupt:
     "Stop the current turn of a task run by one of the person's agents and pause its queue. Only the person can resume it.",
   opensteer_task_wait:
@@ -151,6 +153,11 @@ export const connectionTaskCreateInput = z
   .strictObject(opensteer_task_create.input.shape)
   .omit({ aiAccountId: true, model: true });
 
+export const connectionTaskDoneInput = z.strictObject({
+  taskId: ThreadIdSchema,
+  done: z.literal(true),
+});
+
 export function connectionToolInput(tool: AgentTool, grant: AgentGrant): z.ZodObject {
   let input: z.ZodObject = tool.input;
   switch (tool.name) {
@@ -195,6 +202,9 @@ export function connectionToolInput(tool: AgentTool, grant: AgentGrant): z.ZodOb
       break;
     case "opensteer_task_create":
       input = connectionTaskCreateInput;
+      break;
+    case "opensteer_task_update":
+      input = connectionTaskDoneInput;
       break;
   }
   if (

@@ -6745,18 +6745,24 @@ class MockHostState {
     });
   }
 
-  applyThreadStateChanged(event: Extract<AgentEvent, { type: "thread.state-changed" }>): void {
+  applyThreadStateChanged(
+    event: Extract<AgentEvent, { type: "thread.state-changed" }>,
+    endedWork?: NonNullable<ThreadSummary["externalWork"]>,
+  ): void {
     this.onReferenceEvent?.(event);
     const previous = this.snapshot.threads.find(({ id }) => id === event.threadId);
     this.sequence = Math.max(this.sequence, Number(event.sequence));
+    const { [event.threadId]: _released, ...workingIn } = this.snapshot.agentWorkingIn ?? {};
     this.update({
       ...this.snapshot,
+      ...(endedWork ? { agentWorkingIn: workingIn } : {}),
       threads: this.snapshot.threads.map((thread) =>
         thread.id === event.threadId
           ? this.#threadState.reconcile(
               {
                 ...thread,
                 ...event.data,
+                ...(endedWork ? { agentSessionId: null, externalWork: endedWork } : {}),
                 title: event.data.title ?? thread.title,
                 icon: event.data.icon === undefined ? thread.icon : event.data.icon,
                 doneAt: event.data.doneAt === undefined ? thread.doneAt : event.data.doneAt,
@@ -6902,6 +6908,7 @@ class MockHostState {
         );
       }
       const stopped = this.snapshot.threads.find((item) => item.id === id)!;
+      const work = stopped.externalWork;
       this.publishThreadName(
         {
           ...stopped,
@@ -6911,6 +6918,9 @@ class MockHostState {
           ...(done ? { status: "idle", pendingRequests: 0 } : {}),
         },
         {},
+        done && work?.status === "active"
+          ? { ...work, status: "ended", endReason: "done" }
+          : undefined,
       );
     }
     return this.snapshot.threads.find((item) => item.id === threadId)!;
@@ -12402,6 +12412,7 @@ class MockHostState {
   private publishThreadName(
     thread: ThreadSummary,
     name: { readonly title?: string; readonly icon?: IconName },
+    endedWork?: NonNullable<ThreadSummary["externalWork"]>,
   ): void {
     this.sequence = Math.max(this.sequence, this.snapshot.revision) + 1;
     const event = AgentEventSchema.parse({
@@ -12424,7 +12435,7 @@ class MockHostState {
         pendingRequests: thread.pendingRequests,
       },
     });
-    if (event.type === "thread.state-changed") this.applyThreadStateChanged(event);
+    if (event.type === "thread.state-changed") this.applyThreadStateChanged(event, endedWork);
   }
 
   private generateThreadName(thread: ThreadSummary, body: string): void {

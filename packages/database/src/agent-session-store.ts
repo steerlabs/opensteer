@@ -425,13 +425,31 @@ export async function endAgentSessionRows(
   reason: AgentSessionEndReason,
 ): Promise<readonly AgentSessionRow[]> {
   if (!ids.length) return [];
+  const sessions = await tx
+    .selectFrom("agentSessions")
+    .select("id")
+    .where("id", "in", ids)
+    .where("status", "=", "active")
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+  if (!sessions.length) return [];
+  const sessionIds = sessions.map(({ id }) => id);
   const ended = await tx
     .updateTable("agentSessions")
     .set({ status: "ended", endedAt: new Date(), endReason: reason })
-    .where("id", "in", ids)
-    .where("status", "=", "active")
+    .where("id", "in", sessionIds)
     .returningAll()
     .execute();
+  const operations = await tx
+    .selectFrom("agentOperations")
+    .select("id")
+    .where("sessionId", "in", sessionIds)
+    .where("state", "in", ["admitted", "pending", "approved"])
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+  if (!operations.length) return ended;
   const message =
     reason === "stopped"
       ? "The person stopped this work."
@@ -455,8 +473,11 @@ export async function endAgentSessionRows(
         message,
       } satisfies AgentOperationDecision),
     })
-    .where("sessionId", "in", ids)
-    .where("state", "in", ["admitted", "pending", "approved"])
+    .where(
+      "id",
+      "in",
+      operations.map(({ id }) => id),
+    )
     .execute();
   return ended;
 }

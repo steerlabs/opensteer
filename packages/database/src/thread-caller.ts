@@ -141,9 +141,14 @@ export async function lockThreadCaller(
   admitted = false,
   /** Also lock this task's active Runs, in the same ordered statement as the caller's. */
   activeRunsOf?: ThreadId,
+  beforeRuns?: () => Promise<void>,
 ): Promise<void> {
+  if (caller) await lockLineageConnection(tx, await threadCallerLineageId(tx, caller));
+  // A connected caller's readmission can use the very session the command is ending.
+  const admitBeforeSessions = caller?.kind === "connection" && beforeRuns !== undefined;
+  if (admitBeforeSessions) await assertThreadCaller(tx, caller, { admitted });
+  if (beforeRuns) await beforeRuns();
   if (!caller) return;
-  await lockLineageConnection(tx, await threadCallerLineageId(tx, caller));
   const ids = [
     ...new Set([...targetRunIds, ...(caller.kind === "run" ? [caller.scope.runId] : [])]),
   ].sort();
@@ -168,9 +173,7 @@ export async function lockThreadCaller(
       .orderBy("id")
       .forNoKeyUpdate()
       .execute();
-  await assertThreadCaller(tx, caller, {
-    admitted,
-  });
+  if (!admitBeforeSessions) await assertThreadCaller(tx, caller, { admitted });
 }
 /**
  * Task tools, rechecked under the caller's locks: the execution is live, and the target task is

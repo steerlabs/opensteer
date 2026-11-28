@@ -5,6 +5,7 @@ import {
   admitExecution,
   integrationConnectionGrantTarget,
   reachesTarget,
+  TriggerStore,
   upsertSelfDeviceInTransaction,
 } from "@opensteer/database";
 import { installPersonalMutationHooks } from "@opensteer/database/personal-mutation";
@@ -6080,6 +6081,10 @@ integration.sequential("Computer use for a connected agent, through its session"
     s: Awaited<ReturnType<typeof connectedAgent>>,
     threadId: ThreadId,
     done: boolean,
+    actor: Pick<
+      Parameters<CommandService["setThreadDone"]>[0],
+      "authority" | "actorRunId" | "admission"
+    > = {},
   ) {
     const removeHooks = installPersonalMutationHooks(database, {
       wake: (notice) => {
@@ -6107,63 +6112,137 @@ integration.sequential("Computer use for a connected agent, through its session"
         done,
         requestedBy: s.world.owner.userId,
         idempotencyKey: randomUUID(),
+        ...actor,
       });
     } finally {
       removeHooks();
     }
   }
 
-  it("ends an idle Mac session when the person marks its task Done and keeps it ended on reopen", async () => {
-    const s = await connectedAgent("full-access", { target: "mac" });
-    const closing = Promise.withResolvers<void>();
-    try {
-      const ready = await s.call(
-        { code: "await (await (await target).window()).observe()" },
-        "hold-for-done",
-      );
-      expect(ready.status).toBe("completed");
-      const { sessionId } = await s.operation("hold-for-done");
-      const row = () =>
-        database
-          .selectFrom("agentSessions")
-          .select(["status", "endReason"])
-          .where("id", "=", sessionId)
-          .executeTakeFirstOrThrow();
-      const evidence = () =>
-        database
-          .selectFrom("agentSessionDeviceHolds")
-          .select("id")
-          .where("sessionId", "=", sessionId)
-          .execute();
-      expect(await evidence()).toHaveLength(1);
-      s.sessions.workingIn.note(`session:${sessionId}`, createId("tab"));
-      expect(s.sessions.workingIn.current(s.world.owner.userId)).toHaveLength(1);
-      s.world.fakeMac.closeGate = closing.promise;
-      expect((await setDone(s, ready.taskId, true)).thread.doneAt).not.toBeNull();
-      expect(await row()).toEqual({ status: "ended", endReason: "done" });
-      expect(s.sessions.workingIn.current(s.world.owner.userId)).toEqual([]);
-      expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
-      await s.world.fakeMac.reached("close");
-      expect(await evidence()).toHaveLength(1);
-      closing.resolve();
-      await vi.waitFor(async () => expect(await evidence()).toEqual([]));
-      expect(s.world.fakeMac.openSessions()).toEqual([]);
-      await expect(s.call({ taskId: ready.taskId, code: "return 2" })).rejects.toThrow(
-        "This task's session ended. Leave out taskId to start a new one.",
-      );
-      expect((await setDone(s, ready.taskId, false)).thread.doneAt).toBeNull();
-      expect(await row()).toEqual({ status: "ended", endReason: "done" });
-      await expect(s.call({ taskId: ready.taskId, code: "return 3" })).rejects.toThrow(
-        "This task's session ended. Leave out taskId to start a new one.",
-      );
-      const fresh = await s.call({ code: "return 4" });
-      expect(fresh.status).toBe("completed");
-      expect(fresh.taskId).not.toBe(ready.taskId);
-    } finally {
-      closing.resolve();
-      await s.world.close();
-    }
-  });
+  it.each(["the person", "a Run", "an automation", "the connected agent"] as const)(
+    "ends an idle Mac session when %s marks its task Done and keeps it ended on reopen",
+    async (sender) => {
+      const s = await connectedAgent("full-access", { target: "mac", scope: "everything" });
+      const closing = Promise.withResolvers<void>();
+      try {
+        const ready = await s.call(
+          { code: "await (await (await target).window()).observe()" },
+          "hold-for-done",
+        );
+        expect(ready.status).toBe("completed");
+        const { sessionId } = await s.operation("hold-for-done");
+        const row = () =>
+          database
+            .selectFrom("agentSessions")
+            .select(["status", "endReason"])
+            .where("id", "=", sessionId)
+            .executeTakeFirstOrThrow();
+        const evidence = () =>
+          database
+            .selectFrom("agentSessionDeviceHolds")
+            .select("id")
+            .where("sessionId", "=", sessionId)
+            .execute();
+        expect(await evidence()).toHaveLength(1);
+        s.sessions.workingIn.note(`session:${sessionId}`, createId("tab"));
+        expect(s.sessions.workingIn.current(s.world.owner.userId)).toHaveLength(1);
+        const actor: NonNullable<Parameters<typeof setDone>[3]> = await (async () => {
+          const { world } = s;
+          if (sender === "the person") return {};
+          if (sender === "the connected agent")
+            return {
+              authority: {
+                kind: "connection",
+                userId: world.owner.userId,
+                accessMode: "full-access",
+                connectionId: s.record.id,
+              },
+            } as const;
+          const source = await world.startRun("Caller of Done");
+          if (sender === "a Run")
+            return {
+              actorRunId: source.runId,
+              admission: {
+                ...source.claims,
+                action: "thread.write",
+                requestFingerprint: "a".repeat(64),
+                requestId: randomUUID(),
+                sourceThreadId: source.threadId,
+                targetThreadIds: [ready.taskId],
+              },
+            } as const;
+          const triggers = new TriggerStore(database);
+          const created = await triggers.create({
+            actorThreadId: null,
+            anchorThreadId: source.threadId,
+            createdBy: world.owner.userId,
+            idempotencyKey: randomUUID(),
+            name: "Automation marking Done",
+            script: { interpreter: null, text: "console.log('ready')" },
+            source: {
+              kind: "schedule",
+              schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+            },
+          });
+          const occurrence = await triggers.enqueueManual({
+            actorThreadId: null,
+            ownerId: world.owner.userId,
+            triggerId: created.trigger.id,
+          });
+          const runnerBootId = randomUUID();
+          await world.store.claimCommand(occurrence.commandId, runnerBootId);
+          const { executionGeneration } = await triggers.startExecution({
+            commandId: occurrence.commandId,
+            runnerBootId,
+            runnerId: source.agentRunnerId,
+          });
+          return {
+            authority: {
+              kind: "trigger",
+              userId: world.owner.userId,
+              accessMode: "full-access",
+              scope: {
+                environmentId: source.environmentId,
+                occurrenceId: occurrence.event.id,
+                executionGeneration,
+                requestedBy: world.owner.userId,
+                runnerBootId,
+                runnerId: source.agentRunnerId,
+                threadId: source.threadId,
+              },
+            },
+          } as const;
+        })();
+        s.world.fakeMac.closeGate = closing.promise;
+        expect(await setDone(s, ready.taskId, true, actor)).toMatchObject({
+          thread: { doneAt: expect.any(String) },
+          doneWhenRunEnds: false,
+        });
+        expect(await row()).toEqual({ status: "ended", endReason: "done" });
+        expect(s.sessions.workingIn.current(s.world.owner.userId)).toEqual([]);
+        expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
+        await s.world.fakeMac.reached("close");
+        expect(await evidence()).toHaveLength(1);
+        closing.resolve();
+        await vi.waitFor(async () => expect(await evidence()).toEqual([]));
+        expect(s.world.fakeMac.openSessions()).toEqual([]);
+        await expect(s.call({ taskId: ready.taskId, code: "return 2" })).rejects.toThrow(
+          "This task's session ended. Leave out taskId to start a new one.",
+        );
+        expect((await setDone(s, ready.taskId, false)).thread.doneAt).toBeNull();
+        expect(await row()).toEqual({ status: "ended", endReason: "done" });
+        await expect(s.call({ taskId: ready.taskId, code: "return 3" })).rejects.toThrow(
+          "This task's session ended. Leave out taskId to start a new one.",
+        );
+        const fresh = await s.call({ code: "return 4" });
+        expect(fresh.status).toBe("completed");
+        expect(fresh.taskId).not.toBe(ready.taskId);
+      } finally {
+        closing.resolve();
+        await s.world.close();
+      }
+    },
+  );
 
   it("interrupts a sent Mac call on Done and records why its effect is unknown", async () => {
     const s = await connectedAgent("full-access", { target: "mac" });

@@ -19,6 +19,13 @@ import { pauseAfterLock } from "./lock-race.test-support.js";
 import { TriggerStore } from "./trigger-store.js";
 import { AutomationFailureStore, recordAutomationFailure } from "./automation-failure-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { AgentConnectionStore } from "./agent-connection-store.js";
+import {
+  admitAgentOperation,
+  askForAgentOperation,
+  beginAgentSession,
+  endAgentSessions,
+} from "./agent-session-store.js";
 
 /**
  * Stage 1 fault matrix, database side: every way a Stop, an answer, a steer or
@@ -59,6 +66,112 @@ integration.sequential("Shared task Done", () => {
       .where("entityId", "=", threadId)
       .where("sequence", "=", sequence)
       .execute();
+  async function connected(f: Pick<Fixture, "userId">, key: string) {
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: { scope: "everything" },
+    });
+    await connections.activate(connection.id, `hash-${key}`);
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connection.id,
+    });
+    return { connection, session };
+  }
+
+  it("ends a connected agent's session when its own Done command settles", async () => {
+    const f = await fixture("connection-done");
+    const { connection, session } = await connected(f, "self-done");
+    const result = await store.setThreadDone({
+      done: true,
+      threadId: session.threadId,
+      requestedBy: f.userId,
+      idempotencyKey: "connection-done",
+      authority: {
+        kind: "connection",
+        connectionId: connection.id,
+        userId: f.userId,
+        accessMode: "full-access",
+      },
+    });
+    expect(result.doneWhenRunEnds).toBe(false);
+    expect(result.thread.doneAt).not.toBeNull();
+    expect(
+      await database
+        .selectFrom("agentSessions")
+        .select(["status", "endReason"])
+        .where("id", "=", session.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      status: "ended",
+      endReason: "done",
+    });
+  });
+
+  it("ends a session with two pending operations under the ordered Done locks", async () => {
+    const f = await fixture("connection-pending");
+    const { connection, session } = await connected(f, "pending");
+    for (const key of ["one", "two"]) {
+      const { operation } = await admitAgentOperation(database, {
+        userId: f.userId,
+        agentConnectionId: connection.id,
+        sessionId: session.id,
+        operationKey: key,
+        tool: "browser_use",
+        argumentDigest: key,
+        target: { grant: { kind: "device" }, name: "Browser", device: null },
+        targetGeneration: null,
+        grantRevision: connection.grantRevision,
+        mode: "approval-required",
+        effect: "write",
+        calls: "browser_use",
+        agentReason: null,
+      });
+      expect(
+        await askForAgentOperation(database, store.requests, {
+          operation,
+          threadId: session.threadId,
+          copy: () => ({ title: key, summary: key }),
+        }),
+      ).toMatchObject({ state: "pending" });
+    }
+    await store.setThreadDone({
+      done: true,
+      threadId: session.threadId,
+      requestedBy: f.userId,
+      idempotencyKey: "connection-pending",
+    });
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "ending"])
+        .where("sessionId", "=", session.id)
+        .execute(),
+    ).toEqual([
+      { state: "refused", ending: "task-done" },
+      { state: "refused", ending: "task-done" },
+    ]);
+  });
+
+  it("orders the Done ending when it receives two sessions", async () => {
+    const f = await fixture("two-sessions");
+    const first = await connected(f, "first");
+    const second = await connected(f, "second");
+    const ended = await endAgentSessions(database, {
+      userId: f.userId,
+      sessionIds: [second.session.id, first.session.id],
+      reason: "done",
+    });
+    expect(ended.map(({ id }) => id).sort()).toEqual([first.session.id, second.session.id].sort());
+    expect(ended.map(({ endReason }) => endReason)).toEqual(["done", "done"]);
+  });
+
   it.each(["queued", "starting", "running"] as const)(
     "stops %s work, freezes inputs and reopens before interrupt acknowledgement",
     async (status) => {

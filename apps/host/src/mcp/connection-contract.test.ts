@@ -39,6 +39,7 @@ const tasks = [
   "opensteer_task_send",
   "opensteer_task_wait",
   "opensteer_task_interrupt",
+  "opensteer_task_update",
 ];
 const everything = [
   ...common,
@@ -85,7 +86,6 @@ const removedNames = [
   "opensteer_task_resume",
   "opensteer_task_list",
   "opensteer_delegation_status",
-  "opensteer_task_update",
   "opensteer_task_configure",
   "opensteer_task_queue",
   "opensteer_automation_read",
@@ -157,7 +157,9 @@ describe("the connection's actual MCP listing", () => {
     // What it is listed is what it can call: direct work is refused for that consent, so none of
     // its tools is shown; everything else it holds is.
     expect(names(earlier.tools)).toEqual(
-      names(current.tools).filter((name) => !connectionDirectTools.has(name)),
+      names(current.tools).filter(
+        (name) => !connectionDirectTools.has(name) && name !== "opensteer_task_update",
+      ),
     );
     expect(names(current.tools).some((name) => connectionDirectTools.has(name))).toBe(true);
     for (const name of connectionDirectTools)
@@ -230,6 +232,10 @@ describe("the connection's actual MCP listing", () => {
         const create = input("opensteer_task_create")?.properties;
         expect(create).not.toHaveProperty("aiAccountId");
         expect(create).not.toHaveProperty("model");
+        const done = input("opensteer_task_update");
+        expect(done?.required?.toSorted()).toEqual(["done", "taskId"]);
+        expect(done?.properties?.done).toEqual({ const: true });
+        expect(Object.keys(done?.properties ?? {}).sort()).toEqual(["done", "taskId"]);
       }
       if (names.has("discover"))
         expect(Object.keys(input("discover")?.properties ?? {}).sort()).toEqual([

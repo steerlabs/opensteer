@@ -3,7 +3,23 @@ import type { ThreadSummary } from "./client.js";
 
 const unloadedThreadLimit = 128;
 
+const contextFields = [
+  "returnHint",
+  "endedOrigin",
+  "retry",
+  "agentSessionId",
+  "externalWork",
+  "revision",
+  "originConnectionId",
+  "runQueued",
+  "runStartHoldReason",
+  "failureCode",
+] as const satisfies readonly (keyof ThreadSummary)[];
+
+type ThreadContext = Pick<ThreadSummary, (typeof contextFields)[number]>;
+
 export type ThreadView = Pick<ThreadSummary, "title" | "icon"> &
+  ThreadContext &
   Partial<
     Pick<
       ThreadSummary,
@@ -13,21 +29,15 @@ export type ThreadView = Pick<ThreadSummary, "title" | "icon"> &
       | "lastVisitedAt"
       | "status"
       | "inputQueuePaused"
-      | "returnHint"
-      | "endedOrigin"
-      | "retry"
-      | "agentSessionId"
-      | "externalWork"
     >
   >;
 
-type ThreadState = {
-  returnHint?: ThreadSummary["returnHint"];
-  endedOrigin?: ThreadSummary["endedOrigin"];
-  retry?: ThreadSummary["retry"];
-  agentSessionId?: ThreadSummary["agentSessionId"];
-  externalWork?: ThreadSummary["externalWork"];
-} & Pick<ThreadSummary, "status" | "pendingRequests" | "updatedAt"> & {
+type OptionalThreadContext = {
+  readonly [Field in keyof ThreadContext]?: ThreadContext[Field] | undefined;
+};
+
+type ThreadState = OptionalThreadContext &
+  Pick<ThreadSummary, "status" | "pendingRequests" | "updatedAt"> & {
     readonly inputQueuePaused?: boolean | undefined;
     readonly compact?: boolean | undefined;
     readonly doneAt?: ThreadSummary["doneAt"] | undefined;
@@ -38,15 +48,47 @@ type ThreadState = {
     readonly stateSequence: Sequence;
   };
 
+const stateFields = [
+  "doneAt",
+  "doneReason",
+  "title",
+  "icon",
+  "latestRunCompletedAt",
+  ...contextFields,
+  "status",
+  "inputQueuePaused",
+  "compact",
+  "pendingRequests",
+] as const satisfies readonly (keyof ThreadState)[];
+
+function threadContext(
+  primary: OptionalThreadContext,
+  fallback?: OptionalThreadContext,
+): ThreadContext {
+  return Object.fromEntries(
+    contextFields.flatMap((key) => {
+      const value = primary[key] === undefined ? fallback?.[key] : primary[key];
+      return value === undefined ? [] : [[key, value]];
+    }),
+  );
+}
+
+type AcceptedThreadState = ThreadState & {
+  readonly supplied: ReadonlySet<(typeof stateFields)[number]>;
+};
+
 export class ThreadStateProjection {
-  readonly #loaded = new Map<string, ThreadState>();
-  readonly #unloaded = new Map<string, ThreadState>();
+  readonly #loaded = new Map<string, AcceptedThreadState>();
+  readonly #unloaded = new Map<string, AcceptedThreadState>();
 
   reconcile(
     summary: ThreadSummary,
     asOfSequence: Sequence,
     current?: ThreadSummary,
-    compact?: { readonly inputQueuePaused?: boolean | undefined },
+    compact?: {
+      readonly inputQueuePaused?: boolean | undefined;
+      readonly retry?: ThreadSummary["retry"];
+    },
   ): ThreadSummary {
     const accepted = this.#accept(
       summary.id,
@@ -57,6 +99,7 @@ export class ThreadStateProjection {
           inputQueuePaused: compact.inputQueuePaused,
           returnHint: undefined,
           endedOrigin: undefined,
+          retry: compact.retry,
         }),
         compact: !!compact,
         stateSequence: asOfSequence,
@@ -78,8 +121,7 @@ export class ThreadStateProjection {
     this.#loaded.set(summary.id, { ...state, updatedAt });
     return {
       ...summary,
-      returnHint: state.returnHint === undefined ? summary.returnHint : state.returnHint,
-      endedOrigin: state.endedOrigin === undefined ? summary.endedOrigin : state.endedOrigin,
+      ...threadContext(state),
       doneAt: state.doneAt,
       doneReason: state.doneReason ?? null,
       title: state.title,
@@ -90,9 +132,6 @@ export class ThreadStateProjection {
           : state.latestRunCompletedAt,
       status: state.status,
       inputQueuePaused: state.inputQueuePaused ?? summary.inputQueuePaused,
-      ...(state.retry !== undefined ? { retry: state.retry } : {}),
-      ...(state.agentSessionId !== undefined ? { agentSessionId: state.agentSessionId } : {}),
-      ...(state.externalWork !== undefined ? { externalWork: state.externalWork } : {}),
       pendingRequests: state.pendingRequests,
       updatedAt,
     };
@@ -114,11 +153,7 @@ export class ThreadStateProjection {
       ...(state && {
         status: state.status,
         inputQueuePaused: state.inputQueuePaused ?? thread.inputQueuePaused,
-        returnHint: state.returnHint === undefined ? thread.returnHint : state.returnHint,
-        endedOrigin: state.endedOrigin === undefined ? thread.endedOrigin : state.endedOrigin,
-        ...(state.retry !== undefined ? { retry: state.retry } : {}),
-        ...(state.agentSessionId !== undefined ? { agentSessionId: state.agentSessionId } : {}),
-        ...(state.externalWork !== undefined ? { externalWork: state.externalWork } : {}),
+        ...threadContext(state, thread),
       }),
     };
   }
@@ -141,11 +176,22 @@ export class ThreadStateProjection {
     }
   }
 
-  #accept(id: string, incoming: ThreadState, loaded = false): ThreadState {
+  #accept(id: string, incoming: ThreadState, loaded = false): AcceptedThreadState {
     const previous = this.#loaded.get(id) ?? this.#unloaded.get(id);
-    if (previous) {
-      const order = compareSequence(incoming.stateSequence, previous.stateSequence);
-      if (order < 0 || (order === 0 && !(previous.compact && !incoming.compact))) return previous;
+    const order = previous ? compareSequence(incoming.stateSequence, previous.stateSequence) : 1;
+    if (previous && order < 0) return previous;
+    let supplied = new Set(stateFields.filter((key) => incoming[key] !== undefined));
+    if (previous && order === 0) {
+      // A command and the socket can describe the same revision. A value carried over from
+      // an older revision leaves room for either of them to supply its current value.
+      if (!(previous.compact && !incoming.compact)) {
+        if ([...supplied].every((key) => previous.supplied.has(key))) return previous;
+        incoming = Object.assign(
+          { ...incoming },
+          Object.fromEntries([...previous.supplied].map((key) => [key, previous[key]])),
+        );
+      }
+      supplied = new Set([...previous.supplied, ...supplied]);
     }
     const state = {
       doneAt: incoming.doneAt === undefined ? previous?.doneAt : incoming.doneAt,
@@ -158,19 +204,13 @@ export class ThreadStateProjection {
         incoming.latestRunCompletedAt === undefined
           ? previous?.latestRunCompletedAt
           : incoming.latestRunCompletedAt,
-      returnHint: incoming.returnHint === undefined ? previous?.returnHint : incoming.returnHint,
-      endedOrigin:
-        incoming.endedOrigin === undefined ? previous?.endedOrigin : incoming.endedOrigin,
-      retry: incoming.retry === undefined ? previous?.retry : incoming.retry,
-      agentSessionId:
-        incoming.agentSessionId === undefined ? previous?.agentSessionId : incoming.agentSessionId,
-      externalWork:
-        incoming.externalWork === undefined ? previous?.externalWork : incoming.externalWork,
+      ...threadContext(incoming, previous),
       status: incoming.status,
       inputQueuePaused: incoming.inputQueuePaused ?? previous?.inputQueuePaused,
       compact: incoming.compact,
       pendingRequests: incoming.pendingRequests,
       stateSequence: incoming.stateSequence,
+      supplied,
       updatedAt:
         previous && previous.updatedAt > incoming.updatedAt
           ? previous.updatedAt
@@ -181,7 +221,7 @@ export class ThreadStateProjection {
     return state;
   }
 
-  #remember(id: string, state: ThreadState): void {
+  #remember(id: string, state: AcceptedThreadState): void {
     this.#unloaded.delete(id);
     this.#unloaded.set(id, state);
     if (this.#unloaded.size > unloadedThreadLimit) {

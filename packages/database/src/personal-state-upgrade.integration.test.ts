@@ -144,6 +144,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0123_agent_operation_endings",
         "0124_agent_session_device_holds",
         "0125_retire_archived_profile_tabs",
+        "0126_task_done_agent_session_endings",
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

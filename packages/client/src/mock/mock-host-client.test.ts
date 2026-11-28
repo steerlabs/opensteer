@@ -2,6 +2,7 @@ import { requestDecision } from "../host/client.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { appFrameReadinessScript } from "@opensteer/shared/appFrame";
 import { phoneUseView } from "../integrations/computer-use.js";
+import { mockConnectedAgents } from "./mock-connected-agents.js";
 import { mockIphoneScreenStates } from "./mock-screen-devices.js";
 import { DeviceMachineSummarySchema } from "@opensteer/protocol";
 import { computerTargetId } from "../host/device-projection.js";
@@ -26,6 +27,7 @@ import type { ThreadSummary, CreateThreadInput } from "../host/client.js";
 import { threadStopTarget } from "../host/thread-activity.js";
 import { isThreadUnread } from "../host/thread-unread.js";
 import { defaultThreadPlacement, threadPlacementOptions } from "../host/thread-placement.js";
+import { mockAgentWorkThreads } from "./mock-agent-work.js";
 import { MockHostClient, mockPasswordSignInRequest } from "./mock-host-client.js";
 
 it("carries pending profile erasure through the mock catalog and clears completed jobs", async () => {
@@ -57,6 +59,38 @@ const fixedNow = new Date("2026-08-09T21:15:00.000Z");
 function createClient(): MockHostClient {
   return new MockHostClient({ latencyMs: 0, now: () => fixedNow });
 }
+
+it("ends connected work and clears Watch in the mock Done publication", async () => {
+  const client = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("seeded") });
+  try {
+    client.mockAgentWork();
+    const id = mockAgentWorkThreads.working;
+    client.mockAgentWorksIn(id, createId("tab"));
+    const held = () => client.getSnapshot().threads.find((thread) => thread.id === id)!;
+    expect(held().externalWork?.status).toBe("active");
+    expect(client.getSnapshot().agentWorkingIn?.[id]).toBeDefined();
+    const published = vi.fn(() => {
+      if (!held().doneAt) return;
+      expect(held()).toMatchObject({
+        agentSessionId: null,
+        externalWork: { status: "ended", endReason: "done" },
+      });
+      expect(client.getSnapshot().agentWorkingIn?.[id]).toBeUndefined();
+    });
+    const unsubscribe = client.subscribe(published);
+    try {
+      await client.setTaskDone(id, true);
+      expect(published).toHaveBeenCalled();
+      expect(held().doneAt).toBeTruthy();
+      await client.setTaskDone(id, false);
+      expect(held().externalWork).toMatchObject({ status: "ended", endReason: "done" });
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    client.dispose();
+  }
+});
 
 it("reports the mock plugin page ready to the native WebView bridge", async () => {
   const client = createClient();
