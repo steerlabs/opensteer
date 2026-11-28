@@ -3320,6 +3320,18 @@ it("follows document.title changes and single-page app navigations without a loa
   // 4) Document starting with no <title> element gets one created later and then removed.
   await agent("Page.navigate", { url: `${origin}/untitled` }, cdpSessionId);
   await waitForTab((row) => row.url === `${origin}/untitled` && row.title === "");
+  // The row above is published at the navigation's commit, before the new document is parsed. A
+  // document with no head ignores an assignment to its title (the HTML rule), so the page's own
+  // script here waits for its document, as a real page's script runs inside it.
+  await agent(
+    "Runtime.evaluate",
+    {
+      awaitPromise: true,
+      expression: `new Promise((resolve) => document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", () => resolve(true), { once: true }) : resolve(true))`,
+      returnByValue: true,
+    },
+    cdpSessionId,
+  );
   await agent(
     "Runtime.evaluate",
     { expression: `document.title = "Added later"`, returnByValue: true },
