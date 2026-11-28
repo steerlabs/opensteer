@@ -454,9 +454,19 @@ integration("Linux tab sleep through Home BrowserService", () => {
     const stack2 = await startStack("f2-run2");
     const personRow = (await tabs.get(f.userId, personWrite.id))!;
     await stack2.browser.pageTabs.activate(f.userId, personRow, "activate-person");
-    const lifecycle2 = (
-      stack2.getBrowser() as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
-    ).contextHandle.lifecycle;
-    expect((await lifecycle2.inventory()).some((t) => t.url === agentUrl)).toBe(false);
+    // The browser looks for its tab helper in the background after launch (establishLifecycle):
+    // the handle has it only once that look has ended.
+    const handle2 = (
+      stack2.getBrowser() as unknown as {
+        contextHandle: {
+          lifecycle: ChromiumTabLifecycleBridge | undefined;
+          lifecycleSettled: Promise<void> | undefined;
+        };
+      }
+    ).contextHandle;
+    await handle2.lifecycleSettled;
+    const lifecycle2 = handle2.lifecycle;
+    expect(lifecycle2, "the restarted browser found no tab helper").toBeDefined();
+    expect((await lifecycle2!.inventory()).some((t) => t.url === agentUrl)).toBe(false);
   }, 60_000);
 });
