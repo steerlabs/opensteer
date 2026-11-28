@@ -3573,6 +3573,12 @@ export async function createHostRuntime(
         });
       },
       onError: (error) => reportAgentSessionError(error),
+      ...(managedBrowserPool
+        ? {
+            onPooledBrowserUseTiming: (trace) =>
+              app.log.info({ event: "browser_pool.browser_use.timing", ...trace }),
+          }
+        : {}),
       // After a narrowing, reset old script contexts and release tabs the new grant cannot reach.
       resetBinding: (bindingId, revision) =>
         browserScripts.resetBrowserScriptsForBinding(bindingId, revision),
