@@ -57,7 +57,7 @@ final class OverlayOrderingTests: XCTestCase {
   }
 
   func testTheBreathAsksForALowFrameRate() {
-    let animation = Breath.animation(low: OverlayStyle.stillDotOpacity, high: 1)
+    let animation = Breath.animation(low: OverlayStyle.breathLow, high: 1)
     XCTAssertLessThanOrEqual(animation.preferredFrameRateRange.maximum, 15)
     XCTAssertGreaterThan(animation.preferredFrameRateRange.minimum, 0)
   }

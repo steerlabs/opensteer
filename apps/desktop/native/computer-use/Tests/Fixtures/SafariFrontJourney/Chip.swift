@@ -126,25 +126,12 @@ extension SafariFront {
     await shots(caseOut, "a-one-agent-still", window: safariFrame, chip: still?.frame)
     await png(caseOut, "a-full-screen", nil)
 
-    // b: working, two frames of the breath.
-    let field = try a.index(role: "textfield", containing: "Fixture field")
-    let typing = Task { @MainActor in
-      _ = try await a.act([["type": "type", "text": String(repeating: "steady ", count: 40)], ["type": "key", "keys": "cmd+a"]])
-    }
-    await sleepSeconds(0.25)
-    let working = await chip(on: safariFrame)
-    checks["b-working"] = working?.view.chip?.look == .agents(dots: [.working], more: 0)
-    await shots(caseOut, "b-working-1", window: safariFrame, chip: working?.frame)
-    await sleepSeconds(0.55)
-    await png(caseOut, "b-working-2-closeup", working.map {
-      CGRect(x: $0.frame.midX - 110, y: $0.frame.midY - 34, width: 220, height: 68) })
-    try await typing.value
-
     // i: the click ring, mid-fade.
+    let field = try a.index(role: "textfield", containing: "Fixture field")
     _ = try wireA.send("session.act", ["sessionId": a.session, "app": a.target, "window": a.ref,
       "snapshot": NSNull(), "actions": [["type": "click", "target": ["index": field]]]])
     var ring: CGRect?
-    for _ in 0..<60 where ring == nil {
+    for _ in 0..<300 where ring == nil {
       ring = NSApp.windows.first { $0.isVisible && $0.frame.size == ClickRing.size }.map {
         OverlayGeometry.appKitRect(fromCoreGraphics: $0.frame, primaryHeight: ScreenGeometry.primaryHeight)
       }
@@ -156,6 +143,19 @@ extension SafariFront {
     }
     checks["i-ring"] = ring != nil
     await sleepSeconds(0.8)
+
+    // b: working, two frames of the breath.
+    let typing = Task { @MainActor in
+      _ = try await a.act([["type": "type", "text": String(repeating: "steady ", count: 40)]])
+    }
+    await sleepSeconds(0.25)
+    let working = await chip(on: safariFrame)
+    checks["b-working"] = working?.view.chip?.look == .agents(dots: [.working], more: 0)
+    await shots(caseOut, "b-working-1", window: safariFrame, chip: working?.frame)
+    await sleepSeconds(0.55)
+    await png(caseOut, "b-working-2-closeup", working.map {
+      CGRect(x: $0.frame.midX - 110, y: $0.frame.midY - 34, width: 220, height: 68) })
+    try await typing.value
 
     // d: the person points at the chip: Stop.
     safariFrame = try frame(of: safariAX)
@@ -180,19 +180,22 @@ extension SafariFront {
     Owned.apps.append(textEdit)
     try await waitForWindow(pid: textEdit.processIdentifier, title: "Chip notes", seconds: 20)
     let textEditAX = try axWindow(pid: textEdit.processIdentifier, title: "Chip notes")
-    place(textEditAX, at: CGPoint(x: 40, y: safariFrame.maxY - 220), size: CGSize(width: 520, height: 300))
+    place(textEditAX, at: CGPoint(x: 60, y: safariFrame.minY + 160), size: CGSize(width: 520, height: 300))
     let textEditRecord = try AppResolver.record(forBundleAtPath: textEditPath).unwrap("TextEdit identity")
     let textEditIdentity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(textEditRecord.identity))
     let wireB = try AgentWire(helper: helper)
     defer { wireB.drop() }
     let b = Agent(wire: wireB, identity: textEditIdentity)
     try await b.open(title: "Chip notes", page: false)
-    await sleepSeconds(OverlayModel.holdAfterWork + OverlayStyle.fadeDuration + 0.3)
+    textEdit.activate()
+    await sleepSeconds(OverlayModel.holdAfterWork + OverlayStyle.fadeDuration + 0.6)
     let textEditFrame = try frame(of: textEditAX)
     let light = await chip(on: textEditFrame)
     checks["g-light"] = light != nil
     await shots(caseOut, "g-light-textedit", window: textEditFrame, chip: light?.frame)
     await png(caseOut, "g-full-screen-two-apps", nil)
+    safari.activate()
+    await sleepSeconds(0.6)
 
     // Stop on Safari's chip ends Safari's agent and leaves TextEdit's working.
     safariFrame = try frame(of: safariAX)
@@ -231,7 +234,7 @@ extension SafariFront {
     var visibleWhileMoving = 0, steps = 0
     let origin = safariFrame.origin
     for step in 1...60 {
-      place(safariAX, at: CGPoint(x: origin.x - CGFloat(step) * 3, y: origin.y + CGFloat(step) * 1.5))
+      place(safariAX, at: CGPoint(x: origin.x + CGFloat(step) * 1.5, y: origin.y + CGFloat(step)))
       await sleepSeconds(0.02)
       if step == 30 {
         let midDrag = try frame(of: safariAX)
@@ -239,7 +242,7 @@ extension SafariFront {
       }
       if step > 2 {
         steps += 1
-        if !shownChips().isEmpty { visibleWhileMoving += 1 }
+        if shownChips().contains(where: { $0.view.chip?.app.key == "com.apple.safari" }) { visibleWhileMoving += 1 }
       }
     }
     let stoppedAt = Date()
@@ -279,9 +282,13 @@ extension SafariFront {
     safariFrame = try frame(of: safariAX)
     let darkSafari = await chip(on: safariFrame)
     await shots(caseOut, "g-dark-safari", window: safariFrame, chip: darkSafari?.frame)
-    let darkTextEdit = await chip(on: textEditFrame)
-    await shots(caseOut, "g-dark-textedit", window: textEditFrame, chip: darkTextEdit?.frame)
     await png(caseOut, "g-dark-full-screen", nil)
+    textEdit.activate()
+    await sleepSeconds(0.8)
+    let darkTextEdit = await chip(on: textEditFrame)
+    checks["g-dark-textedit"] = darkTextEdit != nil
+    await shots(caseOut, "g-dark-textedit", window: textEditFrame, chip: darkTextEdit?.frame)
+    safari.activate()
     appearance(dark: false)
     await sleepSeconds(1)
     wireB.drop()
@@ -303,7 +310,9 @@ extension SafariFront {
     checks["c-three-dots"] = three?.view.dots.count == 3
     await shots(caseOut, "c-three-agents", window: safariFrame, chip: three?.frame)
     seam.present((1...5).map { OverlayModel.Session(id: "agent-\($0)", apps: [app]) }, ending: .ended)
-    await sleepSeconds(0.3)
+    // New holders find their window again, as a new session's first observation does.
+    seam.bind(app: key, window: try KeyWindow.windowID(of: safariAX).unwrap("Safari window id"))
+    await sleepSeconds(0.5)
     let five = await chip(on: safariFrame)
     checks["c-five-is-three-and-a-count"] = five?.view.dots.count == 3
       && (five?.view.count.string as? NSAttributedString)?.string == "+2"

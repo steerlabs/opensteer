@@ -27,18 +27,21 @@ enum OverlayStyle {
   /// The chip on the window's top edge, half above it.
   static let chipHeight: CGFloat = 22
   /// Inside the window, where there is no room above it: the dots only,
-  /// hanging from the edge.
-  static let notchHeight: CGFloat = 12
+  /// hanging from the edge, short enough to stay in the 8-point strip
+  /// Safari leaves above its address field on macOS 26.
+  static let notchHeight: CGFloat = 9
   static let chipPadding: CGFloat = 7
   static let dotSize: CGFloat = 8
-  static let notchDotSize: CGFloat = 6
+  static let notchDotSize: CGFloat = 5
   /// How far each dot tucks under the one before it.
   static let dotOverlap: CGFloat = 2
   /// The ring of chip colour around each dot that keeps overlapping dots
   /// apart.
   static let dotRing: CGFloat = 1.5
-  /// A still dot, and the low end of a working dot's breath.
-  static let stillDotOpacity: Float = 0.5
+  /// A still dot: lit, but a step below a working one at its brightest.
+  static let stillDotOpacity: Float = 0.85
+  /// The low end of a working dot's breath.
+  static let breathLow: Float = 0.4
   static let breathPeriod: TimeInterval = 1.6
   static let hairlineOpacity: CGFloat = 0.16
   static let shadowOpacity: Float = 0.28

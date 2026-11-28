@@ -265,7 +265,10 @@ final class ChipView: NSView {
   let root = CALayer()
   let body = CALayer()
   private let shade = CALayer()
+  /// Each dot's fill, which is what breathes, in an opaque ring of the
+  /// chip's colour that keeps overlapping dots apart.
   private(set) var dots: [CALayer] = []
+  private var rings: [CALayer] = []
   let count = CATextLayer()
   let word = CATextLayer()
   private var reduceMotion = false
@@ -318,10 +321,7 @@ final class ChipView: NSView {
       (notice
       ? NSColor.black.withAlphaComponent(0.25)
       : NSColor.white.withAlphaComponent(OverlayStyle.hairlineOpacity)).cgColor
-    for dot in dots {
-      dot.borderColor = body.backgroundColor
-      dot.backgroundColor = (notice ? OverlayStyle.inkOnEmber : OverlayStyle.ember).cgColor
-    }
+    colorDots()
     if case .agents(_, let more) = next.look, more > 0 {
       count.string = Self.text("+\(more)", font: OverlayStyle.countFont,
         color: OverlayStyle.text.withAlphaComponent(OverlayStyle.countOpacity))
@@ -337,7 +337,7 @@ final class ChipView: NSView {
     return before != (chipSize(expansion: 0), chipSize(expansion: 1))
   }
 
-  /// Working dots breathe; still ones rest at the low end of the breath.
+  /// Working dots breathe; still ones are lit and still.
   /// Under Reduce Motion a working dot is simply bright.
   func applyMotion(reduceMotion: Bool) {
     self.reduceMotion = reduceMotion
@@ -357,7 +357,7 @@ final class ChipView: NSView {
       if reduceMotion {
         dot.removeAnimation(forKey: "breath")
       } else if dot.animation(forKey: "breath") == nil {
-        dot.add(Breath.animation(low: OverlayStyle.stillDotOpacity, high: 1), forKey: "breath")
+        dot.add(Breath.animation(low: OverlayStyle.breathLow, high: 1), forKey: "breath")
       }
     }
     CATransaction.commit()
@@ -384,7 +384,9 @@ final class ChipView: NSView {
   func chipSize(expansion: CGFloat) -> CGSize {
     let restHeight = isNotch ? OverlayStyle.notchHeight : OverlayStyle.chipHeight
     let restPadding = isNotch ? 8 : OverlayStyle.chipPadding
-    let restWidth = max(restHeight, restPadding * 2 + dotsWidth + (isNotch ? 0 : countWidth))
+    // At rest a lone dot is a circle on the edge, and as wide a notch.
+    let restWidth = max(
+      OverlayStyle.chipHeight, restPadding * 2 + dotsWidth + (isNotch ? 0 : countWidth))
     let openWidth =
       OverlayStyle.chipPadding + dotsWidth + countWidth + OverlayStyle.chipGap
       + Self.width(of: word.string) + OverlayStyle.chipPadding + 2
@@ -427,10 +429,13 @@ final class ChipView: NSView {
     let restLeading = (chipSize(expansion: 0).width - dotsWidth - (isNotch ? 0 : countWidth)) / 2
     var x = pixel(restLeading + (openLeading - restLeading) * expansion)
     let ring = OverlayStyle.dotRing
-    for dot in dots {
-      dot.frame = CGRect(
+    for (dot, holder) in zip(dots, rings) {
+      holder.frame = CGRect(
         x: x - ring, y: centerY - dotSize / 2 - ring, width: dotSize + ring * 2,
         height: dotSize + ring * 2)
+      holder.cornerRadius = dotSize / 2 + ring
+      dot.frame = CGRect(x: ring, y: ring, width: dotSize, height: dotSize)
+      dot.cornerRadius = dotSize / 2
       x += dotSize - OverlayStyle.dotOverlap
     }
     x += OverlayStyle.dotOverlap
@@ -459,29 +464,33 @@ final class ChipView: NSView {
   private func rebuildDots() {
     CATransaction.begin()
     CATransaction.setDisableActions(true)
-    for dot in dots { dot.removeFromSuperlayer() }
+    for ring in rings { ring.removeFromSuperlayer() }
+    rings = []
     dots = (0..<(chip?.look.dotCount ?? 0)).map { _ in
-      let dot = CALayer()
-      dot.borderWidth = OverlayStyle.dotRing
+      let ring = CALayer(), dot = CALayer()
+      ring.contentsScale = scale
       dot.contentsScale = scale
-      body.insertSublayer(dot, below: count)
+      ring.addSublayer(dot)
+      body.insertSublayer(ring, below: count)
+      rings.append(ring)
       return dot
     }
-    let radius = dotSize / 2 + OverlayStyle.dotRing
-    for dot in dots { dot.cornerRadius = radius }
+    colorDots()
     CATransaction.commit()
-    if let chip {
-      for dot in dots {
-        dot.borderColor = body.backgroundColor
-        dot.backgroundColor = (chip.look.isNotice ? OverlayStyle.inkOnEmber : OverlayStyle.ember).cgColor
-      }
-    }
     applyMotion(reduceMotion: reduceMotion)
     needsLayout = true
   }
 
+  private func colorDots() {
+    let notice = chip?.look.isNotice == true
+    for (dot, ring) in zip(dots, rings) {
+      ring.backgroundColor = (notice ? OverlayStyle.amber : OverlayStyle.surface).cgColor
+      dot.backgroundColor = (notice ? OverlayStyle.inkOnEmber : OverlayStyle.ember).cgColor
+    }
+  }
+
   private func applyScale() {
-    for layer in [root, shade, body, count, word] + dots {
+    for layer in [root, shade, body, count, word] + dots + rings {
       layer.contentsScale = scale
     }
     body.borderWidth = 1 / scale
