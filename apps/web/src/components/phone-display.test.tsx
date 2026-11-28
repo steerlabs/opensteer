@@ -1273,7 +1273,7 @@ describe("Mac owner viewer", () => {
     );
     const words = "This device isn’t taking input right now. Try again.";
     expect(document.body.textContent).toContain(words);
-    act(() =>
+    act(() => {
       canvas().dispatchEvent(
         new MouseEvent("mousedown", {
           bubbles: true,
@@ -1282,8 +1282,8 @@ describe("Mac owner viewer", () => {
           clientX: 270,
           clientY: 390,
         }),
-      ),
-    );
+      );
+    });
     const press = inputs().at(-1)!;
     expect(press.sequence).not.toBe(refused.sequence);
     expect(press.events).toMatchObject([{ kind: "mouse", phase: "down" }]);
