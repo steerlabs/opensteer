@@ -1257,6 +1257,43 @@ describe("display editing receipt adapter", () => {
     },
   );
 
+  it("keeps an unconfirmed typing stop until later input is dispatched", async () => {
+    const { socket, editing } = await editingFixture();
+    const edit = {
+      kind: "edit" as const,
+      edit: {
+        contextId: "00000000-0000-4000-8000-000000000001",
+        before: "",
+        after: "",
+        text: "a",
+      },
+    };
+    const stopped = "Typing stopped. Some of it may not have arrived: check the text.";
+    try {
+      const first = editing.send(edit);
+      socket.json({ type: "display.input.result", sequence: 0, outcome: "unknown" });
+      await expect(first).rejects.toThrow(stopped);
+
+      const refused = editing.send(edit);
+      socket.json({
+        type: "display.input.result",
+        sequence: 1,
+        outcome: "refused",
+        reason: "unavailable",
+      });
+      await expect(refused).rejects.toMatchObject({ name: "DisplayEditingRefusal" });
+      expect(editing.getSnapshot().receipt).toBe(stopped);
+
+      const next = editing.send(edit);
+      expect(editing.getSnapshot().receipt).toBe(stopped);
+      socket.json({ type: "display.input.result", sequence: 2, outcome: "dispatched" });
+      await next;
+      expect(editing.getSnapshot().receipt).toBeNull();
+    } finally {
+      editing.dispose();
+    }
+  });
+
   it("paces continuous batches by receipts and settles merged callers together", async () => {
     const { socket, editing } = await editingFixture();
     const first = editing.input(1, [pointer(0.1)]);

@@ -1259,6 +1259,70 @@ describe("Mac owner viewer", () => {
     hardware(field, "F6", "F6");
     expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
   });
+  it("clears a refused key as soon as the Mac dispatches later pointer input", async () => {
+    const field = await negotiatedMacOwner();
+    proxyInput(field, "a");
+    const refused = inputs().at(-1)!;
+    await act(async () =>
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: refused.sequence,
+        outcome: "refused",
+        reason: "unavailable",
+      }),
+    );
+    const words = "This device isn’t taking input right now. Try again.";
+    expect(document.body.textContent).toContain(words);
+    act(() =>
+      canvas().dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          button: 0,
+          buttons: 1,
+          clientX: 270,
+          clientY: 390,
+        }),
+      ),
+    );
+    const press = inputs().at(-1)!;
+    expect(press.sequence).not.toBe(refused.sequence);
+    expect(press.events).toMatchObject([{ kind: "mouse", phase: "down" }]);
+    expect(document.body.textContent).toContain(words);
+    await act(async () => {
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: press.sequence,
+        outcome: "dispatched",
+      });
+    });
+    expect(document.body.textContent).not.toContain(words);
+  });
+
+  it("shows a stopped Mac typing burst for four seconds on an idle live view", async () => {
+    const field = await negotiatedMacOwner();
+    vi.useFakeTimers();
+    try {
+      proxyInput(field, "a");
+      proxyInput(field, "b");
+      await act(async () =>
+        sockets[0]!.deliver({
+          type: "display.input.result",
+          sequence: inputs().at(-1)!.sequence,
+          outcome: "unknown",
+        }),
+      );
+      expect(inputs()).toHaveLength(1);
+      const words = "Typing stopped. Some of it may not have arrived: check the text.";
+      expect(document.body.textContent).toContain(words);
+      await act(async () => vi.advanceTimersByTimeAsync(3_999));
+      expect(document.body.textContent).toContain(words);
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(document.body.textContent).not.toContain(words);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sends hover, right and middle buttons, modifiers, click counts, drag and scroll in current geometry", async () => {
     await negotiatedMacOwner();
     for (const [type, button, buttons, x] of [
