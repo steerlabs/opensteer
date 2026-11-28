@@ -261,6 +261,7 @@ final class MacOwnerAttachment: @unchecked Sendable {
   let guardFailed = Locked(false)
   let burstActive = Locked(false)
   let active = Locked(true)
+  static let holdDuration: TimeInterval = 5
   let heldDeadline = Locked<TimeInterval?>(nil)
   let contextPending = Locked(false)
   let worker = MacOwnerInputWorker()
@@ -646,7 +647,7 @@ final class MacOwnerInputWorker {
     }
     lease.mutations.setHeld(!keys.isEmpty || !buttons.isEmpty, attachment: lease.id)
     if !keys.isEmpty || !buttons.isEmpty {
-      lease.heldDeadline.withLock { $0 = ProcessInfo.processInfo.systemUptime + 5 }
+      lease.heldDeadline.withLock { $0 = ProcessInfo.processInfo.systemUptime + MacOwnerAttachment.holdDuration }
     } else { lease.heldDeadline.withLock { $0 = nil } }
   }
 

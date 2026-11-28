@@ -25,7 +25,7 @@ export interface OrderedInputLaneOptions<T> {
   readonly interruptOnReset?: boolean;
   readonly reset: (source: string) => Promise<void>;
   /** Answers a batch that never reached the helper. */
-  readonly notSent: (value: T) => void;
+  readonly notSent: (value: T, expired?: true) => void;
 }
 
 /** Whether every event in a batch lets go of something held: a release has reserved room. */
@@ -168,7 +168,7 @@ export class OrderedInputLane<T> {
         }
         this.#take(next.batch);
         if (!next.batch.release && this.#now() - next.arrived > this.#options.maxAgeMs)
-          this.#options.notSent(next.batch.value);
+          this.#options.notSent(next.batch.value, true);
         else await this.#options.send(next.batch.value).catch(() => undefined);
       }
     } finally {

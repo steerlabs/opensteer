@@ -246,9 +246,10 @@ export class MacWindowVideoRelay {
           },
           release: releaseOnly(message.events),
         })
-      )
-        // A full lane refuses as the helper's own full lane does: nothing was sent.
+      ) {
+        entry.input.reset(displaySourceKey(message.source));
         this.#answerOwnerInput(entry, message, "unavailable");
+      }
       return;
     }
     if (
@@ -467,6 +468,7 @@ export class MacWindowVideoRelay {
         const current = entry();
         if (!current) return;
         const deadline = message.inputDeadline;
+        const reset = () => current.input.reset(displaySourceKey(message.source));
         const result: DisplayInputResult = await this.#computerUse
           .videoRequest(
             "display.input",
@@ -480,25 +482,35 @@ export class MacWindowVideoRelay {
             deadline,
           )
           .then(
-            (answer): DisplayInputResult =>
-              performance.now() < deadline
-                ? { type: "display.input.result", ...answer }
-                : { type: "display.input.result", sequence: message.sequence, outcome: "unknown" },
-            (error: unknown): DisplayInputResult => ({
-              type: "display.input.result",
-              sequence: message.sequence,
-              outcome:
-                error instanceof ComputerUseBridgeError && error.code !== "outcome-unknown"
-                  ? "refused"
-                  : "unknown",
-              reason: inputFailure(error),
-            }),
+            (answer): DisplayInputResult => {
+              if (performance.now() >= deadline) {
+                reset();
+                return {
+                  type: "display.input.result",
+                  sequence: message.sequence,
+                  outcome: "unknown",
+                };
+              }
+              if (
+                answer.outcome === "unknown" ||
+                (answer.outcome !== "dispatched" && releaseOnly(message.events))
+              )
+                reset();
+              return { type: "display.input.result", ...answer };
+            },
+            (error: unknown): DisplayInputResult => {
+              reset();
+              return {
+                type: "display.input.result",
+                sequence: message.sequence,
+                outcome:
+                  error instanceof ComputerUseBridgeError && error.code !== "outcome-unknown"
+                    ? "refused"
+                    : "unknown",
+                reason: inputFailure(error),
+              };
+            },
           );
-        if (
-          result.outcome === "unknown" ||
-          (result.outcome !== "dispatched" && releaseOnly(message.events))
-        )
-          current.input.reset(displaySourceKey(message.source));
         await this.#emit({
           type: "runner.integrations.mac-owner.event",
           streamId: message.streamId,
@@ -524,9 +536,11 @@ export class MacWindowVideoRelay {
           )
           .catch(() => this.#close(current, "owner-input-reset-failed"));
       },
-      notSent: (message) => {
+      notSent: (message, expired) => {
         const current = entry();
-        if (current) this.#answerOwnerInput(current, message, "unavailable");
+        if (!current) return;
+        if (expired) current.input.reset(displaySourceKey(message.source));
+        this.#answerOwnerInput(current, message, "unavailable");
       },
     });
   }

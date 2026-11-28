@@ -46,7 +46,10 @@ final class OwnerInputAttachmentTests: XCTestCase {
     }
   }
 
-  @MainActor func testExpiredReleaseBatchClearsHeldInputBeforeRefusing() async throws {
+  @MainActor
+  private func withHeldAttachment(
+    _ test: @MainActor (HelperRuntime, IPCConnection, MacOwnerAttachment) async throws -> Void
+  ) async throws {
     let runtime = hostRuntime(helperVersion: "test", peerRequirement: .sameUser)
     defer { runtime.stop() }
     var pair: [Int32] = [0, 0]
@@ -66,14 +69,36 @@ final class OwnerInputAttachmentTests: XCTestCase {
     let lease = try XCTUnwrap(runtime.installOwnerAttachment(streamID: "stream", source: source,
       connection: connection, binding: binding, producer: producer, path: "/Fixture.app"))
     lease.mutations.setHeld(true, attachment: lease.id)
-    let frame = Data(#"{"id":1,"method":"display.input","params":{"streamId":"stream","source":{"kind":"owner-view","viewId":"view","generation":1},"geometry":1,"sequence":1,"events":[{"kind":"key","action":"up","key":"Shift","code":"ShiftLeft","modifiers":[]}]}}"#.utf8)
-    let envelope = try JSONCoding.decoder.decode(RequestEnvelope.self, from: frame)
-    let reply = try await runtime.ownerInput(envelope, connection: connection, budget: WorkBudget(requestEnd: .distantPast))
-    XCTAssertEqual(reply.outcome, "refused")
-    XCTAssertEqual(reply.reason, "unavailable")
-    XCTAssertFalse(lease.active.current)
-    XCTAssertFalse(lease.mutations.heldByOther("another view"))
-    XCTAssertNil(runtime.ownerAttachments[lease.id])
+    try await test(runtime, connection, lease)
+  }
+
+  @MainActor func testExpiredReleaseBatchClearsHeldInputBeforeRefusing() async throws {
+    try await withHeldAttachment { runtime, connection, lease in
+      let frame = Data(#"{"id":1,"method":"display.input","params":{"streamId":"stream","source":{"kind":"owner-view","viewId":"view","generation":1},"geometry":1,"sequence":1,"events":[{"kind":"key","action":"up","key":"Shift","code":"ShiftLeft","modifiers":[]}]}}"#.utf8)
+      let envelope = try JSONCoding.decoder.decode(RequestEnvelope.self, from: frame)
+      let reply = try await runtime.ownerInput(envelope, connection: connection, budget: WorkBudget(requestEnd: .distantPast))
+      XCTAssertEqual(reply.outcome, "refused")
+      XCTAssertEqual(reply.reason, "unavailable")
+      XCTAssertFalse(lease.active.current)
+      XCTAssertFalse(lease.mutations.heldByOther("another view"))
+      XCTAssertNil(runtime.ownerAttachments[lease.id])
+    }
+  }
+
+  @MainActor func testUnrenewedHoldReleasesAtItsDeadline() async throws {
+    try await withHeldAttachment { runtime, _, lease in
+      lease.heldDeadline.withLock { $0 = MacOwnerAttachment.holdDuration }
+      XCTAssertFalse(runtime.expireOwnerInputHold(lease, now: 4.999))
+      XCTAssertTrue(lease.active.current)
+      XCTAssertTrue(lease.mutations.heldByOther("another view"))
+      XCTAssertTrue(runtime.expireOwnerInputHold(lease, now: 5))
+      await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+        lease.queue.enqueue { done.resume() }
+      }
+      XCTAssertFalse(lease.active.current)
+      XCTAssertFalse(lease.mutations.heldByOther("another view"))
+      XCTAssertNil(runtime.ownerAttachments[lease.id])
+    }
   }
 
   @MainActor

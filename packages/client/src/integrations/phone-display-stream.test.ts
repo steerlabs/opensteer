@@ -1103,6 +1103,84 @@ describe("display editing receipt adapter", () => {
     modifiers: action === "down" ? ["shift"] : [],
   });
 
+  it("keeps Shift held when a second pooled Mac lease asks to reset", () => {
+    const mac = {
+      scope: "pooled-mac",
+      source: {
+        kind: "owner-view" as const,
+        viewId: "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        generation: 1,
+      },
+      editing: 1 as const,
+    };
+    const first = streams.retain(mac);
+    const second = streams.retain(mac);
+    const socket = opened();
+    hold(socket);
+    expect(first.input(1, [shift("down")])).toBe(true);
+    second.resetInput();
+    expect(socket.messages("display.input-reset")).toHaveLength(0);
+    expect(second.input(1, [shift("up")])).toBe(false);
+    expect(first.input(1, [shift("up")])).toBe(true);
+  });
+
+  it.each(["timeout", "channel drop", "clipboard refusal", "clipboard first then drop"] as const)(
+    "preserves unknown for a partially confirmed edit and copy on %s",
+    async (end) => {
+      const { socket, editing } = await editingFixture();
+      const contextId = "00000000-0000-4000-8000-000000000001";
+      const pending = editing.sendBatch([
+        { kind: "edit", edit: { contextId, before: "", after: "", text: "a" } },
+        { kind: "copy", contextId },
+      ]);
+      const stopped = expect(pending).rejects.toMatchObject({
+        name: "DisplayEditingStopped",
+        message: "Typing stopped. Some of it may not have arrived: check the text.",
+      });
+      if (end === "clipboard first then drop") {
+        socket.json({ type: "display.clipboard", sequence: 0, outcome: "copied", text: "a" });
+        socket.drop();
+      } else {
+        socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
+        if (end === "timeout") vi.advanceTimersByTime(10_000);
+        else if (end === "channel drop") socket.drop();
+        else socket.json({ type: "display.clipboard", sequence: 0, outcome: "too-large" });
+      }
+      await stopped;
+      expect(socket.messages("display.input-reset")).toHaveLength(0);
+      editing.dispose();
+    },
+  );
+
+  it.each(["false", "throw"] as const)(
+    "settles an unregistered batch on send %s",
+    async (failure) => {
+      const { lease, socket, editing } = await editingFixture();
+      const timers = vi.getTimerCount();
+      const send = vi.spyOn(lease, "input").mockImplementationOnce(() => {
+        if (failure === "throw") throw new Error("failed before sequence registration");
+        return false;
+      });
+      let outcome: string | undefined;
+      const settled = editing.input(1, [shift("down")]).then(
+        () => {
+          outcome = "dispatched";
+        },
+        (error: Error) => {
+          outcome = error.message;
+        },
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(outcome).toMatch(/Input is unavailable|couldn’t be sent/);
+      await settled;
+      expect(vi.getTimerCount()).toBe(timers);
+      expect(socket.messages("display.input-reset")).toHaveLength(0);
+      send.mockRestore();
+      editing.dispose();
+    },
+  );
+
   it("resets after timing out a balanced batch that holds no keys", async () => {
     const { socket, editing } = await editingFixture();
     const sent = editing.input(1, [shift("down"), shift("up")]);
@@ -1712,7 +1790,7 @@ describe("display editing receipt adapter", () => {
     expect(editing.getSnapshot().receipt).toBe(
       "Typing stopped. Some of it may not have arrived: check the text.",
     );
-    expect(socket.messages("display.input-reset")).toHaveLength(1);
+    expect(socket.messages("display.input-reset")).toHaveLength(0);
     expect(editing.diagnostics.refusals["too-large"]).toBeUndefined();
 
     // A genuinely over-limit atomic group still reports "This edit is too large.".

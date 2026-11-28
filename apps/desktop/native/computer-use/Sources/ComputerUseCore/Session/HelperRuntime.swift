@@ -1411,6 +1411,11 @@ public final class HelperRuntime {
   private func releaseAllOwnerInput(reason: String) {
     for lease in ownerAttachments.values { releaseOwnerInput(lease, reason: reason) }
   }
+  func expireOwnerInputHold(_ lease: MacOwnerAttachment, now: TimeInterval) -> Bool {
+    guard let deadline = lease.heldDeadline.current, now >= deadline else { return false }
+    releaseOwnerInput(lease, reason: "timed-out")
+    return true
+  }
   private func tickOwnerInput() {
     let now = ProcessInfo.processInfo.systemUptime
     for lease in ownerAttachments.values where lease.active.current {
@@ -1419,7 +1424,7 @@ public final class HelperRuntime {
       if (try? Self.requireUnlocked()) == nil { reason = "secure-lock" }
       else if !AXIsProcessTrusted() || lease.guardFailed.current || source == nil || !lease.producer.inputVisible || !lease.binding.target.process.isCurrent || lease.binding.unavailable != nil { reason = "stream-lost" }
       else if lease.producer.inputMap?.generation != lease.generation { reason = "stream-lost" }
-      else if lease.heldDeadline.current.map({ now >= $0 }) == true { reason = "timed-out" }
+      else if expireOwnerInputHold(lease, now: now) { continue }
       else { reason = nil }
       if let reason { releaseOwnerInput(lease, reason: reason) }
       else if lease.admission.pendingBatches == 0, !lease.burstActive.current, !lease.mutations.agentActive,

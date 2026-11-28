@@ -448,11 +448,9 @@ export class DisplayStreams {
       },
       power: (action) => !released && this.#power(current, action),
       resetInput: () => {
-        const macOwner =
-          current.target.source.kind === "owner-view" &&
-          !this.#targetMachine(current.target)?.phoneDisplay;
-        // The Mac reset is scoped to this connection's owner-view source.
-        if (!released && (macOwner || current.holder === null || current.holder === lease))
+        // Never another view's press; with none held a reset only releases
+        // what this viewer may still hold at the Host.
+        if (!released && (current.holder === null || current.holder === lease))
           this.#resetInput(current);
       },
       input: (geometry, events, onSequence, options) => {

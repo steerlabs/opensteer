@@ -3070,6 +3070,97 @@ describe("Mac owner input over authenticated display sockets", () => {
     );
   });
 
+  it.each(["watcher", "legacy helper"] as const)(
+    "does not reset from a %s without input rights",
+    async (kind) => {
+      const f = await fixture(true, { mac: true, macHelperInput: kind !== "legacy helper" });
+      if (kind === "watcher") f.inputAuthorization(false);
+      const viewer = await f.macViewer(true);
+      await f.state();
+      await viewer.roundTrip();
+      expect(
+        viewer
+          .json()
+          .filter((m) => m.type === "display.state")
+          .at(-1)?.sharedInput,
+      ).toBeUndefined();
+      viewer.send({ type: "display.input-reset" });
+      await viewer.roundTrip();
+      expect(
+        f.sent.filter((m) => m.type === "host.integrations.mac-owner.input-reset"),
+      ).toHaveLength(0);
+    },
+  );
+
+  it("does not let a second Mac viewer reset a holder sharing its source", async () => {
+    const f = await fixture(true, { mac: true });
+    const a = await f.macViewer(true);
+    const b = await f.macViewer(true);
+    await f.state();
+    await Promise.all([a.roundTrip(), b.roundTrip()]);
+    const send = (viewer: typeof a, sequence: number, events: unknown[]) =>
+      viewer.send({ type: "display.input", geometry: 1, sequence, events });
+    const shift = { kind: "key", code: "ShiftLeft", key: "Shift" };
+    const hover = { kind: "mouse", phase: "move", button: "none", modifiers: [], x: 0.5, y: 0.5 };
+    send(a, 0, [{ ...shift, action: "down", modifiers: ["shift"] }]);
+    await a.roundTrip();
+    send(b, 0, [hover]);
+    await b.roundTrip();
+    expect(b.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 0,
+      outcome: "refused",
+      reason: "contended",
+    });
+    b.send({ type: "display.input-reset" });
+    await b.roundTrip();
+    send(b, 1, [hover]);
+    await b.roundTrip();
+    expect(b.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 1,
+      outcome: "refused",
+      reason: "contended",
+    });
+    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.input-reset")).toHaveLength(
+      0,
+    );
+  });
+
+  it("keeps the holder when Home refuses a release before forwarding", async () => {
+    const f = await fixture(true, { mac: true });
+    const viewer = await f.macViewer(true);
+    await f.state();
+    await viewer.roundTrip();
+    const shift = { kind: "key", code: "ShiftLeft", key: "Shift" };
+    viewer.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 0,
+      events: [{ ...shift, action: "down", modifiers: ["shift"] }],
+    });
+    await viewer.roundTrip();
+    viewer.send({
+      type: "display.input",
+      geometry: 2,
+      sequence: 1,
+      events: [{ ...shift, action: "up", modifiers: [] }],
+    });
+    await viewer.roundTrip();
+    expect(viewer.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 1,
+      outcome: "stale",
+      reason: "stale",
+    });
+    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.input")).toHaveLength(1);
+    viewer.send({ type: "display.input-reset" });
+    await viewer.roundTrip();
+    expect(
+      f.sent.filter((m) => m.type === "host.integrations.mac-owner.input-reset"),
+    ).toMatchObject([{ source: f.macSource }]);
+  });
+
   it("forwards a relative input budget under clock skew and answers after a late clipboard", async () => {
     let elapsed = 20;
     const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
@@ -3114,7 +3205,7 @@ describe("Mac owner input over authenticated display sockets", () => {
   });
 
   it.each(["explicit reset", "socket close"] as const)(
-    "forwards a Mac viewer reset after a self-balanced batch on %s",
+    "keeps the Home reset gate closed after forwarding a self-balanced batch on %s",
     async (end) => {
       const f = await fixture(true, { mac: true });
       const viewer = await f.macViewer(true);
@@ -3136,12 +3227,11 @@ describe("Mac owner input over authenticated display sockets", () => {
       if (end === "socket close") {
         viewer.socket.close();
         await viewer.closed;
-        await until(() => resets().length > 0);
       } else {
         viewer.send({ type: "display.input-reset" });
         await viewer.roundTrip();
       }
-      expect(resets()).toMatchObject([{ source: f.macSource }]);
+      expect(resets()).toHaveLength(0);
     },
   );
 

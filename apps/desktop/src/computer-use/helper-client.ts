@@ -921,7 +921,12 @@ export class ComputerUseHelperClient {
       this.#pending.set(id, {
         mayHaveEffect,
         method,
-        reject: rejectPromise,
+        reject: (error) =>
+          rejectPromise(
+            ownerInput && now() >= due.at
+              ? new ComputerUseHelperDeadlineFailure(method, params)
+              : error,
+          ),
         resolve: (value) => {
           if (method === "hello") {
             resolvePromise(value);

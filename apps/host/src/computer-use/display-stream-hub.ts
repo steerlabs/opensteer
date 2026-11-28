@@ -1194,9 +1194,9 @@ export class DisplayStreamHub {
       return;
     }
     if (message.type === "display.input-reset") {
-      if (viewer.sharedInput && stream.target && viewer.source.kind === "owner-view")
-        this.#resetInput(stream, viewer);
-      else if (stream.holder === viewer) this.#resetInput(stream);
+      // With no holder, forwarded input either finishes its releases or the helper releases
+      // on refusal or expiry. An ended lane cannot renew the helper’s five-second hold deadline.
+      if (stream.holder === viewer) this.#resetInput(stream);
       return;
     }
     if (message.type !== "display.input" || "controlId" in message) return;
@@ -1217,16 +1217,7 @@ export class DisplayStreamHub {
         : Math.floor(inputDeadline - performance.now() - macOwnerInputViewerReplyMs);
     const expired = timeoutMs !== undefined && timeoutMs <= 0;
     const releaseOnly = message.events.length > 0 && message.events.every(releasesHeldInput);
-    if (
-      releaseOnly &&
-      !stream.inputClosed &&
-      stream.pending.size >= displayInputLane + displayReleaseRoom
-    ) {
-      // Not a person's input any more: take none, and let the producer let go of all of it.
-      stream.inputClosed = true;
-      this.#resetInput(stream);
-    }
-    const reason =
+    let reason =
       stream.inputClosed ||
       !this.#inputAvailable(stream, viewer) ||
       stream.state.state !== "live" ||
@@ -1249,6 +1240,11 @@ export class DisplayStreamHub {
                 ? // A full lane sent nothing: the viewer says so, never that it was too large.
                   "unavailable"
                 : null;
+    if (!reason && releaseOnly && stream.pending.size >= displayInputLane + displayReleaseRoom) {
+      stream.inputClosed = true;
+      this.#resetInput(stream);
+      reason = "unavailable";
+    }
     if (reason) {
       viewer.inputCounters.refusals[reason] = (viewer.inputCounters.refusals[reason] ?? 0) + 1;
       this.#json(viewer.socket, {
@@ -1365,27 +1361,26 @@ export class DisplayStreamHub {
     }
   }
 
-  #resetInput(stream: Stream, viewer = stream.holder): void {
-    if (!viewer) return;
-    if (stream.holder && this.#sameSource(stream.holder.source, viewer.source)) {
-      stream.holder = null;
-      stream.held.clear();
-    }
-    if (stream.target && viewer.source.kind === "owner-view")
+  #resetInput(stream: Stream): void {
+    const holder = stream.holder;
+    if (!holder) return;
+    stream.holder = null;
+    stream.held.clear();
+    if (stream.target && holder.source.kind === "owner-view")
       this.#send(stream, {
         ...stream.fence,
         type: "host.integrations.mac-owner.input-reset",
         streamId: stream.streamId,
-        source: viewer.source,
+        source: holder.source,
       });
     else
       this.#send(stream, {
         ...stream.fence,
         type: "host.integrations.display.input-reset",
         ...(stream.phoneOwnerControl === 1
-          ? { source: viewer.source }
-          : viewer.source.kind === "task-session"
-            ? { sessionId: viewer.source.sessionId }
+          ? { source: holder.source }
+          : holder.source.kind === "task-session"
+            ? { sessionId: holder.source.sessionId }
             : {}),
         streamId: stream.streamId,
       });
@@ -1917,13 +1912,7 @@ export class DisplayStreamHub {
     reason?: string,
   ): void {
     const source = viewer.source;
-    if (
-      stream.holder === viewer ||
-      (stream.target &&
-        source.kind === "owner-view" &&
-        [...stream.pending.values()].some((pending) => pending.viewer === viewer && pending.result))
-    )
-      this.#resetInput(stream, viewer);
+    if (stream.holder === viewer) this.#resetInput(stream);
     for (const [sequence, pending] of stream.pendingPower)
       if (pending.viewer === viewer) stream.pendingPower.delete(sequence);
     for (const [sequence, pending] of stream.pending)

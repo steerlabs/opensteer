@@ -389,7 +389,7 @@ it.each([
       }
       if (peer === "owner-budget") {
         const began = now;
-        const input = (sequence: number) =>
+        const input = (sequence: number, timeoutMs = 9_000) =>
           relay!.handle(
             HostIntegrationsMacOwnerInputSchema.parse({
               ...fence,
@@ -398,7 +398,7 @@ it.each([
               source,
               geometry: 1,
               sequence,
-              timeoutMs: 9_000,
+              timeoutMs,
               events: [
                 { kind: "key", action: "down", key: "a", code: "KeyA", modifiers: [], text: "a" },
                 { kind: "key", action: "up", key: "a", code: "KeyA", modifiers: [] },
@@ -446,6 +446,19 @@ it.each([
         );
         expect(results()).toHaveLength(2);
         waitingInputs[2]!.reply();
+        await vi.waitFor(() => expect(results()).toHaveLength(3));
+
+        input(3);
+        await vi.waitFor(() => expect(waitingInputs).toHaveLength(4));
+        input(4, 1_000);
+        now += 2_000;
+        waitingInputs[3]!.reply();
+        await vi.waitFor(() => expect(results()).toHaveLength(5));
+        expect(results().at(-1)).toMatchObject({ sequence: 4, outcome: "refused" });
+        expect(waitingInputs).toHaveLength(4);
+        await vi.waitFor(() =>
+          expect(requests.filter(({ method }) => method === "display.input-reset")).toHaveLength(3),
+        );
       }
       if (["unsupported", "lost", "timeout"].includes(peer)) {
         if (peer === "timeout")
