@@ -86,6 +86,8 @@ export const agentWorkCopy = {
     "You changed its access while this ran. Part of it may have happened. Check before trying again.",
   "op.ending.tab-closed":
     "You closed this tab while it ran, so Opensteer can’t say whether this happened. Check before trying again.",
+  "op.ending.profile-deleted":
+    "You deleted the browser profile while this ran. Part of it may have happened. Check before trying again.",
   "op.state.pending": "Waiting for you",
   "op.state.running": "Running…",
   "cmd.asked": "Waiting for you",

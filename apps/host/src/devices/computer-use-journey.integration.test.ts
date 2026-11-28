@@ -6305,14 +6305,23 @@ integration.sequential("Computer use for a connected agent, through its session"
       expect(s.sessions.workingIn.current(ownerId)).toEqual([
         { threadId: started.taskId, sessionId, tabId },
       ]);
-      const played = await s.call({
-        taskId: started.taskId,
-        readOnly: true,
-        code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
-      });
+      const played = await s.call(
+        {
+          taskId: started.taskId,
+          readOnly: true,
+          code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
+        },
+        "work-place-mac",
+      );
       expect(played.isError).not.toBe(true);
       expect(s.sessions.workingIn.current(ownerId)).toEqual([
-        { threadId: started.taskId, sessionId, tabId: null, computerId: s.computerId },
+        {
+          threadId: started.taskId,
+          sessionId,
+          tabId: null,
+          computerId: s.computerId,
+          target: (await s.operation("work-place-mac")).target,
+        },
       ]);
     } finally {
       await s.world.close();

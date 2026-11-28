@@ -367,6 +367,7 @@ export class AgentSessionService {
       readonly taskId: ThreadId;
       readonly sessionId: AgentSessionId;
       readonly connectionId: string;
+      readonly profileId?: string;
       /** The grant revision it was admitted under: a narrowing stops it only when it is older. */
       readonly grantRevision: number;
       readonly mode: ThreadAccessMode;
@@ -607,6 +608,12 @@ export class AgentSessionService {
     for (const [id, attempt] of this.#running)
       if (attempt.taskId === taskId && !threadAccessModeAtMost(attempt.mode, mode))
         await this.stopDirectOperation(id, "narrowed");
+  }
+
+  /** A person's profile delete committed. Give that cause to work before closing its browser. */
+  profileDeleted(profileId: string): void {
+    for (const attempt of this.#running.values())
+      if (attempt.profileId === profileId) attempt.controller.abort(endedBy("profile-deleted"));
   }
 
   /** The Disconnect set includes idle device holds, even without a live executor. */
@@ -971,6 +978,9 @@ export class AgentSessionService {
         taskId,
         sessionId: row.sessionId,
         connectionId: row.connectionId,
+        ...(row.target.grant.kind === "browser-profile"
+          ? { profileId: row.target.grant.profileId }
+          : {}),
         grantRevision: row.grantRevision,
         mode: row.mode,
         pooled: true,
@@ -1002,6 +1012,9 @@ export class AgentSessionService {
       taskId,
       sessionId: handed.sessionId,
       connectionId: handed.connectionId,
+      ...(handed.target.grant.kind === "browser-profile"
+        ? { profileId: handed.target.grant.profileId }
+        : {}),
       grantRevision: handed.grantRevision,
       mode: handed.mode,
     });
@@ -1279,7 +1292,11 @@ export class AgentSessionService {
                 computerSubmitted: () => {
                   submitted++;
                   if (!signal.aborted && operation.target?.device)
-                    this.workingIn.noteComputer(row.sessionId, operation.target.device.id);
+                    this.workingIn.noteComputer(
+                      row.sessionId,
+                      operation.target.device.id,
+                      operation.target,
+                    );
                 },
                 computerStopped: () =>
                   endAuthority(agentOperationEndingWords.stopped.message, "stopped"),

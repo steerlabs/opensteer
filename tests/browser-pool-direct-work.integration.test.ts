@@ -3916,6 +3916,157 @@ it.each([false, true])(
   },
 );
 
+it.each(["idle", "interrupted"] as const)(
+  "publishes the retained tab's badge removal after narrowing %s work",
+  async (phase) => {
+    const { site, origin } = await pagesSite();
+    let subscriber: { tabId: string; read: () => Promise<void> } | undefined;
+    // The runtime publishes the tab resource only when stateChanged is true.
+    const publications: Promise<void>[] = [];
+    const j = await journey("direct-narrowed-tab-subscriber", {
+      profile: true,
+      onTabsChanged: (_owner, ids, stateChanged) => {
+        if (stateChanged && subscriber && (!ids || ids.some((id) => id === subscriber?.tabId)))
+          publications.push(subscriber.read());
+      },
+    });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let running: Promise<unknown> | undefined;
+    try {
+      const home = await j.startHome();
+      const work = await directWork(j, () => home, { grant: { scope: "everything" } });
+      const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+      const { threadId } = await sessionOf(j);
+      const readTab = async () =>
+        (await home.service.pageTabs.state!(j.task.userId, await row(j, tab))).usedBy;
+      let shown = await readTab();
+      expect(shown).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+      if (phase === "interrupted") {
+        const run = work.sessions.run.bind(work.sessions);
+        vi.spyOn(work.sessions, "run").mockImplementationOnce((operation) =>
+          run({
+            ...operation,
+            execute: async (context) => {
+              const result = await operation.execute(context);
+              entered.resolve();
+              await release.promise;
+              return result;
+            },
+          }),
+        );
+        running = work.useTab(
+          `return await (await openPage(${JSON.stringify(tab)})).title();`,
+          tab,
+        );
+        await entered.promise;
+      }
+      subscriber = {
+        tabId: tab,
+        async read() {
+          shown = await readTab();
+        },
+      };
+      await commands(j.fixture, j.task.userId, {
+        afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
+      }).update(work.agent.id, {
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
+        },
+      });
+      if (running) {
+        expect(shown).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+        release.resolve();
+        await running;
+      }
+      await vi.waitFor(
+        async () => {
+          await Promise.all(publications);
+          expect(shown).toEqual([]);
+        },
+        { timeout: 1_000 },
+      );
+      expect(await readTab()).toEqual([]);
+      expect(
+        (await work.useTab(`return await (await openPage(${JSON.stringify(tab)})).title();`, tab))
+          .isError,
+      ).not.toBe(true);
+      await Promise.all(publications);
+      expect(shown).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+    } finally {
+      release.resolve();
+      await running?.catch(() => undefined);
+      await Promise.allSettled(publications);
+      await j.close();
+      site.close();
+    }
+  },
+);
+
+it("records profile deletion as the reason a handed-off browser call is uncertain", async () => {
+  const { site, origin } = await pagesSite();
+  let sessions: AgentSessionService | undefined;
+  const j = await journey("direct-receipt-profile-deleted", {
+    profile: true,
+    onProfileArchived: (id) => sessions?.profileDeleted(id),
+  });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let running: Promise<unknown> | undefined;
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home);
+    sessions = work.sessions;
+    const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+    const run = work.sessions.run.bind(work.sessions);
+    vi.spyOn(work.sessions, "run").mockImplementationOnce((operation) =>
+      run({
+        ...operation,
+        execute: async (context) => {
+          const result = await operation.execute(context);
+          entered.resolve();
+          await release.promise;
+          await context.recheck();
+          return result;
+        },
+      }),
+    );
+    const call = work.useTab(`return await (await openPage(${JSON.stringify(tab)})).title();`, tab);
+    running = call;
+    await entered.promise;
+    await home.service.deleteProfile({ ownerId: j.task.userId, profileId: j.profile!.id });
+    release.resolve();
+    const reply = await call;
+    expect(reply).toMatchObject({
+      isError: true,
+      structuredContent: {
+        status: "unknown",
+        error: {
+          message: "The connected agent's access to this work ended.",
+          next: "Part of it may have happened. Check the current state before doing anything else.",
+        },
+      },
+    });
+    const { operations } = await listAgentOperations(j.database, {
+      userId: j.task.userId,
+      connectionId: work.agent.id,
+      limit: 10,
+    });
+    const operation = operations.find(({ outcome }) => outcome === "unknown")!;
+    expect(operation.ending).toBe("profile-deleted");
+    expect(operationRow(operation).detail).toBe(
+      "You deleted the browser profile while this ran. Part of it may have happened. Check before trying again.",
+    );
+  } finally {
+    release.resolve();
+    await running?.catch(() => undefined);
+    await j.close();
+    site.close();
+  }
+});
+
 it("clears where an agent works and its holds when its browser session ends, as a profile's deletion ends it", async () => {
   // The narrow look, finding 4: a deleted profile ends its browser sessions, and their holds
   // go with them, at the one place a session's holds are let go of.

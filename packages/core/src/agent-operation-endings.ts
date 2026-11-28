@@ -19,6 +19,8 @@ export const AgentOperationEndingSchema = z.enum([
   "narrowed",
   /** The person closed the tab the work was using. */
   "tab-closed",
+  /** The person deleted the browser profile the operation was using. */
+  "profile-deleted",
   /** Nothing answered: the Home cannot say why. */
   "contact-lost",
 ]);
@@ -42,6 +44,10 @@ export const agentOperationEndingWords: Readonly<
   "tab-closed": {
     message: "The person closed this tab while the command ran; whether it took effect is unknown.",
     next: "Open the page again if you still need it.",
+  },
+  "profile-deleted": {
+    message: "The connected agent's access to this work ended.",
+    next: mayHaveHappened,
   },
   "contact-lost": {
     message: "The Home lost track of whether this took effect.",

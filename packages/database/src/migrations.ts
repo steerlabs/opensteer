@@ -1044,7 +1044,16 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
-              "0126_task_done_agent_session_endings": {
+              "0126_agent_operation_profile_deleted": {
+                async up(database: Kysely<unknown>) {
+                  await sql`alter table agent_operations
+                    drop constraint agent_operations_ending_check,
+                    add constraint agent_operations_ending_check
+                      check (ending in ('stopped', 'disconnected', 'expired', 'narrowed',
+                        'tab-closed', 'profile-deleted', 'contact-lost'))`.execute(database);
+                },
+              },
+              "0127_task_done_agent_session_endings": {
                 async up(database: Kysely<unknown>) {
                   await sql`
                     alter table agent_sessions
@@ -1055,7 +1064,7 @@ export function migrationProvider(options?: {
                       drop constraint agent_operations_ending_check,
                       add constraint agent_operations_ending_check
                         check (ending in ('stopped', 'disconnected', 'expired', 'narrowed',
-                          'tab-closed', 'contact-lost', 'task-done'));
+                          'tab-closed', 'profile-deleted', 'contact-lost', 'task-done'));
                   `.execute(database);
                 },
               },

@@ -3110,7 +3110,8 @@ export class HttpHostClient {
     if (
       held?.sessionId === notice.sessionId &&
       held.tabId === notice.tabId &&
-      held.computerId === notice.computerId
+      held.computerId === notice.computerId &&
+      held.target === notice.target
     )
       return;
     this.#update({

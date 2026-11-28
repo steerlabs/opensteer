@@ -144,7 +144,21 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0123_agent_operation_endings",
         "0124_agent_session_device_holds",
         "0125_retire_archived_profile_tabs",
-        "0126_task_done_agent_session_endings",
+        "0126_agent_operation_profile_deleted",
+        "0127_task_done_agent_session_endings",
+      ]);
+      const endings = await sql<{ name: string; definition: string }>`
+        select conname as name, pg_get_constraintdef(oid) as definition
+        from pg_constraint
+        where conname in ('agent_operations_ending_check', 'agent_sessions_end_reason_check')
+        order by conname
+      `.execute(database);
+      expect(endings.rows).toEqual([
+        {
+          name: "agent_operations_ending_check",
+          definition: expect.stringMatching(/'profile-deleted'.*'task-done'/u),
+        },
+        { name: "agent_sessions_end_reason_check", definition: expect.stringContaining("'done'") },
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`
