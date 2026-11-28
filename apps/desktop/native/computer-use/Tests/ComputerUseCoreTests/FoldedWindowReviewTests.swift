@@ -9,9 +9,11 @@ final class FoldedWindowReviewTests: XCTestCase {
   @WorkActor func testPostedMutationBoundaries() async throws {
     for route in ["mouse", "scroll", "key", "typing"] {
       for deadline in [false, true] {
+        let guards = Locked(0)
         let receiver = hostApp(
           identity: AppIdentity(bundleId: "fixture", displayName: "Fixture", teamId: nil),
-          path: "/tmp/Fixture.app")
+          path: "/tmp/Fixture.app",
+          focus: FocusSlot(make: { FakeFocusGuard(pid: $0, onGuard: { guards.withLock { $0 += 1 } }) }))
         defer { receiver.focus.stop() }
         let monitor = WindowMonitor()
         let binding = ActionRunner.Binding(
@@ -48,10 +50,9 @@ final class FoldedWindowReviewTests: XCTestCase {
         do {
           switch route {
           case "mouse":
-            let point = CGPoint(x: binding.windowFrame.minX + 40, y: binding.windowFrame.minY + 90)
-            try await ActionRunner.postClick(
-              try ActionRunner.eventTarget(for: point, binding: binding), button: .left, count: 1,
-              binding: binding, context, restarted: "fixture")
+            _ = try await ActionRunner.click(
+              target: .point(CGPoint(x: 40, y: 90)), button: .left, count: 1, binding: binding,
+              context)
           case "scroll":
             _ = try await ActionRunner.scroll(
               target: .point(CGPoint(x: 40, y: 90)), direction: .down, amount: 1, binding: binding,
@@ -61,6 +62,7 @@ final class FoldedWindowReviewTests: XCTestCase {
             _ = try await ActionRunner.type(text: "never", target: nil, binding: binding, context)
           }
         } catch let error as HelperError { failure = error }
+        XCTAssertEqual(guards.current, 1, route)
         XCTAssertEqual(boundary.current, 1, route)
         XCTAssertEqual(
           failure, deadline ? WorkBudget.requestExpired : SessionCancelReason.stoppedByUser.error,

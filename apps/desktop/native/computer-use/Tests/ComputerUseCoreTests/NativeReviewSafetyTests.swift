@@ -59,6 +59,19 @@ final class NativeReviewSafetyTests: XCTestCase {
     XCTAssertEqual(result.performed, ["Clicked first"])
     XCTAssertEqual(result.error?.code, .stoppedByUser)
   }
+
+  @MainActor
+  func testReviewStopWinsOverFocusTeardownAtTheReceipt() async {
+    let cancellation = SessionCancellation()
+    cancellation.cancel(.stoppedByUser)
+    let result = await HelperRuntime.finishAct(
+      ActionRunner.RunResult(performed: ["Clicked first"], error: FocusEnforcer.leftInFront),
+      cancellation: cancellation,
+      publish: { XCTFail("A stopped session must not publish.") })
+    XCTAssertEqual(result.performed, ["Clicked first"])
+    XCTAssertEqual(result.error?.code, .stoppedByUser)
+  }
+
   /// These call the production mutation routes. A late Stop in the final
   /// retained-element validation must prevent the actual AX call, not merely
   /// make a separately invoked gate throw.
