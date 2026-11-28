@@ -180,14 +180,14 @@ final class OwnerEditingContextsTests: XCTestCase {
     }
   }
 
-  /// S9: exercises the real `MacOwnerInputWorker.waitForNamedText` async polling loop for a late
+  /// S9: exercises the real `MacOwnerInput.waitForNamedText` async polling loop for a late
   /// render within 0.5 s, a timeout refusal that calls `mismatch`, and an immediate abort when
   /// focus leaves the field.
   func testNamedTextWaitLoopAppliesLateRenderAndAbortsOnFieldChangeOrTimeout() async throws {
     // 1) Late render: text is missing for the first 3 polls (~30 ms), then appears within 0.5 s.
     var probes = 0
     var mismatchCount = 0
-    let matched: String = try await MacOwnerInputWorker.waitForNamedText(
+    let matched: String = try await MacOwnerInput.waitForNamedText(
       pollIntervalNanoseconds: 10_000_000,
       probe: {
         probes += 1
@@ -204,7 +204,7 @@ final class OwnerEditingContextsTests: XCTestCase {
     var fieldMismatch = 0
     let fieldStarted = ProcessInfo.processInfo.systemUptime
     do {
-      let _: String = try await MacOwnerInputWorker.waitForNamedText(
+      let _: String = try await MacOwnerInput.waitForNamedText(
         pollIntervalNanoseconds: 10_000_000,
         probe: {
           fieldProbes += 1
@@ -224,7 +224,7 @@ final class OwnerEditingContextsTests: XCTestCase {
     var timeoutMismatch = 0
     var timeoutProbes = 0
     do {
-      let _: String = try await MacOwnerInputWorker.waitForNamedText(
+      let _: String = try await MacOwnerInput.waitForNamedText(
         pollIntervalNanoseconds: 1_000_000,
         now: { clock },
         probe: {

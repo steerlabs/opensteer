@@ -199,6 +199,41 @@ enum MacOwnerInput {
     "deleteWordForward": "alt+forwarddelete", "deleteToBeginningOfLine": "cmd+delete",
     "deleteToEndOfLine": "ctrl+k", "deleteToEndOfParagraph": "ctrl+k", "transpose": "ctrl+t", "yank": "ctrl+y",
   ]
+
+  /// Bounded wait for a text-naming edit when an app (such as Electron) renders a prior keystroke
+  /// after dispatch returns (Rule 3, up to `OwnerEditingContexts.namedTextWait` = 0.5 s).
+  static func waitForNamedText<Match>(
+    isolation: isolated (any Actor)? = #isolation,
+    pollIntervalNanoseconds: UInt64 = 10_000_000,
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    checkGate: () throws -> Void = {},
+    probe: () -> (sameField: Bool, match: Match?),
+    onMismatch: () -> Void
+  ) async throws -> Match {
+    let started = now()
+    while true {
+      try checkGate()
+      let result = probe()
+      let decision = OwnerEditingContexts.namedTextWaitDecision(
+        sameField: result.sameField,
+        matches: result.match != nil,
+        waited: now() - started
+      )
+      switch decision {
+      case .apply:
+        if let match = result.match { return match }
+        onMismatch()
+        throw MacOwnerInput.Refusal("stale")
+      case .wait:
+        try await Task.sleep(nanoseconds: pollIntervalNanoseconds)
+      case .refuseField:
+        throw MacOwnerInput.Refusal("stale")
+      case .refuseMismatch:
+        onMismatch()
+        throw MacOwnerInput.Refusal("stale")
+      }
+    }
+  }
 }
 
 final class MacOwnerAttachment: @unchecked Sendable {
@@ -1106,41 +1141,6 @@ final class MacOwnerInputWorker {
       }
     }
   }
-  /// Bounded wait for a text-naming edit when an app (such as Electron) renders a prior keystroke
-  /// after dispatch returns (Rule 3, up to `OwnerEditingContexts.namedTextWait` = 0.5 s).
-  nonisolated static func waitForNamedText<Match>(
-    isolation: isolated (any Actor)? = #isolation,
-    pollIntervalNanoseconds: UInt64 = 10_000_000,
-    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-    checkGate: () throws -> Void = {},
-    probe: () -> (sameField: Bool, match: Match?),
-    onMismatch: () -> Void
-  ) async throws -> Match {
-    let started = now()
-    while true {
-      try checkGate()
-      let result = probe()
-      let decision = OwnerEditingContexts.namedTextWaitDecision(
-        sameField: result.sameField,
-        matches: result.match != nil,
-        waited: now() - started
-      )
-      switch decision {
-      case .apply:
-        if let match = result.match { return match }
-        onMismatch()
-        throw MacOwnerInput.Refusal("stale")
-      case .wait:
-        try await Task.sleep(nanoseconds: pollIntervalNanoseconds)
-      case .refuseField:
-        throw MacOwnerInput.Refusal("stale")
-      case .refuseMismatch:
-        onMismatch()
-        throw MacOwnerInput.Refusal("stale")
-      }
-    }
-  }
-
   private func edit(_ edit: MacOwnerInput.Edit, lease: MacOwnerAttachment, map: MacOwnerInputMap,
                     proceed: @escaping @Sendable () throws -> Void) async throws {
     let focused = try await keyboardAfterClick(lease, map: map, proceed: proceed)
@@ -1160,7 +1160,7 @@ final class MacOwnerInputWorker {
     if namedText {
       let before = edit.before.utf16.count, after = edit.after.utf16.count
       let expected = Array((edit.before + edit.after).utf16)
-      let matched: (parameter: AXValue, location: Int) = try await Self.waitForNamedText(
+      let matched: (parameter: AXValue, location: Int) = try await MacOwnerInput.waitForNamedText(
         checkGate: { try proceed(); try lease.check(map) },
         probe: {
           let sameField = (try? self.verifyFocus(focused, lease: lease, map: map)) != nil
