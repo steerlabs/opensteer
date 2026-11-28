@@ -441,6 +441,8 @@ describe("the personal stack from source", () => {
 
     // The person's own Codex is found on PATH as a package manager's shim, launched
     // through it, read for its version and signed in on its default account.
+    // What the Runner logged last, so a wait that runs out names what the Runner was doing.
+    const runnerSaid = () => `The Runner's last lines:\n${runner.lines.slice(-40).join("\n")}`;
     const engines = await vi.waitFor(
       async () => {
         const [{ environments }, { harnesses }] = await Promise.all([
@@ -456,9 +458,13 @@ describe("the personal stack from source", () => {
           (value) => value.harnessInstanceId === account?.id,
         );
         if (!driver || driver.readiness === "unavailable" || !driver.installation?.version)
-          throw new Error(`Codex on PATH was never inspected: ${JSON.stringify(driver)}`);
+          throw new Error(
+            `Codex on PATH was never inspected: ${JSON.stringify(driver)}\n${runnerSaid()}`,
+          );
         if (catalog?.status !== "ready" || !catalog.models[0])
-          throw new Error(`The Codex account never became ready: ${JSON.stringify(catalog)}`);
+          throw new Error(
+            `The Codex account never became ready: ${JSON.stringify(catalog)}\n${runnerSaid()}`,
+          );
         return { account: account!, driver, model: catalog.models[0] };
       },
       { interval: 250, timeout: 60_000 },
