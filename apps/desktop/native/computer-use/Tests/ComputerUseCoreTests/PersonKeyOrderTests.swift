@@ -12,6 +12,7 @@ final class PersonKeyOrderTests: XCTestCase {
     var clock = 0.0
     var tap: ((CGEvent) -> CGEvent?)?
     var installs = true
+    var installed = 0
     var stopped = 0
     var inFlight: [CGEvent] = []
     var landed: [String] = []
@@ -21,6 +22,7 @@ final class PersonKeyOrderTests: XCTestCase {
       post: { [unowned self] _, event in inFlight.append(event) },
       install: { [unowned self] _, handler in
         guard installs else { return nil }
+        installed += 1
         tap = handler
         return { [unowned self] in stopped += 1 }
       },
@@ -59,6 +61,50 @@ final class PersonKeyOrderTests: XCTestCase {
       scheduled.removeAll()
       for body in due { body() }
     }
+  }
+
+  func testForegroundWatchKeepsTheAppTapBetweenInputRounds() {
+    let world = World()
+    let watch = PersonKeyOrder.ForegroundWatch(order: world.order)
+    for _ in 0..<3 {
+      XCTAssertTrue(watch.keep(7))
+      XCTAssertTrue(world.order.hold(7))
+      world.order.release(7)
+      XCTAssertEqual(world.stopped, 0, "Retired the tap while the person can type")
+    }
+    XCTAssertEqual(world.installed, 1)
+    watch.stop()
+    XCTAssertEqual(world.stopped, 1)
+    XCTAssertFalse(watch.keep(7))
+  }
+
+  func testForegroundWatchMovesAndKeepsAnOldWatchWhenTheNewOneFails() {
+    let world = World()
+    let watch = PersonKeyOrder.ForegroundWatch(order: world.order)
+    XCTAssertTrue(watch.keep(7))
+    world.installs = false
+    XCTAssertFalse(watch.keep(8))
+    XCTAssertEqual(world.stopped, 0)
+    world.installs = true
+    XCTAssertTrue(watch.keep(8))
+    XCTAssertEqual(world.installed, 2)
+    XCTAssertEqual(world.stopped, 1)
+    watch.stop()
+    XCTAssertEqual(world.stopped, 2)
+  }
+
+  func testForegroundWatchDropsAnExitedProcessAndCanWatchTheSamePIDAgain() {
+    let world = World()
+    let watch = PersonKeyOrder.ForegroundWatch(order: world.order)
+    XCTAssertTrue(watch.keep(7))
+    watch.forget(8)
+    XCTAssertEqual(world.stopped, 0)
+    watch.forget(7)
+    XCTAssertEqual(world.stopped, 1)
+    XCTAssertTrue(watch.keep(7))
+    XCTAssertEqual(world.installed, 2)
+    watch.stop()
+    XCTAssertEqual(world.stopped, 2)
   }
 
   func testAKeyTypedRightAfterOneSentOnLandsAfterIt() {

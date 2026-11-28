@@ -46,6 +46,7 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
 
   private let state: Locked<State>
   private let suppression = Locked<(@Sendable (UInt32, Int64) -> Bool)?>(nil)
+  private let foregroundKeys = PersonKeyOrder.ForegroundWatch()
   private let personRound = Locked<Round?>(nil)
   private let personDeliveryWindow = Locked<(id: CGWindowID, lost: Bool)?>(nil)
   private var activationTap: EventTap?
@@ -89,12 +90,17 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     for name in [
       NSWorkspace.didActivateApplicationNotification,
       NSWorkspace.didDeactivateApplicationNotification,
+      NSWorkspace.didTerminateApplicationNotification,
     ] {
       observers.append(
         center.addObserver(forName: name, object: nil, queue: nil) { [weak self] note in
           guard let self,
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
           else { return }
+          if name == NSWorkspace.didTerminateApplicationNotification {
+            self.foregroundKeys.forget(app.processIdentifier)
+            return
+          }
           let active = name == NSWorkspace.didActivateApplicationNotification
           if active { _ = self.state.current.act?.observeFront() }
           if app.processIdentifier == self.pid { self.update { $0.isActive = active } }
@@ -117,6 +123,7 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
       return (current.stopped, current.active, current.act == nil ? current.clickTap : nil)
     }
     guard !wasStopped else { return }
+    foregroundKeys.stop()
     clickTap?.stop()
     for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
     observers = []
@@ -166,7 +173,7 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
 
   private func putBack(_ act: ActKeeper, isolation: isolated (any Actor)? = #isolation) async -> Bool {
     guard let original = act.originalToRestore() else { return true }
-    guard let app = NSRunningApplication(processIdentifier: original),
+    guard let app = NSRunningApplication(processIdentifier: original), foregroundKeys.keep(original),
       let round = try? Round(target: pid, original: app, act: act)
     else { return false }
     suppression.withLock { $0 = round.suppress }
@@ -253,6 +260,7 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     guard let original = NSRunningApplication(processIdentifier: person) else {
       throw Self.unguarded
     }
+    if act != nil, !foregroundKeys.keep(person) { throw Self.unguarded }
     // One round for the whole act: the person's keys meant for the app go to their own app,
     // and the app is sent back if the input brings it forward. A person who clicks into the
     // app chooses it (`relinquish`): it then stays, and their keys reach it.
