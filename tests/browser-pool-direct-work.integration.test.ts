@@ -144,6 +144,7 @@ async function directWork(
     resetBinding: (bindingId, revision) =>
       scripts.resetBrowserScriptsForBinding(bindingId, revision),
     releaseBindingPlaces: (bindingId) => home().service.releaseHolds(bindingId),
+    pruneBindingTabs: (actor, watchedTab) => home().service.pruneBindingTabs(actor, watchedTab),
     ...(options.executionMs ? { executionMs: options.executionMs } : {}),
     ...(options.endsBrowserWork
       ? { closeBinding: (bindingId: string, reason: string) => endBrowserWork(bindingId, reason) }
@@ -2616,6 +2617,44 @@ it("closes the tab with its page when the agent's own script closes it and the b
   }
 });
 
+it("releases the badge and Watch when a script closes its page", async () => {
+  const { site, origin } = await pagesSite();
+  let forget: ((ownerId: Journey["task"]["userId"], tabIds: readonly string[]) => void) | undefined;
+  const j = await journey("direct-page-close-hold", {
+    profile: true,
+    onHoldsDropped: (ownerId, tabIds) => forget?.(ownerId, tabIds),
+  });
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home, { realAuthority: true });
+    forget = (ownerId, tabIds) => {
+      for (const tabId of tabIds) work.sessions.workingIn.forgetTab(ownerId, tabId);
+    };
+    const tab = tabOf(
+      await work.use(
+        `globalThis.pageToClose = await newPage("${origin}/held"); return pageToClose.tabId;`,
+      ),
+    );
+    const saved = await row(j, tab);
+    const { threadId, id: sessionId } = await sessionOf(j);
+    const readHold = async () => (await home.service.pageTabs.state!(j.task.userId, saved)).usedBy;
+    expect(await readHold()).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
+      { threadId, sessionId, tabId: tab },
+    ]);
+
+    const closed = await work.use("await pageToClose.close();");
+    expect(closed.isError, text(closed)).not.toBe(true);
+    await home.service.flushPendingTabDescriptors();
+    expect((await j.tabs.get(j.task.userId, saved.id, true))?.closedAt).toBeInstanceOf(Date);
+    expect.soft(await readHold()).toEqual([]);
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
 /** The person changes the connection's grant (a new revision). */
 async function setGrant(j: Journey, connectionId: string, grant: AgentGrant) {
   const { grantRevision } = await j.database
@@ -3673,12 +3712,16 @@ it("clears where an agent works when the person closes that tab, and tells the o
     const work = await directWork(j, () => home);
     const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
     const { threadId, id: sessionId } = await sessionOf(j);
+    const saved = await row(j, tab);
+    const readHold = async () => (await home.service.pageTabs.state!(j.task.userId, saved)).usedBy;
+    expect(await readHold()).toEqual([{ taskId: threadId, since: expect.any(String) }]);
     expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
       { threadId, sessionId, tabId: tab },
     ]);
     await personTabs(j, home, (ownerId, tabId) =>
       work.sessions.workingIn.forgetTab(ownerId, tabId),
     ).close({ kind: "person", ownerId: j.task.userId }, [tab as TabRecord["id"]], "person-close");
+    expect(await readHold()).toEqual([]);
     expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
     expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
   } finally {
@@ -3687,7 +3730,7 @@ it("clears where an agent works when the person closes that tab, and tells the o
   }
 });
 
-it("starts a session a narrowing leaves running afresh: no hold, no record, no live script attachment; its next command holds again what the rule grants", async () => {
+it("resets old script attachments and releases only inaccessible tabs on narrowing", async () => {
   // The narrow looks, findings 6 and 1: Everything narrowed to the same browser profile after a
   // profile-scoped script used a person's tab and a page of its own. The session stays (its
   // profile is still lent); what its next call would throw away on the grant revision change is
@@ -3758,12 +3801,12 @@ it("starts a session a narrowing leaves running afresh: no hold, no record, no l
           .executeTakeFirstOrThrow()
       ).status,
     ).toBe("active");
-    // No hold, no record, and no script attachment it opened under the old grant still sends.
-    expect([await holds(own.id), await holds(mine)]).toEqual([false, false]);
+    // The agent keeps its page's hold. No old script attachment still sends.
+    expect([await holds(own.id), await holds(mine)]).toEqual([false, true]);
     expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
     expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
     expect(attachments.map(({ closed }) => closed)).toEqual(attachments.map(() => true));
-    // Its next command: the person's tab is no longer its own; its own page is, held again.
+    // Its next command can still bind its own page, while the person's reads as absent.
     const refused = await work.use(`await openPage(${JSON.stringify(own.id)}); return 1;`);
     expect(text(refused)).toMatch(/not_found|not found/iu);
     const again = await work.use(
@@ -3841,8 +3884,59 @@ it("records no hold for a bind that a narrowing ended while it ran", async () =>
   }
 });
 
+it("releases only newly unreachable tabs after a call under the new grant", async () => {
+  const { site, origin } = await pagesSite();
+  const j = await journey("direct-narrowed-hold-after-new-call", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [person] = await home.service.savedPages(j.task.userId, session.id);
+    if (!person) throw new Error("The saved profile has no tab.");
+    expect(person.openedBy).toBe("person");
+    const work = await directWork(j, () => home, {
+      realAuthority: true,
+      grant: { scope: "everything" },
+    });
+    const kept = tabOf(await work.use(`return (await newPage("${origin}/kept")).tabId;`));
+    const result = await work.use(`await (await openPage(${JSON.stringify(person.id)})).title();`);
+    expect(result.isError, text(result)).not.toBe(true);
+    const { threadId, id: sessionId } = await sessionOf(j);
+    const holders = async (tabId: string) =>
+      (await home.service.pageTabs.state!(j.task.userId, await row(j, tabId))).usedBy;
+    const keptHolders = await holders(kept);
+    expect(keptHolders).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+    expect(await holders(person.id)).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+    const watched = [{ threadId, sessionId, tabId: person.id }];
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual(watched);
+
+    // The update commits before the cleanup callback. Run a call with the new grant on the
+    // same task before invoking that cleanup, without taking up a different place in Watch.
+    await narrowToProfile(j, work.agent.id);
+    const answer = await work.use('return "new grant";');
+    expect(answer.isError, text(answer)).not.toBe(true);
+    expect(text(answer)).toContain("new grant");
+    expect(await sessionOf(j)).toMatchObject({ id: sessionId, threadId });
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual(watched);
+    const cleanup = await j.store.driveConnectionCleanups({
+      onCleanup: ({ connectionId }) => work.sessions.closeConnection(connectionId, false),
+    });
+    expect(cleanup.failures).toEqual([]);
+    expect(cleanup.settled).toContain(work.agent.id);
+    expect(await sessionOf(j)).toMatchObject({ id: sessionId, threadId });
+    expect.soft(await holders(person.id)).toEqual([]);
+    expect.soft(await holders(kept)).toEqual(keptHolders);
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
 it.each([false, true])(
-  "resets a retained pooled place after settlement unless a new-grant call has started (%s)",
+  "keeps a reachable tab after narrowed work settles, with a new-grant call: %s",
   async (newCall) => {
     const { site, origin } = await pagesSite();
     const j = await journey("direct-running-holder-narrowed", { profile: true });
@@ -3894,6 +3988,7 @@ it.each([false, true])(
       release.resolve();
       await running;
       await work.sessions.drain();
+      expect(await holders()).toEqual([{ taskId: threadId, since: expect.any(String) }]);
       if (nextTab) {
         expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
           { threadId, sessionId, tabId: nextTab },
@@ -3903,10 +3998,9 @@ it.each([false, true])(
         ).toEqual([{ taskId: threadId, since: expect.any(String) }]);
         return;
       }
-      await work.untilWorking(async () => {
-        expect(await holders()).toEqual([]);
-        expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
-      });
+      expect(work.sessions.workingIn.current(j.task.userId)).toEqual([
+        { threadId, sessionId, tabId: tab },
+      ]);
       expect(
         (
           await work.useTab(
@@ -3926,9 +4020,8 @@ it.each([false, true])(
 );
 
 it.each(["idle", "interrupted"] as const)(
-  "publishes the retained tab's badge removal after narrowing %s work",
+  "publishes the newly unreachable tab's badge removal after narrowing %s work",
   async (phase) => {
-    const { site, origin } = await pagesSite();
     let subscriber: { tabId: string; read: () => Promise<void> } | undefined;
     // The runtime publishes the tab resource only when stateChanged is true.
     const publications: Promise<void>[] = [];
@@ -3944,8 +4037,19 @@ it.each(["idle", "interrupted"] as const)(
     let running: Promise<unknown> | undefined;
     try {
       const home = await j.startHome();
-      const work = await directWork(j, () => home, { grant: { scope: "everything" } });
-      const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+      const { session } = await home.service.start({
+        ownerId: j.task.userId,
+        profileId: j.profile!.id,
+      });
+      const [person] = await home.service.savedPages(j.task.userId, session.id);
+      if (!person) throw new Error("The saved profile has no tab.");
+      const tab = person.id;
+      const work = await directWork(j, () => home, {
+        grant: { scope: "everything" },
+        realAuthority: true,
+      });
+      const held = await work.use(`return await (await openPage(${JSON.stringify(tab)})).title();`);
+      expect(held.isError, text(held)).not.toBe(true);
       const { threadId } = await sessionOf(j);
       const readTab = async () =>
         (await home.service.pageTabs.state!(j.task.userId, await row(j, tab))).usedBy;
@@ -3999,17 +4103,15 @@ it.each(["idle", "interrupted"] as const)(
       );
       expect(await readTab()).toEqual([]);
       expect(
-        (await work.useTab(`return await (await openPage(${JSON.stringify(tab)})).title();`, tab))
-          .isError,
-      ).not.toBe(true);
+        text(await work.use(`return await (await openPage(${JSON.stringify(tab)})).title();`)),
+      ).toMatch(/not_found|not found/iu);
       await Promise.all(publications);
-      expect(shown).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+      expect(shown).toEqual([]);
     } finally {
       release.resolve();
       await running?.catch(() => undefined);
       await Promise.allSettled(publications);
       await j.close();
-      site.close();
     }
   },
 );
@@ -4194,10 +4296,38 @@ it.each([
         afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
       });
       if (end === "revoke") await connection.revoke(work.agent.id);
-      else
-        await connection.update(work.agent.id, {
-          grant: { scope: "selected", tasks: false, resources: [] },
+      else {
+        const other = await j.store.createBrowserProfile({
+          name: "Other profile",
+          ownerId: j.task.userId,
+          homeRunnerId: j.task.runnerId,
+          idempotencyKey: "other-profile-after-narrowing",
         });
+        await setGrant(j, work.agent.id, {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: other.id }],
+        });
+        const result = await work.agent.client.callTool({
+          name: "browser_use",
+          arguments: { profileId: other.id, code: 'return "new grant";', reason: "Continue work" },
+        });
+        expect(result.isError, text(result)).not.toBe(true);
+        expect(await sessionOf(j)).toMatchObject({ id: sessionId, threadId });
+        // With a withdrawn operation target, the Disconnect set ends this session outright.
+        const cleanup = await j.store.driveConnectionCleanups({
+          onCleanup: ({ connectionId }) => work.sessions.closeConnection(connectionId, false),
+        });
+        expect(cleanup.failures).toEqual([]);
+        expect(cleanup.settled).toContain(work.agent.id);
+        expect(
+          await j.database
+            .selectFrom("agentSessions")
+            .select("status")
+            .where("id", "=", sessionId)
+            .executeTakeFirst(),
+        ).toEqual({ status: "ended" });
+      }
       await j.store.driveConnectionCleanups();
       await j.untilTabs(async () => expect(await holds()).toBe(false));
       expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);

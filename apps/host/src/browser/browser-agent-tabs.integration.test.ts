@@ -565,7 +565,7 @@ integration("page tab adapter", () => {
     };
   }
 
-  it("aborts a standalone bind before a narrowing can reset and lose its holder", async () => {
+  it("aborts a standalone bind without retaking the tab that narrowing removed", async () => {
     const {
       f,
       store,
@@ -582,16 +582,17 @@ integration("page tab adapter", () => {
     const release = Promise.withResolvers<void>();
     const sessions = new AgentSessionService({
       store,
-      releaseBindingPlaces: (binding) => browser.releaseHolds(binding),
+      pruneBindingTabs: (actor, watchedTab) => browser.pruneBindingTabs(actor, watchedTab),
     });
     const opened = await tabService.open(
-      agentActor,
+      { kind: "person", ownerId: f.userId },
       { kind: "page", profileId: profile.id, url: "https://example.com/retained" },
       "open-retained",
     );
     const tabId = opened.tab.tabId;
     const record = (await tabsStore.get(f.userId, tabId))!;
     const holder = async () => (await browser.pageTabs.state!(f.userId, record)).usedBy;
+    await tabService.bindBrowserScript(agentActor, record.id);
     const running = sessions.run({
       ownerUserId: f.userId,
       agentConnectionId: connection.id,
@@ -639,8 +640,10 @@ integration("page tab adapter", () => {
       await sessions.closeConnection(connection.id, false);
       release.resolve();
       await settled;
-      expect(await holder()).toEqual([]);
-      expect(sessions.workingIn.current(f.userId)).toEqual([]);
+      await vi.waitFor(async () => {
+        expect(await holder()).toEqual([]);
+        expect(sessions.workingIn.current(f.userId)).toEqual([]);
+      });
     } finally {
       release.resolve();
       await settled;

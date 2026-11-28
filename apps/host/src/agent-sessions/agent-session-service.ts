@@ -22,6 +22,7 @@ import {
   type RequestId,
   type RequestResponse,
   type RequestPresentation,
+  type TabId,
   type ThreadAccessMode,
   type ThreadId,
   type ToolFailureReceipt,
@@ -60,9 +61,15 @@ import { AgentWorkingInRegistry } from "./agent-working-in.js";
 import { isSettledScriptDeadline } from "../computer-use/computer-repl/computer-repl-service.js";
 import { ReplFailureSchema, type ReplFailure } from "../computer-use/computer-repl/messages.js";
 import type { BrowserPoolReservation } from "../browser/browser-pool-gate.js";
+import type { TabActor } from "../tabs/ports.js";
 
 /** How long one executor call may take before its signal aborts. */
 const defaultExecutionMs = 120_000;
+
+type PruneBindingTabs = (
+  actor: Extract<TabActor, { kind: "browser-binding" }>,
+  watchedTab: TabId | null,
+) => Promise<boolean>;
 
 function directOperationAction(tool: string, target: string): string {
   switch (tool) {
@@ -382,6 +389,7 @@ export class AgentSessionService {
     minimumGrantRevision?: number,
   ) => void | Promise<void>;
   readonly #releaseBindingPlaces: (bindingId: string) => void;
+  readonly #pruneBindingTabs: PruneBindingTabs;
   readonly #resetRevision = new Map<AgentSessionId, number>();
   readonly #holdMs: number;
   readonly #executionMs: number;
@@ -406,13 +414,16 @@ export class AgentSessionService {
       bindingId: string,
       minimumGrantRevision?: number,
     ) => void | Promise<void>;
-    /** Release a retained session's old tab holds once its interrupted work has settled. */
+    /** Let go of all the tabs a binding holds. */
     readonly releaseBindingPlaces?: (bindingId: string) => void;
+    /** Release only the tabs a narrowed binding no longer reaches; reports whether Watch lost its tab. */
+    readonly pruneBindingTabs?: PruneBindingTabs;
   }) {
     this.#store = options.store;
     this.workingIn = new AgentWorkingInRegistry(options.onWorkingIn ?? (() => {}));
     this.#resetBinding = options.resetBinding ?? (() => {});
     this.#releaseBindingPlaces = options.releaseBindingPlaces ?? (() => {});
+    this.#pruneBindingTabs = options.pruneBindingTabs ?? (async () => false);
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
     this.#executionMs = options.executionMs ?? defaultExecutionMs;
     this.#closeBinding = options.closeBinding ?? (() => {});
@@ -664,28 +675,28 @@ export class AgentSessionService {
     );
     const live = [...this.#worked].filter(([, work]) => work.connectionId === connectionId);
     if (!live.length) return;
+    const sessions = all
+      ? []
+      : await this.#store.database
+          .selectFrom("agentSessions")
+          .select(["id", "status", "userId", "threadId"])
+          .where(
+            "id",
+            "in",
+            live.map(([id]) => id),
+          )
+          .execute();
     const ended = all
       ? live.map(([id]) => id)
-      : (
-          await this.#store.database
-            .selectFrom("agentSessions")
-            .select("id")
-            .where(
-              "id",
-              "in",
-              live.map(([id]) => id),
-            )
-            .where("status", "=", "ended")
-            .execute()
-        ).map(({ id }) => id);
+      : sessions.filter(({ status }) => status === "ended").map(({ id }) => id);
     await Promise.all(ended.map((id) => this.#abort(id, ending)));
     if (all) return;
     // The receipt waits for the older executor. A newer call may start before this callback
     // runs, so it must keep the places it has taken up under its own grant.
     await Promise.all(
-      live
-        .filter(([id]) => !ended.includes(id))
-        .map(async ([id]) => {
+      sessions
+        .filter(({ status }) => status === "active")
+        .map(async ({ id, userId, threadId }) => {
           const running = older.filter(([, attempt]) => attempt.sessionId === id);
           const binding = `session:${id}`;
           const releasePlaces = () => {
@@ -698,7 +709,21 @@ export class AgentSessionService {
               const work = this.#worked.get(id);
               if (!work || (this.#resetRevision.get(id) ?? -1) >= revision) return;
               this.#resetRevision.set(id, revision);
-              if (work.grantRevision < revision) releasePlaces();
+              const watchedTab = this.workingIn.tabOf(id);
+              const lostWatch = await this.#pruneBindingTabs(
+                {
+                  kind: "browser-binding",
+                  authority: { agentBindingId: binding, ownerId: userId },
+                  threadId,
+                },
+                watchedTab,
+              );
+              if (lostWatch && watchedTab) this.workingIn.forgetTab(userId, watchedTab, id);
+              if (
+                (this.#worked.get(id)?.grantRevision ?? revision) < revision &&
+                !this.workingIn.tabOf(id)
+              )
+                this.workingIn.clearSession(id);
             } else if (ending === "narrowed" && this.#worked.has(id)) {
               releasePlaces();
             }

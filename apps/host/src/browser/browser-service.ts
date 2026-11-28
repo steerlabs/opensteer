@@ -865,7 +865,7 @@ interface BrowserServiceOptions {
     stateChanged?: boolean,
   ) => void;
   readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
-  /** Holds on these tabs were let go of with their browser session: nothing may name them. */
+  /** These tabs closed, or their browser session ended: Watch lets go of them. */
   readonly onHoldsDropped?: (ownerId: UserId, tabIds: readonly BrowserSurfaceId[]) => void;
   readonly onPlaceNotice?: (ownerId: UserId, notice: BrowserPlaceActivityNotice) => void;
   readonly connectTimeoutMs?: number;
@@ -5046,6 +5046,7 @@ export class BrowserService {
     closeViewers: async (ownerId, row, closePage) => {
       const binding = row.pageBinding;
       if (!binding) return;
+      if (closePage) this.#dropSessionHolds(binding.sessionId, { ownerId, tabId: row.id });
       const closing = closePage
         ? this.#queuePhysicalPageClose(binding.sessionId, binding.surfaceId, undefined, {
             ownerId,
@@ -5732,7 +5733,7 @@ export class BrowserService {
         this.#workspacePageGenerations.get(`${record.id}:${tabId}`) !== row.generation
       )
         continue;
-      await tabs.close(
+      const result = await tabs.close(
         ownerId,
         [tabId],
         `physical-close:${record.id}:${tabId}:${row.generation}`,
@@ -5746,6 +5747,7 @@ export class BrowserService {
             throw new OpensteerError({ code: "conflict", message: "The page binding changed." });
         },
       );
+      if (result.tabIds.includes(tabId)) this.#dropSessionHolds(record.id, { ownerId, tabId });
       this.#pagesAwaitingNavigation.delete(tabId);
     }
     if (pending.size && pending.size < descriptors.length)
@@ -8034,7 +8036,7 @@ export class BrowserService {
                     // the access the close command needed; lacking it, the row stays and the page's
                     // absence is the shadow inventory's to report. Recording it never fails the close.
                     try {
-                      await tabs.close(
+                      const closed = await tabs.close(
                         input.ownerId,
                         [tabId],
                         `cdp-close:${record.id}:${tabId}:${globalThis.crypto.randomUUID()}`,
@@ -8055,7 +8057,8 @@ export class BrowserService {
                           row.pageBinding?.sessionId === record.id &&
                           row.pageBinding.surfaceId === tabId,
                       );
-                      this.#onTabsChanged(input.ownerId, [tabId]);
+                      if (closed.tabIds.includes(tabId))
+                        this.#dropSessionHolds(record.id, { ownerId: input.ownerId, tabId });
                     } catch (error) {
                       this.#onError(error);
                     }
@@ -8406,11 +8409,23 @@ export class BrowserService {
   }
 
   /**
-   * The one place a browser session's holds are let go of with it: the tabs' readers are told,
-   * and so is whatever names those tabs as where work is.
+   * A tab or its browser session ended: drop its holds and tell the tab strip and Watch.
    */
-  #dropSessionHolds(sessionId: BrowserSessionId): void {
+  #dropSessionHolds(
+    sessionId: BrowserSessionId,
+    closed?: { readonly ownerId: UserId; readonly tabId: BrowserSurfaceId },
+  ): void {
     const tabs = this.#boundTabs.get(sessionId);
+    if (closed) {
+      if (tabs?.delete(closed.tabId)) {
+        if (!tabs.size) this.#boundTabs.delete(sessionId);
+        this.#brokers.get(sessionId)?.refreshSessionState();
+        this.#shadows.get(sessionId)?.inventoryChanged();
+      }
+      this.#onHoldsDropped(closed.ownerId, [closed.tabId]);
+      this.#onTabsChanged(closed.ownerId, [closed.tabId], true);
+      return;
+    }
     this.#boundTabs.delete(sessionId);
     if (!tabs?.size) return;
     const byOwner = new Map<UserId, BrowserSurfaceId[]>();
@@ -8423,18 +8438,65 @@ export class BrowserService {
       this.#onHoldsDropped(ownerId, [...new Set(surfaces)]);
   }
 
-  /**
-   * After a narrowing: the binding lets go of every tab it holds, and the tabs' readers are told.
-   * The binding is not ended; its next command binds again under the rule and holds afresh.
-   */
-  releaseHolds(agentBindingId: string): void {
+  /** After a narrowing, let go of the page tabs the binding cannot reach under the new grant. */
+  async pruneBindingTabs(
+    actor: Extract<TabActor, { kind: "browser-binding" }>,
+    watchedTab: TabId | null,
+  ): Promise<boolean> {
+    const tabs = this.#workspaceTabs;
+    if (!tabs) return false;
+    const { ownerId, agentBindingId } = actor.authority;
+    const held = new Map<BrowserSessionId, Map<TabId, BoundHolder>>();
+    const candidates = new Set<TabId>();
+    for (const [sessionId, surfaces] of this.#boundTabs) {
+      const entries = new Map<TabId, BoundHolder>();
+      for (const [tabId, bindings] of surfaces) {
+        const holder = bindings.get(agentBindingId);
+        if (holder === undefined) continue;
+        entries.set(tabId, holder);
+        candidates.add(tabId);
+      }
+      if (entries.size) held.set(sessionId, entries);
+    }
+    const heldWatch = watchedTab !== null && candidates.has(watchedTab);
+    if (watchedTab) candidates.add(watchedTab);
+    if (!candidates.size) return false;
+    const rows = await tabs.rows(ownerId, [...candidates]);
+    const reachable = await tabReadAuthority(actor, tabs.database).catch((error: unknown) => {
+      // A Stop or Disconnect can end the binding while the cleanup reads its tabs.
+      if (error instanceof OpensteerError && ["forbidden", "not_found"].includes(error.code))
+        return null;
+      throw error;
+    });
+    const allowed = new Set<TabId>();
+    if (reachable)
+      for (const row of rows) if (await reachable(row, "read-write")) allowed.add(row.id);
+    this.releaseHolds(
+      agentBindingId,
+      (sessionId, tabId, holder) =>
+        held.get(sessionId)?.get(tabId) === holder && !allowed.has(tabId),
+    );
+    // A shared Chrome tab is outside the workspace tab store and has its own cleanup.
+    return (
+      watchedTab !== null &&
+      !allowed.has(watchedTab) &&
+      (heldWatch || rows.some(({ id }) => id === watchedTab))
+    );
+  }
+
+  /** Let go of a binding's tab holds and publish the badge changes. */
+  releaseHolds(
+    agentBindingId: string,
+    drop?: (sessionId: BrowserSessionId, tabId: TabId, holder: BoundHolder) => boolean,
+  ): void {
     const changed = new Set<BrowserSurfaceId>();
     let holdersChanged = false;
     for (const [sessionId, tabs] of this.#boundTabs) {
       let released = false;
       for (const [surfaceId, bindings] of tabs) {
-        if (!bindings.has(agentBindingId)) continue;
-        holdersChanged ||= !!bindings.get(agentBindingId);
+        const holder = bindings.get(agentBindingId);
+        if (holder === undefined || (drop && !drop(sessionId, surfaceId, holder))) continue;
+        holdersChanged ||= !!holder;
         changed.add(surfaceId);
         bindings.delete(agentBindingId);
         released = true;

@@ -77,10 +77,18 @@ export class AgentWorkingInRegistry {
     this.#publish(work.ownerUserId, this.#notice(sessionId, work));
   }
 
-  /** The tab closed: no session of its owner works in it any more. */
-  forgetTab(ownerUserId: UserId, tabId: string): void {
+  tabOf(sessionId: AgentSessionId): TabId | null {
+    return this.#sessions.get(sessionId)?.place?.tabId ?? null;
+  }
+
+  /** A closed tab clears every session there; a narrowing clears only the affected session. */
+  forgetTab(ownerUserId: UserId, tabId: string, sessionId?: AgentSessionId): void {
     for (const [id, work] of this.#sessions)
-      if (work.ownerUserId === ownerUserId && work.place?.tabId === tabId)
+      if (
+        (!sessionId || id === sessionId) &&
+        work.ownerUserId === ownerUserId &&
+        work.place?.tabId === tabId
+      )
         this.#release(id as AgentSessionId, work);
   }
 
