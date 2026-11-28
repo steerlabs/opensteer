@@ -1,4 +1,4 @@
-import { useUnreadableResources } from "@opensteer/client/react";
+import { useHostSelector, useUnreadableResources } from "@opensteer/client/react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 import {
@@ -8,6 +8,7 @@ import {
   browserProfileSettingsRows,
   mutationIdempotencyKey,
   type BrowserProfileSettingsRow,
+  type HostSnapshot,
   type ProfileHomeChoice,
 } from "@opensteer/client/host";
 import { act, failureWords } from "../../use-action.js";
@@ -26,6 +27,7 @@ import { lastBrowsingChoice, rememberBrowsingChoice } from "../../workspace/star
  * sign-ins; your agent may browse as any of them.
  */
 const profileKinds = ["browser-profile"] as const;
+const selectBrowserPools = (snapshot: HostSnapshot) => snapshot.browserPools;
 
 export function BrowserProfilesSection() {
   const { hostClient, snapshot } = useShell();
@@ -33,7 +35,12 @@ export function BrowserProfilesSection() {
   const profilesRead = useUnreadableResources(hostClient, profileKinds);
   const hereId = useHereId();
   const rows = browserProfileSettingsRows(snapshot, hereId);
-  const deletions = browserProfileDeletionRows(snapshot);
+  const browserPools = useHostSelector(hostClient, selectBrowserPools);
+  const deletions = browserProfileDeletionRows({
+    browserProfileDeletions: snapshot.browserProfileDeletions,
+    machines: snapshot.machines,
+    browserPools,
+  });
   // "Add profile…" elsewhere lands here with the name field open.
   const [params] = useSearchParams();
   const [creating, setCreating] = useState(() => params.has("new"));

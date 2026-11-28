@@ -20,7 +20,7 @@ describe("browser profile settings", () => {
         ],
       }),
     ).toEqual([
-      { profileId: "bpr_deleted", status: "Will be erased when its computer is back online" },
+      { profileId: "bpr_deleted", status: "Will be erased when its device is back online" },
     ]);
   });
 
@@ -46,17 +46,38 @@ describe("browser profile settings", () => {
       expect(browserProfileDeletionRows(snapshot)).toEqual([
         { profileId: "bpr_deleted", status: "Will be erased when the browser next starts" },
       ]);
-      expect(
-        browserProfileDeletionRows({ ...snapshot, machines: [{ ...machine, status: "offline" }] }),
-      ).toEqual([
-        { profileId: "bpr_deleted", status: "Will be erased when Main computer is back online" },
-      ]);
-      expect(
-        browserProfileDeletionRows({
-          ...snapshot,
-          browserPools: [{ ...snapshot.browserPools[0]!, phase: "running" }],
-        }),
-      ).toEqual([{ profileId: "bpr_deleted", status: "Data erasure is pending" }]);
+      for (const status of [
+        "offline",
+        "pending",
+        "needs-update",
+        "updating",
+        "update-pending",
+      ] as const) {
+        expect(
+          browserProfileDeletionRows({ ...snapshot, machines: [{ ...machine, status }] }),
+          status,
+        ).toEqual([
+          { profileId: "bpr_deleted", status: "Will be erased when Main computer is back online" },
+        ]);
+      }
+      const report = snapshot.browserPools[0]!;
+      for (const browser of [
+        { ...report, phase: "failed" as const },
+        { ...report, notReady: { reason: "unreachable" } },
+        { ...report, notReady: { reason: "setting-up" } },
+        { ...report, phase: "waking" as const },
+        { ...report, phase: "starting" as const },
+        { ...report, phase: "restarting" as const },
+      ]) {
+        expect(browserProfileDeletionRows({ ...snapshot, browserPools: [browser] })).toEqual([
+          { profileId: "bpr_deleted", status: "Will be erased when the browser next starts" },
+        ]);
+      }
+      for (const browserPools of [[{ ...report, phase: "running" as const }], undefined]) {
+        expect(browserProfileDeletionRows({ ...snapshot, browserPools })).toEqual([
+          { profileId: "bpr_deleted", status: "Not erased yet" },
+        ]);
+      }
       expect(browserProfileDeletionRows({ ...snapshot, browserProfileDeletions: [] })).toEqual([]);
     } finally {
       mock.dispose();

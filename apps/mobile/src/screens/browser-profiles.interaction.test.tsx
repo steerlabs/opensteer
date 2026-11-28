@@ -1,6 +1,7 @@
 import { testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { RunnerIdSchema } from "@opensteer/core";
+import type { HostSnapshot } from "@opensteer/client/host";
 import { tabStoreFixture } from "@opensteer/client/test-support";
 
 import type { ReactNode } from "react";
@@ -21,11 +22,6 @@ const state = vi.hoisted(() => ({
 vi.mock("@react-navigation/native", () => ({
   useIsFocused: () => true,
   useNavigation: () => ({ navigate: state.navigate }),
-}));
-vi.mock("@opensteer/client/react", async (load) => ({
-  ...(await load<typeof import("@opensteer/client/react")>()),
-  useHostSelector: (client: { getSnapshot: () => unknown }, select: (value: unknown) => unknown) =>
-    select(client.getSnapshot()),
 }));
 vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
@@ -198,7 +194,7 @@ function text(): string {
 }
 
 function host(manage = true, empty = false) {
-  const snapshot = {
+  let snapshot = {
     connection: "connected",
     deploymentId: "deployment-a",
     network: "online",
@@ -216,6 +212,7 @@ function host(manage = true, empty = false) {
       computerId: string;
       state: "pending-computer" | "pending-restart";
     }[],
+    browserPools: undefined as HostSnapshot["browserPools"],
     browserSessions: [],
     browserPlacements: [],
     machines: [
@@ -225,14 +222,37 @@ function host(manage = true, empty = false) {
         name: "Studio Mac",
         status: "offline",
       },
+      {
+        id: "restart-device",
+        selfRunnerId: RunnerIdSchema.parse("rnr_99999999-9999-4999-8999-999999999999"),
+        name: "Desk Mac",
+        status: "online",
+      },
     ],
     tabs: tabStoreFixture([]),
   };
   const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
-  const client = { dispatch, getSnapshot: () => snapshot, subscribe: () => () => undefined };
+  const listeners = new Set<() => void>();
+  const client = {
+    dispatch,
+    getSnapshot: () => snapshot,
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
   Object.assign(client, { connection: testHostConnection(client as never) });
   state.hostClient = client;
-  return { dispatch, snapshot };
+  return {
+    dispatch,
+    snapshot,
+    async setBrowserPools(browserPools: HostSnapshot["browserPools"]) {
+      await act(async () => {
+        snapshot = { ...snapshot, browserPools };
+        for (const listener of listeners) listener();
+      });
+    },
+  };
 }
 
 async function typeName(name: string): Promise<void> {
@@ -297,17 +317,37 @@ describe("mobile browser profiles", () => {
       },
       {
         profileId: "bpr_deleted_restart",
-        computerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
+        computerId: RunnerIdSchema.parse("rnr_99999999-9999-4999-8999-999999999999"),
         state: "pending-restart",
       },
     ];
     const repaint = await render();
     expect(text()).toContain("Will be erased when Studio Mac is back online");
-    expect(text()).toContain("Erased after Opensteer restarts on Studio Mac");
+    expect(text()).toContain("Erased after Opensteer restarts on Desk Mac");
     expect(document.querySelectorAll('[aria-label^="Delete "]')).toHaveLength(0);
     snapshot.browserProfileDeletions = [];
     await repaint();
     expect(text()).not.toContain("Deleted profile");
+  });
+
+  it("updates the erasure row from a browser-pool-only snapshot", async () => {
+    const { snapshot, setBrowserPools } = host();
+    const machine = snapshot.machines[0]!;
+    machine.status = "online";
+    snapshot.browserProfileDeletions = [
+      { profileId: "bpr_deleted", computerId: machine.selfRunnerId, state: "pending-computer" },
+    ];
+    const parked = {
+      runnerId: machine.selfRunnerId,
+      phase: "parked" as const,
+      since: "2026-11-28T00:00:00Z",
+    };
+    snapshot.browserPools = [parked];
+    await render();
+    expect(text()).toContain("Will be erased when the browser next starts");
+    await setBrowserPools([{ ...parked, phase: "running" }]);
+    expect(text()).not.toContain("Will be erased when the browser next starts");
+    expect(text()).toContain("Not erased yet");
   });
 
   it("hides Rename and Delete on older Hosts", async () => {

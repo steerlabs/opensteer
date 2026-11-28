@@ -132,19 +132,20 @@ export function browserProfileDeletionRows(
     const machine = snapshot.machines.find(
       (machine) => machineSelfRunnerId(machine) === deletion.computerId,
     );
-    const name = machine?.name ?? "its computer";
+    const name = machine?.name ?? "its device";
     let status: string;
-    if (deletion.state === "pending-restart") {
-      status = `Erased after Opensteer restarts on ${name}`;
-    } else if (!machine || machine.status === "offline") {
+    if (machine?.status !== "online") {
       status = `Will be erased when ${name} is back online`;
+    } else if (deletion.state === "pending-restart") {
+      status = `Erased after Opensteer restarts on ${name}`;
     } else if (
-      browserSleepFromHome(snapshot.browserPools, deletion.computerId, null).browser.kind ===
-      "asleep"
+      !["awake", "not-pooled"].includes(
+        browserSleepFromHome(snapshot.browserPools, deletion.computerId, null).browser.kind,
+      )
     ) {
       status = "Will be erased when the browser next starts";
     } else {
-      status = "Data erasure is pending";
+      status = "Not erased yet";
     }
     return { profileId: deletion.profileId, status };
   });
