@@ -925,6 +925,125 @@ export function migrationProvider(options?: {
                       'tab-closed', 'contact-lost'))`.execute(database);
                 },
               },
+              "0124_agent_session_device_holds": {
+                async up(database: Kysely<unknown>) {
+                  await sql`create table agent_session_device_holds (
+                    id text primary key,
+                    session_id text not null references agent_sessions(id) on delete cascade,
+                    device_name text not null,
+                    home_process_id uuid not null,
+                    unconfirmed_at timestamptz
+                  );
+                  create index agent_session_device_holds_session
+                    on agent_session_device_holds(session_id)`.execute(database);
+                },
+              },
+              "0125_retire_archived_profile_tabs": {
+                /**
+                 * Retires open and closed tabs left behind by browser profiles with explicit
+                 * deletion provenance (preserving tabs of profiles archived by device removal or
+                 * without provable deletion provenance), strips their IDs from tab_layouts.items,
+                 * drops only groups that this migration empties (preserving mixed and unrelated
+                 * groups), advances tab_layouts.revision for affected owners, and advances durable
+                 * client_sync_state sequence + tab/tab-layout resource revisions when rows retire.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    with retired as (
+                      delete from personal_tabs t
+                      using browser_profiles p
+                      where t.profile_id = p.id
+                        and t.owner_id = p.owner_id
+                        and p.archived_at is not null
+                        and (
+                          exists (
+                            select 1
+                            from browser_profile_deletions d
+                            where d.profile_id = p.id
+                              and d.state in ('pending-computer', 'pending-restart', 'deleted')
+                          )
+                          or exists (
+                            select 1
+                            from commands c
+                            where c.requested_by = p.owner_id
+                              and c.type = 'browser.profile.delete'
+                              and c.status = 'succeeded'
+                              and c.payload->'request'->>'profileId' = p.id
+                          )
+                        )
+                      returning t.owner_id, t.id
+                    ),
+                    retired_by_owner as (
+                      select owner_id, array_agg(id) as ids
+                      from retired
+                      group by owner_id
+                    ),
+                    rebuilt as (
+                      select
+                        l.owner_id,
+                        coalesce(
+                          (
+                            select jsonb_agg(mapped.next_item order by elem.ord)
+                            from jsonb_array_elements(l.items) with ordinality as elem(item, ord)
+                            cross join lateral (
+                              select case
+                                when elem.item->>'kind' = 'tab' then
+                                  case when (elem.item->>'tabId') = any(r.ids) then null else elem.item end
+                                when elem.item->>'kind' = 'group' then
+                                  case
+                                    when exists (
+                                      select 1
+                                      from jsonb_array_elements_text(coalesce(elem.item->'group'->'tabIds', '[]'::jsonb)) as m(tab_id)
+                                      where m.tab_id = any(r.ids)
+                                    ) then (
+                                      select case
+                                        when count(*) = 0 then null
+                                        else jsonb_set(
+                                          elem.item,
+                                          '{group,tabIds}',
+                                          jsonb_agg(m.tab_id order by m.ord)
+                                        )
+                                      end
+                                      from jsonb_array_elements_text(coalesce(elem.item->'group'->'tabIds', '[]'::jsonb)) with ordinality as m(tab_id, ord)
+                                      where not (m.tab_id = any(r.ids))
+                                    )
+                                    else elem.item
+                                  end
+                                else elem.item
+                              end as next_item
+                            ) mapped
+                            where mapped.next_item is not null
+                          ),
+                          '[]'::jsonb
+                        ) as next_items
+                      from tab_layouts l
+                      join retired_by_owner r on r.owner_id = l.owner_id
+                    ),
+                    updated_layouts as (
+                      update tab_layouts l
+                      set
+                        items = rebuilt.next_items,
+                        revision = l.revision + 1
+                      from rebuilt
+                      where l.owner_id = rebuilt.owner_id
+                        and l.items is distinct from rebuilt.next_items
+                      returning l.owner_id
+                    )
+                    update client_sync_state s
+                    set
+                      sequence = s.sequence + 1,
+                      last_commit_at = greatest(s.last_commit_at, clock_timestamp()),
+                      resource_revisions =
+                        s.resource_revisions
+                        || jsonb_build_object(
+                          'tab', (s.sequence + 1)::text,
+                          'tab-layout', (s.sequence + 1)::text
+                        )
+                    where exists (select 1 from retired)
+                       or exists (select 1 from updated_layouts)
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

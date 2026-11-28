@@ -8,6 +8,7 @@ import { withDeviceSwitch } from "./device-access-request.js";
 import {
   deviceAccessRows,
   deviceMembership,
+  deviceSwitchOn,
   devicesView,
   type DeviceMembershipInput,
 } from "./devices.js";
@@ -266,6 +267,15 @@ it("uses Host Device capabilities even when a screen Device has no modules", () 
       true,
     ),
   ).toEqual([]);
+});
+
+it("takes the Apps switch from the policy and respects whether the device supports it", () => {
+  const ready = mockIphoneScreenDevice();
+  const off = mockIphoneScreenDevice("apps-off");
+  expect(deviceSwitchOn({ ...ready, access: off.access }, "apps")).toBe(false);
+  expect(deviceSwitchOn({ ...off, access: ready.access }, "apps")).toBe(true);
+  expect(deviceSwitchOn({ ...ready, access: null }, "apps")).toBeNull();
+  expect(deviceSwitchOn(ready, "browser")).toBe(false);
 });
 
 it("addresses self and attached screen access by their Device ids", () => {

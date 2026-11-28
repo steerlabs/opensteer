@@ -13,7 +13,7 @@ import type { MachineAccessReach, MachineSummary } from "@opensteer/protocol";
 export { deviceAsleepDetail, isHomeDevice as isHome };
 export type { DeviceCapability as DeviceSwitchKey };
 
-interface DeviceSwitchRow {
+export interface DeviceSwitchRow {
   readonly key: DeviceCapability;
   readonly title: string;
   readonly detail: string;

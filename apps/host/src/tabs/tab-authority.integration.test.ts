@@ -330,6 +330,74 @@ integration("production tab authority", () => {
       await t.f.close();
     }
   });
+  it("says no to a deleted profile's tab for work, as for a missing profile, and the person still sees and closes it", async () => {
+    const t = await fixture();
+    try {
+      await t.f.database
+        .updateTable("devices")
+        .set({ accessPolicy: sql`'{"browser":true,"apps":true,"files":true}'::jsonb` })
+        .where("id", "=", DeviceIdSchema.parse(t.run.runnerId))
+        .execute();
+      // A profile at home on the Run's computer, matching what the store writes.
+      const profile = await t.f.database
+        .insertInto("browserProfiles")
+        .values({
+          archivedAt: null,
+          id: createId("browserProfile"),
+          name: "Work",
+          ownerId: t.run.userId,
+          homeRunnerId: t.run.runnerId,
+          purpose: "person",
+        })
+        .returning(["id", "name"])
+        .executeTakeFirstOrThrow();
+      const id = await t.page(t.run.runnerId, "archived-profile");
+      await t.f.database
+        .updateTable("personalTabs")
+        .set({ profileId: profile.id, profileName: profile.name })
+        .where("id", "=", id)
+        .execute();
+      const person = { kind: "person", ownerId: t.run.userId } as const;
+      const row = async () => (await t.store.get(t.run.userId, id))!;
+      // Before archiving the Run reaches the tab.
+      expect(await canReadTab(t.actor, await row(), t.f.database)).toBe(true);
+      await authorizeTabTarget(t.actor, await row(), t.f.database);
+      // Archive the profile row directly to verify tab authority still refuses any stale tab row
+      // belonging to an archived profile.
+      await t.f.database
+        .updateTable("browserProfiles")
+        .set({ archivedAt: new Date() })
+        .where("id", "=", profile.id)
+        .execute();
+      expect(
+        (await t.f.database
+          .selectFrom("browserProfiles")
+          .select("archivedAt")
+          .where("id", "=", profile.id)
+          .executeTakeFirstOrThrow())!.archivedAt,
+      ).not.toBeNull();
+      expect(await canReadTab(t.actor, await row(), t.f.database)).toBe(false);
+      await expect(authorizeTabTarget(t.actor, await row(), t.f.database)).rejects.toMatchObject({
+        code: "not_found",
+        message: "Tab not found.",
+      });
+      expect((await t.service.list(t.actor, {})).tabs.map((tab) => tab.tabId)).not.toContain(id);
+      // The person's own read is as before: the tab is listed, activation fails not_found like a
+      // missing profile, and closing it still works.
+      expect(await canReadTab(person, await row(), t.f.database)).toBe(true);
+      expect((await t.service.list(person, {})).tabs.map((tab) => tab.tabId)).toContain(id);
+      await expect(t.service.activate(t.run.userId, id, "activate-archived")).rejects.toMatchObject(
+        { code: "not_found" },
+      );
+      expect(await t.service.close(person, [id], "close-archived")).toEqual({
+        closed: [id],
+        failed: [],
+      });
+    } finally {
+      t.service.dispose();
+      await t.f.close();
+    }
+  });
   it("shares one iPhone Device tab with approved Runs and cannot reacquire it after removal", async () => {
     const t = await fixture();
     try {

@@ -1,4 +1,5 @@
 import { type DeploymentId } from "@opensteer/core";
+import { deviceSwitchOn } from "@opensteer/client/computers";
 import { type HostClient, type HostSnapshot, type IphoneSetupPort } from "@opensteer/client/host";
 import {
   iphoneScreenKeepAwakeTip,
@@ -728,7 +729,7 @@ function AgentAccessChoice({
   const [error, setError] = useState<string | null>(null);
   const name = useId();
   const view = apps.data ? phoneUseView({ ...apps.data, hostConnected: true, machine }) : null;
-  const appsOn = machine.capabilities?.apps.enabled !== false;
+  const appsOn = deviceSwitchOn(machine, "apps") !== false;
   const current: IphoneAgentAccess = appsOn && view?.access ? view.access : "none";
   const shown = pending ?? current;
 

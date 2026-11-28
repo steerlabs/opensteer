@@ -1,5 +1,5 @@
 import { homeFailureText } from "./failure-text.js";
-import { unsupportedVersionCloseCode } from "@opensteer/protocol";
+import { deviceAccess, unsupportedVersionCloseCode } from "@opensteer/protocol";
 import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import {
   clientScopeKey,
@@ -2421,8 +2421,24 @@ export class HttpHostClient {
         ...snapshot,
         environments: snapshot.environments.map((row) => this.#withEnvironmentCatalogs(row)),
       };
-    if (first.kind === "machine")
-      snapshot = { ...snapshot, machineRevision: this.#snapshot.machineRevision + 1 };
+    if (first.kind === "machine") {
+      // A list read can start before a switch's receipt. Keep the newer policy and
+      // take live details, including sessions, from the list that just arrived.
+      const previous = new Map(this.#snapshot.machines.map(({ id, access }) => [id, access]));
+      snapshot = {
+        ...snapshot,
+        machineRevision: this.#snapshot.machineRevision + 1,
+        machines: snapshot.machines.map((machine) => {
+          const access = previous.get(machine.id);
+          if (!access || !machine.access || machine.access.revision >= access.revision)
+            return machine;
+          return {
+            ...machine,
+            access: { ...machine.access, revision: access.revision, policy: access.policy },
+          };
+        }),
+      };
+    }
     if (snapshot !== this.#snapshot) this.#update(snapshot);
   }
 
@@ -3830,12 +3846,36 @@ export class HttpHostClient {
 
   async updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome> {
     const command = deviceAccessCommand(input, mutationIdempotencyKey("machine-access"));
+    const generation = this.#viewerGeneration;
+    const userId = this.#snapshot.user?.id;
     const result = await this.dispatch(command);
     if (result.type !== "machine.access.update") {
       throw new Error("Access settings command mismatch.");
     }
     if (result.outcome === "conflict") return { outcome: "conflict" };
-    await this.refresh();
+    if (this.#viewerStillCurrent(generation, userId)) {
+      const snapshot = this.#snapshot;
+      const existing = snapshot.machines.find(({ id }) => id === command.deviceId);
+      const access = existing?.access;
+      if (access?.revision === command.expectedRevision) {
+        const previous = deviceAccess(access.policy);
+        const policy = {
+          ...command.policy,
+          browser: command.policy.browser ?? previous.browser,
+          apps: command.policy.apps ?? previous.apps,
+        };
+        this.#update({
+          ...snapshot,
+          machineRevision: snapshot.machineRevision + 1,
+          machines: snapshot.machines.map((machine) =>
+            machine === existing
+              ? { ...machine, access: { ...access, policy, revision: result.revision } }
+              : machine,
+          ),
+        });
+      }
+      await this.refresh();
+    }
     return { outcome: "updated", revision: result.revision };
   }
 

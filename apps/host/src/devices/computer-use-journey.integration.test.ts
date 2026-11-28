@@ -10,6 +10,7 @@ import {
 import { computer_use as computerUseTool } from "@opensteer/agent-tools/tools";
 import {
   AgentGrantSchema,
+  OpensteerError,
   ToolFailureSchema,
   type RequestId,
   type ThreadAccessMode,
@@ -4024,7 +4025,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     await world.close();
   });
 
-  it("reports an act the phone's stream dropped as unknown, an observe as a failure to try again, and an offline phone as offline", async () => {
+  it("reports a dropped act or first observation as unknown, an established observation as failed, and an offline phone as offline", async () => {
     const world = await createWorld(database, { phone: true });
     const { fakePhone } = phoneOf(world);
     const run = await world.startRun("Text the driver");
@@ -4063,11 +4064,22 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     await fakePhone.reached("observe", 3);
     expect(fakePhone.received("observe")).toBe(3);
     fakePhone.detach();
-    expect(await observing).toEqual(refusal("failed: That computer went offline."));
+    expect(await observing).toEqual(
+      refusal(
+        "outcome-unknown: That computer went offline. The actions may already have taken effect. Do not repeat them. Observe the phone before deciding the next action.",
+      ),
+    );
     release();
     fakePhone.gate = null;
     await fakePhone.attach();
     expect(text(await phoneCode(gateway, "await p.observe()"))).toContain(`Looked at ${phone}`);
+    const held = Promise.withResolvers<void>();
+    fakePhone.gate = held.promise;
+    const reading = phoneCode(gateway, "await p.observe()");
+    await fakePhone.reached("observe", 5);
+    fakePhone.detach();
+    expect(await reading).toEqual(refusal("failed: That computer went offline."));
+    held.resolve();
     await world.close();
   });
 
@@ -4269,6 +4281,7 @@ class FakeMac {
   actReceivedCount = 0;
   completedActions = 0;
   actGate: Promise<void> | null = null;
+  windowAnswer: (() => Promise<void>) | null = null;
   partialActGate: Promise<void> | null = null;
   partialReceipt = "Clicked element 1";
   actFailure: { code: ComputerUseErrorCode; message: string; performed: string[] } | null = null;
@@ -4332,6 +4345,10 @@ class FakeMac {
 
   async attach(): Promise<void> {
     this.#hub.attach(this.peer, this.stream);
+    await this.reportStatus();
+  }
+
+  async reportStatus(): Promise<void> {
     await this.#hub.handleMessage(this.peer, this.stream, {
       ...this.stream.fence,
       apps: [
@@ -4579,6 +4596,8 @@ class FakeMac {
           this.completedActions += (message.params.actions as unknown[]).length;
         }
         result = { kind: "ok", value: this.#perform(message) };
+        if (message.operation === "bind" || message.operation === "windows")
+          await this.windowAnswer?.();
       }
     } catch (error) {
       if (!(error instanceof MacError)) throw error;
@@ -5213,6 +5232,7 @@ async function createWorld(
   });
   computerUse = new ComputerUseService({
     deploymentId: owner.deploymentId,
+    agentSessionDatabase: database,
     hub,
     ...(options.passwords
       ? {
@@ -6055,6 +6075,114 @@ integration.sequential("Computer use for a connected agent, through its session"
   const tapScript =
     'const p=await phone("Pixel 8"); await p.observe(); await p.tap(1); return "tapped"';
 
+  async function disconnect(s: Awaited<ReturnType<typeof connectedAgent>>) {
+    await s.agents.revoke(s.world.owner.userId, s.record.id);
+    await s.world.store.driveConnectionCleanups({
+      stopper: {
+        stop: async () => {},
+        stopAgentSession: (attempt, change, settle) =>
+          s.sessions.stopAgentSession(attempt.id, connectionCleanupEnding(change.reason), settle),
+      },
+    });
+    return (await s.agents.list(s.world.owner.userId, { includeRevoked: true })).find(
+      ({ id }) => id === s.record.id,
+    );
+  }
+
+  it.each(["lease release", "authority refusal"])(
+    "settles an unsent reserved Mac hold after the last call ends by %s",
+    async (ending) => {
+      const s = await connectedAgent("full-access", { target: "mac" });
+      const { computerUse, fakeMac, hub, owner } = s.world;
+      let resolveRefusal: (() => void) | undefined;
+      try {
+        const started = await s.call({ code: "return 1" }, "unsent-hold");
+        expect(started.status).toBe("completed");
+        const { sessionId } = await s.operation("unsent-hold");
+        const machine = { ownerUserId: owner.userId, deviceId: s.computerId, deviceName: mac };
+        const authority = {
+          kind: "agent-session" as const,
+          runId: agentSessionComputerKey(sessionId),
+          bindingGeneration: 0 as const,
+          threadId: started.taskId,
+          sessionId,
+          assertActive: async () => {},
+        };
+        const target = { kind: "app" as const, app: apps.notes, access: "read" as const };
+        const first = await computerUse.prepare(machine, authority);
+        const checking = Promise.withResolvers<void>();
+        const refuse = Promise.withResolvers<void>();
+        const last =
+          ending === "lease release" ? await computerUse.prepare(machine, authority) : null;
+        if (!last) resolveRefusal = refuse.resolve;
+        const refused = last
+          ? undefined
+          : expect(
+              computerUse.prepare(machine, {
+                ...authority,
+                assertActive: async () => {
+                  checking.resolve();
+                  await refuse.promise;
+                  throw new OpensteerError({ code: "forbidden", message: "Authority ended." });
+                },
+              }),
+            ).rejects.toThrow("authority has ended");
+        if (refused) await checking.promise;
+        vi.spyOn(hub, "sendComputerUse").mockRejectedValueOnce(new Error("Before submission"));
+        await expect(computerUse.sendObserve(first, target, false)).rejects.toThrow(
+          "Before submission",
+        );
+        expect(await database.selectFrom("agentSessionDeviceHolds").select("id").execute()).toEqual(
+          [{ id: first.sessionId }],
+        );
+        if (last) computerUse.release(last);
+        else refuse.resolve();
+        await refused;
+        expect(fakeMac.openSessions()).toEqual([]);
+        expect(fakeMac.closeReceivedCount).toBe(0);
+        expect(await disconnect(s)).toMatchObject({ state: "stopped", lastActionUncertain: false });
+        await expect(s.agents.remove(owner.userId, s.record.id)).resolves.toBeUndefined();
+      } finally {
+        resolveRefusal?.();
+        await s.world.close();
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "settles a Mac hold from a stopped event with unconfirmed=%s",
+    async (unconfirmed) => {
+      const s = await connectedAgent("full-access", { target: "mac" });
+      const fakeMac = s.world.fakeMac;
+      try {
+        const opened = await s.call({
+          code: 'await (await (await app("Notes")).window()).observe();',
+        });
+        expect(opened.status).toBe("completed");
+        const [hold] = s.world.computerUse.sessionsForRunner(s.computerId);
+        expect(hold).toBeDefined();
+        if (!unconfirmed) fakeMac.stopFromPill();
+        else {
+          const params = {
+            sessionId: hold!.sessionId,
+            reason: "app-quit" as const,
+            unconfirmed: true as const,
+          };
+          s.world.computerUse.handleHelperEvent(s.computerId, { event: "session.stopped", params });
+          expect(fakeMac.openSessions()).toEqual([hold!.sessionId]);
+        }
+        expect(await disconnect(s)).toMatchObject({
+          state: "stopped",
+          lastActionUncertain: unconfirmed,
+          ...(unconfirmed ? { lastActionUncertainDetail: { device: mac } } : {}),
+        });
+        expect(fakeMac.closeReceivedCount).toBe(0);
+      } finally {
+        await s.world.close();
+      }
+    },
+  );
+
   it("runs the granted phone screen in full-access, names it on its Device, and shows its task on the phone", async () => {
     const s = await connectedAgent("full-access");
     try {
@@ -6437,31 +6565,87 @@ integration.sequential("Computer use for a connected agent, through its session"
     }
   });
 
-  it("tells a connected agent holding a Mac app when the Mac's apps are off or the Mac is offline, never that the app does not exist", async () => {
+  it("refuses computer_use after the person turns Apps off and before the Mac reports again", async () => {
     const s = await connectedAgent("full-access", { target: "mac", personApproved: true });
+    let closeHost: (() => Promise<unknown>) | undefined;
     try {
+      const { world } = s;
+      const host = await createHostServer(
+        hostServerTestDependencies({
+          store: world.store,
+          computerApps: world.hub,
+          browser: {
+            withRunnerAdmission: async (_runnerId: RunnerId, work: () => Promise<unknown>) =>
+              work(),
+          } as never,
+          discovery: signHostDiscovery(generateKeyPairSync("ed25519"), {
+            canonicalOrigin: "https://device-access.test",
+            deploymentId: createId("deployment"),
+            hostInstanceId: createId("hostInstance"),
+            hostKey: { algorithm: "Ed25519" },
+            deploymentShape: { kind: "personal" },
+          }),
+          authenticator: {
+            authenticateSessionContext: async () => ({
+              credentialKind: "header",
+              surface: "canonical",
+              session: {
+                id: createId("authSession"),
+                user: {
+                  id: world.owner.userId,
+                  disabledAt: null,
+                  displayName: "Owner",
+                  email: "owner@example.test",
+                  emailVerified: true,
+                  image: null,
+                },
+                createdAt: new Date().toISOString(),
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                absoluteExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+            }),
+          } as never,
+        }),
+      );
+      closeHost = () => host.close();
       const observe = () =>
         s.call({
           code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
           readOnly: true,
         });
       const absent = "No app or phone screen shared with this agent matches";
-      const policy = (apps: boolean) =>
-        database
-          .updateTable("devices")
-          .set({
-            accessPolicy: sql`${JSON.stringify({ ...machineAccessPolicyDefault, apps })}::jsonb`,
-            accessPolicyRevision: sql`access_policy_revision + 1`,
-          })
-          .where("id", "=", s.computerId)
-          .execute();
-      await policy(false);
-      const off = await observe().catch((error: unknown) => agentToolFailure(error, "read"));
-      expect(JSON.stringify(off)).toContain(
-        `Apps access is off on ${mac}. The person can turn it on in Opensteer.`,
-      );
-      expect(JSON.stringify(off)).not.toContain(absent);
-      await policy(true);
+      const device = await database
+        .selectFrom("devices")
+        .select(["accessPolicy", "accessPolicyRevision"])
+        .where("id", "=", s.computerId)
+        .executeTakeFirstOrThrow();
+      const setApps = async (apps: boolean, expectedRevision: number) => {
+        const response = await injectRpcRequest(host, "commands.dispatch", {
+          type: "machine.access.update",
+          deviceId: s.computerId,
+          idempotencyKey: `apps-switch-${apps}`,
+          expectedRevision,
+          policy: { ...device.accessPolicy, apps },
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json()).toMatchObject({
+          ok: true,
+          data: { outcome: "updated", revision: expectedRevision + 1 },
+        });
+      };
+      const expectOff = async () => {
+        const off = await observe().catch((error: unknown) => agentToolFailure(error, "read"));
+        expect(JSON.stringify(off)).toContain(
+          `Apps access is off on ${mac}. The person can turn it on in Opensteer.`,
+        );
+        expect(JSON.stringify(off)).not.toContain(absent);
+        expect(JSON.stringify(off)).not.toContain("needs-you");
+      };
+      await setApps(false, device.accessPolicyRevision);
+      await expectOff();
+      await world.fakeMac.reportStatus();
+      await expectOff();
+      await setApps(true, device.accessPolicyRevision + 1);
       s.world.fakeMac.detach();
       const offline = await observe().catch((error: unknown) => agentToolFailure(error, "read"));
       expect(offline).toMatchObject({
@@ -6474,6 +6658,7 @@ integration.sequential("Computer use for a connected agent, through its session"
       expect(JSON.stringify(offline)).not.toContain(absent);
       expect(s.world.fakeMac.frames.some(({ operation }) => operation === "bind")).toBe(false);
     } finally {
+      await closeHost?.();
       await s.world.close();
     }
   });
@@ -6991,6 +7176,83 @@ integration.sequential("Computer use for a connected agent, through its session"
         expect(s.fake.received("observe")).toBe(0);
         expect(s.fake.received("act")).toBe(0);
       } finally {
+        await s.world.close();
+      }
+    },
+  );
+
+  it.each(["bind", "windows"] as const)(
+    "keeps a dispatched Mac %s unknown after its reply is lost",
+    async (operation) => {
+      const s = await connectedAgent("full-access", { target: "mac" });
+      const sent = Promise.withResolvers<void>();
+      const held = Promise.withResolvers<void>();
+      s.world.fakeMac.windowAnswer = () => {
+        sent.resolve();
+        return held.promise;
+      };
+      try {
+        const command = operation === "bind" ? "window" : "windows";
+        const running = s.call(
+          { code: `try { await (await target).${command}(); } catch {} print("continued");` },
+          "lost-mac-launch",
+        );
+        await Promise.race([sent.promise, running]);
+        expect(s.world.fakeMac.frames.some((frame) => frame.operation === operation)).toBe(true);
+        s.world.fakeMac.detach();
+        expect(await running).toMatchObject({
+          status: "unknown",
+          error: {
+            code: "outcome-unknown",
+            method: operation,
+            message:
+              "That computer went offline. The actions may already have taken effect. Do not repeat them. Observe the app before deciding the next action.",
+          },
+        });
+        expect(await s.operation("lost-mac-launch")).toMatchObject({ outcome: "unknown" });
+      } finally {
+        held.resolve();
+        await s.world.close();
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "accounts for an Android read-only bind at the script deadline (answered: %s)",
+    async (answered) => {
+      const sleeping = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      const clock = new ManualClock();
+      const s = await connectedAgent("full-access", {
+        computerReplTime: {
+          clock,
+          wait: (ms, signal) => {
+            sleeping.resolve();
+            return clock.wait(ms, signal);
+          },
+        },
+      });
+      try {
+        if (!answered) s.fake.gate = gate.promise;
+        const running = s.call(
+          { code: "await target; await sleep(100000)", readOnly: true },
+          "bind-deadline",
+        );
+        await Promise.race([answered ? sleeping.promise : s.fake.reached("observe"), running]);
+        expect(s.fake.received("observe")).toBe(1);
+        clock.advanceBy(100_000);
+        expect(await running).toMatchObject({
+          status: answered ? "failed" : "unknown",
+          error: {
+            code: answered ? "deadline" : "outcome-unknown",
+            message: answered
+              ? "Computer code reached its 100 second deadline. 1 action completed. The last was bind."
+              : "Computer code reached its 100 second deadline. A dispatched action may already have happened; observe before deciding what to do next.",
+          },
+          ...(answered ? { next: "Check the current state before trying again." } : {}),
+        });
+      } finally {
+        gate.resolve();
         await s.world.close();
       }
     },
@@ -7606,6 +7868,90 @@ integration.sequential("Computer use for a connected agent, through its session"
       }
     });
   }
+
+  it.each(["failed", "outcome-unknown", "lost"] as const)(
+    "accounts for a preceding task Stop when the Mac close is %s",
+    async (failure) => {
+      const s = await connectedAgent("full-access", { target: "mac" });
+      const fakeMac = s.world.fakeMac;
+      const closeAck = Promise.withResolvers<void>();
+      try {
+        const opened = await s.call(
+          { code: 'await (await (await app("Notes")).window()).observe();' },
+          "retained-mac-hold",
+        );
+        expect(opened.status).toBe("completed");
+        const holds = fakeMac.openSessions();
+        expect(holds).toHaveLength(1);
+        const { sessionId } = await s.operation("retained-mac-hold");
+        if (failure === "lost") fakeMac.closeGate = closeAck.promise;
+        else fakeMac.closeFailureCode = failure;
+        expect(
+          await s.sessions.stopSession({
+            ownerUserId: s.world.owner.userId,
+            threadId: opened.taskId,
+            sessionId,
+          }),
+        ).toEqual({ ended: true });
+        if (failure === "lost") {
+          await fakeMac.reached("close");
+          fakeMac.detach();
+        } else await vi.waitFor(() => expect(fakeMac.closeCompletedCount).toBe(1));
+        expect(fakeMac.openSessions()).toEqual(holds);
+        expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
+
+        const driveCleanup = () =>
+          s.world.store.driveConnectionCleanups({
+            stopper: {
+              stop: async () => {},
+              stopAgentSession: (attempt, change, settle) =>
+                s.sessions.stopAgentSession(
+                  attempt.id,
+                  connectionCleanupEnding(change.reason),
+                  settle,
+                ),
+            },
+            onCleanup: (change) =>
+              s.sessions.closeConnection(
+                change.connectionId,
+                false,
+                connectionCleanupEnding(change.reason),
+              ),
+          });
+        const receipt = async () =>
+          (await s.agents.list(s.world.owner.userId, { includeRevoked: true })).find(
+            ({ id }) => id === s.record.id,
+          );
+        await s.agents.revoke(s.world.owner.userId, s.record.id);
+        await driveCleanup();
+        expect(fakeMac.openSessions()).toEqual(holds);
+        if (failure !== "failed") {
+          expect(await receipt()).toMatchObject({
+            state: "stopped",
+            lastActionUncertain: true,
+            lastActionUncertainDetail: {
+              device: mac,
+              reason: "The device has not confirmed that its computer use ended.",
+            },
+          });
+          s.world.computerUse.sweep();
+          await driveCleanup();
+          expect(fakeMac.closeReceivedCount).toBe(1);
+          expect(fakeMac.openSessions()).toEqual(holds);
+          return;
+        }
+        expect(await receipt()).toMatchObject({ state: "stopping", lastActionUncertain: false });
+
+        fakeMac.closeFailureCode = null;
+        await driveCleanup();
+        expect(fakeMac.openSessions()).toEqual([]);
+        expect(await receipt()).toMatchObject({ state: "stopped", lastActionUncertain: false });
+      } finally {
+        closeAck.resolve();
+        await s.world.close();
+      }
+    },
+  );
 
   for (const ending of ["Stop on the task", "Disconnect"] as const) {
     it(`ends the script in flight on ${ending}, closes the phone's session, and refuses the next call`, async () => {

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -8,8 +9,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { dirname, join, resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { TestProject } from "vitest/node";
 import type { LockOrderEdge } from "./lock-order-checker.test-support.js";
 import setup from "./lock-order-global-setup.test-support.js";
@@ -38,6 +39,8 @@ describe("whole-suite lock graph teardown", () => {
 
   afterEach(() => {
     process.exitCode = undefined;
+    const trace = process.env.OPENSTEER_LOCK_ORDER_TRACE;
+    if (trace) rmSync(dirname(trace), { force: true, recursive: true });
     if (inheritedTrace === undefined) delete process.env.OPENSTEER_LOCK_ORDER_TRACE;
     else process.env.OPENSTEER_LOCK_ORDER_TRACE = inheritedTrace;
     if (inheritedDirectory === undefined) delete process.env.OPENSTEER_LOCK_ORDER_TRACE_DIRECTORY;
@@ -95,6 +98,46 @@ describe("whole-suite lock graph teardown", () => {
 
     await expect(teardown()).rejects.toThrow(/1 rank\/order violations/u);
     expect(process.exitCode).toBe(1);
+  });
+
+  it("reports the verdict and preserves evidence when the summary exceeds the string limit", async () => {
+    const forward = edge("workspaces", "threads");
+    const reverse = edge("threads", "workspaces");
+    const extra = Array.from({ length: 16 }, (_, index) => ({
+      ...forward,
+      database: `isolated-${index}`,
+      stack: forward.stack.repeat(8),
+    }));
+    const edges = [forward, reverse, ...extra];
+    const { teardown, trace } = seeded([
+      ...edges,
+      { message: "threads -> workspaces", type: "violation" },
+    ]);
+    appendFileSync(
+      join(process.env.OPENSTEER_LOCK_ORDER_TRACE_DIRECTORY!, "worker-1.jsonl"),
+      JSON.stringify(forward) + "\n",
+    );
+    const stringify = JSON.stringify;
+    const boundedStringify = vi.spyOn(JSON, "stringify").mockImplementation((...args) => {
+      const serialized = stringify(...args);
+      if (serialized?.length > 4096) throw new RangeError("Invalid string length");
+      return serialized;
+    });
+    try {
+      await expect(teardown()).rejects.toThrow(
+        /1 rank\/order violations; 1 conflicting cycle witnesses; 1 trace errors/u,
+      );
+    } finally {
+      boundedStringify.mockRestore();
+    }
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(readFileSync(trace + ".graph.json", "utf8"))).toMatchObject({
+      acquisitions: edges.length,
+      edges,
+      errors: ["worker-1.jsonl: Record after file-end"],
+      signatures: edges.length,
+      violations: 1,
+    });
   });
 
   it("keeps the summary and drops the raw trace after a clean run", async () => {
@@ -185,6 +228,7 @@ describe("whole-suite lock graph teardown", () => {
     // Vitest 4 logs a global teardown error as "error during close" and exits 0.
     const repository = resolve(import.meta.dirname, "../../..");
     const directory = mkdtempSync(join(tmpdir(), "opensteer-teardown-exit-"));
+    onTestFinished(() => rmSync(directory, { force: true, recursive: true }));
     writeFileSync(
       join(directory, "lose-traces.test.ts"),
       `import { rmSync } from "node:fs";

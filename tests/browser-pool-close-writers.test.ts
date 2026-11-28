@@ -34,9 +34,10 @@ it("counts every write of a session row, raw SQL included, file by file", () => 
   expect(counts(/updateTable\(\s*"browserSessions"\s*\)/gu)).toEqual({
     // endBrowserPoolSessions: the pool's own closed and failed writes.
     "packages/database/src/browser-pool-store.ts": 1,
-    // writeBrowserSessionState (the general transition and the unpooled close) and the sweep
-    // that fails active sessions at start.
-    "packages/database/src/browser-session-store.ts": 2,
+    // writeBrowserSessionState (the general transition and the unpooled close), the sweep
+    // that fails active sessions at start, and markPooledProfileSessionsClosing (writes only
+    // `closing`, never `closed`, atomically in the profile archive transaction).
+    "packages/database/src/browser-session-store.ts": 3,
     // Standard CDP attempt bookkeeping: never a state.
     "packages/database/src/browser-standard-cdp-lease.ts": 2,
     // Disconnect: tab revisions and attempts, never a state.

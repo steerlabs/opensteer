@@ -238,7 +238,7 @@ export function useComputerDisplay({
     });
     const cancel = () => {
       controller.cancel(performance.now());
-      lease.resetInput();
+      (editing ?? lease).resetInput();
     };
     const hidden = () => {
       if (document.visibilityState === "hidden") cancel();
@@ -250,7 +250,7 @@ export function useComputerDisplay({
       window.removeEventListener("blur", cancel);
       document.removeEventListener("visibilitychange", hidden);
       controller.dispose(performance.now());
-      lease.resetInput();
+      (editing ?? lease).resetInput();
       setInput(null);
     };
   }, [enabled, holding, lease, editing]);
@@ -498,7 +498,7 @@ export function ComputerDisplayScreen({
     const focused = document.activeElement;
     if (focused instanceof HTMLElement && pictureRef.current?.contains(focused)) focused.blur();
     input?.cancel(performance.now());
-    display.lease?.resetInput();
+    (display.editing ?? display.lease)?.resetInput();
   };
   useEffect(() => {
     const reset = () => {
@@ -549,9 +549,9 @@ export function ComputerDisplayScreen({
       const focused = document.activeElement;
       if (focused instanceof HTMLElement && pictureRef.current?.contains(focused)) focused.blur();
       input?.cancel(performance.now());
-      display.lease?.resetInput();
+      (display.editing ?? display.lease)?.resetInput();
     },
-    [input, display.lease],
+    [input, display.editing, display.lease],
   );
 
   useLayoutEffect(() => {
@@ -770,7 +770,7 @@ export function ComputerDisplayScreen({
         if (!event.currentTarget.contains(event.relatedTarget)) {
           proxy.current?.cancel();
           input?.cancel(performance.now());
-          display.lease?.resetInput();
+          (display.editing ?? display.lease)?.resetInput();
         }
       }}
       onKeyDown={(event) => {

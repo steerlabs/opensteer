@@ -16,7 +16,7 @@ import {
   setPhoneUseAccess,
 } from "@opensteer/client/integrations";
 import { TabTargetSchema } from "@opensteer/core";
-import { computerStatus, deviceStoppedLabel } from "@opensteer/client/computers";
+import { computerStatus, deviceStoppedLabel, deviceSwitchOn } from "@opensteer/client/computers";
 import {
   canRespondToRequests,
   mutationIdempotencyKey,
@@ -54,6 +54,7 @@ import {
   deviceSwitchesFooter,
   isHome,
   type DeviceSwitchKey,
+  type DeviceSwitchRow,
 } from "./device-page-model.js";
 import { deviceKindLabel } from "./devices-model.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
@@ -116,6 +117,10 @@ function DevicePage(props: {
   /** A fact about the device an action found, such as a change made elsewhere. */
   const [note, setNote] = useState<string | null>(null);
   const [signOutFailed, setSignOutFailed] = useState(false);
+  const [pendingSwitch, setPendingSwitch] = useState<{
+    readonly key: DeviceSwitchKey;
+    readonly on: boolean;
+  } | null>(null);
   const busy = useRef(false);
   const change = useScreenAction<DeviceChange, void>(
     props.hostClient,
@@ -168,13 +173,19 @@ function DevicePage(props: {
       />
     );
 
-  const run = (work: () => Promise<unknown>, refresh = true, settled?: () => boolean): void => {
+  const run = (
+    work: () => Promise<unknown>,
+    refresh = true,
+    settled?: () => boolean,
+    onDone?: () => void,
+  ): void => {
     if (busy.current) return;
     busy.current = true;
     setNote(null);
     setSignOutFailed(false);
     void change.run({ work, refresh, ...(settled ? { settled } : {}) }).finally(() => {
       busy.current = false;
+      onDone?.();
     });
   };
   if (machine.status === "pending") {
@@ -241,7 +252,8 @@ function DevicePage(props: {
   };
   const toggle = (key: DeviceSwitchKey, on: boolean): void => {
     const access = machine.access;
-    if (access === null) return;
+    if (access === null || busy.current) return;
+    setPendingSwitch({ key, on });
     run(
       async () => {
         const result = await props.hostClient.updateMachineAccess({
@@ -259,7 +271,20 @@ function DevicePage(props: {
           ? false
           : deviceSwitches(now, switchContext).rows.find((row) => row.key === key)?.value === on;
       },
+      () => setPendingSwitch(null),
     );
+  };
+  const switchRow = (row: DeviceSwitchRow, detail = row.detail): NativeSettingsRow => {
+    const saving = pendingSwitch?.key === row.key;
+    return {
+      key: row.key,
+      kind: "toggle",
+      label: row.title,
+      detail: saving ? "Saving…" : detail,
+      disabled: pendingSwitch !== null || row.disabled,
+      value: saving ? pendingSwitch.on : row.value,
+      onChange: (on) => toggle(row.key, on),
+    };
   };
 
   const draft = name ?? machine.name;
@@ -335,7 +360,7 @@ function DevicePage(props: {
       apps.data === null
         ? null
         : phoneUseView({ ...apps.data, hostConnected: canRespond, machine });
-    const appsOn = machine.capabilities?.apps.enabled !== false;
+    const appsOn = deviceSwitchOn(machine, "apps") !== false;
     const setup = phoneScreenSetupLine(machine);
     const tab = TabTargetSchema.safeParse({ kind: "phone", computerId: machine.id });
     const disconnect = screenMac.attached
@@ -355,15 +380,7 @@ function DevicePage(props: {
       },
       ...switches.rows
         .filter(({ key }) => key === "apps")
-        .map((row): NativeSettingsRow => ({
-          key: row.key,
-          kind: "toggle",
-          label: row.title,
-          detail: "See and control its screen",
-          disabled: row.disabled,
-          value: row.value,
-          onChange: (on) => toggle(row.key, on),
-        })),
+        .map((row) => switchRow(row, "See and control its screen")),
       ...(phone !== null && appsOn && screenMac.attached
         ? [
             {
@@ -678,15 +695,7 @@ function DevicePage(props: {
               ...switches.rows.flatMap((row): NativeSettingsRow[] => [
                 row.fixed
                   ? { key: row.key, kind: "text", label: row.title, detail: row.detail }
-                  : {
-                      key: row.key,
-                      kind: "toggle",
-                      label: row.title,
-                      detail: row.detail,
-                      disabled: row.disabled,
-                      value: row.value,
-                      onChange: (on) => toggle(row.key, on),
-                    },
+                  : switchRow(row),
                 ...(row.key === "apps" ? appRows : []),
               ]),
               ...(thisDevice

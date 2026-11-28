@@ -68,9 +68,9 @@ async function directWork(
     /** Each call's own bound (two minutes). */
     readonly executionMs?: number;
     /**
-     * The Home's holder record for each tab a script binds is filed under the binding this
-     * names (another session's), and a kept handle taken up again refreshes none: the task holds
-     * no record of the tabs it works in.
+     * The Home's holder record for each tab a script opens or binds is filed under the binding
+     * this names (another session's), and a kept handle taken up again refreshes none: the task
+     * holds no record of the tabs it works in.
      */
     readonly misfileHolders?: () =>
       { readonly bindingId: string; readonly threadId: string } | undefined;
@@ -87,10 +87,23 @@ async function directWork(
     if (!tab) throw new Error("No such tab.");
     return tab;
   };
+  const misfile = (actor: never) => {
+    const elsewhere = options.misfileHolders?.();
+    return elsewhere
+      ? ({
+          ...(actor as object),
+          threadId: elsewhere.threadId,
+          authority: {
+            ...(actor as { authority: object }).authority,
+            agentBindingId: elsewhere.bindingId,
+          },
+        } as never)
+      : actor;
+  };
   // The agent's own page: the Home's page service opens it and its tab row is written, as the
   // tab service does (whose authorization this fixture does not repeat).
   const open = async (actor: never, target: never, key: string) => {
-    const write = await home().service.pageTabs.open(actor, target, `fixture:${key}`);
+    const write = await home().service.pageTabs.open(misfile(actor), target, `fixture:${key}`);
     await j.tabs.open(write, `fixture:${key}`);
     await home().service.pageTabs.admitted?.(write);
     return { tab: { tabId: write.id } };
@@ -106,18 +119,7 @@ async function directWork(
       const tab = await row(tabId);
       if (!(await readable(actor, tab)))
         throw new OpensteerError({ code: "not_found", message: "Tab not found." });
-      const elsewhere = options.misfileHolders?.();
-      const filed = elsewhere
-        ? ({
-            ...(actor as object),
-            threadId: elsewhere.threadId,
-            authority: {
-              ...(actor as { authority: object }).authority,
-              agentBindingId: elsewhere.bindingId,
-            },
-          } as never)
-        : actor;
-      const binding = await home().service.pageTabs.bindBrowserScript!(filed, tab);
+      const binding = await home().service.pageTabs.bindBrowserScript!(misfile(actor), tab);
       await options.afterBind?.();
       return binding;
     },

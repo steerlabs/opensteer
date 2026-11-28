@@ -1,4 +1,18 @@
-import { createId, type RunnerId, type ThreadId, type UserId } from "@opensteer/core";
+import {
+  DeviceIdSchema,
+  TabIdSchema,
+  createId,
+  type AgentWorkingIn,
+  type RunnerId,
+  type ThreadId,
+  type UserId,
+} from "@opensteer/core";
+import {
+  TabStore,
+  advanceBrowserPoolSlot,
+  closeBrowserPoolSessions,
+  installBrowserPoolSlot,
+} from "@opensteer/database";
 import {
   describeStore,
   enrollTestRunner,
@@ -12,6 +26,16 @@ import { createBrowserSessionId, type HostToClientMessage } from "@opensteer/pro
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
+import { AdministrationService } from "../administration/administration-service.js";
+import { AgentWorkingInRegistry } from "../agent-sessions/agent-working-in.js";
+import {
+  authorizeTabActor,
+  authorizeTabTarget,
+  canReadTab,
+  tabComputer,
+  tabReadAuthority,
+} from "../tabs/tab-authority.js";
+import { TabService } from "../tabs/tab-service.js";
 import { BrowserService, type BrowserRuntimePlacement } from "./browser-service.js";
 import { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import { browserAccessResponse } from "@opensteer/client/host";
@@ -619,6 +643,523 @@ describeStore("Host browser homes", (it) => {
       keptViewer.unregister();
       idle.unregister();
       await browser.close();
+    }
+  });
+
+  it("retires a deleted profile's tabs and emptied groups, stops its live sessions, and clears agent holds through browser.profile.delete", async ({
+    storeFixture: fixture,
+  }) => {
+    const run = await setup(fixture);
+    const tabStore = new TabStore(fixture.database);
+    const unused = async () => {
+      throw new Error("unused");
+    };
+    const tabs = new TabService({
+      store: tabStore,
+      devices: fixture.store,
+      pages: {
+        open: unused,
+        state: async () => ({ state: "asleep", usedBy: [] }),
+        activate: unused,
+        bind: unused,
+        closeViewers: async () => undefined,
+      },
+      nativeTargets: {
+        resolveWindow: unused,
+        windowState: async () => ({ state: "asleep", usedBy: [] }),
+        phoneState: async () => ({ state: "asleep", usedBy: [] }),
+        openOwnerView: unused,
+        closeOwnerViews: async () => undefined,
+        onTargetAcquired: () => () => undefined,
+      },
+      apps: { get: unused },
+      computer: async (owner, id, db) => ({
+        ...(await tabComputer(owner, id, db)),
+        connected: true,
+      }),
+      canRead: canReadTab,
+      readAuthority: tabReadAuthority,
+      canReadTask: async () => true,
+      authorize: authorizeTabTarget,
+      authorizeMembership: authorizeTabActor,
+      onError: (error) => {
+        throw error;
+      },
+    });
+    const workingNotices: AgentWorkingIn[] = [];
+    const workingIn = new AgentWorkingInRegistry((_owner, notice) => workingNotices.push(notice));
+    const errors: unknown[] = [];
+    const browser = new BrowserService({
+      deploymentId: createId("deployment"),
+      hostOrigin: new URL("https://host.test"),
+      repository: fixture.store,
+      signer: {} as never,
+      personal: true,
+      localProfiles: new BrowserLocalProfiles({
+        deploymentId: createId("deployment"),
+        baseUrl: new URL("https://host.test"),
+        repository: fixture.store,
+      }),
+      profileRequestRunner: async () => run.runnerId,
+      onSessionsChanged: () => undefined,
+      onHoldsDropped: (ownerId, tabIds) => {
+        for (const tabId of tabIds) workingIn.forgetTab(ownerId, tabId);
+      },
+      onTabsChanged: (ownerId, tabIds) => {
+        tabs.changed(ownerId, tabIds);
+      },
+      onError: (error) => errors.push(error),
+      targetResolver: { placements: () => [], resolve: () => undefined },
+    });
+    const admin = new AdministrationService(
+      {
+        store: fixture.store,
+        browser,
+      } as never,
+      () => undefined,
+    );
+    const person = { kind: "person", ownerId: run.userId } as const;
+    try {
+      const deletedProfile = await fixture.store.createBrowserProfile({
+        ownerId: run.userId,
+        name: "Shopping",
+        homeRunnerId: run.runnerId,
+        idempotencyKey: "delete-retires-shopping",
+      });
+      const keptProfile = await fixture.store.createBrowserProfile({
+        ownerId: run.userId,
+        name: "Personal",
+        homeRunnerId: run.runnerId,
+        idempotencyKey: "delete-retires-personal",
+      });
+      const deletedSessionId = createBrowserSessionId();
+      const keptSessionId = createBrowserSessionId();
+      for (const [sessionId, profileId] of [
+        [deletedSessionId, deletedProfile.id],
+        [keptSessionId, keptProfile.id],
+      ] as const) {
+        await sql`insert into browser_sessions(id,tab_group_id,origin,profile_id,placement_key,runner_id,runtime_id,state)
+          values(${sessionId},${sessionId},'person',${profileId},'personal',${run.runnerId},'browser','ready')`.execute(
+          fixture.database,
+        );
+      }
+      await fixture.database
+        .insertInto("browserSessionAttachments")
+        .values({
+          sessionId: deletedSessionId,
+          agentBindingId: `thread:${run.threadId}`,
+          ownerId: run.userId,
+        })
+        .execute();
+
+      const computerId = DeviceIdSchema.parse(run.runnerId);
+      const openPage = async (
+        sessionId: typeof deletedSessionId,
+        profileId: typeof deletedProfile.id,
+        profileName: string,
+        suffix: string,
+      ) => {
+        const id = TabIdSchema.parse(`${sessionId}-${suffix}`);
+        await tabStore.open(
+          {
+            id,
+            ownerId: run.userId,
+            computerId,
+            kind: "page",
+            title: suffix,
+            url: `https://example.test/${suffix}`,
+            profileId,
+            profileName,
+            openedBy: "person",
+            pageBinding: { lineageId: sessionId, sessionId, surfaceId: id },
+          },
+          `open-${suffix}`,
+        );
+        return id;
+      };
+      const standaloneTab = await openPage(deletedSessionId, deletedProfile.id, "Shopping", "solo");
+      const groupedTab = await openPage(deletedSessionId, deletedProfile.id, "Shopping", "grouped");
+      const mixedDeletedTab = await openPage(
+        deletedSessionId,
+        deletedProfile.id,
+        "Shopping",
+        "mixed-del",
+      );
+      const closedTab = await openPage(deletedSessionId, deletedProfile.id, "Shopping", "closed");
+      const keptTab = await openPage(keptSessionId, keptProfile.id, "Personal", "kept");
+      await tabStore.close(run.userId, [closedTab], "close-before-delete");
+      const onlyDeletedGroup = await tabStore.organize(
+        run.userId,
+        { tabIds: [groupedTab], group: { name: "Shopping only", color: "blue" } },
+        "group-shopping-only",
+      );
+      const mixedGroup = await tabStore.organize(
+        run.userId,
+        { tabIds: [mixedDeletedTab, keptTab], group: { name: "Mixed", color: "green" } },
+        "group-mixed",
+      );
+      const onlyDeletedGroupId = onlyDeletedGroup.layout.items.find(
+        (item) => item.kind === "group" && item.group.name === "Shopping only",
+      );
+      const mixedGroupId = mixedGroup.layout.items.find(
+        (item) => item.kind === "group" && item.group.name === "Mixed",
+      );
+      expect(onlyDeletedGroupId?.kind).toBe("group");
+      expect(mixedGroupId?.kind).toBe("group");
+
+      // Connected agent holds a Watch record on the deleted profile's tab.
+      const agentSessionId = createId("agentSession");
+      workingIn.begin(agentSessionId, run.threadId, run.userId);
+      workingIn.note(`session:${agentSessionId}`, standaloneTab);
+      expect(workingIn.current(run.userId)).toEqual([
+        { threadId: run.threadId, sessionId: agentSessionId, tabId: standaloneTab },
+      ]);
+      // Warm TabService catalog before deletion.
+      expect((await tabs.list(person, {})).tabs.map((tab) => tab.tabId)).toEqual(
+        expect.arrayContaining([standaloneTab, groupedTab, mixedDeletedTab, keptTab]),
+      );
+
+      // Delete through the administration door (`browser.profile.delete`).
+      await admin.execute(
+        { kind: "person", userId: run.userId },
+        {
+          type: "browser.profile.delete",
+          idempotencyKey: "delete-shopping-profile",
+          profileId: deletedProfile.id,
+        },
+      );
+
+      // No stop errors (previously getBrowserSessionForOwner threw not_found on archived profiles).
+      expect(errors).toEqual([]);
+      // Person's tab list no longer shows the deleted profile's tabs or its emptied group, while
+      // preserving the other profile's tab and the mixed group's surviving member.
+      const listed = await tabs.list(person, {});
+      expect(listed.tabs.map((tab) => tab.tabId)).toEqual([keptTab]);
+      expect(listed.groups).toEqual([
+        expect.objectContaining({
+          name: "Mixed",
+          tabIds: [keptTab],
+        }),
+      ]);
+      // Closed tabs of the deleted profile are also retired (cannot be reopened).
+      for (const retiredId of [standaloneTab, groupedTab, mixedDeletedTab, closedTab])
+        expect(await tabStore.get(run.userId, retiredId, true)).toBeNull();
+      // Live session was stopped and its attachment cleared; the other profile's session stays ready.
+      expect(
+        (
+          await fixture.database
+            .selectFrom("browserSessions")
+            .select("state")
+            .where("id", "=", deletedSessionId)
+            .executeTakeFirstOrThrow()
+        ).state,
+      ).toBe("closed");
+      expect(
+        await fixture.database
+          .selectFrom("browserSessionAttachments")
+          .select("sessionId")
+          .where("sessionId", "=", deletedSessionId)
+          .execute(),
+      ).toEqual([]);
+      expect(
+        (
+          await fixture.database
+            .selectFrom("browserSessions")
+            .select("state")
+            .where("id", "=", keptSessionId)
+            .executeTakeFirstOrThrow()
+        ).state,
+      ).toBe("ready");
+      // Connected agent's Watch record on the deleted profile's tab was cleared.
+      expect(workingIn.current(run.userId)).toEqual([]);
+      expect(workingNotices.at(-1)).toEqual({
+        threadId: run.threadId,
+        sessionId: agentSessionId,
+        tabId: null,
+      });
+    } finally {
+      tabs.dispose();
+      await browser.close();
+    }
+  });
+
+  it("publishes exactly one tab-removal notice after invalidating the warm catalog on profile deletion while keeping session notices", async ({
+    storeFixture: fixture,
+  }) => {
+    const run = await setup(fixture);
+    const tabStore = new TabStore(fixture.database);
+    const unused = async () => {
+      throw new Error("unused");
+    };
+    const tabs = new TabService({
+      store: tabStore,
+      devices: fixture.store,
+      pages: {
+        open: unused,
+        state: async () => ({ state: "asleep", usedBy: [] }),
+        activate: unused,
+        bind: unused,
+        closeViewers: async () => undefined,
+      },
+      nativeTargets: {
+        resolveWindow: unused,
+        windowState: async () => ({ state: "asleep", usedBy: [] }),
+        phoneState: async () => ({ state: "asleep", usedBy: [] }),
+        openOwnerView: unused,
+        closeOwnerViews: async () => undefined,
+        onTargetAcquired: () => () => undefined,
+      },
+      apps: { get: unused },
+      computer: async (owner, id, db) => ({
+        ...(await tabComputer(owner, id, db)),
+        connected: true,
+      }),
+      canRead: canReadTab,
+      readAuthority: tabReadAuthority,
+      canReadTask: async () => true,
+      authorize: authorizeTabTarget,
+      authorizeMembership: authorizeTabActor,
+      onError: (error) => {
+        throw error;
+      },
+    });
+    const announcements: string[] = [];
+    const person = { kind: "person", ownerId: run.userId } as const;
+    let tabListAtNotice: Promise<string[]> | null = null;
+    let changedTabsAtNotice: string[] = [];
+    let recording = false;
+    const removeHooks = fixture.observePersonalReactions({
+      notice: (notice) => {
+        if (!recording) return;
+        // Mirrors runtime.ts wake(): invalidate the warm catalog before publishing the durable revision.
+        if (notice.changedTabs.size > 0)
+          tabs.changed(
+            undefined,
+            [...notice.changedTabs].map((id) => TabIdSchema.parse(id)),
+          );
+        else if (notice.resourceKinds.has("tab-layout")) tabs.changed();
+        for (const kind of notice.resourceKinds) announcements.push(`durable:${kind}`);
+        if (notice.resourceKinds.has("tab") && !tabListAtNotice) {
+          changedTabsAtNotice = [...notice.changedTabs];
+          tabListAtNotice = tabs.list(person, {}).then((view) => view.tabs.map((t) => t.tabId));
+        }
+      },
+      reaction: () => undefined,
+    });
+    const browser = new BrowserService({
+      deploymentId: createId("deployment"),
+      hostOrigin: new URL("https://host.test"),
+      repository: fixture.store,
+      signer: {} as never,
+      personal: true,
+      localProfiles: new BrowserLocalProfiles({
+        deploymentId: createId("deployment"),
+        baseUrl: new URL("https://host.test"),
+        repository: fixture.store,
+      }),
+      profileRequestRunner: async () => run.runnerId,
+      onSessionsChanged: (_ids, options) => {
+        if (!recording) return;
+        announcements.push(
+          "announce:browser-placement",
+          "announce:browser-availability",
+          ...(options?.tabs === false ? [] : ["announce:tab"]),
+        );
+      },
+      onTabsChanged: (ownerId, tabIds, stateChanged) => {
+        tabs.changed(ownerId, tabIds);
+        if (recording && stateChanged) announcements.push("announce:tab");
+      },
+      onError: (error) => {
+        throw error;
+      },
+      targetResolver: { placements: () => [], resolve: () => undefined },
+    });
+    const admin = new AdministrationService(
+      { store: fixture.store, browser } as never,
+      () => undefined,
+    );
+    try {
+      const profile = await fixture.store.createBrowserProfile({
+        ownerId: run.userId,
+        name: "Ephemeral",
+        homeRunnerId: run.runnerId,
+        idempotencyKey: "one-notice-profile",
+      });
+      const sessionId = createBrowserSessionId();
+      await sql`insert into browser_sessions(id,tab_group_id,origin,profile_id,placement_key,runner_id,runtime_id,state)
+        values(${sessionId},${sessionId},'person',${profile.id},'ephemeral',${run.runnerId},'browser','ready')`.execute(
+        fixture.database,
+      );
+      const tabId = TabIdSchema.parse(`${sessionId}-tab`);
+      await tabStore.open(
+        {
+          id: tabId,
+          ownerId: run.userId,
+          computerId: DeviceIdSchema.parse(run.runnerId),
+          kind: "page",
+          title: "One Notice Tab",
+          url: "https://example.test/one",
+          profileId: profile.id,
+          profileName: "Ephemeral",
+          openedBy: "person",
+          pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
+        },
+        "one-notice-open",
+      );
+      // Warm the person's tab catalog before deletion.
+      expect((await tabs.list(person, {})).tabs.map((t) => t.tabId)).toEqual([tabId]);
+
+      recording = true;
+      await admin.execute(
+        { kind: "person", userId: run.userId },
+        {
+          type: "browser.profile.delete",
+          idempotencyKey: "one-notice-delete",
+          profileId: profile.id,
+        },
+      );
+      recording = false;
+
+      const tabNotices = announcements.filter(
+        (entry) => entry === "durable:tab" || entry === "announce:tab",
+      );
+      expect(tabNotices, JSON.stringify(announcements)).toEqual(["durable:tab"]);
+      expect(changedTabsAtNotice).toEqual([tabId]);
+      expect(await tabListAtNotice).toEqual([]);
+      expect(
+        announcements.some((entry) => entry.endsWith(":browser-placement")),
+        JSON.stringify(announcements),
+      ).toBe(true);
+      expect(
+        announcements.some((entry) => entry.endsWith(":browser-availability")),
+        JSON.stringify(announcements),
+      ).toBe(true);
+    } finally {
+      removeHooks();
+      tabs.dispose();
+      await browser.close();
+    }
+  });
+
+  it("suppresses durable tab bumps when a pooled session of an archived profile closes asynchronously via advanceBrowserPoolSlot or closeBrowserPoolSessions", async ({
+    storeFixture: fixture,
+  }) => {
+    const run = await setup(fixture);
+    const archivedProfile = await fixture.store.createBrowserProfile({
+      ownerId: run.userId,
+      name: "Archived Pooled",
+      homeRunnerId: run.runnerId,
+      idempotencyKey: "archived-pooled-late-stop",
+    });
+    const activeProfile = await fixture.store.createBrowserProfile({
+      ownerId: run.userId,
+      name: "Active Pooled",
+      homeRunnerId: run.runnerId,
+      idempotencyKey: "active-pooled-late-stop",
+    });
+    const slotId = `bps_${randomUUID()}`;
+    const runtimeId = "pool-runtime";
+    const slot = await installBrowserPoolSlot(fixture.database, {
+      runnerId: run.runnerId,
+      slotId,
+      term: 1,
+      runtimeId,
+      instanceId: randomUUID(),
+      epoch: 1,
+    });
+    const archivedParkSession = createBrowserSessionId();
+    const archivedEndSession = createBrowserSessionId();
+    const activeSession = createBrowserSessionId();
+    const guestSession = createBrowserSessionId();
+    const insertClosingPoolSession = async (
+      sessionId: ReturnType<typeof createBrowserSessionId>,
+      profileId: typeof archivedProfile.id | null,
+    ) => {
+      await fixture.database
+        .insertInto("browserSessions")
+        .values({
+          id: sessionId,
+          tabGroupId: sessionId,
+          origin: "person",
+          profileId,
+          placementKey: `runner:${run.runnerId}`,
+          runnerId: run.runnerId,
+          runtimeId,
+          state: "closing",
+          opener: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          closedAt: null,
+        })
+        .execute();
+      await fixture.database
+        .insertInto("browserPoolSessions")
+        .values({
+          sessionId,
+          runnerId: run.runnerId,
+          slotId,
+          term: 1,
+        })
+        .execute();
+    };
+    await insertClosingPoolSession(archivedParkSession, archivedProfile.id);
+    await fixture.database
+      .updateTable("browserProfiles")
+      .set({ archivedAt: new Date() })
+      .where("id", "=", archivedProfile.id)
+      .execute();
+
+    const bumped: string[] = [];
+    const unhook = fixture.observePersonalReactions({
+      notice: (notice) => {
+        for (const kind of notice.resourceKinds) bumped.push(kind);
+      },
+      reaction: () => undefined,
+    });
+    try {
+      // 1. A late park closing an archived profile's closing session via advanceBrowserPoolSlot
+      // must suppress `tab` from durable archive state while keeping placement & availability.
+      await advanceBrowserPoolSlot(
+        fixture.database,
+        slot,
+        { phase: "parked" },
+        {
+          losses: [{ sessionId: archivedParkSession, reason: "paused", surfaces: [] }],
+          closing: { kind: "guest-paused" },
+        },
+      );
+      expect(bumped).not.toContain("tab");
+      expect(bumped).toContain("browser-placement");
+      expect(bumped).toContain("browser-availability");
+
+      // 2. Direct closeBrowserPoolSessions (without any caller flag) on an archived profile's
+      // session also suppresses `tab` from durable archive state.
+      await insertClosingPoolSession(archivedEndSession, archivedProfile.id);
+      bumped.length = 0;
+      await closeBrowserPoolSessions(fixture.database, slot, [archivedEndSession], {
+        kind: "runtime-ended",
+      });
+      expect(bumped).not.toContain("tab");
+      expect(bumped).toContain("browser-placement");
+      expect(bumped).toContain("browser-availability");
+
+      // 3. Active profile and Guest sessions still bump `tab` on close.
+      await insertClosingPoolSession(activeSession, activeProfile.id);
+      bumped.length = 0;
+      await closeBrowserPoolSessions(fixture.database, slot, [activeSession], {
+        kind: "runtime-ended",
+      });
+      expect(bumped).toContain("tab");
+
+      await insertClosingPoolSession(guestSession, null);
+      bumped.length = 0;
+      await closeBrowserPoolSessions(fixture.database, slot, [guestSession], {
+        kind: "runtime-ended",
+      });
+      expect(bumped).toContain("tab");
+    } finally {
+      unhook();
     }
   });
 });

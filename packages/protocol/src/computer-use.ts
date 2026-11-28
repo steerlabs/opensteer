@@ -1223,6 +1223,8 @@ const computerUseEventVariants = [
     event: z.literal("session.stopped"),
     params: z.strictObject({
       reason: ComputerUseStopReasonSchema,
+      /** A local fence announced without a receipt from the helper. */
+      unconfirmed: z.literal(true).optional(),
       /**
        * The Run the stopped session belonged to. A phone names it, because
        * its owner's Stop can reach the Host only on a later stream, after the
@@ -1292,18 +1294,43 @@ export type ComputerUseBridgeMethod = z.infer<typeof ComputerUseBridgeMethodSche
 const WritingDataInvokeSchema = z.object({ effect: z.literal("write") });
 
 /**
- * Whether a request may have changed something on the Mac, which decides what
- * a lost, late or unreadable answer is at every hop: `outcome-unknown` rather
- * than `failed`, because a caller told "failed" asks again and the change
- * happens twice. An action batch and an iMessage reply always may; a data
- * operation when it writes.
+ * Whether a request may change something, and a lost, late or unreadable answer
+ * must stay unknown. A phone observation can take an exclusive hold when the
+ * Host has not yet confirmed that session.
  */
-export function computerUseRequestMayHaveEffect(method: string, params: unknown): boolean {
+export function computerUseRequestMayHaveEffect(
+  method: string,
+  params: unknown,
+  phoneHold = false,
+): boolean {
   if (
+    method === "windows" ||
+    method === "bind" ||
+    method === "session.windows" ||
+    method === "session.bind"
+  )
+    return !(
+      typeof params === "object" &&
+      params !== null &&
+      "noLaunch" in params &&
+      params.noLaunch === true
+    );
+  if (
+    (method === "observe" && phoneHold) ||
+    method === "act" ||
+    method === "click" ||
+    method === "type" ||
+    method === "key" ||
+    method === "setValue" ||
+    method === "scroll" ||
     method === "display.input" ||
     method === "display.input-reset" ||
     method === "session.act" ||
+    method === "session.close" ||
     method === "iphone.perform" ||
+    method === "iphone.session.open" ||
+    method === "iphone.session.close" ||
+    method === "iphone.cancel" ||
     method === "imessage.send" ||
     method === "view.open" ||
     method === "view.activate"

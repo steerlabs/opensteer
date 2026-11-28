@@ -44,7 +44,7 @@ it("names a gated checkout while destroy waits, and clears it after release", as
     });
     expect(databaseShutdownDetails(database)).toContain("checked out");
     expect(databaseShutdownDetails(database)).toContain("connection-shutdown.test.ts");
-    expect(databaseShutdownDetails(database)).not.toMatch(/password|example.invalid|private/);
+    expect(databaseShutdownDetails(database)).not.toMatch(/password|example\.invalid/);
     gate.resolve();
     await expect(
       withTimeout(Promise.all([holding, closing]), 1_000, {

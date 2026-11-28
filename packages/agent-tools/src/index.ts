@@ -12,6 +12,7 @@ export {
   isRemovedConnectionTool,
 } from "./tools-for.js";
 export {
+  connectionComputerKinds,
   connectionDirectTools,
   connectionTaskKind,
   connectionToolDescription,

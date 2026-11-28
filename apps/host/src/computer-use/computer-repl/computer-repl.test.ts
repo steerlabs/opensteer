@@ -50,6 +50,115 @@ function setup(invoke?: ConstructorParameters<typeof ComputerReplService>[0]["in
   };
 }
 describe("computer REPL worker boundary", () => {
+  it.each([
+    [undefined, "It changed nothing. It is safe to try again."],
+    [false, "It changed nothing. It is safe to try again."],
+    [true, "1 action completed. The last was release."],
+  ])("reports the connected computer deadline after release %s", async (released, detail) => {
+    const entered = Promise.withResolvers<void>();
+    const schedule = vi.fn((_callback: () => void) => () => undefined);
+    const waiting = new ComputerReplService({
+      invoke: async ({ operation }) => ({
+        value: operation === "phones" ? [{ id: "phone", name: "Phone" }] : { released: !!released },
+      }),
+      clock: { now: Date.now, schedule },
+      wait: async (_ms, signal) => {
+        entered.resolve();
+        return new Promise<void>((_, reject) =>
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        );
+      },
+    });
+    try {
+      const running = waiting.execute(
+        {
+          runId: "deadline",
+          generation: 1,
+          reportUnknownEffects: true,
+          connectedAgent: true,
+          tracksScriptSends: true,
+        },
+        released === undefined
+          ? "await sleep(100000)"
+          : 'await (await phone("phone")).release(); await sleep(100000)',
+      );
+      await entered.promise;
+      schedule.mock.calls[0]![0]();
+      expect(await running).toMatchObject({
+        structuredContent: {
+          error: {
+            code: "deadline",
+            message: `Computer code reached its 100 second deadline. ${detail}`,
+          },
+        },
+      });
+    } finally {
+      await waiting.close();
+    }
+  });
+  it.each([true, false])(
+    "accounts for an iPhone observe that can take a hold (answered: %s)",
+    async (answered) => {
+      const entered = Promise.withResolvers<void>();
+      const held = Promise.withResolvers<void>();
+      const schedule = vi.fn((_callback: () => void) => () => undefined);
+      const repl = new ComputerReplService({
+        clock: { now: Date.now, schedule },
+        wait: async (_ms, signal) => {
+          entered.resolve();
+          return new Promise<void>((_, reject) =>
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
+          );
+        },
+        invoke: async ({ operation, markSubmitted }) => {
+          if (operation === "apps") return { value: [] };
+          if (operation === "phones") return { value: [{ id: "phone", name: "iPhone" }] };
+          if (operation === "bind") return { value: {} };
+          markSubmitted!();
+          if (!answered) {
+            entered.resolve();
+            await held.promise;
+          }
+          return { value: { observation: {} } };
+        },
+      });
+      try {
+        const running = repl.execute(
+          {
+            runId: "iphone-hold",
+            generation: 1,
+            reportUnknownEffects: true,
+            connectedAgent: true,
+            tracksScriptSends: true,
+            readOnly: true,
+          },
+          "await (await target).observe(); await sleep(100000)",
+        );
+        await entered.promise;
+        schedule.mock.calls[0]![0]();
+        expect(await running).toMatchObject({
+          structuredContent: {
+            error: answered
+              ? {
+                  code: "deadline",
+                  message:
+                    "Computer code reached its 100 second deadline. 1 action completed. The last was observe.",
+                  next: "Check the current state before trying again.",
+                }
+              : {
+                  code: "outcome-unknown",
+                  method: "observe",
+                  message:
+                    "Computer code reached its 100 second deadline. A dispatched action may already have happened; observe before deciding what to do next.",
+                },
+          },
+        });
+      } finally {
+        held.resolve();
+        await repl.close();
+      }
+    },
+  );
   it("keeps a connected agent's prints on both sides of a caught lost device reply", async () => {
     const window = {
       ref: "w",

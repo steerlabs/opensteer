@@ -13,6 +13,7 @@ import {
   tabsMaxPerMutation,
   tabsMaxPerOwner,
   type AppId,
+  type BrowserProfileId,
   type BrowserSessionId,
   type ClosedPosition,
   type PageBinding,
@@ -899,32 +900,55 @@ export class TabStore {
         .execute(databaseOperationOptions());
     removeIds(layout, new Set(open.map((row) => row.id)));
   }
-  async #latest(tx: TabTransaction, binding: PageBinding) {
+  async #latest(tx: TabTransaction, binding: PageBinding, ownerId: UserId) {
     const latest = await tx
       .selectFrom("browserSessions")
-      .select(["id", "origin", "opener", "state"])
-      .where("tabGroupId", "=", binding.lineageId)
-      .orderBy("createdAt", "desc")
-      .orderBy("id", "desc")
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.id",
+        "browserSessions.origin",
+        "browserSessions.opener",
+        "browserSessions.state",
+        "browserSessions.profileId",
+        "browserProfiles.ownerId as profileOwnerId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
+      .where("browserSessions.tabGroupId", "=", binding.lineageId)
+      .orderBy("browserSessions.createdAt", "desc")
+      .orderBy("browserSessions.id", "desc")
       .executeTakeFirst(databaseOperationOptions());
     return latest?.id === binding.sessionId &&
       latest.origin !== "trigger" &&
-      latest.opener?.kind !== "automation"
+      latest.opener?.kind !== "automation" &&
+      (latest.profileId === null ||
+        (latest.profileOwnerId === ownerId && latest.profileArchivedAt === null))
       ? latest
       : null;
   }
   async #session(tx: TabTransaction, binding: PageBinding, ownerId: UserId) {
     const session = await tx
       .selectFrom("browserSessions")
-      .select(["id", "origin", "opener", "state", "runnerId"])
-      .where("id", "=", binding.sessionId)
-      .where("tabGroupId", "=", binding.lineageId)
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.id",
+        "browserSessions.origin",
+        "browserSessions.opener",
+        "browserSessions.state",
+        "browserSessions.runnerId",
+        "browserSessions.profileId",
+        "browserProfiles.ownerId as profileOwnerId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
+      .where("browserSessions.id", "=", binding.sessionId)
+      .where("browserSessions.tabGroupId", "=", binding.lineageId)
       .executeTakeFirst(databaseOperationOptions());
     if (
       !session ||
       session.origin === "trigger" ||
       session.opener?.kind === "automation" ||
-      ["closed", "failed"].includes(session.state)
+      ["closed", "failed"].includes(session.state) ||
+      (session.profileId !== null &&
+        (session.profileOwnerId !== ownerId || session.profileArchivedAt !== null))
     )
       return null;
     const viewer = await tx
@@ -946,7 +970,7 @@ export class TabStore {
     PageBindingSchema.parse(binding);
     return commitPersonalMutation(this.database, async (tx, mutation) => {
       await this.#lock(tx, ownerId, [], [tabId]);
-      if (!(await this.#latest(tx, binding))) return null;
+      if (!(await this.#latest(tx, binding, ownerId))) return null;
       const row = await this.get(ownerId, tabId, false, tx);
       if (
         !row ||
@@ -1041,4 +1065,79 @@ export class TabStore {
       return owned.map((row) => row.id);
     });
   }
+}
+
+/**
+ * Retires every tab belonging to `profileId` for `ownerId` inside the profile-deletion
+ * transaction, stripping them from `tab_layouts` and dropping any tab group that becomes empty as
+ * a result (preserving non-empty mixed groups and unrelated groups).
+ */
+export async function removeProfileTabs(
+  tx: TabTransaction,
+  ownerId: UserId,
+  profileId: BrowserProfileId,
+): Promise<TabId[]> {
+  return commitPersonalMutation(tx, async (tx, mutation) => {
+    const matched = await tx
+      .selectFrom("personalTabs")
+      .select("id")
+      .where("ownerId", "=", ownerId)
+      .where("profileId", "=", profileId)
+      .orderBy("id")
+      .execute(databaseOperationOptions());
+    if (!matched.length) return [];
+    const ids = matched.map((row) => row.id);
+    const removedSet = new Set(ids);
+    const stored = await tx
+      .selectFrom("tabLayouts")
+      .selectAll()
+      .where("ownerId", "=", ownerId)
+      .forNoKeyUpdate()
+      .executeTakeFirst(databaseOperationOptions());
+    await tx
+      .selectFrom("personalTabs")
+      .select("id")
+      .where("ownerId", "=", ownerId)
+      .where((eb) => eb.or([eb("closedAt", "is", null), eb("id", "in", ids)]))
+      .orderBy("id")
+      // FOR UPDATE: The profile's tabs are deleted below; lock keys in deterministic order.
+      .forUpdate()
+      .execute(databaseOperationOptions());
+    await tx
+      .deleteFrom("personalTabs")
+      .where("ownerId", "=", ownerId)
+      .where("id", "in", ids)
+      .execute(databaseOperationOptions());
+    if (stored) {
+      const layout = TabLayoutSchema.parse({
+        revision: Number(stored.revision),
+        items: stored.items,
+      });
+      const before = JSON.stringify(layout.items);
+      layout.items = layout.items.flatMap<TabLayout["items"][number]>((item) => {
+        if (item.kind === "tab") return removedSet.has(item.tabId) ? [] : [item];
+        if (!item.group.tabIds.some((id) => removedSet.has(id))) return [item];
+        const remaining = item.group.tabIds.filter((id) => !removedSet.has(id));
+        return remaining.length
+          ? [{ kind: "group" as const, group: { ...item.group, tabIds: remaining } }]
+          : [];
+      });
+      if (JSON.stringify(layout.items) !== before) {
+        layout.revision++;
+        TabLayoutSchema.parse(layout);
+        await tx
+          .updateTable("tabLayouts")
+          .set({
+            revision: layout.revision,
+            items: sql`${JSON.stringify(layout.items)}::jsonb`,
+          })
+          .where("ownerId", "=", ownerId)
+          .execute(databaseOperationOptions());
+        mutation.bumpResource("tab-layout");
+      }
+    }
+    mutation.bumpResource("tab");
+    mutation.changeTabs(ids);
+    return ids;
+  });
 }

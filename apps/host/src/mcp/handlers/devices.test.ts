@@ -41,3 +41,47 @@ it("carries a lineage Run's connection to computer use, and nothing for the pers
     expect.not.objectContaining({ connectionWork: expect.anything() }),
   ]);
 });
+
+it("refuses a missing app on computer_use before looking up the target", async () => {
+  const sessionComputerTarget = vi.fn(async () => {
+    throw new Error("should not look up target");
+  });
+  const handlers = new DeviceToolHandlers({
+    devices: { sessionComputerTarget } as never,
+    access: {} as never,
+    sessions: {} as never,
+  });
+  const deviceId = createId("device");
+  const baseCaller = {
+    kind: "connection" as const,
+    key: "connection:test",
+    userId: createId("user"),
+    connectionId: "agc_test",
+    grantRevision: 1,
+    accessMode: "full-access" as const,
+  };
+  const macOnly = {
+    ...baseCaller,
+    grant: {
+      scope: "selected" as const,
+      tasks: false,
+      resources: [
+        {
+          kind: "computer-app" as const,
+          deviceId,
+          approvalId: "con_test",
+          app: { kind: "mac-app" as const, bundleId: "com.apple.Notes", teamId: null },
+        },
+      ],
+    },
+  } as unknown as AgentCaller;
+  await expect(
+    handlers.computer_use({
+      caller: macOnly,
+      input: { code: "help()", computerId: deviceId },
+      operationKey: "k1",
+    } as never),
+  ).rejects.toMatchObject({ code: "bad_request" });
+
+  expect(sessionComputerTarget).not.toHaveBeenCalled();
+});

@@ -734,6 +734,11 @@ export async function createHostRuntime(
     removeMutationHooks = installPersonalMutationHooks(database, {
       wake: (notice) => {
         if (BigInt(notice.head) > BigInt(syncHead)) syncHead = notice.head;
+        // Invalidate the warm tab catalog before publishing durable `tab` / `tab-layout`
+        // revisions so clients reacting immediately to the durable notice never read stale rows.
+        if (notice.changedTabs.size > 0)
+          tabs?.changed(undefined, [...notice.changedTabs] as import("@opensteer/core").TabId[]);
+        else if (notice.resourceKinds.has("tab-layout")) tabs?.changed();
         realtime.wake(notice.head, notice.changedScopes);
         refreshReturnHints(notice.resourceKinds);
         // A durable card can pass an on-screen provisional one: move that card to the new tail.
@@ -1081,6 +1086,7 @@ export async function createHostRuntime(
     });
     computerUse = new ComputerUseService({
       deploymentId: deployment.id,
+      agentSessionDatabase: store.database,
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),
       onAuthorityRevoked: ({ runId, bindingGeneration }) =>
         devices.resetComputerGeneration(runId, bindingGeneration),
@@ -1378,8 +1384,12 @@ export async function createHostRuntime(
         write: (input) => store.recordRunTabPlace(input),
         notice: (owner, notice) => realtime.sendToUsers([owner], notice),
       },
-      onSessionsChanged: () =>
-        announceResources("browser-placement", "browser-availability", "tab"),
+      onSessionsChanged: (_sessionIds, options) =>
+        announceResources(
+          "browser-placement",
+          "browser-availability",
+          ...(options?.tabs === false ? [] : (["tab"] as const)),
+        ),
       onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
       onProfileArchived: () => realtime.refreshObservedBrowserUsage(),
       onError: (error) => reportBrowserUsageError(error),

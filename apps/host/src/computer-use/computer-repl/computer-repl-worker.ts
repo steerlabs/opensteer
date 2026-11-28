@@ -1,5 +1,6 @@
 import { DeviceRefusalContextSchema } from "@opensteer/protocol";
 /// <reference lib="dom" />
+import { performance } from "node:perf_hooks";
 import { parentPort, workerData } from "node:worker_threads";
 import { setImmediate as yieldTurn } from "node:timers/promises";
 import variant from "@jitl/quickjs-singlefile-mjs-release-sync";
@@ -36,14 +37,21 @@ interface HostCall {
   request?: ReplRequest;
   promise: QuickJSDeferredPromise;
 }
+interface SliceLimit {
+  limit: "cpu" | "wall";
+  threadCpuMs: number;
+  hostCpuMs: number;
+  wallMs: number;
+}
 interface Call {
   id: string;
+  code: string;
   cpu: number;
   sliceStart: number;
   /** The Host's own CPU time inside the current slice (see `hostWork`). */
   sliceHost: number;
   sliceHeldSince: number;
-  failure: ReplFailure | undefined;
+  failure: (ReplFailure & { sliceLimit?: SliceLimit }) | undefined;
   poisoned: boolean;
   body: QuickJSHandle;
   queue: HostCall[];
@@ -111,17 +119,23 @@ function threadCpuMs(): number {
   const { user, system } = process.threadCpuUsage();
   return (user + system) / 1000;
 }
-function sliceFailure(cpu: number, held: number): ReplFailure | undefined {
-  if (cpu > limits.sliceMs)
-    return failure(
-      "The code ran for 100 ms of CPU time without awaiting; split the work.",
-      "slice-limit",
-    );
-  if (held > limits.sliceWallMs)
-    return failure(
-      `The code held the shared ${label.toLowerCase()} worker for 1 second without awaiting; split the work.`,
-      "slice-limit",
-    );
+function sliceFailure(threadCpuMs: number, hostCpuMs: number, wallMs: number): Call["failure"] {
+  if (threadCpuMs - hostCpuMs > limits.sliceMs)
+    return {
+      ...failure(
+        "The code ran for 100 ms of CPU time without awaiting; split the work.",
+        "slice-limit",
+      ),
+      sliceLimit: { limit: "cpu", threadCpuMs, hostCpuMs, wallMs },
+    };
+  if (wallMs > limits.sliceWallMs)
+    return {
+      ...failure(
+        `The code held the shared ${label.toLowerCase()} worker for 1 second without awaiting; split the work.`,
+        "slice-limit",
+      ),
+      sliceLimit: { limit: "wall", threadCpuMs, hostCpuMs, wallMs },
+    };
   return undefined;
 }
 // What the Host does for a guest inside its slice (measuring, copying and
@@ -137,7 +151,7 @@ function hostWork<T>(call: Call, fn: () => T): T {
     call.sliceHost += threadCpuMs() - start;
   }
 }
-function slice<T>(context: Context, fn: () => T): T {
+function slice<T>(context: Context, fn: () => T, firstSlice?: true): T {
   const call = context.call;
   const start = threadCpuMs();
   const heldSince = performance.now();
@@ -152,10 +166,23 @@ function slice<T>(context: Context, fn: () => T): T {
     if (call) {
       const elapsed = threadCpuMs() - start;
       call.cpu += elapsed;
-      const exceeded = sliceFailure(elapsed - call.sliceHost, performance.now() - heldSince);
+      const exceeded = sliceFailure(elapsed, call.sliceHost, performance.now() - heldSince);
       if (exceeded) {
         call.poisoned = true;
         call.failure ??= exceeded;
+        if (call.failure.sliceLimit) {
+          const clock = call.failure.sliceLimit;
+          console.warn(
+            browser ? "browser.repl.slice-limit" : "computer.repl.slice-limit",
+            JSON.stringify({
+              ...clock,
+              firstSlice: firstSlice === true,
+              workerAgeMs: heldSince + clock.wallMs - performance.nodeTiming.environment,
+              scriptChars: call.code.length,
+            }),
+          );
+          delete call.failure.sliceLimit;
+        }
       }
       if (call.cpu > limits.cpuMs) {
         call.poisoned = true;
@@ -210,7 +237,7 @@ async function create(key: string, connection: boolean): Promise<Context> {
     if (!call) return false;
     const used = threadCpuMs() - call.sliceStart;
     if (!call.failure)
-      call.failure = sliceFailure(used - call.sliceHost, performance.now() - call.sliceHeldSince);
+      call.failure = sliceFailure(used, call.sliceHost, performance.now() - call.sliceHeldSince);
     if (!call.failure && call.cpu + used > limits.cpuMs)
       call.failure = failure("The code exceeded 5 seconds of CPU time.", "cpu-limit");
     if (call.failure?.code === "slice-limit" || call.failure?.code === "cpu-limit")
@@ -715,6 +742,7 @@ async function handle(input: unknown) {
     // Install the call before eval so the first synchronous slice is bounded.
     const call: Call = {
       id: message.callId,
+      code: message.code,
       cpu: 0,
       sliceStart: 0,
       sliceHost: 0,
@@ -738,11 +766,14 @@ async function handle(input: unknown) {
       if (message.events) receiveEvents(context, message.events);
       send({ type: "ready", context: message.context, callId: call.id });
     }
-    const result = slice(context, () =>
-      context.vm.evalCode(
-        `(async () => {\n${message.code}\n})()${browser ? "" : ".then(value => value === undefined ? undefined : JSON.stringify(value))"}`,
-        browser ? "browser.js" : "computer.js",
-      ),
+    const result = slice(
+      context,
+      () =>
+        context.vm.evalCode(
+          `(async () => {\n${call.code}\n})()${browser ? "" : ".then(value => value === undefined ? undefined : JSON.stringify(value))"}`,
+          browser ? "browser.js" : "computer.js",
+        ),
+      true,
     );
     if (result.error) {
       const rejected = readFailure(context, result.error);

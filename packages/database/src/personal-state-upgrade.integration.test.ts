@@ -1,5 +1,5 @@
 import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
-import { RequestSchema, createId } from "@opensteer/core";
+import { RequestSchema, TabIdSchema, createId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { expect, test, vi } from "vitest";
 import { createDatabase } from "./connection.js";
@@ -43,6 +43,14 @@ import { cloneTestDatabase } from "./test-database.test-support.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { completePersonalToolCall } from "./personal-tool-calls.js";
 import { resolvePersonalToolImages } from "./personal-tool-images.js";
+import { seedPersonalFixture } from "./personal-fixture.test-support.js";
+import { enrollTestRunner } from "./store.integration.test-support.js";
+import { personalReachableGrant } from "./runner-store.js";
+import { OpensteerStore } from "./store.js";
+import { TabStore } from "./tab-store.js";
+import { bindBrowserProfile } from "./browser-profile-storage-store.js";
+import { LocalProfileBindingSchema } from "@opensteer/protocol";
+import { jsonValue } from "./store-primitives.js";
 import { liveRequest } from "./store.integration.test-support.js";
 import { requestInsert } from "./request-persistence.js";
 import { transcriptIdentity } from "./transcript-store.js";
@@ -134,6 +142,8 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0121_one_device_switch_record_contract",
         "0122_command_attempt_outcomes",
         "0123_agent_operation_endings",
+        "0124_agent_session_device_holds",
+        "0125_retire_archived_profile_tabs",
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`
@@ -856,5 +866,534 @@ test("resumes offline settlement of a Run with a large live node set", async () 
     expect(subagent).toEqual({ kind: "unavailable" });
   } finally {
     await fixture.close();
+  }
+});
+
+test("0125 retires only tabs with explicit deletion provenance, preserves device-removal and ambiguous archived tabs, and advances durable sync stamps only when rows retire", async () => {
+  const clone = await cloneTestDatabase("host");
+  const database = createDatabase<DatabaseSchema>({ connectionString: clone.url });
+  try {
+    await sql`drop schema public cascade; create schema public`.execute(database);
+    const all = await migrationProvider().getMigrations();
+    const through0124 = Object.fromEntries(
+      Object.entries(all).filter(([name]) => name <= "0124_agent_session_device_holds"),
+    );
+    await migrateToLatest(database, {
+      async getMigrations() {
+        return through0124;
+      },
+    });
+    const owner = await seedPersonalFixture(database, "/fixture/retire-archived-tabs");
+    const store = new OpensteerStore(database);
+    const principal = await database
+      .selectFrom("principals")
+      .select("id")
+      .where("userId", "=", owner.userId)
+      .executeTakeFirstOrThrow();
+
+    // Enable remote access so a second computer can enroll and then be removed via real revokeRunner.
+    const enabled = {
+      generation: 1,
+      mode: "private" as const,
+      routeOrigin: "https://personal.test.invalid",
+      updatedAt: new Date(),
+    };
+    await database
+      .insertInto("personalRemoteAccess")
+      .values({ singletonKey: "personal", ...enabled })
+      .onConflict((c) => c.column("singletonKey").doUpdateSet(enabled))
+      .execute();
+
+    // A second computer that will be removed via real revokeRunner (device removal).
+    const removedRunnerId = createId("runner");
+    await enrollTestRunner(store, {
+      createdBy: owner.userId,
+      environmentId: createId("environment"),
+      runnerId: removedRunnerId,
+      runnerKind: "local",
+      name: "Old Laptop",
+      tokenSuffix: removedRunnerId,
+      allowedModules: personalReachableGrant,
+      modules: { browser: { runtimeId: removedRunnerId, wireVersion: 2 } },
+    });
+
+    const deletedLocalProfile = createId("browserProfile");
+    const deletedCommandProfile = createId("browserProfile");
+    const removedDeviceProfile = createId("browserProfile");
+    const ambiguousArchivedProfile = createId("browserProfile");
+    const activeProfile = createId("browserProfile");
+    await database
+      .insertInto("browserProfiles")
+      .values([
+        {
+          id: deletedLocalProfile,
+          ownerId: owner.userId,
+          homeRunnerId: owner.runnerId,
+          name: "Deleted Local",
+          archivedAt: new Date("2026-01-01T00:00:00Z"),
+        },
+        {
+          id: deletedCommandProfile,
+          ownerId: owner.userId,
+          homeRunnerId: owner.runnerId,
+          name: "Deleted By Command",
+          archivedAt: new Date("2026-01-02T00:00:00Z"),
+        },
+        {
+          id: removedDeviceProfile,
+          ownerId: owner.userId,
+          homeRunnerId: removedRunnerId,
+          name: "Removed Device Profile",
+          archivedAt: null,
+        },
+        {
+          id: ambiguousArchivedProfile,
+          ownerId: owner.userId,
+          homeRunnerId: owner.runnerId,
+          name: "Ambiguous Archived",
+          archivedAt: new Date("2026-01-03T00:00:00Z"),
+        },
+        {
+          id: activeProfile,
+          ownerId: owner.userId,
+          homeRunnerId: owner.runnerId,
+          name: "Active",
+          archivedAt: null,
+        },
+      ])
+      .execute();
+
+    // Provenance A: explicit local erasure row (`pending-computer`) for deletedLocalProfile.
+    await database
+      .insertInto("browserProfileDeletions")
+      .values({
+        deletionId: crypto.randomUUID(),
+        profileId: deletedLocalProfile,
+        bindingVersion: 1,
+        deploymentId: owner.deploymentId,
+        runnerId: owner.runnerId,
+        storageInstanceId: crypto.randomUUID(),
+        bindingId: crypto.randomUUID(),
+        engine: "chromium",
+        state: "pending-computer",
+        deletedAt: null,
+      })
+      .execute();
+
+    // Provenance B: explicit succeeded `browser.profile.delete` command receipt for deletedCommandProfile.
+    await database
+      .insertInto("commands")
+      .values({
+        id: createId("command"),
+        requestedBy: owner.userId,
+        actorPrincipalId: principal.id,
+        authoritySource: jsonValue({
+          kind: "mcp",
+          callerKind: "connection",
+          callerKey: "connection:conn_test",
+        }),
+        idempotencyKey: `delete-${deletedCommandProfile}`,
+        type: "browser.profile.delete",
+        payload: jsonValue({
+          request: { profileId: deletedCommandProfile },
+          result: { deletion: null },
+        }),
+        status: "succeeded",
+        environmentId: null,
+        threadId: null,
+        runId: null,
+        dispatcherId: null,
+        lastError: null,
+      })
+      .execute();
+
+    // Bind removedDeviceProfile to removedRunnerId and run the real device removal sequence.
+    await bindBrowserProfile(
+      database,
+      LocalProfileBindingSchema.parse({
+        version: 1,
+        profileId: removedDeviceProfile,
+        deploymentId: owner.deploymentId,
+        runnerId: removedRunnerId,
+        storageInstanceId: crypto.randomUUID(),
+        bindingId: crypto.randomUUID(),
+        engine: "chromium",
+      }),
+    );
+
+    const archivedOpenTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const deletedCommandTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const archivedClosedTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const activeClosedTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const singleGroupTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const mixedArchivedTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const mixedActiveTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const removedDeviceTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const ambiguousArchivedTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const guestTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    const singleGroupId = `tgp_${crypto.randomUUID()}`;
+    const mixedGroupId = `tgp_${crypto.randomUUID()}`;
+    const removedDeviceGroupId = `tgp_${crypto.randomUUID()}`;
+    const unrelatedGroupId = `tgp_${crypto.randomUUID()}`;
+    const alreadyEmptyGroupId = `tgp_${crypto.randomUUID()}`;
+
+    await sql`
+      insert into personal_tabs(id, owner_id, kind, computer_id, title, url, profile_id, profile_name, opened_by, closed_at)
+      values
+        (${archivedOpenTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Archived Open', 'https://archived.test/open', ${deletedLocalProfile}, 'Deleted Local', '"person"'::jsonb, null),
+        (${deletedCommandTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Deleted Cmd', 'https://archived.test/cmd', ${deletedCommandProfile}, 'Deleted By Command', '"person"'::jsonb, null),
+        (${archivedClosedTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Archived Closed', 'https://archived.test/closed', ${deletedLocalProfile}, 'Deleted Local', '"person"'::jsonb, '2026-02-02T00:00:00Z'::timestamptz),
+        (${activeClosedTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Active Closed', 'https://active.test/closed', ${activeProfile}, 'Active', '"person"'::jsonb, '2026-02-01T00:00:00Z'::timestamptz),
+        (${singleGroupTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Single Group', 'https://archived.test/group', ${deletedLocalProfile}, 'Deleted Local', '"person"'::jsonb, null),
+        (${mixedArchivedTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Mixed Archived', 'https://archived.test/mixed', ${deletedLocalProfile}, 'Deleted Local', '"person"'::jsonb, null),
+        (${mixedActiveTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Mixed Active', 'https://active.test/mixed', ${activeProfile}, 'Active', '"person"'::jsonb, null),
+        (${removedDeviceTab}, ${owner.userId}, 'page', ${removedRunnerId}, 'Removed Device Saved', 'https://removed-device.test/', ${removedDeviceProfile}, 'Removed Device Profile', '"person"'::jsonb, null),
+        (${ambiguousArchivedTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Ambiguous Saved', 'https://ambiguous.test/', ${ambiguousArchivedProfile}, 'Ambiguous Archived', '"person"'::jsonb, null),
+        (${guestTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Guest', 'https://guest.test/', null, null, '"person"'::jsonb, null)
+    `.execute(database);
+
+    // Run real device removal (`revokeRunner`): archives removedDeviceProfile with state='unconfirmed' and keeps its open saved tab.
+    await store.revokeRunner(removedRunnerId, owner.userId, {
+      administration: {
+        requestedBy: owner.userId,
+        idempotencyKey: `revoke-${removedRunnerId}`,
+        type: "machine.revoke",
+        request: { runnerId: removedRunnerId },
+        authoritySource: { kind: "user-session", userId: owner.userId },
+      },
+    });
+
+    const beforeItems = [
+      { kind: "tab", tabId: archivedOpenTab },
+      { kind: "tab", tabId: deletedCommandTab },
+      { kind: "tab", tabId: ambiguousArchivedTab },
+      {
+        kind: "group",
+        group: {
+          groupId: singleGroupId,
+          name: "Single Archived",
+          color: "red",
+          collapsed: false,
+          tabIds: [singleGroupTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: mixedGroupId,
+          name: "Mixed",
+          color: "blue",
+          collapsed: false,
+          tabIds: [mixedArchivedTab, mixedActiveTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: removedDeviceGroupId,
+          name: "Removed Device Group",
+          color: "yellow",
+          collapsed: false,
+          tabIds: [removedDeviceTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: unrelatedGroupId,
+          name: "Guest Group",
+          color: "grey",
+          collapsed: false,
+          tabIds: [guestTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: alreadyEmptyGroupId,
+          name: "Empty Unrelated",
+          color: "green",
+          collapsed: false,
+          tabIds: [],
+        },
+      },
+    ];
+    await database
+      .insertInto("tabLayouts")
+      .values({
+        ownerId: owner.userId,
+        revision: 5,
+        items: sql`${JSON.stringify(beforeItems)}::jsonb`,
+      })
+      .execute();
+
+    // Capture client_sync_state sequence & resource_revisions before running 0125.
+    const syncBefore = await database
+      .selectFrom("clientSyncState")
+      .select(["sequence", "resourceRevisions"])
+      .where("deploymentId", "=", owner.deploymentId)
+      .executeTakeFirstOrThrow();
+    const expectedNextSequence = String(BigInt(syncBefore.sequence) + 1n);
+
+    // Run migrations up to latest (including 0125).
+    await migrateToLatest(database);
+
+    const remainingIds = (
+      await database
+        .selectFrom("personalTabs")
+        .select("id")
+        .where("ownerId", "=", owner.userId)
+        .execute()
+    )
+      .map((row) => row.id)
+      .toSorted();
+    expect(remainingIds).toEqual(
+      [
+        activeClosedTab,
+        ambiguousArchivedTab,
+        guestTab,
+        mixedActiveTab,
+        removedDeviceTab,
+      ].toSorted(),
+    );
+
+    const layout = await database
+      .selectFrom("tabLayouts")
+      .select(["revision", "items"])
+      .where("ownerId", "=", owner.userId)
+      .executeTakeFirstOrThrow();
+    expect(Number(layout.revision)).toBe(6);
+    expect(layout.items).toEqual([
+      { kind: "tab", tabId: ambiguousArchivedTab },
+      {
+        kind: "group",
+        group: {
+          groupId: mixedGroupId,
+          name: "Mixed",
+          color: "blue",
+          collapsed: false,
+          tabIds: [mixedActiveTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: removedDeviceGroupId,
+          name: "Removed Device Group",
+          color: "yellow",
+          collapsed: false,
+          tabIds: [removedDeviceTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: unrelatedGroupId,
+          name: "Guest Group",
+          color: "grey",
+          collapsed: false,
+          tabIds: [guestTab],
+        },
+      },
+      {
+        kind: "group",
+        group: {
+          groupId: alreadyEmptyGroupId,
+          name: "Empty Unrelated",
+          color: "green",
+          collapsed: false,
+          tabIds: [],
+        },
+      },
+    ]);
+
+    // Durable sync stamps (`sequence`, `tab`, and `tab-layout`) advance atomically when rows retire.
+    const syncAfter = await database
+      .selectFrom("clientSyncState")
+      .select(["sequence", "resourceRevisions"])
+      .where("deploymentId", "=", owner.deploymentId)
+      .executeTakeFirstOrThrow();
+    expect(syncAfter.sequence).toBe(expectedNextSequence);
+    expect(syncAfter.resourceRevisions).toMatchObject({
+      tab: expectedNextSequence,
+      "tab-layout": expectedNextSequence,
+      "browser-profile": syncBefore.resourceRevisions["browser-profile"],
+    });
+
+    // Running 0125 again when 0 rows retire leaves sequence and resource_revisions unchanged.
+    await all["0125_retire_archived_profile_tabs"]!.up(database);
+    const syncNoop = await database
+      .selectFrom("clientSyncState")
+      .select(["sequence", "resourceRevisions"])
+      .where("deploymentId", "=", owner.deploymentId)
+      .executeTakeFirstOrThrow();
+    expect(syncNoop.sequence).toBe(expectedNextSequence);
+    expect(syncNoop.resourceRevisions).toMatchObject({
+      tab: expectedNextSequence,
+      "tab-layout": expectedNextSequence,
+      "browser-profile": syncBefore.resourceRevisions["browser-profile"],
+    });
+
+    // Archived closed tab no longer hijacks latestClosed reopen.
+    const reopened = await new TabStore(database).reopen(owner.userId, undefined, "reopen-latest");
+    expect(reopened.tabIds).toEqual([activeClosedTab]);
+  } finally {
+    await database.destroy();
+    await clone.drop();
+  }
+});
+
+test("0125 advances durable client_sync_state sequence and tab/tab-layout revisions only when rows retire", async () => {
+  const clone = await cloneTestDatabase("host");
+  const database = createDatabase({ connectionString: clone.url });
+  try {
+    await sql`drop schema public cascade; create schema public`.execute(database);
+    const all = await migrationProvider().getMigrations();
+    const through0124 = Object.fromEntries(
+      Object.entries(all).filter(([name]) => name < "0125_retire_archived_profile_tabs"),
+    );
+    await migrateToLatest(database, {
+      async getMigrations() {
+        return through0124;
+      },
+    });
+    const owner = await seedPersonalFixture(database, "/fixture/retire-archived-tabs-sync");
+    const deletedProfile = createId("browserProfile");
+    await database
+      .insertInto("browserProfiles")
+      .values({
+        id: deletedProfile,
+        ownerId: owner.userId,
+        homeRunnerId: owner.runnerId,
+        name: "Deleted Local",
+        archivedAt: new Date("2026-01-01T00:00:00Z"),
+      })
+      .execute();
+    await database
+      .insertInto("browserProfileDeletions")
+      .values({
+        deletionId: crypto.randomUUID(),
+        profileId: deletedProfile,
+        bindingVersion: 1,
+        deploymentId: owner.deploymentId,
+        runnerId: owner.runnerId,
+        storageInstanceId: crypto.randomUUID(),
+        bindingId: crypto.randomUUID(),
+        engine: "chromium",
+        state: "pending-computer",
+        deletedAt: null,
+      })
+      .execute();
+    const deletedTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    await sql`
+      insert into personal_tabs(id, owner_id, kind, computer_id, title, url, profile_id, profile_name, opened_by, closed_at)
+      values (${deletedTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Deleted Tab', 'https://deleted.test/', ${deletedProfile}, 'Deleted Local', '"person"'::jsonb, null)
+    `.execute(database);
+
+    const syncBefore = await database
+      .selectFrom("clientSyncState")
+      .select(["sequence", "resourceRevisions"])
+      .where("deploymentId", "=", owner.deploymentId)
+      .executeTakeFirstOrThrow();
+    const expectedNextSequence = String(BigInt(syncBefore.sequence) + 1n);
+
+    await migrateToLatest(database);
+
+    const syncAfter = await database
+      .selectFrom("clientSyncState")
+      .select(["sequence", "resourceRevisions"])
+      .where("deploymentId", "=", owner.deploymentId)
+      .executeTakeFirstOrThrow();
+    expect(syncAfter.sequence).toBe(expectedNextSequence);
+    expect(syncAfter.resourceRevisions).toMatchObject({
+      tab: expectedNextSequence,
+      "tab-layout": expectedNextSequence,
+      "browser-profile": syncBefore.resourceRevisions["browser-profile"],
+    });
+
+    // Running 0125 again when 0 rows retire leaves sequence and resource_revisions unchanged.
+    await all["0125_retire_archived_profile_tabs"]!.up(database);
+    const syncNoop = await database
+      .selectFrom("clientSyncState")
+      .select(["sequence", "resourceRevisions"])
+      .where("deploymentId", "=", owner.deploymentId)
+      .executeTakeFirstOrThrow();
+    expect(syncNoop.sequence).toBe(expectedNextSequence);
+    expect(syncNoop.resourceRevisions).toMatchObject({
+      tab: expectedNextSequence,
+      "tab-layout": expectedNextSequence,
+      "browser-profile": syncBefore.resourceRevisions["browser-profile"],
+    });
+  } finally {
+    await database.destroy();
+    await clone.drop();
+  }
+});
+
+test("0125 preserves a future client_sync_state.last_commit_at when retiring archived profile tabs", async () => {
+  const clone = await cloneTestDatabase("host");
+  const database = createDatabase({ connectionString: clone.url });
+  try {
+    await sql`drop schema public cascade; create schema public`.execute(database);
+    const all = await migrationProvider().getMigrations();
+    const through0124 = Object.fromEntries(
+      Object.entries(all).filter(([name]) => name < "0125_retire_archived_profile_tabs"),
+    );
+    await migrateToLatest(database, {
+      async getMigrations() {
+        return through0124;
+      },
+    });
+    const owner = await seedPersonalFixture(database, "/fixture/retire-archived-tabs-future-clock");
+    const deletedProfile = createId("browserProfile");
+    await database
+      .insertInto("browserProfiles")
+      .values({
+        id: deletedProfile,
+        ownerId: owner.userId,
+        homeRunnerId: owner.runnerId,
+        name: "Deleted Future Clock",
+        archivedAt: new Date("2026-01-01T00:00:00Z"),
+      })
+      .execute();
+    await database
+      .insertInto("browserProfileDeletions")
+      .values({
+        deletionId: crypto.randomUUID(),
+        profileId: deletedProfile,
+        bindingVersion: 1,
+        deploymentId: owner.deploymentId,
+        runnerId: owner.runnerId,
+        storageInstanceId: crypto.randomUUID(),
+        bindingId: crypto.randomUUID(),
+        engine: "chromium",
+        state: "pending-computer",
+        deletedAt: null,
+      })
+      .execute();
+    const deletedTab = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    await sql`
+      insert into personal_tabs(id, owner_id, kind, computer_id, title, url, profile_id, profile_name, opened_by, closed_at)
+      values (${deletedTab}, ${owner.userId}, 'page', ${owner.runnerId}, 'Deleted Tab', 'https://deleted.test/', ${deletedProfile}, 'Deleted Future Clock', '"person"'::jsonb, null)
+    `.execute(database);
+
+    const futureCommitAt = new Date("2099-01-01T00:00:00.000Z");
+    await database
+      .updateTable("clientSyncState")
+      .set({ lastCommitAt: futureCommitAt })
+      .where("deploymentId", "=", owner.deploymentId)
+      .execute();
+
+    await migrateToLatest(database);
+
+    const syncAfter = await database
+      .selectFrom("clientSyncState")
+      .select(["sequence", "lastCommitAt", "resourceRevisions"])
+      .where("deploymentId", "=", owner.deploymentId)
+      .executeTakeFirstOrThrow();
+    expect(syncAfter.lastCommitAt.toISOString()).toBe(futureCommitAt.toISOString());
+  } finally {
+    await database.destroy();
+    await clone.drop();
   }
 });

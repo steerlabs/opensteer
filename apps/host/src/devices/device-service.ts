@@ -223,7 +223,7 @@ export interface ComputerSessionCaller {
   readonly readOnly: boolean;
   /** Re-admits the operation's session and target; called before every command. */
   readonly recheck: () => Promise<void>;
-  readonly submitted?: () => void;
+  readonly submitted?: (mayHaveEffect?: boolean) => void;
   readonly stopped?: () => never;
 }
 
@@ -262,14 +262,15 @@ export function agentSessionComputerKey(sessionId: AgentSessionId): RunId {
 export async function endSessionComputerWork(
   bindingId: string,
   ports: {
-    readonly computerUse: { closeForAgentSession(runId: RunId): Promise<void> } | undefined;
+    readonly computerUse:
+      { closeForAgentSession(runId: RunId, sessionId: AgentSessionId): Promise<void> } | undefined;
     readonly devices: Pick<DeviceService, "endComputerSession">;
   },
 ): Promise<void> {
   const session = AgentSessionIdSchema.safeParse(bindingId.replace(/^session:/u, ""));
   if (!bindingId.startsWith("session:") || !session.success) return;
   await Promise.all([
-    ports.computerUse?.closeForAgentSession(agentSessionComputerKey(session.data)),
+    ports.computerUse?.closeForAgentSession(agentSessionComputerKey(session.data), session.data),
     ports.devices.endComputerSession(session.data),
   ]);
 }
@@ -1835,6 +1836,7 @@ export class DeviceService {
       runId: agentSessionComputerKey(session.sessionId),
       bindingGeneration: 0,
       threadId: session.taskId,
+      sessionId: session.sessionId,
       ...(session.driver ? { driver: session.driver } : {}),
       assertDispatch: () => this.#assertSessionComputer(session),
       ...(session.submitted ? { submitted: session.submitted } : {}),
@@ -2191,12 +2193,34 @@ export class DeviceService {
     const work = this.#beginConnectedComputerWork(session.deviceId, session.driver, signal);
     try {
       const result = await this.computerRepl.execute(
-        { runId: key, generation: 0, reportUnknownEffects: true, connectedAgent: true },
+        {
+          runId: key,
+          generation: 0,
+          reportUnknownEffects: true,
+          connectedAgent: true,
+          ...(session.readOnly ? { readOnly: true } : {}),
+          ...(session.submitted ? { tracksScriptSends: true } : {}),
+        },
         code,
         work.signal,
         async (request) => {
           try {
-            return await this.#invokeComputerRepl(caller, request);
+            const submitted = request.markSubmitted;
+            return await this.#invokeComputerRepl(
+              submitted
+                ? {
+                    ...caller,
+                    session: {
+                      ...session,
+                      submitted: (mayHaveEffect) => {
+                        session.submitted?.();
+                        if (mayHaveEffect) submitted();
+                      },
+                    },
+                  }
+                : caller,
+              request,
+            );
           } catch (error) {
             // The device Stop is scoped to this Mac. Latch its ending at the operation door
             // even if the script catches the device's legacy error and returns normally.

@@ -1,5 +1,6 @@
 import {
   displayPasteTextMaxLength,
+  trackHeldDisplayInput,
   type DisplayInputEvent,
   type DisplayInputRefusal,
 } from "@opensteer/protocol";
@@ -14,6 +15,14 @@ import {
   type DisplayEditingMessage,
   type DisplayLease,
 } from "./phone-display-stream.js";
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { fatal: true });
+const batchTimeoutMs = 10_000;
+const batchEnvelopeOverheadBytes = 128;
+const maxQueuedEvents = 8_192;
+const maxQueuedBytes = 2 * 1_024 * 1_024;
+const stoppedWords = "Typing stopped. Some of it may not have arrived: check the text.";
 
 /** Phone and Mac producers insert only literal text. */
 export const displayEditingAbilities: EditingTargetAbilities = {
@@ -40,23 +49,36 @@ const unknownClipboardWords = {
   paste: "May have been pasted: check before pasting again.",
   cut: "May have been cut: check before cutting again.",
 } as const;
+interface Caller {
+  readonly mutatesClipboard?: "paste" | "cut";
+  sent: boolean;
+  remainingEvents: number;
+  settled: boolean;
+  readonly resolve: (result: ViewerClipboardResult | undefined) => void;
+  readonly reject: (error: Error) => void;
+}
+interface Queued {
+  readonly geometry: number;
+  readonly events: DisplayInputEvent[];
+  readonly eventBytes: number[];
+  readonly copy: boolean;
+  readonly mutatesClipboard?: "paste" | "cut";
+  readonly atomic: boolean;
+  caller: Caller;
+}
 interface Pending {
   readonly copy: boolean;
+  readonly atomic: boolean;
+  readonly eventCount: number;
+  readonly onlyMove: boolean;
   readonly mutatesClipboard?: "paste" | "cut";
   /** True once `lease.input` registered a sequence and handed the batch to the socket. */
   sent: boolean;
   dispatched?: true;
   clipboardRefusal?: { readonly reason: string; readonly message: string };
   readonly sequences: Set<number>;
-  readonly resolve: (result: ViewerClipboardResult | undefined) => void;
-  readonly reject: (error: Error) => void;
+  readonly callers: readonly { readonly caller: Caller; readonly eventsTaken: number }[];
   readonly timer: ReturnType<typeof setTimeout>;
-}
-/** Movement waiting for the producer to answer this view's earlier input. */
-interface Held {
-  readonly geometry: number;
-  readonly events: DisplayInputEvent[];
-  readonly callers: Pick<Pending, "resolve" | "reject">[];
 }
 
 /**
@@ -73,6 +95,19 @@ export class DisplayEditingRefusal extends Error {
   }
 }
 
+/**
+ * Input stopped mid-burst: queued input was dropped and never sent, and anything in flight may
+ * have landed (never resent).
+ */
+export class DisplayEditingStopped extends Error {
+  constructor(message = stoppedWords) {
+    super(message);
+    this.name = "DisplayEditingStopped";
+  }
+}
+
+type StopCause = "timeout" | "refused" | "send-failed" | "bound" | "changed" | "reset" | "dispose";
+
 /** The lease owns input; this adapter fences its private context and receipt lifetimes. */
 export class DisplayEditingSession {
   readonly diagnostics = {
@@ -84,12 +119,15 @@ export class DisplayEditingSession {
   readonly #lease: DisplayLease;
   readonly #listeners = new Set<() => void>();
   readonly #pending = new Map<number, Pending>();
+  readonly #queue: Queued[] = [];
+  readonly #held = new Set<string>();
   readonly #unsubscribe: readonly (() => void)[];
   #state: DisplayEditingSnapshot = { context: null, receipt: null };
   #scope: string | null = null;
   #geometry: number | null = null;
   #disposed = false;
-  #held: Held | null = null;
+  #queuedEvents = 0;
+  #queuedBytes = 0;
 
   constructor(lease: DisplayLease) {
     this.#lease = lease;
@@ -105,9 +143,15 @@ export class DisplayEditingSession {
     return () => this.#listeners.delete(listener);
   };
   setGeometry(geometry: number | null): void {
-    if (this.#geometry === geometry) return;
+    const previous = this.#geometry;
+    if (previous === geometry) return;
     this.#geometry = geometry;
-    if (geometry === null) this.#cancel("The display changed. Try again.");
+    if (previous !== null)
+      this.#stop("changed", "The display changed. Try again.", { releaseGeometry: null });
+  }
+  /** Stops queued input, releases what this view holds down, and resets the lease. */
+  resetInput(): void {
+    this.#stop("reset", "The display changed. Try again.", { resetLease: true });
   }
   #currentScope(): string | null {
     const { input, connection, display } = this.#lease.getSnapshot();
@@ -119,7 +163,9 @@ export class DisplayEditingSession {
     const scope = this.#currentScope();
     if (scope === this.#scope) return;
     this.#scope = scope;
-    const preservedReceipt = this.#cancel("The display changed. Try again.");
+    const preservedReceipt = this.#stop("changed", "The display changed. Try again.", {
+      releaseGeometry: null,
+    });
     this.#set({ context: null, ...(preservedReceipt ? {} : { receipt: null }) });
   }
   #set(patch: Partial<DisplayEditingSnapshot>): void {
@@ -129,52 +175,145 @@ export class DisplayEditingSession {
   #count(record: Record<string, number>, kind: string): void {
     record[kind] = (record[kind] ?? 0) + 1;
   }
-  #finish(pending: Pending, error?: Error, result?: ViewerClipboardResult): void {
+  #settle(caller: Caller, error?: Error, result?: ViewerClipboardResult): void {
+    if (caller.settled) return;
+    caller.settled = true;
+    if (error) caller.reject(error);
+    else caller.resolve(result);
+  }
+  #finish(pending: Pending, result?: ViewerClipboardResult): void {
     clearTimeout(pending.timer);
     for (const sequence of pending.sequences) this.#pending.delete(sequence);
     pending.sequences.clear();
-    if (error) pending.reject(error);
-    else pending.resolve(result);
-    if (!this.#pending.size) this.#sendHeld();
+    for (const { caller, eventsTaken } of pending.callers) {
+      caller.remainingEvents -= eventsTaken;
+      if (caller.remainingEvents <= 0) this.#settle(caller, undefined, result);
+    }
+    if (!this.#pending.size && this.#queue.length) this.#drain();
   }
-  /** All held movement goes before other input; otherwise one wire batch per answer. */
-  #sendHeld(all = false): void {
-    const held = this.#held;
-    if (!held) return;
-    const events = all ? held.events : held.events.splice(0, maxDisplayInputEvents);
-    if (all || !held.events.length) this.#held = null;
-    const sent = this.#transmit(held.geometry, events);
-    // Callers settle with the last piece; an earlier piece's refusal is its receipt.
-    if (this.#held === held) void sent.catch(() => undefined);
-    else
-      void sent.then(
-        (result) => held.callers.forEach((caller) => caller.resolve(result)),
-        (error: Error) => held.callers.forEach((caller) => caller.reject(error)),
+  /**
+   * One stop path for timeout, refusal, send failure, the queue bound, blur, layout/scope change
+   * and dispose: clears pending batches so late receipts do nothing, drops queued ordinary input,
+   * and releases what this view holds down before settling callers.
+   */
+  #stop(
+    cause: StopCause,
+    message: string,
+    options: {
+      readonly reason?: string;
+      readonly settledRefusal?: boolean;
+      readonly recordReceipt?: boolean;
+      readonly resetLease?: boolean;
+      readonly releaseGeometry?: number | null;
+    } = {},
+  ): boolean {
+    const pendingList = [...new Set(this.#pending.values())];
+    for (const pending of pendingList) {
+      clearTimeout(pending.timer);
+      for (const sequence of pending.sequences) this.#pending.delete(sequence);
+      pending.sequences.clear();
+    }
+    // Pure pointer/mouse moves with nothing held recover on a live refusal or timeout.
+    if (
+      (cause === "timeout" || cause === "refused") &&
+      !this.#disposed &&
+      this.#scope !== null &&
+      this.#geometry !== null &&
+      this.#held.size === 0 &&
+      pendingList.length > 0 &&
+      pendingList.every((pending) => pending.onlyMove) &&
+      this.#queue.length > 0 &&
+      this.#queue.every((entry) => !entry.atomic && !entry.copy && entry.events.every(isMove))
+    ) {
+      const error = this.#refuse(
+        options.reason ?? "timeout",
+        message,
+        options.settledRefusal === true,
       );
-  }
-  #carrierEnded(pending: Pending, text: string, recordTimeoutReceipt: boolean): boolean {
-    // Q1 (AGENTS.md rule 4): once a paste or cut batch has left this client onto the carrier,
-    // never report it as failed or invite a blind retry on timeout or display/carrier change.
-    if (pending.sent && pending.mutatesClipboard) {
-      this.#count(this.diagnostics.clipboard, "unknown");
-      this.#set({ receipt: unknownClipboardWords[pending.mutatesClipboard] });
-      this.#finish(pending, undefined, { outcome: "unknown", items: [] });
+      for (const pending of pendingList)
+        for (const { caller } of pending.callers) this.#settle(caller, error);
+      this.#drain();
       return true;
     }
-    // A batch that left and never answered may have happened: never a refusal (rule 4).
-    this.#finish(
-      pending,
-      recordTimeoutReceipt ? this.#refuse("timeout", text, false) : new Error(text),
-    );
-    return false;
-  }
-  #cancel(reason: string): boolean {
-    const held = this.#held;
-    this.#held = null;
-    for (const caller of held?.callers ?? []) caller.reject(new Error(reason));
+
+    const dropped = this.#queue.splice(0);
+    this.#queuedEvents = 0;
+    this.#queuedBytes = 0;
+    const wasHeld = this.#held.size > 0;
+    const releaseGeometry =
+      options.releaseGeometry !== undefined ? options.releaseGeometry : this.#geometry;
+    const releases: DisplayInputEvent[] = [];
+    if (wasHeld && !this.#disposed && this.#scope !== null && releaseGeometry !== null) {
+      for (const entry of dropped)
+        if (entry.geometry === releaseGeometry)
+          for (const event of entry.events)
+            if (releasesHeld(this.#held, event)) {
+              releases.push(event);
+              trackHeldDisplayInput(this.#held, event);
+            }
+    }
+    if (releases.length > 0 && releaseGeometry !== null) {
+      try {
+        this.#lease.input(releaseGeometry, releases);
+      } catch {
+        /* `resetInput` follows whenever this view held anything down. */
+      }
+    }
+    if (wasHeld || options.resetLease) {
+      this.#held.clear();
+      this.#lease.resetInput();
+    }
+
+    const packedMulti = pendingList.some((pending) => !pending.atomic && pending.eventCount > 1);
+    const nonMove =
+      pendingList.some((pending) => !pending.onlyMove) ||
+      dropped.some((entry) => entry.copy || entry.atomic || !entry.events.every(isMove));
+    const singleClipboard =
+      !packedMulti && dropped.length === 0 && cause !== "refused" && cause !== "bound"
+        ? pendingList.find((pending) => pending.sent && pending.mutatesClipboard)
+        : undefined;
+    const isStoppedBurst =
+      cause === "bound" ||
+      (cause !== "reset" &&
+        cause !== "dispose" &&
+        !singleClipboard &&
+        nonMove &&
+        (packedMulti ||
+          dropped.length > 0 ||
+          (cause === "timeout" && !pendingList.every((pending) => pending.copy))));
+
     let preservedReceipt = false;
-    for (const pending of new Set(this.#pending.values()))
-      if (this.#carrierEnded(pending, reason, false)) preservedReceipt = true;
+    let error: Error;
+    if (isStoppedBurst) {
+      const diag =
+        options.reason ??
+        (cause === "bound" ? "capacity" : cause === "timeout" ? "timeout" : undefined);
+      if (diag) this.#count(this.diagnostics.refusals, diag);
+      this.#set({ receipt: stoppedWords });
+      preservedReceipt = true;
+      error = new DisplayEditingStopped(stoppedWords);
+    } else if (singleClipboard?.mutatesClipboard) {
+      this.#count(this.diagnostics.clipboard, "unknown");
+      this.#set({ receipt: unknownClipboardWords[singleClipboard.mutatesClipboard] });
+      preservedReceipt = true;
+      error = new Error(message);
+    } else if (options.recordReceipt) {
+      error = this.#refuse(
+        options.reason ?? "unavailable",
+        message,
+        options.settledRefusal === true,
+      );
+    } else {
+      error = new Error(message);
+    }
+
+    for (const pending of pendingList)
+      for (const { caller } of pending.callers)
+        if (caller.sent && caller.mutatesClipboard && cause !== "refused" && cause !== "bound") {
+          if (!singleClipboard) this.#count(this.diagnostics.clipboard, "unknown");
+          this.#settle(caller, undefined, { outcome: "unknown", items: [] });
+        } else this.#settle(caller, error);
+    for (const entry of dropped) this.#settle(entry.caller, error);
     return preservedReceipt;
   }
   /** A refusal of input that never happened says so in its own words; `settled` false is unknown. */
@@ -202,9 +341,9 @@ export class DisplayEditingSession {
         message.outcome === "empty"
       ) {
         const text = message.outcome !== "empty" ? message.text : undefined;
-        this.#finish(pending, undefined, {
+        this.#finish(pending, {
           outcome: text ? message.outcome : "empty",
-          items: text ? [{ type: "text/plain", bytes: new TextEncoder().encode(text) }] : [],
+          items: text ? [{ type: "text/plain", bytes: encoder.encode(text) }] : [],
         });
       } else {
         const refusal = {
@@ -216,20 +355,33 @@ export class DisplayEditingSession {
         };
         // The batch receipt supplies the native reason even when the clipboard arrives first.
         if (pending.dispatched)
-          this.#finish(pending, this.#refuse(refusal.reason, refusal.message));
+          this.#stop("refused", refusal.message, {
+            reason: refusal.reason,
+            settledRefusal: true,
+            recordReceipt: true,
+          });
         else pending.clipboardRefusal = refusal;
       }
       return;
     }
     if (message.outcome !== "dispatched") {
       const reason = message.reason ?? (message.outcome === "stale" ? "stale" : "unsupported");
-      this.#finish(pending, this.#refuse(reason, refusalWords[reason]));
+      this.#stop("refused", refusalWords[reason], {
+        reason,
+        settledRefusal: true,
+        recordReceipt: true,
+      });
     } else {
       this.#set({ receipt: null });
       if (pending.copy) {
         pending.dispatched = true;
         const refusal = pending.clipboardRefusal;
-        if (refusal) this.#finish(pending, this.#refuse(refusal.reason, refusal.message));
+        if (refusal)
+          this.#stop("refused", refusal.message, {
+            reason: refusal.reason,
+            settledRefusal: true,
+            recordReceipt: true,
+          });
         return;
       }
       this.#pending.delete(message.sequence);
@@ -281,24 +433,12 @@ export class DisplayEditingSession {
           this.#count(this.diagnostics.operations, operation.kind);
           throw this.#refuse("unsupported", refusalWords.unsupported);
         }
-        const text = operation.items
-          .map((item) => new TextDecoder("utf-8", { fatal: true }).decode(item.bytes))
-          .join("");
+        const text = operation.items.map((item) => decoder.decode(item.bytes)).join("");
         if (!operation.contextId) {
           this.#count(this.diagnostics.operations, operation.kind);
           throw this.#refuse("stale", refusalWords.stale);
         }
-        const events: DisplayInputEvent[] = [];
-        let piece = "";
-        for (const character of text) {
-          if (piece.length + character.length > displayPasteTextMaxLength) {
-            events.push({ kind: "paste", text: piece, contextId: operation.contextId });
-            piece = "";
-          }
-          piece += character;
-        }
-        if (piece) events.push({ kind: "paste", text: piece, contextId: operation.contextId });
-        return events;
+        return splitPasteEvents(text, operation.contextId, this.#geometry ?? 0);
       }
     }
   }
@@ -337,14 +477,7 @@ export class DisplayEditingSession {
     const geometry = this.#geometry;
     const fitsOneBatch = (items: readonly DisplayInputEvent[]) =>
       items.length <= maxDisplayInputEvents &&
-      new TextEncoder().encode(
-        JSON.stringify({
-          type: "display.input",
-          geometry: geometry ?? 0,
-          sequence: Number.MAX_SAFE_INTEGER,
-          events: items,
-        }),
-      ).byteLength <= maxDisplayInputBytes;
+      serializedBatchBytes(geometry ?? 0, items) <= maxDisplayInputBytes;
     if (fitsOneBatch(events)) return this.input(geometry, events, copy, true);
     const last = operations.at(-1)!;
     const prefix = groups.slice(0, -1).flat();
@@ -370,98 +503,267 @@ export class DisplayEditingSession {
       geometry !== snapshot.display.generation
     )
       return Promise.reject(this.#refuse("stale", "The display changed. Try again."));
-    // The producer's lane is short and a frame is shorter than its answer: movement
-    // and wheel turns wait for this view's earlier input to be answered, merged.
-    if (!atomic && this.#pending.size && events.length && events.every(merges)) {
-      const held = (this.#held ??= { geometry, events: [], callers: [] });
-      for (const event of events) {
-        const last = held.events.at(-1);
-        const merged = last ? mergeDisplayInput(last, event) : null;
-        if (merged) held.events[held.events.length - 1] = merged;
-        else held.events.push(event);
-      }
-      return new Promise((resolve, reject) => held.callers.push({ resolve, reject }));
-    }
-    if (this.#pending.size >= 128)
-      return Promise.reject(
-        this.#refuse("capacity", "This device is still catching up. Try again."),
-      );
-    // Presses and edits never wait, and follow the movement before them.
-    this.#sendHeld(true);
-    return this.#transmit(geometry, events, copy, atomic);
-  }
-  #transmit(
-    geometry: number,
-    events: readonly DisplayInputEvent[],
-    copy = false,
-    atomic = false,
-  ): Promise<ViewerClipboardResult | undefined> {
     const mutatesClipboard = events.some((event) => event.kind === "paste")
       ? "paste"
       : events.some((event) => event.kind === "cut")
         ? "cut"
         : undefined;
+    const tail = this.#queue.at(-1);
+    const merged =
+      tail &&
+      !atomic &&
+      !copy &&
+      !tail.atomic &&
+      !tail.copy &&
+      tail.geometry === geometry &&
+      tail.mutatesClipboard === mutatesClipboard &&
+      tail.events.length === 1 &&
+      events.length === 1 &&
+      merges(tail.events[0]!) &&
+      merges(events[0]!)
+        ? mergeDisplayInput(tail.events[0]!, events[0]!)
+        : null;
+    const eventBytes = merged ? [serializedEventBytes(merged)] : events.map(serializedEventBytes);
+    const nextEvents = merged ? this.#queuedEvents : this.#queuedEvents + events.length;
+    const nextBytes = merged
+      ? this.#queuedBytes - tail!.eventBytes[0]! + eventBytes[0]!
+      : this.#queuedBytes + eventBytes.reduce((sum, bytes) => sum + bytes, 0);
+    if (nextEvents > maxQueuedEvents || nextBytes > maxQueuedBytes) {
+      this.#stop("bound", stoppedWords, { reason: "capacity" });
+      return Promise.reject(new DisplayEditingStopped(stoppedWords));
+    }
     return new Promise((resolve, reject) => {
-      const pending: Pending = {
-        copy,
+      const caller: Caller = {
         ...(mutatesClipboard ? { mutatesClipboard } : {}),
         sent: false,
+        remainingEvents: merged ? 1 : events.length,
+        settled: false,
         resolve,
         reject,
-        sequences: new Set(),
-        timer: setTimeout(
-          () => this.#carrierEnded(pending, "This device didn’t respond. Try again.", true),
-          10000,
-        ),
       };
-      try {
-        if (
-          !this.#lease.input(
-            geometry,
-            events,
-            (sequence) => {
-              pending.sent = true;
-              pending.sequences.add(sequence);
-              this.#pending.set(sequence, pending);
-            },
-            atomic ? { atomic: true } : undefined,
-          )
-        )
-          this.#finish(pending, new Error("Input is unavailable."));
-      } catch (error) {
-        if (pending.sent && pending.mutatesClipboard) {
-          this.#carrierEnded(pending, "This edit couldn’t be sent.", false);
-          return;
-        }
-        if (error instanceof DisplayInputTooLargeError) {
-          this.#finish(pending, this.#refuse("too-large", refusalWords["too-large"]));
-          return;
-        }
-        if (pending.sent) {
-          this.#finish(
-            pending,
-            this.#refuse("unavailable", "This edit couldn’t be sent. Try again."),
-          );
-          return;
-        }
-        this.#finish(
-          pending,
-          error instanceof Error ? error : new Error("This edit couldn’t be sent."),
-        );
+      if (merged && tail) {
+        // The older move/scroll is superseded: settle it now so coalescing retains one caller.
+        this.#settle(tail.caller);
+        tail.events[0] = merged;
+        tail.eventBytes[0] = eventBytes[0]!;
+        tail.caller = caller;
+      } else {
+        this.#queue.push({
+          geometry,
+          events: [...events],
+          eventBytes,
+          copy,
+          ...(mutatesClipboard ? { mutatesClipboard } : {}),
+          atomic,
+          caller,
+        });
       }
+      this.#queuedEvents = nextEvents;
+      this.#queuedBytes = nextBytes;
+      if (!this.#pending.size) this.#drain();
     });
   }
+  /** Packs the head of `#queue` into one wire batch and sends it at the device's pace. */
+  #drain(): void {
+    if (this.#pending.size || !this.#queue.length) return;
+    const geometry = this.#queue[0]!.geometry;
+    const batchEvents: DisplayInputEvent[] = [];
+    const batchCallers: { readonly caller: Caller; readonly eventsTaken: number }[] = [];
+    let batchBytes = 0;
+    let batchCopy = false;
+    let batchAtomic = false;
+    let batchMutatesClipboard: "paste" | "cut" | undefined;
+
+    while (this.#queue.length) {
+      const entry = this.#queue[0]!;
+      if (entry.geometry !== geometry) break;
+      if (entry.copy || entry.atomic) {
+        if (batchEvents.length) break;
+        this.#queue.shift();
+        this.#queuedEvents -= entry.events.length;
+        this.#queuedBytes -= entry.eventBytes.reduce((sum, bytes) => sum + bytes, 0);
+        batchEvents.push(...entry.events);
+        batchCallers.push({ caller: entry.caller, eventsTaken: entry.events.length });
+        batchCopy = entry.copy;
+        batchAtomic = entry.atomic;
+        batchMutatesClipboard = entry.mutatesClipboard;
+        break;
+      }
+      let taken = 0;
+      let takenBytes = 0;
+      while (taken < entry.events.length && batchEvents.length < maxDisplayInputEvents) {
+        const event = entry.events[taken]!;
+        // Keep a key press paired with its immediately following release at the 64-event cap.
+        if (
+          batchEvents.length === maxDisplayInputEvents - 1 &&
+          event.kind === "key" &&
+          event.action === "down"
+        ) {
+          const following =
+            taken + 1 < entry.events.length ? entry.events[taken + 1] : this.#queue[1]?.events[0];
+          if (
+            following?.kind === "key" &&
+            following.action === "up" &&
+            following.code === event.code
+          )
+            break;
+        }
+        const bytes = entry.eventBytes[taken]!;
+        if (
+          batchEvents.length > 0 &&
+          batchEnvelopeOverheadBytes + batchBytes + bytes > maxDisplayInputBytes &&
+          serializedBatchBytes(geometry, [...batchEvents, event]) > maxDisplayInputBytes
+        )
+          break;
+        batchEvents.push(event);
+        batchBytes += bytes;
+        takenBytes += bytes;
+        taken += 1;
+      }
+      if (taken === 0) break;
+      entry.events.splice(0, taken);
+      entry.eventBytes.splice(0, taken);
+      this.#queuedEvents -= taken;
+      this.#queuedBytes -= takenBytes;
+      if (entry.mutatesClipboard) batchMutatesClipboard ??= entry.mutatesClipboard;
+      batchCallers.push({ caller: entry.caller, eventsTaken: taken });
+      if (!entry.events.length) this.#queue.shift();
+      else break;
+    }
+
+    if (batchEvents.length)
+      this.#transmit(
+        geometry,
+        batchEvents,
+        batchCallers,
+        batchCopy,
+        batchAtomic,
+        batchMutatesClipboard,
+      );
+  }
+  #transmit(
+    geometry: number,
+    events: readonly DisplayInputEvent[],
+    callers: readonly { readonly caller: Caller; readonly eventsTaken: number }[],
+    copy: boolean,
+    atomic: boolean,
+    mutatesClipboard: "paste" | "cut" | undefined,
+  ): void {
+    const pending: Pending = {
+      copy,
+      atomic,
+      eventCount: events.length,
+      onlyMove: events.length > 0 && events.every(isMove),
+      ...(mutatesClipboard ? { mutatesClipboard } : {}),
+      sent: false,
+      sequences: new Set(),
+      callers,
+      timer: setTimeout(
+        () =>
+          this.#stop("timeout", "This device didn’t respond. Try again.", {
+            reason: "timeout",
+            recordReceipt: true,
+          }),
+        batchTimeoutMs,
+      ),
+    };
+    try {
+      if (
+        !this.#lease.input(
+          geometry,
+          events,
+          (sequence) => {
+            if (!pending.sent) {
+              pending.sent = true;
+              for (const event of events) trackHeldDisplayInput(this.#held, event);
+              for (const { caller } of pending.callers) caller.sent = true;
+            }
+            pending.sequences.add(sequence);
+            this.#pending.set(sequence, pending);
+          },
+          atomic ? { atomic: true } : undefined,
+        )
+      )
+        this.#stop("send-failed", "Input is unavailable.");
+    } catch (error) {
+      if (pending.sent && pending.mutatesClipboard) {
+        this.#stop("send-failed", "This edit couldn’t be sent.");
+      } else if (error instanceof DisplayInputTooLargeError) {
+        this.#stop("refused", refusalWords["too-large"], {
+          reason: "too-large",
+          settledRefusal: true,
+          recordReceipt: true,
+        });
+      } else {
+        this.#stop(
+          "send-failed",
+          pending.sent ? "This edit couldn’t be sent. Try again." : "This edit couldn’t be sent.",
+          { reason: "unavailable", recordReceipt: pending.sent },
+        );
+      }
+    }
+  }
   dispose(): void {
+    this.#stop("dispose", "The display changed. Try again.");
     this.#disposed = true;
     for (const unsubscribe of this.#unsubscribe) unsubscribe();
-    this.#cancel("The display changed. Try again.");
     this.#listeners.clear();
   }
 }
 
+function isMove(event: DisplayInputEvent): boolean {
+  return (event.kind === "mouse" || event.kind === "pointer") && event.phase === "move";
+}
 function merges(event: DisplayInputEvent): boolean {
-  return (
-    event.kind === "scroll" ||
-    ((event.kind === "mouse" || event.kind === "pointer") && event.phase === "move")
-  );
+  return event.kind === "scroll" || isMove(event);
+}
+function releasesHeld(held: ReadonlySet<string>, event: DisplayInputEvent): boolean {
+  if (event.kind === "pointer")
+    return (event.phase === "up" || event.phase === "cancel") && held.has("pointer");
+  if (event.kind === "mouse") {
+    if (event.phase === "up") return held.has(`mouse:${event.button}`);
+    return event.phase === "cancel" && [...held].some((item) => item.startsWith("mouse:"));
+  }
+  return event.kind === "key" && event.action === "up" && held.has(`key:${event.code}`);
+}
+function serializedEventBytes(event: DisplayInputEvent): number {
+  return encoder.encode(JSON.stringify(event)).byteLength + 1;
+}
+function serializedBatchBytes(geometry: number, events: readonly DisplayInputEvent[]): number {
+  return encoder.encode(
+    JSON.stringify({
+      type: "display.input",
+      geometry,
+      sequence: Number.MAX_SAFE_INTEGER,
+      events,
+    }),
+  ).byteLength;
+}
+function jsonStringCharBytes(ch: string): number {
+  const code = ch.charCodeAt(0);
+  if (ch.length === 1 && code >= 0x20 && code <= 0x7e)
+    return code === 0x22 || code === 0x5c ? 2 : 1;
+  return encoder.encode(JSON.stringify(ch)).byteLength - 2;
+}
+function splitPasteEvents(text: string, contextId: string, geometry: number): DisplayInputEvent[] {
+  const maxPieceBytes =
+    maxDisplayInputBytes - serializedBatchBytes(geometry, [{ kind: "paste", text: "", contextId }]);
+  const events: DisplayInputEvent[] = [];
+  let piece = "";
+  let pieceBytes = 0;
+  for (const character of text) {
+    const charBytes = jsonStringCharBytes(character);
+    if (
+      piece.length + character.length > displayPasteTextMaxLength ||
+      pieceBytes + charBytes > maxPieceBytes
+    ) {
+      events.push({ kind: "paste", text: piece, contextId });
+      piece = "";
+      pieceBytes = 0;
+    }
+    piece += character;
+    pieceBytes += charBytes;
+  }
+  if (piece) events.push({ kind: "paste", text: piece, contextId });
+  return events;
 }

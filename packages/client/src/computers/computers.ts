@@ -5,7 +5,7 @@ import { formatRelativeTime } from "../host/thread-list-model.js";
 import { computerAppRows } from "../integrations/computer-apps.js";
 import { computerUseView, phoneUseView } from "../integrations/computer-use.js";
 import { deviceWords } from "./devices-copy.js";
-import { deviceStoppedLabel, isDeviceAsleep } from "./devices.js";
+import { deviceStoppedLabel, deviceSwitchOn, isDeviceAsleep } from "./devices.js";
 
 /**
  * The Computers page, as every client reads it.
@@ -305,7 +305,7 @@ export function computerUses(
   apps: ComputerAppsData | null,
 ): readonly ComputerUse[] {
   const uses: ComputerUse[] = [];
-  if (apps && machine.capabilities?.apps.enabled !== false) {
+  if (apps && deviceSwitchOn(machine, "apps") !== false) {
     for (const row of computerAppRows({ ...apps, machine })) {
       if (row.access === null) continue;
       uses.push({ definitionId: row.definition.id, kind: "app", name: row.definition.name });
@@ -318,7 +318,7 @@ export function computerUses(
     if (phone?.access) uses.push({ kind: "screen" });
   }
   const policy = machine.access?.policy;
-  if (policy && policy.reach !== "nobody" && machine.capabilities?.files.supported) {
+  if (policy && deviceSwitchOn(machine, "files") === true) {
     const folders = policy.shares.filter((share) => share.path.trim() !== "").length;
     if (folders > 0) uses.push({ count: folders, kind: "folders" });
     if (policy.commands) uses.push({ kind: "commands" });
@@ -369,7 +369,7 @@ export function computerRole(
   if (machine.status === "pending") return "waiting";
   if (machine.selfRunnerId && machine.modules.agents) return "works";
   // A device that lends its browser has shared something even with no app on.
-  if (uses.length > 0 || machine.capabilities?.browser.enabled === true) return "uses";
+  if (uses.length > 0 || deviceSwitchOn(machine, "browser") === true) return "uses";
   if (!appsLoaded) return null;
   return "idle";
 }

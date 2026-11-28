@@ -31,6 +31,7 @@ import { type IntegrationToolEffect } from "@opensteer/integration-core/effect";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import type { RunnerAuxiliaryStream, RunnerStreamLossReason } from "@opensteer/orchestration";
 import {
+  computerUseRequestMayHaveEffect,
   computerOwnerViewSupported,
   macOwnerViewVersion,
   macWindowVideoOwnerViewVersions,
@@ -253,6 +254,8 @@ export interface ComputerUseSendInput {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly submitted?: () => void;
+  readonly trackClose?: true;
+  readonly phoneHold?: true;
 }
 
 export interface ComputerUseSend {
@@ -1826,7 +1829,11 @@ export class ComputerAppHub {
       else if (!this.#options.drivers)
         await this.#options.requireAgentAccess?.(input.runnerId as RunnerId);
     }
-    const effect: IntegrationToolEffect = input.operation === "act" ? "write" : "read";
+    const effect: IntegrationToolEffect =
+      computerUseRequestMayHaveEffect(input.operation, input.params, input.phoneHold) ||
+      input.trackClose
+        ? "write"
+        : "read";
     if (this.#closed) return settledComputerUse(computerUseOffline("Opensteer is shutting down."));
     const entry = this.#byRunner.get(route?.runnerId ?? (input.runnerId as RunnerId));
     if (!entry) return settledComputerUse(computerUseOffline("That computer is offline."));

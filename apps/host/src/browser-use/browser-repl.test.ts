@@ -422,15 +422,117 @@ describe("browser REPL", () => {
       },
       { now: Date.now, schedule },
     );
-    const running = run("globalThis.saved = 7; await pages()");
+    const running = service.execute(
+      "context",
+      "globalThis.saved = 7; await pages()",
+      undefined,
+      undefined,
+      async () => {},
+    );
     const { signal } = await entered.promise;
     expect(schedule).toHaveBeenCalledWith(expect.any(Function), 100_000);
     expect(await service.execute("other", "return 9")).toEqual({ content: [text(9)] });
     schedule.mock.calls[0]![0]();
-    expect(await running).toMatchObject({ structuredContent: { error: { code: "deadline" } } });
+    expect(await running).toMatchObject({
+      structuredContent: {
+        error: {
+          code: "deadline",
+          message:
+            "Browser code reached its 100 second deadline. It changed nothing. It is safe to try again.",
+        },
+      },
+    });
     expect(signal.aborted).toBe(true);
     expect(await run("return typeof saved")).toEqual({ content: [text("undefined")] });
     withheld.resolve([]);
+  });
+
+  it.each([
+    [
+      "read",
+      "Accessibility.queryAXTree",
+      0,
+      "deadline",
+      "It changed nothing. It is safe to try again.",
+    ],
+    [
+      "completed effect",
+      "Input.insertText",
+      2,
+      "deadline",
+      "2 actions completed. The last was Input.insertText.",
+    ],
+    [
+      "unconfirmed effect",
+      "Input.insertText",
+      0,
+      "outcome-unknown",
+      "A dispatched action may already have happened; observe before deciding what to do next.",
+    ],
+  ])("reports the deadline after a %s", async (_, method, completed, code, message) => {
+    const entered = Promise.withResolvers<void>();
+    const withheld = Promise.withResolvers<string>();
+    const schedule = vi.fn((_callback: () => void) => () => undefined);
+    let commands = 0;
+    const { service } = setup(
+      {
+        command: async () => {
+          if (++commands <= completed) return "{}";
+          entered.resolve();
+          return withheld.promise;
+        },
+      },
+      { now: Date.now, schedule },
+    );
+    const run = (code: string) =>
+      service.execute("context", code, undefined, undefined, async () => {});
+    await run(bind);
+    const pendingMethod = completed ? "Accessibility.queryAXTree" : method;
+    const running = run(`
+      for (let i = 0; i < ${completed}; i++) await page.cdp(${JSON.stringify(method)});
+      await page.cdp(${JSON.stringify(pendingMethod)});
+    `);
+    await entered.promise;
+    schedule.mock.calls.at(-1)![0]();
+    expect(await running).toMatchObject({
+      structuredContent: {
+        error: { code, message: `Browser code reached its 100 second deadline. ${message}` },
+      },
+    });
+    withheld.resolve("{}");
+  });
+
+  it("reports a selector wait as a read even with its generated CDP query in flight", async () => {
+    const query = Promise.withResolvers<void>();
+    const reply = Promise.withResolvers<string>();
+    const schedule = vi.fn((_callback: () => void) => () => undefined);
+    const { service } = setup(
+      {
+        command: async (_target, method) => {
+          if (method === "Runtime.evaluate")
+            return JSON.stringify({ result: { objectId: "document" } });
+          query.resolve();
+          return reply.promise;
+        },
+      },
+      { now: Date.now, schedule },
+    );
+    const run = (code: string) =>
+      service.execute("context", code, undefined, undefined, async () => {});
+    await run(bind);
+    const running = run('await page.locator("button").waitFor({ timeout: 100000 });');
+    await query.promise;
+    schedule.mock.calls.at(-1)![0]();
+    expect(await running).toMatchObject({
+      structuredContent: {
+        error: {
+          code: "deadline",
+          message:
+            "Browser code reached its 100 second deadline. It changed nothing. It is safe to try again.",
+        },
+      },
+    });
+    reply.resolve("{}");
   });
 
   it("cancels a pending command, clears timers and subscriptions, and ignores its late result", async () => {
@@ -1056,6 +1158,42 @@ describe("browser REPL", () => {
       ).toEqual([{ ...text("undefined"), context, callId: "new" }]);
     } finally {
       await worker.terminate();
+    }
+  });
+
+  it.each([
+    ["while (true) {}", true],
+    ["await sleep(0); while (true) {}", false],
+  ])("logs the CPU slice refusal for %s without changing the answer", async (code, firstSlice) => {
+    const stderr = vi.spyOn(process.stderr, "write");
+    const { service, run } = setup();
+    try {
+      const message = "The code ran for 100 ms of CPU time without awaiting; split the work.";
+      expect(JSON.stringify(await run(code))).toBe(
+        JSON.stringify({
+          content: [{ type: "text", text: `slice-limit: ${message}` }],
+          isError: true,
+          structuredContent: { error: { code: "slice-limit", message, performed: [] } },
+        }),
+      );
+      expect(await run("return 42")).toEqual({ content: [text(42)] });
+      await service.close();
+      const prefix = "browser.repl.slice-limit ";
+      const lines = stderr.mock.calls
+        .map(([chunk]) => String(chunk))
+        .filter((line) => line.startsWith(prefix));
+      expect(lines).toHaveLength(1);
+      const clock = JSON.parse(lines[0]!.slice(prefix.length));
+      expect(clock).toMatchObject({
+        limit: "cpu",
+        firstSlice,
+        scriptChars: code.length,
+      });
+      expect(clock.threadCpuMs - clock.hostCpuMs).toBeGreaterThan(limits.sliceMs);
+      expect(clock.wallMs).toBeGreaterThan(0);
+      expect(clock.workerAgeMs).toBeGreaterThanOrEqual(clock.wallMs);
+    } finally {
+      stderr.mockRestore();
     }
   });
 

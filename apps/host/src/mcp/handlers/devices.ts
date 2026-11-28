@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { immediateRequestResult, requestResult as domainRequestResult } from "../request-result.js";
 import type { z } from "zod";
+import { connectionComputerKinds } from "@opensteer/agent-tools";
 import type { AppAccessRequestInputSchema } from "@opensteer/agent-tools/tools";
 import type { IntegrationRequester } from "@opensteer/database";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
@@ -121,10 +122,17 @@ export class DeviceToolHandlers {
    */
   async #sessionComputerUse(caller: ConnectionCaller, call: ToolCall<"computer_use">) {
     const { code, computerId, app, taskId, reason, readOnly = false } = call.input;
+    // A named app the grant does not hold reads as any other thing outside it (rule 5), below.
+    const { phones } = connectionComputerKinds(caller.grant);
     if (!computerId)
       throw refused(
         "bad_request",
         "Name the app or phone screen shared with you: computerId, and app for a Mac app, from discover.",
+      );
+    if (!phones && !app)
+      throw refused(
+        "bad_request",
+        "Name the Mac app shared with you in app (name or bundleId from discover).",
       );
     if (code.length > requestOperationCallsMaxLength)
       throw refused(

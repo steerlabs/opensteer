@@ -56,12 +56,15 @@ it("bounds the pending map and tears down only its captured supervisor", async (
   expect(f.requests).toHaveLength(63);
   expect(f.terminate).toHaveBeenCalledExactlyOnceWith(5000);
 });
-it("rejects malformed UTF-8 without logging content and classifies sent effects unknown", async () => {
-  const f = fake();
-  const result = f.client.request("phone.perform", {}, z.strictObject({}));
-  f.stdout.write(Buffer.from([0, 0, 0, 1, 0xff]));
-  await expect(result).rejects.toMatchObject({ code: "phone-disconnected", effect: "unknown" });
-});
+it.each(["phone.perform", "session.close"])(
+  "rejects malformed UTF-8 without logging content and classifies sent %s unknown",
+  async (method) => {
+    const f = fake();
+    const result = f.client.request(method, {}, z.strictObject({}));
+    f.stdout.write(Buffer.from([0, 0, 0, 1, 0xff]));
+    await expect(result).rejects.toMatchObject({ code: "phone-disconnected", effect: "unknown" });
+  },
+);
 it("validates every method's result and never resends an invalid reply", async () => {
   const f = fake();
   const result = f.client.request("roster.get", {}, z.strictObject({ revision: z.number() }));

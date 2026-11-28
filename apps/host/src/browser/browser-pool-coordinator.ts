@@ -2795,7 +2795,16 @@ export class BrowserPoolCoordinator {
       const saved = slot.savedState as { id?: string } | null;
       switch (slot.phase) {
         case "parked":
-          if (saved?.id && status.savedState?.id === saved.id) return;
+          if (saved?.id && status.savedState?.id === saved.id) {
+            const closing = await listBrowserPoolClosingSessions(this.#options.database, this.#own);
+            for (const sessionId of closing)
+              await this.#adopter?.ended?.(
+                sessionId,
+                { slotId: slot.slotId, term: slot.term },
+                { kind: "guest-paused" },
+              );
+            return;
+          }
           return this.#continueWake(await this.#advance(slot, { phase: "waking" }));
         case "waking":
           return this.#continueWake(slot);

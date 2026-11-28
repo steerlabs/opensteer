@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   menuBarWords,
+  type MenuBarSwitchInput,
   type MenuBarRow,
   type MenuBarStatus,
   type OpensteerMenuBarBridge,
@@ -53,27 +54,42 @@ function usePending(onFailure: (message: string | null) => void): [ReadonlySet<s
  */
 export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBridge }) {
   const [status, setStatus] = useState<MenuBarStatus | null>(null);
+  const showStatus = useCallback((next: MenuBarStatus) => {
+    setStatus((previous) => {
+      const before = previous?.thisMac;
+      const after = next.thisMac;
+      return before?.revision != null &&
+        after?.revision != null &&
+        before.deploymentId === after.deploymentId &&
+        before.machineId === after.machineId &&
+        before.revision > after.revision
+        ? { ...next, thisMac: before }
+        : next;
+    });
+  }, []);
   const [failure, setFailure] = useState<string | null>(null);
   const [stopFailure, setStopFailure] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [pendingSwitch, setPendingSwitch] = useState<MenuBarSwitchInput | null>(null);
+  const switchBusy = useRef(false);
   const [busy, act] = usePending(setFailure);
   const [stopping, stopAct] = usePending(setStopFailure);
   useEffect(() => {
     let current = true;
     void bridge.status().then(
       (value) => {
-        if (current) setStatus(value);
+        if (current) showStatus(value);
       },
       (error: unknown) => {
         if (current) setFailure(menuBarFailure(error));
       },
     );
-    const detach = bridge.onStatus(setStatus);
+    const detach = bridge.onStatus(showStatus);
     return () => {
       current = false;
       detach();
     };
-  }, [bridge]);
+  }, [bridge, showStatus]);
   const phase = status?.stop.phase ?? "running";
   const stopProblem = status?.stop.problem ?? stopFailure;
   const problemLine = stopProblem ? (
@@ -195,19 +211,27 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
           {status.thisMac ? (
             <ThisMacSwitches
               busy={busy.size > 0}
+              pending={pendingSwitch}
               thisMac={status.thisMac}
               onSet={(capability, on, revision) => {
                 const thisMac = status.thisMac;
-                if (thisMac)
-                  void act(`switch:${capability}`, () =>
-                    bridge.setSwitch({
-                      deploymentId: thisMac.deploymentId,
-                      machineId: thisMac.machineId,
-                      capability,
-                      on,
-                      revision,
-                    }),
-                  );
+                if (!thisMac || switchBusy.current) return;
+                switchBusy.current = true;
+                const input = {
+                  deploymentId: thisMac.deploymentId,
+                  machineId: thisMac.machineId,
+                  capability,
+                  on,
+                  revision,
+                };
+                setPendingSwitch(input);
+                void act(`switch:${capability}`, async () => {
+                  await bridge.setSwitch(input);
+                  showStatus(await bridge.status());
+                }).finally(() => {
+                  switchBusy.current = false;
+                  setPendingSwitch(null);
+                });
               }}
             />
           ) : null}
@@ -323,9 +347,11 @@ function ThisMacSwitches({
   thisMac,
   busy,
   onSet,
+  pending,
 }: {
   readonly thisMac: NonNullable<MenuBarStatus["thisMac"]>;
   readonly busy: boolean;
+  readonly pending: MenuBarSwitchInput | null;
   readonly onSet: (
     capability: NonNullable<MenuBarStatus["thisMac"]>["switches"][number]["capability"],
     on: boolean,
@@ -337,18 +363,22 @@ function ThisMacSwitches({
     <ul className="menu-bar__rows">
       {thisMac.switches.map((item) => {
         const labelId = `menu-bar-switch-${item.capability}`;
+        const changing =
+          pending?.capability === item.capability &&
+          pending.machineId === thisMac.machineId &&
+          pending.deploymentId === thisMac.deploymentId;
         return (
           <li className="menu-bar__row" key={item.capability}>
             <span className="menu-bar__row-text">
               <span id={labelId}>{item.label}</span>
-              <span className="menu-bar__detail">{item.detail}</span>
+              <span className="menu-bar__detail">{changing ? "Saving…" : item.detail}</span>
             </span>
             {item.fixed ? (
               <span className="chip chip--ok">{menuBarWords("menubar.switch.on")}</span>
             ) : (
               <input
                 aria-labelledby={labelId}
-                checked={item.on}
+                checked={changing ? pending.on : item.on}
                 className="switch"
                 disabled={busy || !thisMac.editable || revision === null}
                 onChange={(event) => {

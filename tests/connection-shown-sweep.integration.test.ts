@@ -1206,4 +1206,97 @@ integration("what a connection is shown", () => {
       expect(await w.waitingRequests()).toEqual([]);
     },
   );
+
+  it("refuses wrong tool shapes with invalid_input before looking up the grant, identically whether or not the caller holds the target", async () => {
+    const w = await world();
+    w.helper.answer = () => ({ calendars: [], events: [] }) as never;
+    const holder = keep(
+      await connectAgent(
+        w.host,
+        grantOf(w.profileId, { calendar: w.calendar, notes: { id: w.notes, device: w.mac } }),
+      ),
+    );
+    const other = keep(
+      await connectAgent(
+        w.host,
+        grantOf(w.profileId, {
+          calendar: `con_${randomUUID()}`,
+          notes: { id: `con_${randomUUID()}`, device: w.mac },
+        }),
+      ),
+    );
+    const p1 = pathForms(namespaceOf(w.calendar), "list_calendars")[0]!;
+    const p2 = pathForms(namespaceOf(w.calendar), "list_events")[0]!;
+    const otherPlugin = pathForms(namespaceOf(`con_${randomUUID()}`), "list_calendars")[0]!;
+    const ns = `tools[${JSON.stringify(namespaceOf(w.calendar))}]`;
+    const big = "a".repeat(25_000);
+
+    // Valid array form for one plugin still runs for the holder and reads not_found for non-holder.
+    for (const calls of [
+      [{ path: p1, input: {} }],
+      [
+        { path: p1, input: {} },
+        { path: p2, input: day },
+      ],
+    ]) {
+      expect((await holder.call("plugin_call", { calls })).structuredContent).toMatchObject({
+        status: "completed",
+      });
+      expect(callError(await other.call("plugin_call", { calls }))).toEqual({
+        code: "not_found",
+        message: "That item is unavailable.",
+        next: null,
+      });
+    }
+
+    const invocationsBefore = w.helper.invocations.length;
+    const wrongShapes: readonly [string, string, Args][] = [
+      ["plugin_call empty array", "plugin_call", { calls: [] }],
+      ["plugin_call array missing input", "plugin_call", { calls: [{ path: p1 }] }],
+      [
+        "plugin_call malformed bracket path with newline",
+        "plugin_call",
+        {
+          calls: {
+            path: `tools[${JSON.stringify(namespaceOf(w.calendar))}]["line\nbreak"]`,
+            input: {},
+          },
+        },
+      ],
+      [
+        "plugin_call array naming two plugins",
+        "plugin_call",
+        {
+          calls: [
+            { path: p1, input: {} },
+            { path: otherPlugin, input: {} },
+          ],
+        },
+      ],
+      ["plugin_call oversized object", "plugin_call", { calls: { path: p1, input: { big } } }],
+      ["plugin_call oversized array", "plugin_call", { calls: [{ path: p1, input: { big } }] }],
+      [
+        "plugin_execute oversized code",
+        "plugin_execute",
+        { namespace: ns, code: `return "${big}";` },
+      ],
+      ["plugin_execute missing namespace", "plugin_execute", { code: "return 1;" }],
+      [
+        "computer_use missing app on Mac-app grant",
+        "computer_use",
+        { code: "help()", computerId: w.mac },
+      ],
+      ["browser_use oversized code", "browser_use", { code: `return "${big}";` }],
+      ["opensteer_command empty", "opensteer_command", {}],
+    ];
+
+    for (const [label, tool, args] of wrongShapes) {
+      const held = (await holder.call(tool, args)).structuredContent;
+      const unheld = (await other.call(tool, args)).structuredContent;
+      expect(held, label).toMatchObject({ error: { code: "invalid_input" } });
+      expect(unheld, label).toEqual(held);
+    }
+    expect(w.helper.invocations).toHaveLength(invocationsBefore);
+    expect(await w.waitingRequests()).toEqual([]);
+  });
 });

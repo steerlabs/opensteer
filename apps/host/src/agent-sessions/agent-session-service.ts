@@ -11,6 +11,7 @@ import {
   refused,
   requestOperationCallsMaxLength,
   threadAccessModeAtMost,
+  type AgentGrantTarget,
   type AgentOperationDecision,
   type AgentOperationEnding,
   type AgentOperationId,
@@ -39,6 +40,7 @@ import {
   findAgentOperation,
   handOffAgentOperation,
   idleAgentSessions,
+  reachesTarget,
   readAgentOperation,
   refuseUnsentAgentOperation,
   refuseUnsentHandedOffAgentOperation,
@@ -55,6 +57,7 @@ import {
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { DeadlineDrain } from "../runtime/deadline-drain.js";
 import { AgentWorkingInRegistry } from "./agent-working-in.js";
+import { isSettledScriptDeadline } from "../computer-use/computer-repl/computer-repl-service.js";
 import { ReplFailureSchema, type ReplFailure } from "../computer-use/computer-repl/messages.js";
 import type { BrowserPoolReservation } from "../browser/browser-pool-gate.js";
 
@@ -257,6 +260,13 @@ export const unknownNext = agentOperationEndingSentence("contact-lost");
 export const scriptFailedNext =
   "Earlier steps may have taken effect. Check the current state before trying again.";
 
+export function failedScriptNext(
+  summary: Readonly<Record<string, unknown>> | null,
+  error: ReplFailure,
+): string {
+  return (summary?.settledScriptDeadline === true && error.next) || scriptFailedNext;
+}
+
 function keepsScriptDiagnostics(ending: AgentOperationEnding | null): boolean {
   return ending === null || ending === "contact-lost";
 }
@@ -453,11 +463,16 @@ export class AgentSessionService {
       identity: { key: operation.operationKey },
     });
     if (existing) {
+      // Authorize the stored operation's target before comparing arguments or returning any
+      // receipt (completed, failed, unknown, or refused); an unreachable stored target reads
+      // exactly as an unknown operation and never reuses the key to run a new effect.
+      const storedTarget = existing.target.grant;
+      const execution = await this.#admitStoredTarget(operation, storedTarget);
       assertOperationArguments(existing, argumentDigest, operation.taskId);
       if (
         existing.state === "completed" &&
         (!operation.replay || existing.sessionStatus === "ended")
-      )
+      ) {
         return {
           status: "completed",
           taskId: existing.taskId,
@@ -465,13 +480,25 @@ export class AgentSessionService {
           summary: existing.resultSummary,
           ...(operation.reportReplay ? { replayed: true } : {}),
         };
+      }
       return withAgentOperationReceipt(
         this.#store.database,
         existing,
         existing.taskId,
         async () => {
-          const execution = await this.#admit(operation, `session:${existing.sessionId}`);
-          const result = await this.#advance(operation, existing, existing.taskId, execution);
+          const replayExecution =
+            existing.state === "failed" ||
+            existing.state === "unknown" ||
+            existing.state === "refused"
+              ? execution
+              : await this.#admit(
+                  {
+                    ...operation,
+                    ...(storedTarget.kind === "device" ? {} : { target: existing.target }),
+                  },
+                  `session:${existing.sessionId}`,
+                );
+          const result = await this.#advance(operation, existing, existing.taskId, replayExecution);
           return operation.reportReplay ? { ...result, replayed: true as const } : result;
         },
       );
@@ -689,6 +716,29 @@ export class AgentSessionService {
     return reason ? connectionCleanupEnding(reason) : null;
   }
 
+  async #admitStoredTarget(
+    operation: Pick<DirectOperation<unknown>, "ownerUserId" | "agentConnectionId">,
+    storedTarget: AgentGrantTarget,
+  ): Promise<ExecutionAuthority> {
+    let execution: ExecutionAuthority;
+    try {
+      execution = await admitExecution(this.#store.database, {
+        ownerUserId: operation.ownerUserId,
+        subject: { kind: "connection", agentConnectionId: operation.agentConnectionId },
+        ...(storedTarget.kind === "browser-profile" ? { grantTarget: storedTarget } : {}),
+      });
+    } catch (error) {
+      if (error instanceof OpensteerError && error.code === "not_found")
+        throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
+      throw error;
+    }
+    if (storedTarget.kind !== "device" && storedTarget.kind !== "browser-profile") {
+      if (!(await reachesTarget(this.#store.database, execution, storedTarget)))
+        throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
+    }
+    return execution;
+  }
+
   async #admit(
     operation: Pick<DirectOperation<unknown>, "ownerUserId" | "target" | "effect">,
     bindingId: string,
@@ -723,7 +773,12 @@ export class AgentSessionService {
         case "failed": {
           const scriptError = storedScriptError(row);
           return scriptError
-            ? { status: "failed", ...base, scriptError, next: scriptFailedNext }
+            ? {
+                status: "failed",
+                ...base,
+                scriptError,
+                next: failedScriptNext(row.resultSummary, scriptError),
+              }
             : { status: "failed", ...base, next: "It failed. Check the current state." };
         }
         case "unknown": {
@@ -1112,7 +1167,9 @@ export class AgentSessionService {
         ...(current.state === "failed"
           ? {
               status: "failed" as const,
-              next: scriptError ? scriptFailedNext : "It failed. Check the current state.",
+              next: scriptError
+                ? failedScriptNext(current.resultSummary, scriptError)
+                : "It failed. Check the current state.",
             }
           : { status: "unknown" as const, next: unknownOperationNext(current.ending) }),
         ...(scriptError ? { scriptError } : {}),
@@ -1296,7 +1353,7 @@ export class AgentSessionService {
         this.#onError(error);
       }
       if (
-        outstanding > 0 ||
+        (outstanding > 0 && (!scriptError || !isSettledScriptDeadline(scriptError))) ||
         scriptError?.code === "outcome-unknown" ||
         (operation.scriptFailure && signal.aborted)
       ) {
@@ -1328,11 +1385,23 @@ export class AgentSessionService {
         this.#store.database,
         row.id,
         scriptError ? "failed" : "completed",
-        scriptError ? { ...summary, scriptError } : summary,
+        scriptError
+          ? {
+              ...summary,
+              scriptError,
+              ...(isSettledScriptDeadline(scriptError) ? { settledScriptDeadline: true } : {}),
+            }
+          : summary,
       );
       if (!settled) return recorded();
       if (scriptError)
-        return { status: "failed", ...base, result, scriptError, next: scriptFailedNext };
+        return {
+          status: "failed",
+          ...base,
+          result,
+          scriptError,
+          next: (isSettledScriptDeadline(scriptError) && scriptError.next) || scriptFailedNext,
+        };
       return { status: "completed", ...base, result, summary };
     } finally {
       if (--entry.work === 0 && this.#sessions.get(row.sessionId) === entry)

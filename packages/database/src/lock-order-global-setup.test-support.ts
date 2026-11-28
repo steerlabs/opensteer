@@ -1,7 +1,9 @@
 import {
   appendFileSync,
+  closeSync,
   createReadStream,
   mkdtempSync,
+  openSync,
   readdirSync,
   rmSync,
   writeFileSync,
@@ -39,6 +41,29 @@ const recordSchema = z.discriminatedUnion("type", [
     previousStack: z.string(),
   }),
 ]);
+
+function writeJson(fd: number, value: unknown, prefix: string): void {
+  if (!Array.isArray(value)) {
+    writeFileSync(fd, prefix + JSON.stringify(value));
+    return;
+  }
+  writeFileSync(fd, prefix + "[");
+  for (const [index, item] of value.entries()) writeJson(fd, item, index === 0 ? "\n" : ",\n");
+  writeFileSync(fd, "\n]");
+}
+
+function writeGraph(path: string, summary: Record<string, unknown>): void {
+  const fd = openSync(path, "w");
+  try {
+    writeFileSync(fd, "{");
+    for (const [index, [key, value]] of Object.entries(summary).entries()) {
+      writeJson(fd, value, `${index === 0 ? "" : ","}\n${JSON.stringify(key)}:`);
+    }
+    writeFileSync(fd, "\n}\n");
+  } finally {
+    closeSync(fd);
+  }
+}
 
 /** Physical database isolation must preserve the whole suite's logical lock graph. */
 export default function setup(project?: TestProject) {
@@ -125,11 +150,11 @@ export default function setup(project?: TestProject) {
       errors,
       edges: [...edges.values()],
     };
-    writeFileSync(trace + ".graph.json", JSON.stringify(summary, null, 2) + "\n");
+    writeGraph(trace + ".graph.json", summary);
     console.info(`Database lock graph: ${trace}.graph.json`);
     if (errors.length || (!recordOnly && (violations > 0 || cycles.length > 0))) {
       throw new Error(
-        `Database lock graph: ${violations} rank/order violations; ${cycles.length} conflicting cycle witnesses; ${errors.length} trace errors. See ${trace}.graph.json\n${errors.join("\n")}`,
+        `Database lock graph: ${violations} rank/order violations; ${cycles.length} conflicting cycle witnesses; ${errors.length} trace errors. See ${trace}.graph.json${errors.length ? `\n${errors[0]}` : ""}`,
       );
     }
     if (scratch && !recordOnly) {

@@ -2065,8 +2065,17 @@ export interface AgentOperationTable {
   updatedAt: Generated<Date>;
 }
 
+export interface AgentSessionDeviceHoldTable {
+  id: string;
+  sessionId: AgentSessionId;
+  deviceName: string;
+  homeProcessId: string;
+  unconfirmedAt: Date | null;
+}
+
 export interface DatabaseSchema {
   agentSessions: AgentSessionTable;
+  agentSessionDeviceHolds: AgentSessionDeviceHoldTable;
   agentOperations: AgentOperationTable;
   pluginOauthRecords: {
     id: string;
