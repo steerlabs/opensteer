@@ -688,6 +688,7 @@ describeStore("Host browser homes", (it) => {
     });
     const workingNotices: AgentWorkingIn[] = [];
     const workingIn = new AgentWorkingInRegistry((_owner, notice) => workingNotices.push(notice));
+    const placesAtSessionPublish: (readonly AgentWorkingIn[])[] = [];
     const errors: unknown[] = [];
     const browser = new BrowserService({
       deploymentId: createId("deployment"),
@@ -701,7 +702,7 @@ describeStore("Host browser homes", (it) => {
         repository: fixture.store,
       }),
       profileRequestRunner: async () => run.runnerId,
-      onSessionsChanged: () => undefined,
+      onSessionsChanged: () => placesAtSessionPublish.push(workingIn.current(run.userId)),
       onHoldsDropped: (ownerId, tabIds) => {
         for (const tabId of tabIds) workingIn.forgetTab(ownerId, tabId);
       },
@@ -820,6 +821,7 @@ describeStore("Host browser homes", (it) => {
       );
 
       // Delete through the administration door (`browser.profile.delete`).
+      placesAtSessionPublish.length = 0;
       await admin.execute(
         { kind: "person", userId: run.userId },
         {
@@ -871,6 +873,8 @@ describeStore("Host browser homes", (it) => {
         ).state,
       ).toBe("ready");
       // Connected agent's Watch record on the deleted profile's tab was cleared.
+      expect(placesAtSessionPublish).toContainEqual([]);
+      expect(placesAtSessionPublish.flat()).toEqual([]);
       expect(workingIn.current(run.userId)).toEqual([]);
       expect(workingNotices.at(-1)).toEqual({
         threadId: run.threadId,

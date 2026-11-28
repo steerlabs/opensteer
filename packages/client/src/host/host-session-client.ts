@@ -3100,13 +3100,18 @@ export class HttpHostClient {
   #applyWorkingIn(notice: AgentWorkingIn): void {
     const current = this.#snapshot.agentWorkingIn ?? {};
     const held = current[notice.threadId];
-    if (notice.tabId === null) {
+    if (notice.tabId === null && !notice.computerId) {
       if (held?.sessionId !== notice.sessionId) return;
       const { [notice.threadId]: _ended, ...rest } = current;
       this.#update({ ...this.#snapshot, agentWorkingIn: rest });
       return;
     }
-    if (held?.sessionId === notice.sessionId && held.tabId === notice.tabId) return;
+    if (
+      held?.sessionId === notice.sessionId &&
+      held.tabId === notice.tabId &&
+      held.computerId === notice.computerId
+    )
+      return;
     this.#update({
       ...this.#snapshot,
       agentWorkingIn: { ...current, [notice.threadId]: notice },

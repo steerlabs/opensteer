@@ -6089,6 +6089,31 @@ integration.sequential("Computer use for a connected agent, through its session"
     );
   }
 
+  it("supersedes a connected agent's older browser place when the Mac receives computer work", async () => {
+    const s = await connectedAgent("full-access", { target: "mac", personApproved: true });
+    try {
+      const started = await s.call({ code: "return 1" }, "work-place-task");
+      const { sessionId } = await s.operation("work-place-task");
+      const ownerId = s.world.owner.userId;
+      const tabId = createId("tab");
+      s.sessions.workingIn.note(`session:${sessionId}`, tabId);
+      expect(s.sessions.workingIn.current(ownerId)).toEqual([
+        { threadId: started.taskId, sessionId, tabId },
+      ]);
+      const played = await s.call({
+        taskId: started.taskId,
+        readOnly: true,
+        code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
+      });
+      expect(played.isError).not.toBe(true);
+      expect(s.sessions.workingIn.current(ownerId)).toEqual([
+        { threadId: started.taskId, sessionId, tabId: null, computerId: s.computerId },
+      ]);
+    } finally {
+      await s.world.close();
+    }
+  });
+
   it.each(["lease release", "authority refusal"])(
     "settles an unsent reserved Mac hold after the last call ends by %s",
     async (ending) => {

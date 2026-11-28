@@ -22,9 +22,10 @@ const button = (label: string, parent: ParentNode = document) =>
   );
 
 async function watch(
-  scene: "one" | "three" | "cloud-tab" | "two-tabs" | "late-tab",
+  scene: "one" | "three" | "cloud-tab" | "two-tabs" | "late-tab" | "cold-tab",
   name?: string,
   prepare?: (source: typeof client) => void,
+  beforeClick?: () => void,
 ) {
   await mount("/", {
     mock: mockConnectedAgents("seeded"),
@@ -43,6 +44,7 @@ async function watch(
     [...dialog.querySelectorAll("button")].find((entry) =>
       (entry.getAttribute("aria-label") ?? "").startsWith("Watch "),
     )!;
+  beforeClick?.();
   await act(async () => watching.click());
 }
 
@@ -105,6 +107,22 @@ for (const acting of [false, true])
 /** The tab the address shows now, if any. */
 const shownTab = () => new URLSearchParams(history.at(-1)?.search).get("tab");
 
+it("uses the Home's device place before any Mac acting flag arrives", async () => {
+  const thread = mockAgentWorkThreads.shopping;
+  await watch("two-tabs", undefined, (source) => {
+    source.mockComputerUseSessionTask(thread, { actingAppKeys: [] });
+    const mac = source
+      .getSnapshot()
+      .machines.find(({ computerUse }) =>
+        computerUse?.sessions.some(({ threadId }) => threadId === thread),
+      )!;
+    source.mockAgentWorksIn(thread, "mock-tab-0-1");
+    source.mockAgentWorksIn(thread, null, mac.id);
+  });
+  expect(shownTab()).toBeNull();
+  expect(document.querySelector(".place--watch")?.textContent).toContain("Notes");
+});
+
 it("lands Watch on the tab the task's work took up last, of the two it holds", async () => {
   // Tester run 15, trials 2, 4, 6 and 7: an earlier tab, and the one its call works in now.
   await watch("two-tabs");
@@ -118,6 +136,24 @@ it("lands Watch on the task's tab when the row naming it reaches this client aft
   expect(history.at(-1)?.path).toBe(`/tasks/${mockAgentWorkThreads.shopping}`);
   expect(shownTab()).toBeNull();
   await vi.waitFor(() => expect(shownTab()).toBe("mock-tab-1-0"), { timeout: 4_000 });
+});
+
+it("keeps a cold Watch waiting longer than five seconds and opens the page when it arrives", async () => {
+  try {
+    await watch("cold-tab", undefined, undefined, () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    expect(shownTab()).toBeNull();
+    expect
+      .soft(document.querySelector(".place-state")?.textContent)
+      .toContain("Waiting for the agent’s page");
+    const thread = mockAgentWorkThreads.shopping;
+    await act(async () => vi.advanceTimersByTimeAsync(6_000));
+    await act(async () => client.mockAgentWorksIn(thread, "mock-tab-0-1"));
+    expect(shownTab()).toBe("mock-tab-0-1");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("follows the task's work to its next tab while the person chooses nothing else, and never after they do", async () => {

@@ -41,6 +41,8 @@ export function connectedAgentsNow(input: {
   readonly waitingRequests: readonly WaitingRequestView[];
   /** The task activity the client has read. */
   readonly operations?: readonly AgentOperationView[] | undefined;
+  /** Once read, the profile inventory is authority on which browser targets still exist. */
+  readonly profileIds?: ReadonlySet<string> | undefined;
 }): {
   readonly agents: readonly ConnectedAgentNow[];
   readonly headline: string | null;
@@ -70,17 +72,28 @@ export function connectedAgentsNow(input: {
         latestTime = at;
       }
     }
+    const exists = (target: AgentOperationTarget) =>
+      target.grant.kind !== "browser-profile" ||
+      !input.profileIds ||
+      input.profileIds.has(target.grant.profileId);
     const targets = [
       waiting?.request.agentOperation?.target,
       ...operations.filter(({ outcome }) => outcome === null).map(({ target }) => target),
-    ].filter((target): target is AgentOperationTarget => target !== undefined);
+    ].filter((target): target is AgentOperationTarget => target !== undefined && exists(target));
     // When no action is in flight, the latest recorded action is the only place we can name.
-    if (targets.length === 0 && latest) targets.push(latest.target);
+    if (targets.length === 0 && latest) {
+      if (!exists(latest.target) && !waiting) continue;
+      if (exists(latest.target) && latest.ending !== "narrowed") targets.push(latest.target);
+    }
     const question = waiting
       ? (needsYouAgentRequest(waiting.request, sessionSlotFromHome(work))?.question ??
         waiting.request.presentation.title)
       : null;
-    const actionParts = question ? [question] : latest ? operationActionParts(latest) : [];
+    const actionParts = question
+      ? [question]
+      : latest && exists(latest.target) && latest.ending !== "narrowed"
+        ? operationActionParts(latest)
+        : [];
     const entry: ConnectedAgentNow = {
       agent: sessionAgent(work.connection),
       connectionId: work.connection.id,

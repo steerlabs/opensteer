@@ -323,11 +323,16 @@ export class BrowserScriptService {
    * context running a call admitted since (its own start disposed the old state) is left to it.
    * The binding is not ended: its next call runs in a fresh context, deciding every tab again.
    */
-  resetBrowserScriptsForBinding(agentBindingId: string): void {
+  resetBrowserScriptsForBinding(agentBindingId: string, minimumGrantRevision?: number): void {
     const binding = this.#bindings.get(agentBindingId);
     if (!binding) return;
     for (const key of binding.contexts) {
       if (this.#repl.busy(key)) continue;
+      if (
+        minimumGrantRevision !== undefined &&
+        (this.#revisions.get(key) ?? -1) >= minimumGrantRevision
+      )
+        continue;
       this.#repl.disposeContext(key);
       this.#revisions.delete(key);
     }

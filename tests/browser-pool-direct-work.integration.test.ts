@@ -141,10 +141,9 @@ async function directWork(
       workingChanged();
     },
     // As the Home's runtime wires it: a session a narrowing leaves running starts afresh.
-    resetBinding: (bindingId) => {
-      scripts.resetBrowserScriptsForBinding(bindingId);
-      home().service.releaseHolds(bindingId);
-    },
+    resetBinding: (bindingId, revision) =>
+      scripts.resetBrowserScriptsForBinding(bindingId, revision),
+    releaseBindingPlaces: (bindingId) => home().service.releaseHolds(bindingId),
     ...(options.executionMs ? { executionMs: options.executionMs } : {}),
     ...(options.endsBrowserWork
       ? { closeBinding: (bindingId: string, reason: string) => endBrowserWork(bindingId, reason) }
@@ -3396,6 +3395,46 @@ it("tells the person where a kept page handle works, with no holder record of th
   }
 });
 
+it("publishes the first page from a pooled call after its delayed admission", async () => {
+  const { site, origin } = await pagesSite();
+  const j = await journey("direct-working-in-cold", { profile: true });
+  const blocked = Promise.withResolvers<void>();
+  const wake = Promise.withResolvers<void>();
+  let result: Promise<unknown> | undefined;
+  try {
+    const home = await j.startHome();
+    const pooled = home.service.pooledDirectBrowser.bind(home.service);
+    vi.spyOn(home.service, "pooledDirectBrowser").mockImplementation((runnerId) => {
+      const pool = pooled(runnerId);
+      if (!pool) return pool;
+      return {
+        ...pool,
+        reserve: async (...args) => {
+          blocked.resolve();
+          await wake.promise;
+          return pool.reserve(...args);
+        },
+      };
+    });
+    const work = await directWork(j, () => home);
+    const opening = work.use(`return (await newPage("${origin}/cold")).tabId;`);
+    result = opening;
+    await blocked.promise;
+    const { threadId } = await sessionOf(j);
+    expect(work.sessions.workingIn.current(j.task.userId)).toEqual([]);
+    wake.resolve();
+    const tab = tabOf(await opening);
+    await work.untilWorking(async () =>
+      expect(await watchLands(j, home, threadId, work.workingIn)).toBe(tab),
+    );
+  } finally {
+    wake.resolve();
+    await result?.catch(() => undefined);
+    await j.close();
+    site.close();
+  }
+});
+
 it("tells the person where a script works once it opens a page, before any command on it", async () => {
   const { site, origin } = await pagesSite();
   const j = await journey("direct-working-in-open", { profile: true });
@@ -3745,6 +3784,71 @@ it("records no hold for a bind that a narrowing ended while it ran", async () =>
   } finally {
     release.resolve();
     await j.close();
+  }
+});
+
+it("drops a retained pooled tab's badge when access narrows while a browser call is still unwinding", async () => {
+  const { site, origin } = await pagesSite();
+  const j = await journey("direct-running-holder-narrowed", { profile: true });
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let running: Promise<unknown> | undefined;
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home, {
+      grant: { scope: "everything" },
+    });
+    const tab = tabOf(await work.use(`return (await newPage("${origin}/one")).tabId;`));
+    const { threadId, id: sessionId } = await sessionOf(j);
+    const holders = async () =>
+      (await home.service.pageTabs.state!(j.task.userId, await row(j, tab))).usedBy;
+    expect(await holders()).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+    const run = work.sessions.run.bind(work.sessions);
+    vi.spyOn(work.sessions, "run").mockImplementationOnce((operation) =>
+      run({
+        ...operation,
+        execute: async (context) => {
+          const result = await operation.execute(context);
+          reached.resolve();
+          await release.promise;
+          return result;
+        },
+      }),
+    );
+    running = work.useTab(
+      `const page = await openPage(${JSON.stringify(tab)}); return await page.title();`,
+      tab,
+    );
+    await reached.promise;
+    const connection = commands(j.fixture, j.task.userId, {
+      afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
+    });
+    await connection.update(work.agent.id, {
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
+      },
+    });
+    expect(await holders()).toEqual([]);
+    expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId, tabId: null });
+    release.resolve();
+    await running;
+    expect(await holders()).toEqual([]);
+    expect(
+      (
+        await work.useTab(
+          `const page = await openPage(${JSON.stringify(tab)}); return await page.title();`,
+          tab,
+        )
+      ).isError,
+    ).not.toBe(true);
+    expect(await holders()).toEqual([{ taskId: threadId, since: expect.any(String) }]);
+  } finally {
+    release.resolve();
+    await running?.catch(() => undefined);
+    await j.close();
+    site.close();
   }
 });
 

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { DeviceIdSchema, type TabTarget } from "@opensteer/core";
-import type { HostClient } from "@opensteer/client/host";
+import { watchComputerId, type HostClient } from "@opensteer/client/host";
 import {
   threadComputerSessions,
   type WatchableComputerSession,
@@ -31,9 +31,13 @@ export function taskAppWatch(input: {
   readonly hostConnected: boolean;
   readonly machines: readonly MachineSummary[];
   readonly threadId: string | null;
+  readonly computerId?: string | null;
 }): TaskAppWatch | null {
   const watch = threadComputerSessions(input).find(
-    ({ session }) => !session.display && session.apps.length > 0,
+    ({ machine, session }) =>
+      (!input.computerId || machine.id === input.computerId) &&
+      !session.display &&
+      session.apps.length > 0,
   );
   if (!watch) return null;
   const { apps, actingAppKeys } = watch.session;
@@ -134,7 +138,10 @@ export function TaskAppWatchPane({
   readonly visible: boolean;
 }) {
   const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
-  const using = taskAppWatch({ hostConnected, machines, threadId });
+  const workingComputerId = useHostSelector(hostClient, (snapshot) =>
+    threadId ? watchComputerId(snapshot, threadId) : null,
+  );
+  const using = taskAppWatch({ hostConnected, machines, threadId, computerId: workingComputerId });
   const sessionId = using?.watch.session.sessionId ?? null;
   // The person's pick among the apps it holds, kept while the session holds it.
   const [picked, setPicked] = useState<{ sessionId: string; appKey: string } | null>(null);

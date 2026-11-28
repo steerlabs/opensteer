@@ -35,6 +35,7 @@ import { useListedBrowserPresentations } from "./identity.js";
 import { OwnerView } from "./owner-view.js";
 import { StartPage } from "./start-page.js";
 import { TaskAppWatchPane } from "./task-app-watch.js";
+import { useWatchWaiting } from "./watch-follow.js";
 import {
   destinationPlaceKey,
   startPageLink,
@@ -148,6 +149,7 @@ function SelectedPlace({
   const presentations = useListedBrowserPresentations(hostClient);
   const pageVisible = usePageVisible();
   const { pathname, state: entryState } = useLocation();
+  const watching = useWatchWaiting(hostClient, conversationAt(pathname));
   const known = useRef(new Map<string, PlaceItem>());
   const placeKey = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
   const live = usePlace(hostClient, placeKey) ?? null;
@@ -349,6 +351,21 @@ function SelectedPlace({
   }
   if (selection.kind === "talk") return null;
   if (selection.kind === "launcher") {
+    if (watching && startPageOpening(entryState) === "") {
+      return (
+        <section aria-label="Watch" className="place place--page">
+          <div className="browser-toolbar surface-row">
+            {leading}
+            {trailing}
+          </div>
+          <div className="browser-stage">
+            <div className="place-state" role="status">
+              Waiting for the agent’s page…
+            </div>
+          </div>
+        </section>
+      );
+    }
     const startPage = (
       <section aria-label="New tab" className="place place--launcher">
         <StartPageSlot hostClient={hostClient} leading={leading} trailing={trailing} />

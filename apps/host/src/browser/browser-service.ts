@@ -2246,6 +2246,12 @@ export class BrowserService {
       `profile-admission:${input.profileId}`,
       () => this.#repository.deleteBrowserProfile(input),
     );
+    // The archive has already retired and published these tabs. Clear their Watch places
+    // before waiting on the device to stop or erase anything.
+    if (retiredTabIds?.length) {
+      this.#onHoldsDropped(input.ownerId, retiredTabIds);
+      this.#onTabsChanged(input.ownerId, retiredTabIds);
+    }
     this.#onProfileArchived();
     for (const [id, group] of this.#personUseGroups)
       if (group.profileId === input.profileId) this.#endPersonUse(id);
@@ -2262,11 +2268,6 @@ export class BrowserService {
         : sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
     );
     for (const stop of stops) if (stop.status === "rejected") this.#onError(stop.reason);
-    if (retiredTabIds?.length) {
-      this.#onHoldsDropped(input.ownerId, retiredTabIds);
-      // Invalidate standalone warm catalogs without emitting a second `tab` notice.
-      this.#onTabsChanged(input.ownerId, retiredTabIds);
-    }
     if (deletion) await this.#eraseLocalProfiles?.(deletion.computerId).catch(() => undefined);
     await this.#ownerProfilesChanged(input.ownerId);
     // Retried agent operations replay admission; subsequent reads show erasure progress.

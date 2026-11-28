@@ -379,6 +379,7 @@ export interface WorkspaceNavigation {
     readonly replace?: boolean;
   }) => ((destination: SurfaceDestination) => void) & {
     readonly launcher: (options: { address: string; open: boolean }) => void;
+    readonly watch: () => void;
     /** Whether the answer would still land: no newer choice, and the same conversation open. */
     readonly standing: () => boolean;
   };
@@ -625,6 +626,13 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
           });
         },
         {
+          watch: () => {
+            if (current())
+              choosePlace({ kind: "launcher" }, undefined, {
+                replace: true,
+                state: { watch: true },
+              });
+          },
           launcher: (failure: { address: string; open: boolean }) => {
             if (!current()) return;
             setPending(null);

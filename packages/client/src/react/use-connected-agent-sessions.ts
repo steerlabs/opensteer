@@ -127,6 +127,11 @@ export function useConnectedAgentWork(
     return () => controller.abort();
   }, [hostClient, activeTasks, activityRead, readActivity]);
   const activity = read?.client === hostClient ? read.byTask : undefined;
+  const profiles = useHostSelector(hostClient, (snapshot) => {
+    if (!activity) return null;
+    const inventory = snapshot.browserProfiles;
+    return snapshot.loadedResources.includes("browser-profile") ? inventory : null;
+  });
   // What each agent is working in, as the person sees it: a Mac app by the name they approved.
   const names = useApprovedAppNames(
     hostClient,
@@ -139,9 +144,10 @@ export function useConnectedAgentWork(
             tasks,
             waitingRequests,
             operations: shownOperations([...activity.values()].flat(), names),
+            profileIds: profiles ? new Set(profiles.map(({ id }) => id)) : undefined,
           })
         : base,
-    [activity, base, names, tasks, waitingRequests],
+    [activity, base, names, profiles, tasks, waitingRequests],
   );
   return { view, tasks, activity, refresh };
 }

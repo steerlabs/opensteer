@@ -258,6 +258,23 @@ it("keeps the last operations for a task whose activity refresh fails", async ()
   expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");
 });
 
+it("removes a deleted profile from Now and offers neither Watch nor Stop for that work", async () => {
+  await mount("/", options("one"));
+  const dialog = await openPanel();
+  const shopping = client.getSnapshot().browserProfiles.find(({ name }) => name === "Shopping")!;
+  expect(button("Watch ChatGPT", dialog)).toBeDefined();
+  await act(async () => {
+    await client.dispatch({
+      type: "browser.profile.delete",
+      profileId: shopping.id,
+      idempotencyKey: "delete-now-profile",
+    });
+  });
+  await vi.waitFor(() => expect(trigger()).toBeNull());
+  expect(button("Watch ChatGPT")).toBeUndefined();
+  expect(button("Stop ChatGPT")).toBeUndefined();
+});
+
 it("quotes and isolates a self-declared product name on the row, its actions and Stop warning", async () => {
   await mount("/", {
     ...options("long-one"),

@@ -369,7 +369,12 @@ export class AgentSessionService {
   readonly #decisions = new EventEmitter();
   /** Where each session is working now, for its owner's Watch; in memory only. */
   readonly workingIn: AgentWorkingInRegistry;
-  readonly #resetBinding: (bindingId: string) => void | Promise<void>;
+  readonly #resetBinding: (
+    bindingId: string,
+    minimumGrantRevision?: number,
+  ) => void | Promise<void>;
+  readonly #releaseBindingPlaces: (bindingId: string) => void;
+  readonly #placeResetRevision = new Map<AgentSessionId, number>();
   readonly #holdMs: number;
   readonly #executionMs: number;
   readonly #sweeper: DeadlineDrain;
@@ -388,14 +393,19 @@ export class AgentSessionService {
     readonly onWorkingIn?: (ownerUserId: UserId, notice: AgentWorkingIn) => void;
     /**
      * After a narrowing, for a session it leaves running: does at once what its next call does
-     * on the grant revision change (its script contexts disposed, every page attachment closed)
-     * and lets go of every tab it holds. The binding is not ended.
+     * on the grant revision change (its script contexts disposed, every page attachment closed).
      */
-    readonly resetBinding?: (bindingId: string) => void | Promise<void>;
+    readonly resetBinding?: (
+      bindingId: string,
+      minimumGrantRevision?: number,
+    ) => void | Promise<void>;
+    /** A narrowed session stops presenting its old places before the interrupted work settles. */
+    readonly releaseBindingPlaces?: (bindingId: string) => void;
   }) {
     this.#store = options.store;
     this.workingIn = new AgentWorkingInRegistry(options.onWorkingIn ?? (() => {}));
     this.#resetBinding = options.resetBinding ?? (() => {});
+    this.#releaseBindingPlaces = options.releaseBindingPlaces ?? (() => {});
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
     this.#executionMs = options.executionMs ?? defaultExecutionMs;
     this.#closeBinding = options.closeBinding ?? (() => {});
@@ -444,6 +454,7 @@ export class AgentSessionService {
       this.#sessions.delete(id);
     }
     this.#worked.clear();
+    this.#placeResetRevision.clear();
     this.workingIn.clear();
   }
 
@@ -617,8 +628,20 @@ export class AgentSessionService {
     /** The change's cause: a Disconnect, an expiry or a narrowed grant. */
     ending: AgentOperationEnding = all ? "disconnected" : "narrowed",
   ): Promise<void> {
+    const current =
+      ending === "narrowed"
+        ? await this.#store.database
+            .selectFrom("agentConnections")
+            .select("grantRevision")
+            .where("id", "=", connectionId as never)
+            .executeTakeFirst()
+        : undefined;
     for (const [id, attempt] of this.#running)
-      if (attempt.pooled?.connectionId === connectionId) await this.stopDirectOperation(id, ending);
+      if (
+        attempt.pooled?.connectionId === connectionId &&
+        (current === undefined || attempt.grantRevision < current.grantRevision)
+      )
+        await this.stopDirectOperation(id, ending);
     const live = [...this.#worked].filter(([, connection]) => connection === connectionId);
     if (!live.length) return;
     const ended = all
@@ -639,14 +662,9 @@ export class AgentSessionService {
     if (all) return;
     // A session the narrowing leaves running starts afresh, as its next call would on the grant
     // revision change: its work admitted under an older revision ends as narrowed (the cleanup
-    // stops exactly that set); work admitted since runs on. Once the stopped work has
-    // ended, its idle script contexts and its holds go, and so does its Watch record. Its next
-    // command is admitted again by the rule and takes its hold again.
-    const current = await this.#store.database
-      .selectFrom("agentConnections")
-      .select("grantRevision")
-      .where("id", "=", connectionId as never)
-      .executeTakeFirst();
+    // stops exactly that set). Its holds and Watch place go when authority changes. Its
+    // script contexts are disposed once the older executor returns, and the next command
+    // is admitted again by the rule and takes its hold again.
     await Promise.all(
       live
         .filter(([id]) => !ended.includes(id))
@@ -656,14 +674,18 @@ export class AgentSessionService {
               attempt.sessionId === id &&
               (current === undefined || attempt.grantRevision < current.grantRevision),
           );
-          const reset = async () => {
-            await this.#resetBinding(`session:${id}`);
+          const revision = current?.grantRevision;
+          const binding = `session:${id}`;
+          if (revision === undefined || (this.#placeResetRevision.get(id) ?? -1) < revision) {
+            if (revision !== undefined) this.#placeResetRevision.set(id, revision);
             this.workingIn.clearSession(id);
-          };
+            this.#releaseBindingPlaces(binding);
+          }
+          const reset = () => this.#resetBinding(binding, revision);
           // With nothing older running it starts afresh now. Older work is stopped by the cleanup
           // itself (pooled in the pass above, the rest right after this step) and is not waited
           // for here: an executor that does not return at once keeps the cleanup Stopping until
-          // it does. The reset follows its end; a bind it finishes meanwhile records no hold.
+          // it does. Script disposal follows its end. A bind that finishes meanwhile records no hold.
           if (!running.length) await reset();
           else
             void Promise.allSettled(running.map(([, attempt]) => attempt.result))
@@ -699,6 +721,7 @@ export class AgentSessionService {
     const entry = this.#sessions.get(sessionId);
     entry?.controller.abort(error);
     this.#worked.delete(sessionId);
+    this.#placeResetRevision.delete(sessionId);
     this.workingIn.close(sessionId);
     await this.#closeBinding(`session:${sessionId}`, error.message);
     if (this.#sessions.get(sessionId) === entry) this.#sessions.delete(sessionId);
@@ -1228,6 +1251,8 @@ export class AgentSessionService {
             ? {
                 computerSubmitted: () => {
                   submitted++;
+                  if (operation.target?.device)
+                    this.workingIn.noteComputer(row.sessionId, operation.target.device.id);
                 },
                 computerStopped: () =>
                   endAuthority(agentOperationEndingWords.stopped.message, "stopped"),

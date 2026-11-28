@@ -3571,10 +3571,9 @@ export async function createHostRuntime(
       onError: (error) => reportAgentSessionError(error),
       // After a narrowing, a session it leaves running starts afresh: its script contexts (and
       // every page attachment they hold) and its holds go; its next command binds again.
-      resetBinding: (bindingId) => {
-        browserScripts.resetBrowserScriptsForBinding(bindingId);
-        browser.releaseHolds(bindingId);
-      },
+      resetBinding: (bindingId, revision) =>
+        browserScripts.resetBrowserScriptsForBinding(bindingId, revision),
+      releaseBindingPlaces: (bindingId) => browser.releaseHolds(bindingId),
       // Where a session works now goes to the person who owns the Home, and to no one else.
       onWorkingIn: (ownerUserId, notice) =>
         realtime.sendToUsers([ownerUserId], { type: "host.agent-working-in", ...notice }),

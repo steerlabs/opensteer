@@ -66,6 +66,7 @@ export const mockAgentWorkLiveScenes = [
   // As "one", the agent's tab reaching this client a moment after load: its call started on a
   // tab an earlier call opened, and the row naming it is on its way (run 15, trial 5).
   "late-tab",
+  "cold-tab",
   "three",
   "needs-you",
   "long-panel",
@@ -147,6 +148,7 @@ export function mockAgentWork(input: {
     livePanel === "cloud-tab" ||
     livePanel === "two-tabs" ||
     livePanel === "late-tab" ||
+    livePanel === "cold-tab" ||
     longSolo ||
     longSoloPlace ||
     history;

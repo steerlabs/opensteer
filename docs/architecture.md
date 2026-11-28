@@ -217,6 +217,8 @@ Each call is one reviewed **operation** of an **agent session**:
   15 minutes idle (never while an operation is handed off or a Request is open). Direct tools take
   an optional `taskId`: left out, the call continues the connection's current session or starts
   one. Every result carries it.
+- If narrowing leaves a session active, its old tab holds and Watch place are released while its
+  interrupted work settles. The next admitted command takes a new hold under the current grant.
 - An operation (`agent_operations`) is written before review or dispatch. It records the caller,
   an operation key and id, a digest of the arguments, the concrete target and its generation, the
   grant revision, the effective mode, who decided (`structural-read`, `full-access`, `person`,

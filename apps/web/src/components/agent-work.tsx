@@ -15,6 +15,7 @@ import {
   tabNeedsYouParts,
   taskActivityKey,
   watchPage,
+  watchSessionPlace,
   threadInDirectory,
   type OperationGlyph,
   type OperationRequestView,
@@ -94,16 +95,20 @@ export function useOpenSessionTask() {
     // acting in right now comes first. Then the tab the Home says its connected agent is working
     // in (or, naming none, the page it holds), then a Mac app it holds, then the task alone.
     const snapshot = workspace ? shell?.hostClient.getSnapshot() : undefined;
+    const current = snapshot && !waiting ? watchSessionPlace(snapshot, id) : null;
+    const computerId = current?.computerId ?? null;
     const app = snapshot
       ? taskAppWatch({
           hostConnected: snapshot.connection === "connected",
           machines: snapshot.machines,
           threadId: id,
+          computerId,
         })
       : null;
     // Review opens the Request it is about; only Watch lands on a page.
     const page = snapshot && !waiting ? watchPage(snapshot, id) : null;
-    if (workspace && page && !app?.acting) {
+    const opensPage = !!page && (!!current || !app?.acting);
+    if (workspace && opensPage && page) {
       workspace.nav.showPlaceWithConversation(
         { kind: "tab", tabId: page.tabId },
         workspace.nav.threadPath(id),
@@ -111,18 +116,19 @@ export function useOpenSessionTask() {
     } else if (workspace) {
       workspace.nav.openConversation(workspace.nav.threadPath(id), {
         ...(waiting ? { focusRequest: waiting.request.id } : {}),
-        ...(app ? { watch: true } : {}),
+        ...(!waiting || app ? { watch: true } : {}),
       });
     }
     // Watch's click lasts: it lands on the task's page when that reaches this client, and moves
     // with the task's work from page to page while the person chooses nothing else. A Mac app
     // the task holds is watched as before.
-    if (workspace && shell && !waiting && !app)
+    if (workspace && shell && !waiting && (current || !app || opensPage))
       followWatch({
         client: shell.hostClient,
         nav: workspace.nav,
         threadId: id,
-        shown: page?.tabId ?? null,
+        shown: opensPage ? (page?.tabId ?? null) : null,
+        computerId,
       });
     if (!workspace) {
       void navigate(`/tasks/${encodeURIComponent(id)}`);

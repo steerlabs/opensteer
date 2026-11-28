@@ -5245,8 +5245,8 @@ export class MockHostClient implements HostClient {
    * For tests and journeys: the Home says the task's connected agent works in this tab now, or,
    * with null, that it works in none (its session ended, or the tab closed).
    */
-  mockAgentWorksIn(threadId: string, tabId: string | null): void {
-    this.#state.mockAgentWorksIn(threadId, tabId);
+  mockAgentWorksIn(threadId: string, tabId: string | null, computerId?: string): void {
+    this.#state.mockAgentWorksIn(threadId, tabId, computerId);
   }
 
   /** Ends one of the preview's direct operations and publishes its task again, as the Home does. */
@@ -8042,7 +8042,7 @@ class MockHostState {
             "mock-tab-1-0": mockAgentWorkThreads.shopping,
             "mock-tab-2-0": mockAgentWorkThreads.shopping,
           }
-        : options.livePanel === "late-tab"
+        : options.livePanel === "late-tab" || options.livePanel === "cold-tab"
           ? {}
           : options.livePanel === "one" ||
               options.livePanel === "cloud-tab" ||
@@ -8136,7 +8136,7 @@ class MockHostState {
     this.update({ ...this.snapshot, browserSessions });
   }
 
-  mockAgentWorksIn(threadId: string, tabId: string | null): void {
+  mockAgentWorksIn(threadId: string, tabId: string | null, computerId?: string): void {
     const thread = this.snapshot.threads.find(({ id }) => id === threadId);
     const sessionId = thread?.externalWork?.sessionId;
     if (!sessionId) throw new Error("No connected agent works this mock task.");
@@ -8144,11 +8144,12 @@ class MockHostState {
       threadId,
       sessionId,
       tabId,
+      computerId,
     });
     const { [threadId]: _previous, ...rest } = this.snapshot.agentWorkingIn ?? {};
     this.update({
       ...this.snapshot,
-      agentWorkingIn: tabId === null ? rest : { ...rest, [threadId]: notice },
+      agentWorkingIn: tabId === null && !computerId ? rest : { ...rest, [threadId]: notice },
     });
   }
 

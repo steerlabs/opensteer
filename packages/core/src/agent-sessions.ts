@@ -143,13 +143,13 @@ export type AgentOperationView = z.infer<typeof AgentOperationViewSchema>;
 
 /**
  * Where a connected agent's session on a task is working now, for the person who owns the Home
- * only: the tab its last command targeted. A null tab: the session ended, the tab closed, or the
- * session no longer holds it.
+ * only: the tab or device its last command targeted. Neither: the place has ended.
  */
 export const AgentWorkingInSchema = z.object({
   threadId: ThreadIdSchema,
   sessionId: AgentSessionIdSchema,
   tabId: TabIdSchema.nullable(),
+  computerId: DeviceIdSchema.optional(),
 });
 export type AgentWorkingIn = z.infer<typeof AgentWorkingInSchema>;
 

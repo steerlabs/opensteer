@@ -53,28 +53,48 @@ export function threadAgentPlace(
   return best && { tabId: best.tabId, kind: best.kind, title: placeTitle(best) };
 }
 
-/**
- * Where the person's Watch on a task lands. A connected agent's session that the Home says is
- * working in a tab (the tab of its last command) names that tab, while this client has it as a
- * page it can show. Otherwise, as with no record (a Run, computer use, an older Home, a tab this
- * client does not have: unshared, its row gone or not here yet), the page the task holds:
- * `threadAgentPage`. Watch's following moves to the named tab once its row arrives.
- */
+/** The Home's place belongs to the current session alone. */
+export function watchSessionPlace(
+  source: Pick<HostSnapshot, "agentWorkingIn" | "threads" | "tasks" | "activeTasks">,
+  threadId: string,
+) {
+  const working = source.agentWorkingIn?.[threadId];
+  const work = threadInDirectory(threadId, source)?.externalWork;
+  return working && (!work || (work.status === "active" && work.sessionId === working.sessionId))
+    ? working
+    : null;
+}
+
+/** Watch's tab, if the named place has one here. A device place never falls back to a browser. */
 export function watchPage(
   source: Pick<HostSnapshot, "tabs" | "agentWorkingIn" | "threads" | "tasks" | "activeTasks">,
   threadId: string,
 ): BrowserTabDestination | null {
-  const working = source.agentWorkingIn?.[threadId];
-  const work = threadInDirectory(threadId, source)?.externalWork;
-  // A record of a session that has since ended, or of an earlier one, names nothing.
-  const current =
-    working?.tabId != null &&
-    (!work || (work.status === "active" && work.sessionId === working.sessionId));
-  if (!working || !current) return threadAgentPage(source, threadId);
-  const tab = source.tabs.get(working.tabId!);
+  const working = watchSessionPlace(source, threadId);
+  if (!working) return threadAgentPage(source, threadId);
+  if (working.computerId) {
+    for (const tab of source.tabs.rows.values())
+      if (
+        tab.kind === "phone" &&
+        tab.state !== "unavailable" &&
+        tab.computer.computerId === working.computerId
+      )
+        return { tabId: tab.tabId };
+    return null;
+  }
+  if (working.tabId === null) return threadAgentPage(source, threadId);
+  const tab = source.tabs.get(working.tabId);
   return tab?.kind === "page" && tab.state !== "unavailable"
     ? { tabId: tab.tabId }
     : threadAgentPage(source, threadId);
+}
+
+/** The device the Home says a connected agent worked on most recently. */
+export function watchComputerId(
+  source: Pick<HostSnapshot, "agentWorkingIn" | "threads" | "tasks" | "activeTasks">,
+  threadId: string,
+): string | null {
+  return watchSessionPlace(source, threadId)?.computerId ?? null;
 }
 
 /**
