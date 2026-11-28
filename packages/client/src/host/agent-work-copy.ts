@@ -65,13 +65,14 @@ export const agentWorkCopy = {
   "op.outcome.failed": "Failed",
   "op.outcome.refused": "Not allowed",
   "op.outcome.unknown": "Uncertain",
-  "op.outcome.unknownDetail":
-    "Opensteer lost contact before it heard back, so it can’t say whether this happened. Check before trying again.",
   "op.outcome.notSent": "Not sent",
   "op.unsent.stopped": "You stopped this before anything was sent.",
   "op.unsent.disconnected": "You disconnected this agent before anything was sent.",
   "op.unsent.expired": "Its access expired before anything was sent.",
   "op.unsent.narrowed": "You changed its access before anything was sent.",
+  "op.unsent.tab-closed": "You closed the tab before anything was sent.",
+  "op.unsent.profile-deleted": "You deleted the browser profile before anything was sent.",
+  "op.unsent.contact-lost": "Opensteer lost contact before anything was sent.",
   "op.ending.stopped":
     "You stopped this while it ran. Part of it may have happened. Check before trying again.",
   "op.ending.disconnected":
@@ -84,6 +85,8 @@ export const agentWorkCopy = {
     "You closed this tab while it ran, so Opensteer can’t say whether this happened. Check before trying again.",
   "op.ending.profile-deleted":
     "You deleted the browser profile while this ran. Part of it may have happened. Check before trying again.",
+  "op.ending.contact-lost":
+    "Opensteer lost contact before it heard back, so it can’t say whether this happened. Check before trying again.",
   "op.state.pending": "Waiting for you",
   "op.state.running": "Running…",
   "cmd.asked": "Waiting for you",

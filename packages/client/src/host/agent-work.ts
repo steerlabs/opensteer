@@ -300,23 +300,15 @@ export function operationRow(operation: AgentOperationView): OperationRow {
   };
 }
 
-/**
- * The plain statement an ending needs: an unknown outcome by its cause where the Home knows it
- * (the person's Stop or Disconnect, an expiry, a changed access, a tab the person closed), "lost
- * contact" only when nothing else is known; and what a refusal for an unready or changed browser
- * did (nothing was sent).
- */
+/** Explain an unknown outcome or say what stopped the operation before it was sent. */
 function operationDetail(operation: AgentOperationView): string | null {
   if (operation.outcome === "unknown")
-    return !operation.ending || operation.ending === "contact-lost"
-      ? workWords("op.outcome.unknownDetail")
-      : workWords(`op.ending.${operation.ending}`);
+    return workWords(`op.ending.${operation.ending ?? "contact-lost"}`);
   const decision = operation.decision;
   if (operation.outcome === "refused" && decision?.by === "refused") {
     if (decision.reason === "stopped") return workWords("op.unsent.stopped");
     const { ending } = operation;
-    if (ending === "disconnected" || ending === "expired" || ending === "narrowed")
-      return workWords(`op.unsent.${ending}`);
+    if (ending) return workWords(`op.unsent.${ending}`);
     if (decision.reason === "changed") return decision.message;
   }
   return null;
@@ -364,7 +356,7 @@ export function commandActivityRow(command: AgentCommandActivity): OperationRow 
     outcome: commandOutcome(command),
     detail:
       command.status === "unknown" || command.outcome === "unknown"
-        ? workWords("op.outcome.unknownDetail")
+        ? workWords("op.ending.contact-lost")
         : null,
     at: command.createdAt,
   };

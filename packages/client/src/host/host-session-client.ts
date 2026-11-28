@@ -1,4 +1,5 @@
 import { homeFailureText } from "./failure-text.js";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { deviceAccess, unsupportedVersionCloseCode } from "@opensteer/protocol";
 import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import {
@@ -3110,7 +3111,7 @@ export class HttpHostClient {
       held?.sessionId === notice.sessionId &&
       held.tabId === notice.tabId &&
       held.computerId === notice.computerId &&
-      held.target === notice.target
+      canonicalJson(held.target ?? null) === canonicalJson(notice.target ?? null)
     )
       return;
     this.#update({

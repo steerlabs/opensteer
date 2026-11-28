@@ -57,6 +57,7 @@ function connectionOf(connections: readonly AgentConnection[], label: string): S
 
 export const mockAgentWorkLiveScenes = [
   "one",
+  "same-place",
   // As "one", on a Home reached as a Cloud Computer: the agent's tab is in that computer's own
   // pooled browser, the shape tester run 12 found Watch missing.
   "cloud-tab",
@@ -137,6 +138,7 @@ export function mockAgentWork(input: {
   const shop = connectionOf(input.connections, "Shop helper");
   const lisbon = profile("Travel");
   const livePanel = input.livePanel;
+  const samePlace = livePanel === "same-place";
   const liveWaiting = livePanel === "needs-you";
   const longPanel = livePanel === "long-panel";
   const longSolo = livePanel === "long-one";
@@ -145,6 +147,7 @@ export function mockAgentWork(input: {
   const liveShopping = livePanel && livePanel !== "history";
   const solo =
     livePanel === "one" ||
+    samePlace ||
     livePanel === "cloud-tab" ||
     livePanel === "two-tabs" ||
     livePanel === "late-tab" ||
@@ -347,14 +350,14 @@ export function mockAgentWork(input: {
     const firstThread = mockAgentWorkThreads.working;
     slots[firstThread] = {
       ...slots[firstThread]!,
-      connection: workingAgent,
+      connection: samePlace ? slots[mockAgentWorkThreads.shopping]!.connection : workingAgent,
       operations: [
         op(
           firstThread,
           sessions.working,
           {
             tool: liveWaiting ? "tab_open" : "tab_list",
-            target: liveWaiting ? profile("Work") : lisbon,
+            target: samePlace ? profile(shopping) : liveWaiting ? profile("Work") : lisbon,
           },
           1,
         ),
@@ -610,6 +613,18 @@ export function mockAgentWork(input: {
               sessions.waiting,
             ),
           ]),
+      ...(samePlace
+        ? [
+            task(
+              mockAgentWorkThreads.working,
+              "Compare desk chairs",
+              "running",
+              1,
+              0,
+              sessions.working,
+            ),
+          ]
+        : []),
       ...(history
         ? [task(mockAgentWorkThreads.pastShopping, "Compare desk chairs", "idle", todayAge)]
         : []),
