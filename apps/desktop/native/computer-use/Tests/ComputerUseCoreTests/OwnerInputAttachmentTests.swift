@@ -123,6 +123,13 @@ final class OwnerInputAttachmentTests: XCTestCase {
 
   @MainActor
   func testReplacementInputWaitsForDisconnectedAttachmentWithinItsBudget() async throws {
+    for disconnectDelivered in [true, false] {
+      try await assertReplacementWaits(disconnectDelivered: disconnectDelivered)
+    }
+  }
+
+  @MainActor
+  private func assertReplacementWaits(disconnectDelivered: Bool) async throws {
     try await withOwnerViewRuntime { runtime, _, app in
       let oldPeer = try peer(1, input: 2), newPeer = try peer(2, input: 2)
       defer { for peer in [oldPeer, newPeer] { peer.0.close(); Darwin.close(peer.1) } }
@@ -150,7 +157,7 @@ final class OwnerInputAttachmentTests: XCTestCase {
       await fulfillment(of: [entered], timeout: 1)
       defer { gate.withLock { done in done?.resume(); done = nil } }
       oldPeer.0.close()
-      runtime.connectionClosed(oldPeer.0)
+      if disconnectDelivered { runtime.connectionClosed(oldPeer.0) }
       func input(geometry: Int) throws -> RequestEnvelope {
         let data = try JSONSerialization.data(withJSONObject: ["id": 1, "method": "display.input",
           "params": ["streamId": stream, "source": source, "geometry": geometry, "sequence": 1,

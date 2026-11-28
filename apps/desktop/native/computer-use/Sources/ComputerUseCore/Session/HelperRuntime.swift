@@ -1391,7 +1391,8 @@ public final class HelperRuntime {
       try budget.check()
       tickOwnerInput()
       if let previous = ownerAttachments[id], !previous.active.current,
-        previous.connection === connection || closedConnectionIDs.contains(previous.connection.id)
+        previous.connection === connection || previous.connection.closedFlag
+          || closedConnectionIDs.contains(previous.connection.id)
       {
         // Cleanup still owns the key. A replacement waits for that release, within its own budget.
         guard await waitForOwnerCleanup(previous, budget: budget) else {
