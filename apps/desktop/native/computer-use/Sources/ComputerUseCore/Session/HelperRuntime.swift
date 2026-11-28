@@ -58,7 +58,6 @@ public final class HelperRuntime {
   nonisolated let executor = SerialTaskChain()
   private let captureTargets = CaptureTargetStore()
   private let ownerViews = OwnerViewRegistry()
-  private var reportedOwnerViews: [OverlayModel.Session] = []
   private var appMutations: [String: AppMutationCoordinator] = [:]
   private(set) var ownerAttachments: [String: MacOwnerAttachment] = [:]
   var videoProducerFactory: MacWindowVideoRegistry.ProducerFactory?
@@ -260,7 +259,6 @@ public final class HelperRuntime {
   }
 
   public func stop() {
-    ownerViews.closeAll()
     releaseAllOwnerInput(reason: "stream-lost")
     video.close()
     videoTicker?.invalidate()
@@ -449,11 +447,11 @@ public final class HelperRuntime {
       return try await ownerInput(envelope, connection: connection, budget: budget)
     case "display.start":
       let result = try await video.start(envelope, connection: connection, budget: budget)
-      refreshOwnerViewOverlay()
+      overlay?.connectionRestored()
       return result
     case "display.resolve", "display.demand", "display.refresh", "display.stop", "display.attach":
       let result = try video.perform(envelope, connection: connection)
-      if method == "display.attach" || method == "display.demand" { refreshOwnerViewOverlay() }
+      if method == "display.attach" || method == "display.demand" { overlay?.connectionRestored() }
       tickOwnerInput()
       for attachment in ownerAttachments.values where !attachment.active.current {
         await waitForOwnerCleanup(attachment)
@@ -839,31 +837,14 @@ public final class HelperRuntime {
   /// How the last sessions that went away were shown as ending.
   private(set) var lastOverlayEnding: OverlayModel.Ending?
 
-  private func ownerViewSessions() -> [OverlayModel.Session] {
-    ownerViews.readyViews.compactMap { view in
-      guard let app = view.target?.app else { return nil }
-      return OverlayModel.Session(
-        id: "owner-view:\(view.id):\(view.generation)", threadTitle: nil,
-        apps: [.init(key: app.bundleId.lowercased(), name: app.displayName, access: .read,
-          path: view.appPath)], ownerView: true)
-    }
-  }
-
-  private func refreshOwnerViewOverlay() {
-    if overlay != nil, ownerViewSessions() != reportedOwnerViews { updateOverlay() }
-  }
-
   private func updateOverlay(ending: OverlayModel.Ending = .ended) {
-    lastOverlayEnding = ending
-    guard let overlay else { return }
-    reportedOwnerViews = ownerViewSessions()
     let ownerInput = ownerAttachments.values.filter { $0.active.current }.map { lease in
       OverlayModel.Session(id: lease.id, threadTitle: nil,
         apps: [.init(key: lease.binding.target.app.bundleId.lowercased(), name: lease.binding.target.app.displayName,
           access: .readWrite, path: lease.path)], ownerInput: true)
     }
-    overlay.update(sessions: registry.sessions.values, owners: registry.owners, ending: ending,
-      ownerInput: ownerInput, ownerViews: reportedOwnerViews)
+    lastOverlayEnding = ending
+    overlay?.update(sessions: registry.sessions.values, owners: registry.owners, ending: ending, ownerInput: ownerInput)
   }
 
   private func closeAllSessions(reason: SessionStoppedReason?) {
@@ -920,7 +901,11 @@ public final class HelperRuntime {
 
   func stopFromOverlay() {
     Log.session.notice("The person pressed Stop.")
-    ownerViews.closeAll()
+    for attachment in ownerAttachments.values {
+      if let id = attachment.source.viewId, let generation = attachment.source.generation {
+        try? ownerViews.close(id, generation: generation, connectionID: attachment.connection.id)
+      }
+    }
     releaseAllOwnerInput(reason: "stopped")
     closeAllSessions(reason: .user)
   }
@@ -1020,17 +1005,21 @@ public final class HelperRuntime {
         window: closed ? nil : view.windowSummary)
     }
     func opened(_ view: OwnerViewRegistry.View) -> any Encodable {
-      guard view.target != nil else {
+      guard let target = view.target else {
         return Wire.ViewUnavailableResult(
           viewId: view.id, generation: view.generation, kind: "unavailable",
           reason: view.unavailableReason)
+      }
+      if method == "view.open", target.process.isCurrent,
+        view.window?.unavailableReason != "window-closed"
+      {
+        overlay?.connectionRestored()
       }
       return state(view)
     }
     if method == "view.close" {
       try ownerViews.close(
         params.viewId, generation: params.generation, connectionID: connection.id)
-      refreshOwnerViewOverlay()
       return Wire.ViewStateResult(
         viewId: params.viewId, generation: params.generation, state: "closed", captureTargetId: nil)
     }
@@ -1050,7 +1039,6 @@ public final class HelperRuntime {
         id: params.viewId, generation: params.generation, leaseDurationMs: params.leaseDurationMs,
         app: target.app,
         connectionID: connection.id, windowID: target.windowId)
-      defer { refreshOwnerViewOverlay() }
       if view.prepared { return opened(view) }
       view.prepared = true
       let record = try await catalog.verifiedRecord(for: target.app)
@@ -1065,7 +1053,6 @@ public final class HelperRuntime {
           record, target.windowId, cancellation, budget)
         view.window = binding
         view.target = binding.target
-        view.appPath = record.path
         view.windowSummary = summary
       } catch let error as OwnerViewWindow.Failure {
         view.unavailableReason = error.reason
@@ -1509,7 +1496,6 @@ public final class HelperRuntime {
   private func tick() {
     refreshPermissions(deferRestart: false)
     ownerViews.prune()
-    refreshOwnerViewOverlay()
     expireIdleSession()
     noticeQuitApps()
     pruneStoppedSessions()

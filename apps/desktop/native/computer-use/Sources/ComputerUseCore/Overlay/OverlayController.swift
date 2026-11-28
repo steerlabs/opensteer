@@ -60,13 +60,12 @@ public final class OverlayController: ActionFeedback {
     sessions: some Collection<HelperSession>,
     owners: [String: String],
     ending: OverlayModel.Ending,
-    ownerInput: [OverlayModel.Session] = [],
-    ownerViews: [OverlayModel.Session] = []
+    ownerInput: [OverlayModel.Session] = []
   ) {
     let controlled = Set(ownerInput.flatMap(\.apps).map(\.key))
     let next = Self.sessions(sessions, owners: owners).map {
       OverlayModel.Session(id: $0.id, threadTitle: $0.threadTitle, apps: $0.apps.filter { !controlled.contains($0.key) })
-    } + ownerInput + ownerViews
+    } + ownerInput
     let previousOwners = OverlayModel.owners(model.sessions)
     let nextOwners = OverlayModel.owners(next)
     let nextInstances = Dictionary(
@@ -84,6 +83,10 @@ public final class OverlayController: ActionFeedback {
     model.update(
       sessions: next, ending: ending, at: Date(), pointerNear: pill?.pointerIsNear() ?? false)
     render()
+  }
+
+  func connectionRestored() {
+    if model.connectionRestored() { render() }
   }
 
   /// The live sessions in the order they opened, each with only the apps it

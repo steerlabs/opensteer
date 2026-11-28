@@ -15,7 +15,6 @@ final class OwnerViewRegistry {
     var closed = false
     var target: CaptureTarget?
     var window: OwnerViewWindow.Binding?
-    var appPath = ""
     var unavailableReason = "window-unreadable"
     var prepared = false
     var windowSummary: Wire.ViewStateResult.OwnerWindowSummary?
@@ -34,14 +33,6 @@ final class OwnerViewRegistry {
   }
 
   private var views: [String: View] = [:]
-
-  var readyViews: [View] {
-    let now = ProcessInfo.processInfo.systemUptime
-    return views.values.filter {
-      !$0.closed && $0.expiresAt > now && $0.target?.process.isCurrent == true
-        && $0.window?.unavailableReason != "window-closed"
-    }.sorted { $0.id < $1.id }
-  }
 
   func open(
     id: String, generation: Int, leaseDurationMs: Int, app: AppIdentity, connectionID: Int,
@@ -109,14 +100,6 @@ final class OwnerViewRegistry {
     else {
       throw HelperError(.noSession, "That owner view has ended.")
     }
-    end(view)
-  }
-
-  func closeAll() {
-    for view in views.values where !view.closed { end(view) }
-  }
-
-  private func end(_ view: View) {
     view.videoLease.close()
     view.closed = true
     view.cancellation.cancel(.closed)
@@ -132,12 +115,22 @@ final class OwnerViewRegistry {
   }
 
   func remove(connectionID: Int) {
-    for view in views.values where view.connectionID == connectionID { end(view) }
+    for view in views.values where view.connectionID == connectionID {
+      view.videoLease.close()
+      view.closed = true
+      view.cancellation.cancel(.closed)
+    }
     views = views.filter { $0.value.connectionID != connectionID }
   }
 
   func prune(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
-    for view in views.values where view.expiresAt <= now { end(view) }
+    for view in views.values where view.expiresAt <= now {
+      view.videoLease.close()
+      view.closed = true
+      view.cancellation.cancel(.closed)
+      view.target = nil
+      view.window = nil
+    }
     views = views.filter { $0.value.expiresAt > now }
   }
 }

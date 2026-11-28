@@ -85,7 +85,7 @@ final class OwnerInputAttachmentTests: XCTestCase {
   }
 
   @MainActor
-  func testPassiveViewReplacesConnectionLostAfterAnActWasInterrupted() async throws {
+  func testPassiveViewClearsConnectionLostAfterAnActWasInterrupted() async throws {
     try await withOwnerViewRuntime { runtime, overlay, app in
       let agent = try peer(1), control = try peer(2), media = try peer(3)
       defer {
@@ -95,6 +95,7 @@ final class OwnerInputAttachmentTests: XCTestCase {
       runtime.videoProducerFactory = { id, binding, _, _ in
         OwnerViewTestProducer(id: id, binding: binding, onStart: { started.fulfill() })
       }
+      XCTAssertNil(overlay.presentation(at: Date()).pill)
       _ = try await request(runtime, agent, "session.open", ["sessionId": "task", "threadTitle": "Fixture task"])
       let session = try XCTUnwrap(runtime.registry.sessions["task"])
       let state = AppSessionState(identity: app, path: "/Fixture.app")
@@ -108,16 +109,14 @@ final class OwnerInputAttachmentTests: XCTestCase {
       XCTAssertEqual(overlay.presentation(at: Date()).pill?.status, "Connection lost · last action unconfirmed")
 
       let source = try await openView(runtime, peer: control, app: app)
-      XCTAssertEqual(overlay.presentation(at: Date()).pill?.status, "Sharing Fixture")
+      XCTAssertNil(overlay.presentation(at: Date()).pill)
       let token = try await startViewStream(runtime, peer: control, source: source,
         stream: "dsp_\(UUID().uuidString)")
       _ = try await request(runtime, media, "display.attach", ["token": token])
       await fulfillment(of: [started], timeout: 1)
       XCTAssertTrue(runtime.ownerAttachments.isEmpty, "A passive viewer never gets an input attachment")
-      XCTAssertEqual(overlay.presentation(at: Date()).pill?.status, "Sharing Fixture")
-      XCTAssertEqual(overlay.presentation(at: Date().addingTimeInterval(61)).pill?.status, "Sharing Fixture")
-      runtime.stopFromOverlay()
-      XCTAssertEqual(overlay.presentation(at: Date()).pill?.status, "Computer use stopped")
+      XCTAssertNil(overlay.presentation(at: Date()).pill)
+      XCTAssertNil(overlay.presentation(at: Date().addingTimeInterval(61)).pill)
     }
   }
 
