@@ -99,12 +99,14 @@ enum PersonInput {
     guard CGPreflightPostEventAccess(), FileManager.default.createFile(atPath: log, contents: nil),
       let file = FileHandle(forWritingAtPath: log) else { exit(3) }
     for character in text {
-      let row = "{\"text\":\"\(character)\",\"at\":\(wallMs())}\n"
-      file.write(Data(row.utf8))
       for down in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { exit(4) }
         let units = Array(String(character).utf16)
         event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+        if down {
+          let row = "{\"text\":\"\(character)\",\"at\":\(wallMs()),\"stamp\":\(event.timestamp)}\n"
+          file.write(Data(row.utf8))
+        }
         event.post(tap: .cghidEventTap)
         usleep(8_000)
       }
@@ -771,6 +773,38 @@ final class FrontSampler {
 
   // MARK: - e: TextEdit in front, the control
 
+  private struct KeyRoute: Encodable {
+    let lane: String
+    let stamp: UInt64
+    let at: Int64
+    let source: Int64
+    let destination: Int64
+  }
+
+  private func keyRoutes(to textEdit: pid_t, recording routes: Locked<[KeyRoute]>) async throws -> [EventTap] {
+    guard ProcessInfo.processInfo.environment["OPENSTEER_SAFARI_FRONT_TRACE_KEYS"] == "1" else {
+      return []
+    }
+    let lanes: [(String, EventTap.Scope)] = [
+      ("session", .session), ("textEdit", .process(textEdit)),
+      ("safari", .process(safari.processIdentifier)),
+    ]
+    let taps = try lanes.map { lane, scope in
+      try EventTap(scope, place: .tailAppendEventTap, options: .listenOnly,
+        types: [CGEventType.keyDown.rawValue], handler: { _, event in
+          let row = KeyRoute(lane: lane, stamp: event.timestamp, at: wallMs(),
+            source: event.getIntegerValueField(FocusEvents.sourcePIDField),
+            destination: event.getIntegerValueField(FocusEvents.targetPIDField))
+          routes.withLock { $0.append(row) }
+          return event
+        }).unwrap("control keyboard observer \(lane)")
+    }
+    await withCheckedContinuation { ready in
+      EventTapThread.shared.perform { ready.resume() }
+    }
+    return taps
+  }
+
   func controlCase(_ caseOut: URL) async throws -> [String: Any] {
     let document = caseOut.appendingPathComponent("control.txt")
     try Data().write(to: document)
@@ -791,6 +825,9 @@ final class FrontSampler {
     let cycle = "abcdefghijlnoprstuvwxyz"
     let letters = String(String(repeating: cycle, count: 42).prefix(960))
     let keysLog = caseOut.appendingPathComponent("person-keys.jsonl")
+    let routes = Locked<[KeyRoute]>([])
+    let observers = try await keyRoutes(to: textEdit.processIdentifier, recording: routes)
+    defer { for observer in observers { observer.stop() } }
     let person = try personKeys(letters, intervalMs: 40, log: keysLog)
     var calls: [Call] = []
     let sampler = FrontSampler()
@@ -828,6 +865,9 @@ final class FrontSampler {
     }
     let textEditFront = calls.filter { $0.frontAfter == textEdit.processIdentifier }.count
     try JSONSerialization.data(withJSONObject: samples).write(to: caseOut.appendingPathComponent("front-samples.json"))
+    if !observers.isEmpty {
+      try JSONEncoder().encode(routes.current).write(to: caseOut.appendingPathComponent("key-routing.json"))
+    }
     return [
       "met": textEditFront == calls.count && kept == letters,
       "callCount": calls.count, "textEditFrontAfter300ms": textEditFront,
