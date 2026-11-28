@@ -105,11 +105,14 @@ try {
       const requests = await page.evaluate(
         () => (Reflect.get(window, "opensteerMock") as MockHostClient).searchSuggestionRequests,
       );
+      // The omnibox spaces its sends 100 ms apart by performance.now(). The mock stamps each
+      // arrival a hop later with Date.now(), a whole-millisecond clock, so two arrivals can read
+      // 99 apart (a hosted run read 239 then 338). Requests sent unspaced would be 40 ms apart.
       expectThat(
         { requests },
         requests.length >= 2 &&
           requests.every(
-            (r, i) => r.query !== "gmail.com" && (i === 0 || r.at - requests[i - 1]!.at >= 100),
+            (r, i) => r.query !== "gmail.com" && (i === 0 || r.at - requests[i - 1]!.at >= 95),
           ),
         "URL request or throttle violation",
       );
