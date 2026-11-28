@@ -128,8 +128,8 @@ extension SafariFront {
 
     // i: the click ring, mid-fade.
     let field = try a.index(role: "textfield", containing: "Fixture field")
-    _ = try wireA.send("session.act", ["sessionId": a.session, "app": a.target, "window": a.ref,
-      "snapshot": NSNull(), "actions": [["type": "click", "target": ["index": field]]]])
+    let clickID = try wireA.send("session.act", ["sessionId": a.session, "app": a.target, "window": a.ref,
+      "snapshot": a.snapshot ?? "", "actions": [["type": "click", "target": ["index": field]]]])
     var ring: CGRect?
     for _ in 0..<300 where ring == nil {
       ring = NSApp.windows.first { $0.isVisible && $0.frame.size == ClickRing.size }.map {
@@ -142,6 +142,8 @@ extension SafariFront {
       await png(caseOut, "i-click-ring-closeup", ring.insetBy(dx: -70, dy: -40))
     }
     checks["i-ring"] = ring != nil
+    let clicked = try await wireA.reply(clickID)
+    row["clickError"] = (clicked["error"] as? [String: Any])?["message"] as? String ?? "none"
     await sleepSeconds(0.8)
 
     // b: working, two frames of the breath.
