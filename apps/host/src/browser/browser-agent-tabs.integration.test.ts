@@ -625,6 +625,8 @@ integration("page tab adapter", () => {
       ]);
       expect(await holder()).toEqual([{ taskId: session.threadId, since: expect.any(String) }]);
       const current = (await connections.list(f.userId)).find(({ id }) => id === connection.id)!;
+      if (current.grantRevision === undefined)
+        throw new Error("The test agent has no grant revision.");
       await connections.update(f.userId, {
         connectionId: connection.id,
         expectedRevision: current.grantRevision,
