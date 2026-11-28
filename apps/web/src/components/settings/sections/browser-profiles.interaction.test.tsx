@@ -177,7 +177,7 @@ async function mount(
   // Each command's effect on the snapshot is the client's, covered with its patches.
   const dispatch = vi.spyOn(hostClient, "dispatch").mockResolvedValue(undefined as never);
   const base = hostClient.getSnapshot();
-  const snapshot: HostSnapshot = {
+  const snapshot = {
     ...base,
     browserProfileManageAvailable: input.manageable ?? true,
     browserProfileDeletions: input.deletions,
@@ -202,7 +202,7 @@ async function mount(
       { homeRunnerId: null, id: "bpr_work", name: "Work" },
       { homeRunnerId: null, id: "bpr_shopping", name: "Shopping" },
     ],
-  };
+  } satisfies HostSnapshot;
   let liveSnapshot = snapshot;
   if (input.pools) vi.spyOn(hostClient, "getSnapshot").mockImplementation(() => liveSnapshot);
   const context = { hostClient, snapshot } as unknown as ShellContext;
