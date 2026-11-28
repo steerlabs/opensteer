@@ -355,7 +355,13 @@ export class DisplayEditingSession {
           outcome: text ? message.outcome : "empty",
           items: text ? [{ type: "text/plain", bytes: encoder.encode(text) }] : [],
         };
-        if (pending.mayHaveEffect && !pending.dispatched) pending.clipboardResult = result;
+        // Android sends the standalone Cut's authoritative clipboard result before its batch receipt.
+        const confirmsCut =
+          pending.eventCount === 1 &&
+          pending.mutatesClipboard === "cut" &&
+          (message.outcome === "cut" || message.outcome === "empty");
+        if (pending.mayHaveEffect && !pending.dispatched && !confirmsCut)
+          pending.clipboardResult = result;
         else this.#finish(pending, result);
       } else {
         const refusal = {
