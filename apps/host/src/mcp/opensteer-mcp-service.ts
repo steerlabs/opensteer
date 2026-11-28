@@ -21,7 +21,6 @@ import {
   connectionInstructionsFor,
   connectionDirectTools,
   connectionTaskCreateInput,
-  connectionTaskDoneInput,
   connectionTaskKind,
   connectionToolDescription,
   connectionToolSchema,
@@ -116,11 +115,9 @@ function withoutRequestCounts(value: unknown): unknown {
 }
 const requestTools = new Set<string>(requestToolNames);
 function parseToolInput(tool: AgentTool, caller: AgentCaller, value: unknown) {
-  if (caller.kind === "connection") {
-    if (tool.name === "opensteer_task_create") return connectionTaskCreateInput.parse(value);
-    if (tool.name === "opensteer_task_update") return connectionTaskDoneInput.parse(value);
-  }
-  return tool.input.parse(value);
+  return caller.kind === "connection" && tool.name === "opensteer_task_create"
+    ? connectionTaskCreateInput.parse(value)
+    : tool.input.parse(value);
 }
 
 const maximumSessions = 256;
@@ -1161,7 +1158,7 @@ export class OpensteerMcpService {
     const passwordsOff = typeof passwords === "function" ? !passwords() : passwords === false;
     return offered.filter(
       ({ name }) =>
-        (direct || (name !== "opensteer_task_update" && !connectionDirectTools.has(name))) &&
+        (direct || !connectionDirectTools.has(name)) &&
         !(passwordsOff && (name === "saved_login_request" || name === "card_request")),
     );
   }

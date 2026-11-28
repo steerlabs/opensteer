@@ -12,7 +12,7 @@ import {
   type ThreadAccessMode,
   type ThreadId,
 } from "@opensteer/core";
-import { AgentConnectionStore, admitCommand } from "@opensteer/database";
+import { AgentConnectionStore, admitCommand, beginAgentSession } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { expect, it, vi } from "vitest";
 import {
@@ -548,6 +548,51 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       ["approved", "done"],
     ]);
     for (const { sentence } of settled) expect(sentence).toMatch(/^Reviewed agent asked to /u);
+    // A connected agent proposes Done through the person's command and waits for approval.
+    const { session } = await beginAgentSession(host.store.database, {
+      userId: owner,
+      agentConnectionId: reviewed.id,
+    });
+    const doneAsk = await call(reviewed.client, "opensteer_command", {
+      taskId: session.threadId,
+      command: { type: "thread.done.set", threadId: session.threadId, done: true },
+    });
+    expect(doneAsk.structuredContent).toMatchObject({ status: "pending" });
+    const doneRequestId = RequestIdSchema.parse(doneAsk.structuredContent?.requestId);
+    const sessionRow = () =>
+      host.store.database
+        .selectFrom("agentSessions")
+        .select(["status", "endReason"])
+        .where("id", "=", session.id)
+        .executeTakeFirstOrThrow();
+    expect(await sessionRow()).toEqual({ status: "active", endReason: null });
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "request.command.approve",
+        idempotencyKey: randomUUID(),
+        requestId: doneRequestId,
+        expectedRevision: (await host.store.requests.revision(doneRequestId))!,
+      },
+      { headers: host.ownerHeaders },
+    );
+    expect((await host.store.getThreadForOwner(session.threadId, owner))?.doneAt).toEqual(
+      expect.any(String),
+    );
+    expect(await sessionRow()).toEqual({ status: "ended", endReason: "done" });
+    expect(
+      await call(reviewed.client, "ask_person", {
+        title: "Continue the finished task?",
+        questions: [{ question: "Continue?" }],
+        taskId: session.threadId,
+      }),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { message: "This task's session ended. Leave out taskId to start a new one." },
+      },
+    });
     // Your own agent: its engine's name, from its task, for what it did and what it asked.
     const engine = (await host.store.getHarnessInstance(machine.harnessInstanceId as never))!.name;
     const fullTask = await host.store.database

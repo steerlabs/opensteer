@@ -100,15 +100,15 @@ const decided: Readonly<Record<string, string>> = {
   "machine.rename / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.done.set / everything":
-    "A connection's task tool accepts Done on its own direct-work task. The command door can ask the person to mark other reachable tasks Done.",
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.done.set / selected-covering":
-    "A connection's task tool accepts Done on its own direct-work task. The command door can ask the person to mark other reachable tasks Done.",
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.rename / everything":
-    "A connection's task tool accepts only Done. The command door can ask the person to rename a reachable task.",
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.execution.update / selected-covering":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.rename / selected-covering":
-    "A connection's task tool accepts only Done. The command door can ask the person to rename a reachable task.",
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "trigger.create / selected-covering":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.open (guest) / everything":

@@ -217,10 +217,8 @@ Each call is one reviewed **operation** of an **agent session**:
   Done, or 15 minutes idle. Idle expiry waits while an operation is handed off or a Request is
   open. An immediate Done interrupts in-flight work just as it does for a Run, ends the session
   in the same commit, and releases its tab and device holds through session cleanup. A Run can
-  mark its own task Done at the end of its turn. A connected agent can mark its own direct-work
-  task Done with `opensteer_task_update`. That command returns the saved Done state and ends
-  the session as it settles. The connection stays active. Reopening the task does not reopen the
-  session. Direct tools take an optional `taskId`: left out, the call continues the connection's
+  mark its own task Done at the end of its turn. The connection stays active. Reopening the task
+  does not reopen the session. Direct tools take an optional `taskId`: left out, the call continues the connection's
   current session or starts one. Every result carries it.
 - If narrowing leaves a session active, the Home aborts its older operations. After settlement it
   releases their tab holds and clears Watch, unless a call under the new grant has already started

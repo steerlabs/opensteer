@@ -139,7 +139,6 @@ const connectionSurface: ReadonlySet<AgentToolName> = new Set([
   "opensteer_task_send",
   "opensteer_task_read",
   "opensteer_task_wait",
-  "opensteer_task_update",
   "opensteer_task_interrupt",
 ]);
 

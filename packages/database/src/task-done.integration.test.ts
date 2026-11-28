@@ -85,33 +85,36 @@ integration.sequential("Shared task Done", () => {
     return { connection, session };
   }
 
-  it("ends a connected agent's session when its own Done command settles", async () => {
-    const f = await fixture("connection-done");
-    const { connection, session } = await connected(f, "self-done");
+  it("locks the connection before Runs when its Run marks a native task Done", async () => {
+    const source = await context.startRunFixture("lineaged-done");
+    const target = await fixture("native-done-target");
+    const { connection } = await connected(source, "lineaged-done");
+    await database
+      .updateTable("runs")
+      .set({ connectionId: connection.id })
+      .where("id", "=", source.run.id)
+      .execute();
     const result = await store.setThreadDone({
+      threadId: target.thread.id,
+      requestedBy: source.userId,
+      actorRunId: source.run.id,
+      idempotencyKey: "lineaged-native-done",
       done: true,
-      threadId: session.threadId,
-      requestedBy: f.userId,
-      idempotencyKey: "connection-done",
-      authority: {
-        kind: "connection",
-        connectionId: connection.id,
-        userId: f.userId,
-        accessMode: "full-access",
+      admission: {
+        action: "thread.write",
+        bindingGeneration: source.bindingGeneration,
+        environmentId: source.environmentId,
+        requestFingerprint: "a".repeat(64),
+        requestId: "lineaged-native-done",
+        requestedBy: source.userId,
+        runnerBootId: source.runnerBootId,
+        runnerId: source.runnerId,
+        runId: source.run.id,
+        sourceThreadId: source.threadId,
+        targetThreadIds: [target.thread.id],
       },
     });
-    expect(result.doneWhenRunEnds).toBe(false);
     expect(result.thread.doneAt).not.toBeNull();
-    expect(
-      await database
-        .selectFrom("agentSessions")
-        .select(["status", "endReason"])
-        .where("id", "=", session.id)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({
-      status: "ended",
-      endReason: "done",
-    });
   });
 
   it("ends a session with two pending operations under the ordered Done locks", async () => {
@@ -164,10 +167,38 @@ integration.sequential("Shared task Done", () => {
     ]);
   });
 
-  it("orders the Done ending when it receives two sessions", async () => {
+  it("locks both ended tasks before cancelling the first session’s Request", async () => {
     const f = await fixture("two-sessions");
-    const first = await connected(f, "first");
-    const second = await connected(f, "second");
+    const sessions = [await connected(f, "first"), await connected(f, "second")].sort((a, b) =>
+      a.session.threadId.localeCompare(b.session.threadId),
+    );
+    const [first, second] = [sessions[0]!, sessions[1]!];
+    const { grantRevision } = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", first.connection.id)
+      .executeTakeFirstOrThrow();
+    const { operation } = await admitAgentOperation(database, {
+      userId: f.userId,
+      agentConnectionId: first.connection.id,
+      sessionId: first.session.id,
+      operationKey: "pending-first",
+      tool: "browser_use",
+      argumentDigest: "pending-first",
+      target: { grant: { kind: "device" }, name: "Browser", device: null },
+      targetGeneration: null,
+      grantRevision,
+      mode: "approval-required",
+      effect: "write",
+      calls: "browser_use",
+      agentReason: null,
+    });
+    const pending = await askForAgentOperation(database, store.requests, {
+      operation,
+      threadId: first.session.threadId,
+      copy: () => ({ title: "First", summary: "First" }),
+    });
+    expect(pending.state).toBe("pending");
     const ended = await endAgentSessions(database, {
       userId: f.userId,
       sessionIds: [second.session.id, first.session.id],
@@ -175,6 +206,7 @@ integration.sequential("Shared task Done", () => {
     });
     expect(ended.map(({ id }) => id).sort()).toEqual([first.session.id, second.session.id].sort());
     expect(ended.map(({ endReason }) => endReason)).toEqual(["done", "done"]);
+    expect((await store.requests.get(pending.requestId!))?.status).toBe("cancelled");
   });
 
   it.each(["queued", "starting", "running"] as const)(

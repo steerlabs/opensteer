@@ -17,6 +17,5 @@ export {
   connectionTaskKind,
   connectionToolDescription,
   connectionTaskCreateInput,
-  connectionTaskDoneInput,
   connectionToolSchema,
 } from "./connection-tools.js";

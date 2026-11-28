@@ -177,8 +177,8 @@
   "thread.rename": {
     "own-full": "allowed",
     "own-supervised": "allowed",
-    "everything": "refused:invalid_input",
-    "selected-covering": "refused:invalid_input",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
   },
   "thread.sendMessage": {
@@ -226,8 +226,8 @@
   "thread.done.set": {
     "own-full": "allowed",
     "own-supervised": "allowed",
-    "everything": "not_found",
-    "selected-covering": "not_found",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
   },
   "trigger.update (name)": {

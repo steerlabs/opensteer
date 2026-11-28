@@ -41,6 +41,7 @@ import { cancelPending } from "./request-cancellation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   assertRequestRevision,
+  lockRequestThreads,
   refreshRequestState,
   requestFromRow,
 } from "./request-persistence.js";
@@ -405,6 +406,11 @@ export async function endAgentSessions(
       .$if(input.reason !== "stopped", (query) => query.where("command", "is", null))
       .orderBy("id")
       .execute();
+    if (open.length && ended.length > 1)
+      await lockRequestThreads(
+        tx,
+        ended.map(({ threadId }) => threadId),
+      );
     if (open.length)
       await cancelPending(tx, {
         reason: input.reason === "stopped" ? "run-ended" : "authority-revoked",

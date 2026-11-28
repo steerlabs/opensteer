@@ -80,7 +80,6 @@ const notAnId = new Set([
   "query",
   "cursor",
   "readOnly",
-  "done",
   "delivery",
   "freshContext",
   "mode",
@@ -148,7 +147,6 @@ const sweep: Record<string, (ids: readonly Value[]) => Args[]> = {
   opensteer_task_send: () => [{}],
   opensteer_task_wait: () => [{}],
   opensteer_task_interrupt: () => [{}],
-  opensteer_task_update: () => [{ done: true }, { done: false }],
 };
 /** Names a connection is no longer listed: each reads as unknown, whatever it names. */
 const retired = [

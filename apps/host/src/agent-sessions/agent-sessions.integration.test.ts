@@ -269,46 +269,6 @@ async function setUp(
 }
 
 describeStore("an external agent's direct work through sessions", (it) => {
-  it("answers a connected agent's own Done call and releases its session at settlement", async ({
-    storeFixture,
-  }) => {
-    const s = await setUp(storeFixture, "connected-self-done", { grant: { scope: "everything" } });
-    const ready = await s.ok("browser_use", script);
-    const taskId = ThreadIdSchema.parse(ready.taskId);
-    const session = await storeFixture.database
-      .selectFrom("agentSessions")
-      .select("id")
-      .where("threadId", "=", taskId)
-      .executeTakeFirstOrThrow();
-    const tabId = createId("tab");
-    s.sessions.workingIn.note(`session:${session.id}`, tabId);
-    const removeHooks = storeFixture.observePersonalReactions({
-      notice(notice) {
-        if (notice.doneAgentSessions) s.sessions.taskDone(notice.doneAgentSessions);
-      },
-      reaction: () => undefined,
-    });
-    try {
-      expect(s.sessions.workingIn.current(s.f.userId)).toHaveLength(1);
-      expect(await s.call("opensteer_task_update", { taskId, done: true })).toMatchObject({
-        structuredContent: { doneAt: expect.any(String), doneWhenRunEnds: false },
-      });
-      expect(s.sessions.workingIn.current(s.f.userId)).toEqual([]);
-      expect(
-        await storeFixture.database
-          .selectFrom("agentSessions")
-          .select(["status", "endReason"])
-          .where("id", "=", session.id)
-          .executeTakeFirstOrThrow(),
-      ).toEqual({
-        status: "ended",
-        endReason: "done",
-      });
-    } finally {
-      removeHooks();
-    }
-  });
-
   it("returns the same Done refusal for a waiting call and its replay", async ({
     storeFixture,
   }) => {
@@ -357,7 +317,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
           ending: "task-done",
           error: {
             code: "access_denied",
-            message: "The person marked this task Done.",
+            message: "This task was marked Done.",
             next: "Nothing was sent. It is safe to try again on a new task.",
           },
         },
@@ -508,7 +468,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
                   ending: "task-done",
                   error: {
                     code: "access_denied",
-                    message: "The person marked this task Done.",
+                    message: "This task was marked Done.",
                     next: "Nothing was sent. It is safe to try again on a new task.",
                   },
                 },

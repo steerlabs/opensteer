@@ -6119,7 +6119,7 @@ integration.sequential("Computer use for a connected agent, through its session"
     }
   }
 
-  it.each(["the person", "a Run", "an automation", "the connected agent"] as const)(
+  it.each(["the person", "a Run", "an automation"] as const)(
     "ends an idle Mac session when %s marks its task Done and keeps it ended on reopen",
     async (sender) => {
       const s = await connectedAgent("full-access", { target: "mac", scope: "everything" });
@@ -6149,15 +6149,6 @@ integration.sequential("Computer use for a connected agent, through its session"
         const actor: NonNullable<Parameters<typeof setDone>[3]> = await (async () => {
           const { world } = s;
           if (sender === "the person") return {};
-          if (sender === "the connected agent")
-            return {
-              authority: {
-                kind: "connection",
-                userId: world.owner.userId,
-                accessMode: "full-access",
-                connectionId: s.record.id,
-              },
-            } as const;
           const source = await world.startRun("Caller of Done");
           if (sender === "a Run")
             return {
@@ -6268,7 +6259,7 @@ integration.sequential("Computer use for a connected agent, through its session"
           .executeTakeFirst(),
       ).toEqual({ status: "ended", endReason: "done" });
       expect(await settled).toMatchObject({
-        message: "The person marked this task Done.",
+        message: "This task was marked Done.",
       });
       expect(await s.operation("done-in-flight")).toMatchObject({
         outcome: "unknown",

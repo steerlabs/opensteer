@@ -4,6 +4,7 @@ import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   lockThreadCaller,
   lockLineageConnection,
+  threadCallerLineageId,
   assertThreadCaller,
   callerAuthoritySource,
   type ThreadCallerAuthority,
@@ -273,29 +274,28 @@ export async function setThreadDone(
       const quietWithSessions = checkedQuietAt
         ? !input.actorRunId && (await threadIsQuiet(transaction, input.threadId, checkedQuietAt))
         : undefined;
+      if (input.admission && !input.authority)
+        await lockLineageConnection(
+          transaction,
+          await bindingAgentConnectionId(transaction, `run:${input.admission.runId}`),
+        );
+      if (sessions?.length && quietWithSessions !== false) {
+        if (input.authority)
+          await lockLineageConnection(
+            transaction,
+            await threadCallerLineageId(transaction, input.authority),
+          );
+        const ended = await endAgentSessionRows(
+          transaction,
+          sessions.map(({ id }) => id),
+          "done",
+        );
+        mutation.sessionsEndedByDone(ended.map(({ id }) => id));
+      }
       await lockThreadCaller(
         transaction,
         input.authority,
         scope.runs.map((run) => run.id),
-        false,
-        undefined,
-        sessions?.length && quietWithSessions !== false
-          ? async () => {
-              // A Run tool brings its own admission, which also takes its lineage lock. Acquire
-              // that connection before the sessions so the later recheck holds the same lock.
-              if (input.admission && !input.authority)
-                await lockLineageConnection(
-                  transaction,
-                  await bindingAgentConnectionId(transaction, `run:${input.admission.runId}`),
-                );
-              const ended = await endAgentSessionRows(
-                transaction,
-                sessions.map(({ id }) => id),
-                "done",
-              );
-              mutation.sessionsEndedByDone(ended.map(({ id }) => id));
-            }
-          : undefined,
       );
       const runs = scope.runs.length
         ? await transaction
@@ -345,15 +345,6 @@ export async function setThreadDone(
         .forNoKeyUpdate()
         .execute();
       const thread = threads.find(({ id }) => id === input.threadId)!;
-      // The connected tool's self-Done is a database command. Its own call settles with this
-      // commit, so closing the direct session cuts only its other calls.
-      if (
-        input.authority?.kind === "connection" &&
-        (!input.done ||
-          thread.worker !== "external" ||
-          thread.originConnectionId !== input.authority.connectionId)
-      )
-        throw new OpensteerError({ code: "not_found", message: "Task is unavailable" });
       await requireThreadWriteAuthority(transaction, thread, input, input.done ? "done" : "reopen");
       const triggers = scope.triggers.length
         ? await transaction

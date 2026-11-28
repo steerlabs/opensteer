@@ -37,7 +37,7 @@ export const agentOperationEndingWords: Readonly<
   Record<AgentOperationEnding, { readonly message: string; readonly next: string }>
 > = {
   stopped: { message: "The person stopped this work.", next: mayHaveHappened },
-  "task-done": { message: "The person marked this task Done.", next: mayHaveHappened },
+  "task-done": { message: "This task was marked Done.", next: mayHaveHappened },
   disconnected: { message: "The person disconnected this agent.", next: mayHaveHappened },
   expired: { message: "This agent's access expired.", next: mayHaveHappened },
   narrowed: { message: "The person changed this agent's access.", next: mayHaveHappened },
