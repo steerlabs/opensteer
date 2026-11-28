@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { ClientOperationError } from "@opensteer/client/connections";
+import { DeviceIdSchema } from "@opensteer/core";
 import { placeList } from "@opensteer/client/host";
 import {
   mockAgentWorkThreads,
@@ -281,7 +282,7 @@ it("follows a device place in Now before Watch or another activity read", async 
         app: { kind: "mac-app", bundleId: "com.apple.Safari", teamId: null },
       },
       name: "Safari",
-      device: { id: machine.id, name: machine.name },
+      device: { id: DeviceIdSchema.parse(machine.id), name: machine.name },
     });
   });
   expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Safari");
