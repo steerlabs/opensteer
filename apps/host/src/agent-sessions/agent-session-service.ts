@@ -1501,10 +1501,10 @@ export async function withAgentOperationReceipt<Result>(
     throw new AgentOperationFailure(done ? endedBy("task-done") : error, {
       taskId,
       operationId: row.id,
-      ...(done ? { ending: "task-done" as const } : {}),
       ...(state === "refused" || state === "failed" || state === "unknown"
         ? { status: state }
         : {}),
+      ...(done ? { ending: "task-done" as const } : {}),
     });
   }
 }

@@ -906,16 +906,18 @@ export class OpensteerMcpService {
         key = row.operationKey;
         identity.keyed?.(key);
         resume = row;
+        if (row.state === "refused")
+          throw new AgentOperationFailure(agentOperationRefusal(row.decision, row.ending), {
+            taskId: row.taskId,
+            operationId: row.id,
+            status: "refused",
+            ...(row.ending ? { ending: row.ending } : {}),
+          });
         const base = {
           taskId: row.taskId,
           operationId: row.id,
           ...(row.ending ? { ending: row.ending } : {}),
         };
-        if (row.state === "refused")
-          throw new AgentOperationFailure(agentOperationRefusal(row.decision, row.ending), {
-            ...base,
-            status: "refused",
-          });
         if (row.state === "unknown" || row.state === "failed" || row.state === "completed") {
           const connection = caller;
           await withAgentOperationReceipt(database, row, row.taskId, () =>

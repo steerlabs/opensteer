@@ -500,7 +500,8 @@ describeStore("an external agent's direct work through sessions", (it) => {
                 requestedBy: f.userId,
                 idempotencyKey: "done-during-browser-reserve",
               });
-              expect(await resumed).toMatchObject({
+              const refusal = await resumed;
+              expect(refusal).toMatchObject({
                 isError: true,
                 structuredContent: {
                   status: "refused",
@@ -512,6 +513,9 @@ describeStore("an external agent's direct work through sessions", (it) => {
                   },
                 },
               });
+              expect(
+                await s.call("browser_use", { ...script, operationId: pending.operationId }),
+              ).toEqual(refusal);
             } finally {
               removeHooks();
             }
