@@ -254,6 +254,8 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
     case "unconfirmed":
       return result(`Couldn't confirm ${issue.happened ?? "this change"}.`, "check");
     case "rejected": {
+      if (issue.reason === "browser-typing-overload")
+        return result("Typing stopped. Some of it may not have arrived: check the text.");
       const reason = rejectionDetail(issue.reason);
       return result(
         reason
