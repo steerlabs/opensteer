@@ -836,10 +836,10 @@ const portalLines = () =>
     .split("\n")
     .filter((line) => line.startsWith("OPENSTEER_HOME_PORTAL_ORIGIN"));
 
-it("takes the account's portal into config.env when it prepares a release, before its gate starts it", () => {
-  // A Home installed before its account's boot answer named the portal: its config.env has none,
-  // and the code it runs does not ask for one. The release it updates to does, as it prepares.
-  const { b, prepare } = candidate();
+// Each prepare starts the recipe's shell anew (about half a second on a Mac), so the portal's
+// cases are two tests: ten starts in one sat at the default five seconds.
+it("leaves config.env as it was when the account's answer names no usable portal", () => {
+  const { prepare } = candidate();
   const before = readFileSync(join(home, "config.env"), "utf8");
   for (const answer of [
     { releaseManifestUrl: "https://releases.example.test/stable.json" },
@@ -852,6 +852,13 @@ it("takes the account's portal into config.env when it prepares a release, befor
     expect(prepare().status, JSON.stringify(answer)).toBe(0);
     expect(readFileSync(join(home, "config.env"), "utf8"), JSON.stringify(answer)).toBe(before);
   }
+});
+
+it("takes the account's portal into config.env when it prepares a release, before its gate starts it", () => {
+  // A Home installed before its account's boot answer named the portal: its config.env has none,
+  // and the code it runs does not ask for one. The release it updates to does, as it prepares.
+  const { b, prepare } = candidate();
+  const before = readFileSync(join(home, "config.env"), "utf8");
   network({
     releaseManifestUrl: "https://releases.example.test/stable.json",
     portalOrigin: "https://portal.example.test",
