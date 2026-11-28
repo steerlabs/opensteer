@@ -118,13 +118,13 @@ enum PersonInput {
   static func keys(_ text: String, intervalMs: UInt32, log: String) -> Never {
     guard CGPreflightPostEventAccess(), FileManager.default.createFile(atPath: log, contents: nil),
       let file = FileHandle(forWritingAtPath: log) else { exit(3) }
-    let trace = ProcessInfo.processInfo.environment["OPENSTEER_SAFARI_FRONT_TRACE_KEYS"] == "1"
+    let timestampKeys = ProcessInfo.processInfo.environment["OPENSTEER_SAFARI_FRONT_TRACE_STAMP"] == "1"
     for character in text {
       for down in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { exit(4) }
         let units = Array(String(character).utf16)
         event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
-        if trace { event.timestamp = DispatchTime.now().uptimeNanoseconds }
+        if timestampKeys { event.timestamp = DispatchTime.now().uptimeNanoseconds }
         if down {
           let row = "{\"text\":\"\(character)\",\"at\":\(wallMs()),\"stamp\":\(event.timestamp)}\n"
           file.write(Data(row.utf8))
