@@ -447,11 +447,13 @@ public final class HelperRuntime {
       return try await ownerInput(envelope, connection: connection, budget: budget)
     case "display.start":
       let result = try await video.start(envelope, connection: connection, budget: budget)
-      overlay?.connectionRestored()
+      restoreConnection(video.app(of: envelope, connection: connection))
       return result
     case "display.resolve", "display.demand", "display.refresh", "display.stop", "display.attach":
       let result = try video.perform(envelope, connection: connection)
-      if method == "display.attach" || method == "display.demand" { overlay?.connectionRestored() }
+      if method == "display.attach" || method == "display.demand" {
+        restoreConnection(video.app(of: envelope, connection: connection))
+      }
       tickOwnerInput()
       for attachment in ownerAttachments.values where !attachment.active.current {
         await waitForOwnerCleanup(attachment)
@@ -834,6 +836,13 @@ public final class HelperRuntime {
   /// How the last sessions that went away were shown as ending.
   private(set) var lastOverlayEnding: OverlayModel.Ending?
 
+  /// The person reached `app` again through Opensteer: only that app's
+  /// connection notice goes.
+  private func restoreConnection(_ app: AppIdentity?) {
+    guard let app else { return }
+    overlay?.connectionRestored(app: app.bundleId.lowercased())
+  }
+
   /// The agents' sessions only: the person's own viewing and typing through
   /// Opensteer draws nothing on this Mac.
   private func updateOverlay(ending: OverlayModel.Ending = .ended) {
@@ -1015,7 +1024,7 @@ public final class HelperRuntime {
       if method == "view.open", target.process.isCurrent,
         view.window?.unavailableReason != "window-closed"
       {
-        overlay?.connectionRestored()
+        restoreConnection(target.app)
       }
       return state(view)
     }
@@ -1109,10 +1118,12 @@ public final class HelperRuntime {
     overlay?.workStarted(on: state)
     defer { overlay?.workEnded(on: state) }
     let cancellation = opened.cancellation
+    let key = state.key, overlay = overlay
     let observation = try await AppObserver.observe(
       app: state, window: params.window, monitor: monitor, budget: budget,
       includeScreenshot: includeScreenshot, cancellation: cancellation,
-      check: { try cancellation.check() })
+      check: { try cancellation.check() },
+      verified: { window in await overlay?.bind(app: key, window: window) })
     try await commit(observation, of: state, in: opened, connectionID: connection.id)
     return observation
   }

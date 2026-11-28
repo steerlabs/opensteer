@@ -205,7 +205,6 @@ import Darwin
     func onWindow(_ panel: NSWindow) -> Bool {
       guard panel.contentView is ChipView, panel.isVisible, panel.alphaValue > 0 else { return false }
       let chip = OverlayGeometry.appKitRect(fromCoreGraphics: panel.frame, primaryHeight: ScreenGeometry.primaryHeight)
-        .insetBy(dx: OverlayStyle.chipMargin, dy: OverlayStyle.chipMargin)
       return abs(chip.midX - frame.midX) <= 1
         && (abs(chip.midY - frame.minY) <= 1 || abs(chip.minY - frame.minY) <= 1)
     }

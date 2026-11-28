@@ -58,6 +58,38 @@ extension SafariFront {
     return nil
   }
 
+  /// The chip panel on a window, shown or still fading in.
+  func chipPanel(on window: CGRect) -> CGRect? {
+    NSApp.windows.compactMap { panel -> CGRect? in
+      guard panel.contentView is ChipView, panel.isVisible else { return nil }
+      return OverlayGeometry.appKitRect(fromCoreGraphics: panel.frame, primaryHeight: ScreenGeometry.primaryHeight)
+    }.first { abs($0.midX - window.midX) <= 1.5 && $0.minY <= window.minY + 1 && $0.maxY >= window.minY - 1 }
+  }
+
+  /// Whether Safari's keyboard focus is in its address field (a text field
+  /// outside the page), and what it is, for the record.
+  func safariAddressFieldFocused() -> (Bool, String) {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      AXUIElementCreateApplication(safari.processIdentifier), kAXFocusedUIElementAttribute as CFString, &value)
+      == .success, let focused = value, CFGetTypeID(focused) == AXUIElementGetTypeID()
+    else { return (false, "nothing focused") }
+    let element = focused as! AXUIElement
+    let role = AXValueReader.copyString(element, kAXRoleAttribute) ?? ""
+    let described = [role, AXValueReader.copyString(element, kAXDescriptionAttribute) ?? "",
+      AXValueReader.copyString(element, "AXIdentifier") ?? ""].joined(separator: " | ")
+    var current: AXUIElement? = element
+    for _ in 0..<40 {
+      guard let node = current else { break }
+      if AXValueReader.copyString(node, kAXRoleAttribute) == "AXWebArea" { return (false, described + " (in the page)") }
+      var parent: CFTypeRef?
+      guard AXUIElementCopyAttributeValue(node, kAXParentAttribute as CFString, &parent) == .success,
+        let next = parent, CFGetTypeID(next) == AXUIElementGetTypeID() else { break }
+      current = (next as! AXUIElement)
+    }
+    return (role == "AXTextField", described)
+  }
+
   func axWindow(pid: pid_t, title: String) throws -> AXUIElement {
     try AXValueReader.copyElements(AXUIElementCreateApplication(pid), kAXWindowsAttribute).first {
       AXValueReader.copyString($0, kAXTitleAttribute)?.contains(title) == true
@@ -95,6 +127,70 @@ extension SafariFront {
     return "AppleInterfaceStyle default"
   }
 
+  /// An agent's keys to window A, after its session last bound a window B that the person
+  /// then minimized: its Stop must be on A by the first key that reaches the page.
+  func chipBindCase(_ caseOut: URL) async throws -> [String: Any] {
+    _ = front.hide()
+    defer { _ = front.unhide() }
+    let safariAX = try safariWindow()
+    place(safariAX, at: CGPoint(x: 160, y: 140), size: CGSize(width: 700, height: 480))
+    let wire = try AgentWire(helper: helper)
+    defer { wire.drop() }
+    let agent = Agent(wire: wire, identity: safariIdentity)
+    try await agent.open(title: "Sol fixture")
+    let refA = agent.ref
+    let app = AXUIElementCreateApplication(safari.processIdentifier)
+    func windowB() -> AXUIElement? {
+      AXValueReader.copyElements(app, kAXWindowsAttribute).first {
+        AXValueReader.copyString($0, kAXTitleAttribute)?.contains("Sol fixture") == false
+      }
+    }
+    _ = try await agent.act([["type": "key", "keys": "cmd+n"]])
+    for _ in 0..<60 where windowB() == nil { await sleepSeconds(0.1) }
+    let bAX = try windowB().unwrap("Safari window B")
+    defer {
+      _ = AXUIElementSetAttributeValue(bAX, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+      if let close = AXValueReader.copyElements(bAX, kAXCloseButtonAttribute).first {
+        _ = AXUIElementPerformAction(close, kAXPressAction as CFString)
+      } else {
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(bAX, kAXCloseButtonAttribute as CFString, &value) == .success,
+          let close = value, CFGetTypeID(close) == AXUIElementGetTypeID()
+        {
+          _ = AXUIElementPerformAction(close as! AXUIElement, kAXPressAction as CFString)
+        }
+      }
+    }
+    let listed = try await wire.request("session.windows", ["sessionId": agent.session, "app": agent.target])
+    let windows = (listed["windows"] as? [[String: Any]]) ?? []
+    let b = try windows.first { ($0["title"] as? String)?.contains("Sol fixture") == false }
+      .unwrap("window B in \(windows.map { $0["title"] ?? "" })")
+    _ = try await wire.request("session.bind", ["sessionId": agent.session, "app": agent.target, "windowId": b["windowId"]!])
+    await sleepSeconds(0.5)
+    _ = AXUIElementSetAttributeValue(bAX, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+    await sleepSeconds(1.2)
+    let frameA = try frame(of: safariAX)
+    let before = chipPanel(on: frameA)
+    let baseline = lineCount(fixtureLog)
+    let id = try wire.send("session.act", ["sessionId": agent.session, "app": agent.target, "window": refA,
+      "snapshot": NSNull(), "actions": Array(repeating: ["type": "key", "keys": "z"] as [String: Any], count: 24)])
+    var firstKey = false
+    for _ in 0..<500 where !firstKey {
+      firstKey = lines(fixtureLog, after: baseline).contains { $0["kind"] as? String == "keydown" }
+      if !firstKey { await sleepSeconds(0.01) }
+    }
+    let atFirstKey = chipPanel(on: frameA)
+    await png(caseOut, "bind-at-first-key-window", frameA.insetBy(dx: -28, dy: -36), wait: false)
+    let reply = try await wire.reply(id)
+    return [
+      "met": firstKey && before == nil && atFirstKey != nil,
+      "firstKeyReachedThePage": firstKey,
+      "chipOnABeforeTheAct": before.map { NSStringFromRect($0) } ?? "none",
+      "chipOnAAtTheFirstKey": atFirstKey.map { NSStringFromRect($0) } ?? "none",
+      "actError": (reply["error"] as? [String: Any])?["message"] as? String ?? "none",
+    ]
+  }
+
   func chipCase(_ caseOut: URL) async throws -> [String: Any] {
     var row: [String: Any] = [:]
     var checks: [String: Bool] = [:]
@@ -122,7 +218,8 @@ extension SafariFront {
     await sleepSeconds(OverlayModel.holdAfterWork + OverlayStyle.fadeDuration + 0.3)
     var safariFrame = try frame(of: safariAX)
     let still = await chip(on: safariFrame)
-    checks["a-still"] = still?.view.chip?.look == .agents(dots: [.still], more: 0)
+    checks["a-still"] = still?.view.chip?.look == .agent(.still)
+      && still.map { $0.frame.width > $0.frame.height && $0.frame.height == OverlayStyle.chipHeight } == true
     await shots(caseOut, "a-one-agent-still", window: safariFrame, chip: still?.frame)
     await png(caseOut, "a-full-screen", nil)
 
@@ -151,7 +248,7 @@ extension SafariFront {
     }
     await sleepSeconds(0.25)
     let working = await chip(on: safariFrame)
-    checks["b-working"] = working?.view.chip?.look == .agents(dots: [.working], more: 0)
+    checks["b-working"] = working?.view.chip?.look == .agent(.working)
     await shots(caseOut, "b-working-1", window: safariFrame, chip: working?.frame)
     await sleepSeconds(0.55)
     await png(caseOut, "b-working-2-closeup", working.map {
@@ -191,10 +288,7 @@ extension SafariFront {
     textEdit.activate()
     await sleepSeconds(OverlayModel.holdAfterWork + OverlayStyle.fadeDuration + 0.6)
     let textEditFrame = try frame(of: textEditAX)
-    let light = await chip(on: textEditFrame)
-    checks["g-light"] = light != nil
-    await shots(caseOut, "g-light-textedit", window: textEditFrame, chip: light?.frame)
-    await png(caseOut, "g-full-screen-two-apps", nil)
+    checks["textedit-chip"] = await chip(on: textEditFrame) != nil
     safari.activate()
     await sleepSeconds(0.6)
 
@@ -202,7 +296,7 @@ extension SafariFront {
     safariFrame = try frame(of: safariAX)
     let safariChip = try await chip(on: safariFrame).unwrap("Safari's chip before Stop")
     try await move(CGPoint(x: safariChip.frame.midX, y: safariChip.frame.midY))
-    await sleepSeconds(OverlayStyle.expandDuration + OverlayStyle.stopArmDelay + 0.3)
+    await sleepSeconds(OverlayStyle.expandDuration + 0.3)
     let armed = try await chip(on: safariFrame).unwrap("Safari's chip open")
     let frontBefore = PrivateAPI.focusPID(front: true)
     try await personClick(CGPoint(x: armed.frame.maxX - 20, y: armed.frame.midY))
@@ -257,22 +351,65 @@ extension SafariFront {
     await sleepSeconds(0.3)
     await shots(caseOut, "e-after-settling", window: safariFrame, chip: settled?.frame)
 
-    // f: under the menu bar: the notch inside the window, at rest and on hover.
+    // f: under the menu bar: the notch inside the window. It takes none of the address
+    // field's clicks: below it at rest, beside it opened; it opens only once the pointer rests.
     place(safariAX, at: CGPoint(x: safariFrame.minX, y: menuBarBottom))
     await sleepSeconds(0.8)
     safariFrame = try frame(of: safariAX)
-    let notch = await chip(on: safariFrame)
-    checks["f-notch"] = notch.map { abs($0.frame.minY - safariFrame.minY) <= 0.5 && $0.frame.height == OverlayStyle.notchHeight } == true
-    row["notch"] = ["window": NSStringFromRect(safariFrame), "chip": notch.map { NSStringFromRect($0.frame) } ?? "none"]
-    await shots(caseOut, "f-notch-under-menu-bar", window: safariFrame, chip: notch?.frame)
-    if let notch {
-      try await move(CGPoint(x: notch.frame.midX, y: notch.frame.midY))
-      await sleepSeconds(0.6)
-      let grown = await chip(on: safariFrame)
-      checks["f-notch-grows-down"] = grown.map { $0.frame.height == OverlayStyle.chipHeight && $0.frame.minY == notch.frame.minY } == true
-      await shots(caseOut, "f-notch-hover", window: safariFrame, chip: grown?.frame)
-      try await move(away)
-    }
+    let notch = try await chip(on: safariFrame).unwrap("the notch")
+    checks["f-notch"] = abs(notch.frame.minY - safariFrame.minY) <= 0.5
+      && notch.frame.height == OverlayStyle.notchHeight && notch.view.dot.frame.height == OverlayStyle.notchDotSize
+    row["notch"] = ["window": NSStringFromRect(safariFrame), "chip": NSStringFromRect(notch.frame)]
+    await shots(caseOut, "f-notch-at-rest", window: safariFrame, chip: notch.frame)
+    let below = CGPoint(x: notch.frame.midX, y: notch.frame.maxY + 5)
+    let focusBefore = safariAddressFieldFocused()
+    try await personClick(below)
+    await sleepSeconds(0.5)
+    let focusBelow = safariAddressFieldFocused()
+    checks["f-click-below-the-notch-reaches-safari"] = !focusBefore.0 && focusBelow.0
+      && helper.registry.sessions[c.session] != nil
+    // The page takes the focus back, so the next click is seen to move it again.
+    try await personClick(CGPoint(x: safariFrame.midX, y: safariFrame.midY + 120))
+    await sleepSeconds(0.5)
+    let focusPage = safariAddressFieldFocused()
+    // Passing over the notch opens nothing; resting on it does.
+    try await move(CGPoint(x: notch.frame.midX, y: notch.frame.midY))
+    await sleepSeconds(0.1)
+    try await move(away)
+    await sleepSeconds(OverlayStyle.notchDwell + 0.3)
+    let passed = await chip(on: safariFrame)
+    checks["f-passing-over-opens-nothing"] = passed?.frame.height == OverlayStyle.notchHeight
+    try await move(CGPoint(x: notch.frame.midX, y: notch.frame.midY))
+    await sleepSeconds(0.1)
+    let early = await chip(on: safariFrame)
+    await sleepSeconds(OverlayStyle.notchDwell + OverlayStyle.expandDuration + 0.2)
+    let opened = try await chip(on: safariFrame).unwrap("the opened notch")
+    checks["f-notch-opens-after-a-rest"] = early?.frame.height == OverlayStyle.notchHeight
+      && opened.frame.height == OverlayStyle.notchOpenHeight && opened.frame.minY == notch.frame.minY
+      && opened.view.word.opacity == 1
+    await shots(caseOut, "f-notch-dwelled-open", window: safariFrame, chip: opened.frame)
+    try await personClick(CGPoint(x: opened.frame.maxX + 24, y: opened.frame.midY + 2))
+    await sleepSeconds(0.5)
+    let focusBeside = safariAddressFieldFocused()
+    checks["f-click-beside-the-open-notch-reaches-safari"] = !focusPage.0 && focusBeside.0
+      && helper.registry.sessions[c.session] != nil
+    row["addressField"] = ["before": focusBefore.1, "belowRestingNotch": focusBelow.1, "page": focusPage.1,
+      "besideOpenNotch": focusBeside.1]
+    try await move(away)
+
+    // j: the window's top under the menu bar and its left part off the screen: the chip sits
+    // at the top of the part the person can see.
+    place(safariAX, at: CGPoint(x: -300, y: 4))
+    await sleepSeconds(0.8)
+    safariFrame = try frame(of: safariAX)
+    let visible = safariFrame.intersection(CGRect(x: 0, y: menuBarBottom, width: screen.frame.width,
+      height: screen.frame.height - menuBarBottom))
+    let clamped = shownChips().first { $0.view.chip?.app.key == "com.apple.safari" }
+    checks["j-clamped-to-the-visible-part"] = clamped.map {
+      abs($0.frame.midX - visible.midX) <= 1 && abs($0.frame.minY - visible.minY) <= 0.5
+    } == true
+    row["clamped"] = ["window": NSStringFromRect(safariFrame), "chip": clamped.map { NSStringFromRect($0.frame) } ?? "none"]
+    await png(caseOut, "j-partly-off-screen-full-screen", nil)
     place(safariAX, at: home)
     await sleepSeconds(0.8)
 
@@ -282,44 +419,14 @@ extension SafariFront {
     row["darkStyleAfter"] = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") ?? "light"
     safariFrame = try frame(of: safariAX)
     let darkSafari = await chip(on: safariFrame)
+    checks["g-dark"] = darkSafari != nil
     await shots(caseOut, "g-dark-safari", window: safariFrame, chip: darkSafari?.frame)
     await png(caseOut, "g-dark-full-screen", nil)
-    textEdit.activate()
-    await sleepSeconds(0.8)
-    let darkTextEdit = await chip(on: textEditFrame)
-    checks["g-dark-textedit"] = darkTextEdit != nil
-    await shots(caseOut, "g-dark-textedit", window: textEditFrame, chip: darkTextEdit?.frame)
-    safari.activate()
     appearance(dark: false)
     await sleepSeconds(1)
     wireB.drop()
     wireC.drop()
     await sleepSeconds(0.5)
-
-    // c: three agents in one window, through a second overlay handed three sessions on Safari:
-    // the registry admits one session per app, so three real sessions cannot hold it at once.
-    safariFrame = try frame(of: safariAX)
-    let seam = OverlayController(drawsWindows: true, onStop: { _ in })
-    let key = "com.apple.safari"
-    let app = OverlayModel.App(key: key, name: "Safari")
-    seam.present((1...3).map { OverlayModel.Session(id: "agent-\($0)", apps: [app]) }, ending: .ended)
-    seam.bind(app: key, window: try KeyWindow.windowID(of: safariAX).unwrap("Safari window id"))
-    seam.workStarted(.init(session: "agent-1", app: key))
-    seam.workStarted(.init(session: "agent-2", app: key))
-    await sleepSeconds(0.6)
-    let three = await chip(on: safariFrame)
-    checks["c-three-dots"] = three?.view.dots.count == 3
-    await shots(caseOut, "c-three-agents", window: safariFrame, chip: three?.frame)
-    seam.present((1...5).map { OverlayModel.Session(id: "agent-\($0)", apps: [app]) }, ending: .ended)
-    // New holders find their window again, as a new session's first observation does.
-    seam.bind(app: key, window: try KeyWindow.windowID(of: safariAX).unwrap("Safari window id"))
-    await sleepSeconds(0.5)
-    let five = await chip(on: safariFrame)
-    checks["c-five-is-three-and-a-count"] = five?.view.dots.count == 3
-      && (five?.view.count.string as? NSAttributedString)?.string == "+2"
-    await shots(caseOut, "c-five-agents", window: safariFrame, chip: five?.frame)
-    seam.present([], ending: .ended)
-    await sleepSeconds(0.3)
 
     // h: the connection dropped with an action under way: amber, still; hover says why.
     let wireD = try AgentWire(helper: helper)
@@ -335,7 +442,7 @@ extension SafariFront {
     wireD.drop()
     await sleepSeconds(0.8)
     let amber = await chip(on: safariFrame)
-    checks["h-amber"] = amber?.view.chip?.look == .connectionLost && amber?.view.dots.first?.animation(forKey: "breath") == nil
+    checks["h-amber"] = amber?.view.chip?.look == .connectionLost && amber?.view.dot.animation(forKey: "breath") == nil
     await shots(caseOut, "h-amber-notice", window: safariFrame, chip: amber?.frame)
     if let amber {
       try await move(CGPoint(x: amber.frame.midX, y: amber.frame.midY))
@@ -345,11 +452,13 @@ extension SafariFront {
       await shots(caseOut, "h-amber-hover", window: safariFrame, chip: sentence?.frame)
       try await move(away)
       await sleepSeconds(0.4)
-      let dismissing = await chip(on: safariFrame)
-      _ = dismissing?.view.accessibilityPerformPress()
-      await sleepSeconds(0.3)
+      // One ordinary click on the resting amber chip dismisses it, and stops nothing.
+      let resting = try await chip(on: safariFrame).unwrap("the resting amber chip")
+      try await personClick(CGPoint(x: resting.frame.midX, y: resting.frame.midY))
+      await sleepSeconds(0.4)
       let gone = await chip(on: safariFrame, seconds: 0.3)
-      checks["h-dismissed"] = gone == nil
+      checks["h-one-click-dismisses"] = gone == nil && resting.frame.width == amber.frame.width
+      try await move(away)
     }
 
     // The person typing into Safari through an owner view draws nothing on the Mac.

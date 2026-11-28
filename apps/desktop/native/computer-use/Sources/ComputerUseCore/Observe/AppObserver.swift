@@ -19,7 +19,8 @@ public enum AppObserver {
     walkBudget: TimeInterval = ElementTreeWalker.timeBudget,
     includeScreenshot: Bool = true,
     cancellation: SessionCancellation = SessionCancellation(),
-    check: @Sendable () throws -> Void = {}
+    check: @Sendable () throws -> Void = {},
+    verified: @Sendable (CGWindowID) async -> Void = { _ in }
   ) async throws -> Observation {
     try HelperRuntime.requireUnlocked()
     if let ref = window {
@@ -34,6 +35,10 @@ public enum AppObserver {
       throw SessionWindows.closed
     }
     app.currentWindow = bound
+    // Its target is known and verified: the person's Stop goes on it now, not
+    // when the observation commits (or never, if it fails).
+    await verified(bound.windowID)
+    try check()
     let processIdentifier = bound.process.processIdentifier
     let applicationElement = AXUIElementCreateApplication(processIdentifier)
     AXUIElementSetMessagingTimeout(applicationElement, axMessagingTimeout)

@@ -5,15 +5,14 @@ import QuartzCore
 
 /// The agent's look on the Mac, in one place.
 ///
-/// One small dark chip tucked onto the top edge of the window agents work in,
-/// a dot per agent in Opensteer's ember, and nothing else at rest: the
+/// One small dark chip tucked onto the top edge of the window an agent works
+/// in, one dot in Opensteer's ember, and nothing else at rest: the
 /// person's pointer is black and white and macOS's focus rings are blue, so
 /// ember reads as the agent.
 enum OverlayStyle {
   // MARK: - Palette (apps/web/src/styles/tokens.css)
 
   static let ember = rgb(0xE6BEB0)
-  static let inkOnEmber = rgb(0x1B120E)
   static let text = rgb(0xF5F4F2)
   static let surface = rgb(0x101010)
   static let red = rgb(0xE77E76)
@@ -24,40 +23,34 @@ enum OverlayStyle {
 
   // MARK: - Chip
 
-  /// The chip on the window's top edge, half above it.
+  /// The chip on the window's top edge, half above it: a short capsule, a
+  /// few points wider than it is tall.
   static let chipHeight: CGFloat = 22
-  /// Inside the window, where there is no room above it: the dots only,
+  static let chipRestWidth: CGFloat = 28
+  /// Inside the window, where there is no room above it: the dot only,
   /// hanging from the edge, short enough to stay in the 8-point strip
   /// Safari leaves above its address field on macOS 26.
   static let notchHeight: CGFloat = 9
-  static let chipPadding: CGFloat = 7
+  static let notchRestWidth: CGFloat = 24
+  /// The notch opened: as short as the word allows, growing sideways.
+  static let notchOpenHeight: CGFloat = 16
   static let dotSize: CGFloat = 8
-  static let notchDotSize: CGFloat = 5
-  /// How far each dot tucks under the one before it.
-  static let dotOverlap: CGFloat = 2
-  /// The ring of chip colour around each dot that keeps overlapping dots
-  /// apart.
-  static let dotRing: CGFloat = 1.5
+  static let notchDotSize: CGFloat = 6
   /// A still dot: lit, but a step below a working one at its brightest.
   static let stillDotOpacity: Float = 0.85
   /// The low end of a working dot's breath.
   static let breathLow: Float = 0.4
   static let breathPeriod: TimeInterval = 1.6
-  static let hairlineOpacity: CGFloat = 0.16
-  static let shadowOpacity: Float = 0.28
-  static let shadowRadius: CGFloat = 2
-  static let shadowOffset: CGFloat = 1
-  /// Room around the chip in its panel for the shadow.
-  static let chipMargin: CGFloat = 4
-  /// Between the dots and `+N` or the word.
+  /// The one-pixel rim that holds the chip over a dark background.
+  static let rimOpacity: CGFloat = 0.26
+  static let chipPadding: CGFloat = 9
+  /// Between the dot and the word.
   static let chipGap: CGFloat = 6
   static var wordFont: NSFont { .systemFont(ofSize: 11, weight: .semibold) }
-  static var countFont: NSFont { .systemFont(ofSize: 10, weight: .medium) }
-  static let countOpacity: CGFloat = 0.62
   static let expandDuration: TimeInterval = 0.22
-  /// A click lands on `Stop` only once it has shown this long, so a click
-  /// aimed at the toolbar as the chip appeared under it stops nothing.
-  static let stopArmDelay: TimeInterval = 0.3
+  /// A notch opens only once the pointer has rested on it this long, so a
+  /// pointer on its way to the address field below never opens it.
+  static let notchDwell: TimeInterval = 0.25
   /// The chip returns this long after its window stops moving.
   static let settleDelay: TimeInterval = 0.15
   static let fadeDuration: TimeInterval = 0.15
@@ -130,37 +123,43 @@ enum OverlayGeometry {
     case notch
   }
 
-  /// One fixed rule: the chip goes on the edge when its upper half clears the
-  /// top of the usable area of the screen the window's top edge is on, and
-  /// hangs inside otherwise. `usableTops` are each screen's frame with the
-  /// top of the area below its menu bar, all in CoreGraphics coordinates.
-  static func chipPlacement(
-    window: CGRect, usableTops: [(screen: CGRect, top: CGFloat)]
-  ) -> ChipPlacement {
-    let anchor = CGPoint(x: window.midX, y: window.minY)
-    guard
-      let screen = usableTops.first(where: {
-        anchor.x >= $0.screen.minX && anchor.x < $0.screen.maxX
-          && anchor.y >= $0.screen.minY && anchor.y < $0.screen.maxY
-      })
-    else { return .notch }
-    return window.minY - OverlayStyle.chipHeight / 2 >= screen.top ? .edge : .notch
+  /// The middle of the visible part of a window's top, and how the chip
+  /// sits there.
+  struct ChipAnchor: Equatable {
+    let midX: CGFloat
+    /// The edge line for `.edge`; the notch's top for `.notch`.
+    let top: CGFloat
+    let placement: ChipPlacement
   }
 
-  /// The chip's own frame, in CoreGraphics coordinates, centred on the
-  /// window's top edge and on whole device pixels. On the edge it is centred
-  /// on the edge line; as a notch its top is the edge.
-  static func chipFrame(
-    window: CGRect, size: CGSize, placement: ChipPlacement, scale: CGFloat
-  ) -> CGRect {
-    func pixel(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
-    let x = pixel(window.midX - size.width / 2)
-    let top: CGFloat
-    switch placement {
-    case .edge: top = pixel(window.minY - OverlayStyle.chipHeight / 2)
-    case .notch: top = pixel(window.minY)
+  /// One fixed rule. `usable` is each screen's area below its menu bar, in
+  /// CoreGraphics coordinates. The chip goes on the edge when its upper half
+  /// clears that area's top, and hangs inside otherwise; either way it sits
+  /// at the top of the part of the window the person can see, so a window
+  /// partly off its screen still has its chip on screen. Nil when no part of
+  /// the window is on a screen.
+  static func chipAnchor(window: CGRect, usable: [CGRect]) -> ChipAnchor? {
+    let visible = usable.map { window.intersection($0) }.filter { !$0.isNull && !$0.isEmpty }
+      .max { $0.width * $0.height < $1.width * $1.height }
+    guard let visible, let area = usable.first(where: { $0.intersects(visible) }) else { return nil }
+    if window.minY - OverlayStyle.chipHeight / 2 >= area.minY {
+      return ChipAnchor(midX: visible.midX, top: window.minY, placement: .edge)
     }
-    return CGRect(x: x, y: top, width: size.width, height: size.height)
+    return ChipAnchor(midX: visible.midX, top: visible.minY, placement: .notch)
+  }
+
+  /// The chip's own frame, in CoreGraphics coordinates, on whole device
+  /// pixels: centred on the anchor, on the edge line or hanging from the
+  /// notch's top.
+  static func chipFrame(anchor: ChipAnchor, size: CGSize, scale: CGFloat) -> CGRect {
+    func pixel(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
+    let x = anchor.midX - size.width / 2
+    let top: CGFloat
+    switch anchor.placement {
+    case .edge: top = anchor.top - OverlayStyle.chipHeight / 2
+    case .notch: top = anchor.top
+    }
+    return CGRect(x: pixel(x), y: pixel(top), width: size.width, height: size.height)
   }
 }
 

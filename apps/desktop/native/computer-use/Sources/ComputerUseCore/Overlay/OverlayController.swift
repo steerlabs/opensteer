@@ -54,9 +54,6 @@ public final class OverlayController: ActionFeedback {
     model.presentation(at: now)
   }
 
-  /// The chip drawn for an app, if any.
-  func chip(for key: String) -> WindowChip? { chips[key] }
-
   // MARK: - What the runtime reports
 
   /// After a session opens, changes, claims an app or closes. `ending` says
@@ -79,12 +76,7 @@ public final class OverlayController: ActionFeedback {
     for (instance, holder) in holders where before[holder.app].map({ $0 != instance }) == true {
       keyWindows[holder.app] = nil
     }
-    present(Self.sessions(sessions, owners: owners), ending: ending)
-  }
-
-  /// The sessions as the model takes them. The runtime reaches it through
-  /// `update`; a journey can hand it several agents on one app.
-  func present(_ next: [OverlayModel.Session], ending: OverlayModel.Ending) {
+    let next = Self.sessions(sessions, owners: owners)
     let previous = Set(OverlayModel.holders(model.sessions))
     let current = Set(OverlayModel.holders(next))
     model.update(sessions: next, ending: ending, at: Date())
@@ -106,8 +98,11 @@ public final class OverlayController: ActionFeedback {
     render()
   }
 
-  func connectionRestored() {
-    if model.connectionRestored() { render() }
+  /// The person reached the app `key` through Opensteer again (a view of it
+  /// opened, or its picture started or was asked for): its amber notice, if
+  /// any, has been seen there.
+  func connectionRestored(app key: String) {
+    if model.clearNotice(app: key) { render() }
   }
 
   /// The live sessions in the order they opened, each with only the apps it
@@ -183,7 +178,10 @@ public final class OverlayController: ActionFeedback {
     bind(app: Self.key(app), window: keyWindow)
   }
 
-  /// The window the agents in an app work in.
+  /// The window an app's chip is on.
+  func keyWindow(for key: String) -> CGWindowID? { keyWindows[key] }
+
+  /// The window the agent in an app works in.
   func bind(app key: String, window: CGWindowID) {
     guard keyWindows[key] != window else { return }
     keyWindows[key] = window
@@ -208,9 +206,10 @@ public final class OverlayController: ActionFeedback {
     let now = Date()
     let presentation = model.presentation(at: now)
     // A chip leaves at once when its app is released: it must never remain
-    // over a window another task owns.
-    for (key, chip) in chips where presentation.chips[key] == nil || keyWindows[key] == nil {
+    // over a window another task owns. Its panel goes with it.
+    for (key, chip) in Array(chips) where presentation.chips[key] == nil || keyWindows[key] == nil {
       chip.hide()
+      chips[key] = nil
     }
     let shown = presentation.chips.compactMap { key, state in
       keyWindows[key].map { (key, state, $0) }
@@ -228,19 +227,26 @@ public final class OverlayController: ActionFeedback {
 
   private func makeChip(_ key: String) -> WindowChip {
     let chip = WindowChip()
-    chip.onAction = { [weak self] in self?.press(app: key) }
+    chip.onAction = { [weak self] action in self?.press(action, app: key) }
     chips[key] = chip
     return chip
   }
 
-  /// The person pressed the chip of the app `key`: `Stop` on an agents'
-  /// chip; on an amber one, dismissing its notice.
-  func press(app key: String) {
-    if case .connectionLost = model.presentation(at: Date()).chips[key]?.look {
-      if model.dismiss(app: key) { render() }
-      return
+  /// The person pressed the chip of the app `key`. `Stop` reaches the
+  /// runtime only from a live agent's chip that is showing; a dismissal
+  /// clears that app's notice once, and never stops anything.
+  func press(_ action: ChipAction, app key: String) {
+    let look = model.presentation(at: Date()).chips[key]?.look
+    switch action {
+    case .dismiss:
+      guard look == .connectionLost, model.clearNotice(app: key) else { return }
+      render()
+    case .stop:
+      guard case .agent = look, chips[key]?.isShowing == true else { return }
+      onStop(key)
+    case .open, .nothing:
+      break
     }
-    onStop(key)
   }
 
   private func updateTracking() {

@@ -1,18 +1,30 @@
 import AppKit
 import QuartzCore
 
-/// The one mark the agents leave on a window they work in: a small dark chip
-/// tucked onto the middle of its top edge, a dot per agent.
+/// What a press on the chip does.
+enum ChipAction: Equatable {
+  case nothing
+  /// Widen the chip to show its word.
+  case open
+  /// Stop the agent working in the app.
+  case stop
+  /// Dismiss the amber notice.
+  case dismiss
+}
+
+/// The one mark an agent leaves on a window it works in: a short dark
+/// capsule tucked onto the middle of the window's top edge, one dot.
 ///
-/// Pointing at it widens it to show `Stop`; pressing that stops the agents
+/// Pointing at it widens it to show `Stop`; pressing that stops the agent
 /// working in that app. It lives inside the app like the window it marks: its
 /// panel is ordered directly above that window, so whatever covers the window
 /// covers it, and it is never seen chasing the window: the moment the window
 /// moves or resizes it is gone, and it fades back in at the new place once
-/// the window has been still for a moment.
+/// the window has been still for a moment. Its panel is exactly the chip, so
+/// it takes no click meant for the app around it.
 @MainActor
 final class WindowChip {
-  private let panel = WindowOverlayPanel(size: NSSize(width: 30, height: 30), ignoresMouse: false)
+  private let panel = WindowOverlayPanel(size: NSSize(width: 28, height: 22), ignoresMouse: false)
   let view = ChipView()
   private let clock = FrameClock()
   /// The window it marks, and that window as last read.
@@ -21,25 +33,29 @@ final class WindowChip {
   private var wanted = false
   /// The window frame the panel is placed for; nil while it is not showing.
   private(set) var placedFor: CGRect?
+  private var anchor: OverlayGeometry.ChipAnchor?
   private var settling = ChipSettling()
+  private var gesture = ChipGesture()
   private var onScreen = false
   private var hovering = false
-  /// When `Stop` (or the notice's sentence) finished widening into view.
-  private var expandedAt: CFTimeInterval?
+  /// Bumped whenever the pointer leaves or the chip goes, so a dwell timer
+  /// that something newer superseded opens nothing.
+  private var dwell = 0
   /// The person pressed `Stop`, or dismissed the notice.
-  var onAction: (@MainActor () -> Void)?
-  /// The clock and the mouse buttons. A test stands in for both.
+  var onAction: (@MainActor (ChipAction) -> Void)?
+  /// The clock, the mouse buttons and the screens. A test stands in for
+  /// each.
   var now: () -> CFTimeInterval = CACurrentMediaTime
   var mouseButtonsDown: () -> Bool = { NSEvent.pressedMouseButtons != 0 }
+  var usableAreas: @MainActor () -> [CGRect] = WindowChip.screenAreas
 
   init() {
     panel.contentView = view
     view.onHover = { [weak self] inside in self?.hover(inside) }
-    view.onClick = { [weak self] in self?.click() }
-    view.onPress = { [weak self] in self?.onAction?() }
+    view.onMouse = { [weak self] phase, inside in self?.mouse(phase, inside: inside) }
+    view.onPress = { [weak self] in self?.accessibilityPress() ?? false }
   }
 
-  var panelWindowNumber: Int { panel.windowNumber }
   var isWanted: Bool { wanted }
   /// Shown, or hidden only while its window moves: the tracker keeps
   /// following its window's events.
@@ -97,55 +113,101 @@ final class WindowChip {
   // MARK: - Drawing
 
   private func reveal(on window: TrackedWindow, in snapshot: WindowSnapshot) {
-    view.placement = OverlayGeometry.chipPlacement(
-      window: window.frame, usableTops: Self.usableTops())
-    view.scale = Self.scale(for: window.frame)
+    guard
+      let anchor = OverlayGeometry.chipAnchor(window: window.frame, usable: usableAreas())
+    else {
+      conceal()
+      return
+    }
+    self.anchor = anchor
+    view.placement = anchor.placement
+    view.scale = Self.scale(at: CGPoint(x: anchor.midX, y: anchor.top + 1))
     placedFor = window.frame
+    gesture.reset()
     setExpansion(0, on: window)
     panel.alphaValue = 0
     panel.order(above: window, .always, in: snapshot)
     OverlayMotion.fade(panel, to: 1, duration: OverlayStyle.fadeDuration)
   }
 
-  /// Out of sight at once, at rest.
+  /// Out of sight at once, at rest; a press under way does nothing.
   private func conceal() {
     clock.stop()
     hovering = false
-    expandedAt = nil
+    dwell += 1
+    gesture.reset()
     view.expansion = 0
     guard placedFor != nil || panel.isVisible else { return }
     placedFor = nil
+    anchor = nil
     panel.alphaValue = 0
     panel.orderOut(nil)
   }
 
+  /// The edge chip opens as the pointer arrives; the notch, which hangs over
+  /// the app's toolbar, only once the pointer has rested on it.
   private func hover(_ inside: Bool) {
     guard placedFor != nil, inside != hovering else { return }
     hovering = inside
-    expand(inside)
-  }
-
-  /// A click on `Stop` once it has shown long enough stops; a click before
-  /// that only opens it.
-  private func click() {
-    guard placedFor != nil else { return }
-    if let expandedAt, view.expansion >= 1, now() - expandedAt >= OverlayStyle.stopArmDelay {
-      onAction?()
+    dwell += 1
+    guard inside else {
+      expand(false)
       return
     }
-    hovering = true
-    expand(true)
+    guard view.placement == .notch else {
+      expand(true)
+      return
+    }
+    let mark = dwell
+    DispatchQueue.main.asyncAfter(deadline: .now() + OverlayStyle.notchDwell) { [weak self] in
+      MainActor.assumeIsolated {
+        guard let self, self.dwell == mark, self.hovering, self.placedFor != nil else { return }
+        self.expand(true)
+      }
+    }
+  }
+
+  /// One press: decided as it begins from what the chip shows under the
+  /// pointer, carried to its release, and dropped if the pointer leaves the
+  /// chip first or the chip goes.
+  private func mouse(_ phase: ChipView.MousePhase, inside: Bool) {
+    guard placedFor != nil else {
+      gesture.reset()
+      return
+    }
+    switch phase {
+    case .down:
+      gesture.down(ChipGesture.action(look: view.chip?.look, expansion: view.expansion, inside: inside))
+    case .dragged:
+      gesture.dragged(inside: inside)
+    case .up:
+      let action = gesture.up(inside: inside)
+      switch action {
+      case .nothing: break
+      case .open:
+        hovering = true
+        expand(true)
+      case .stop, .dismiss: onAction?(action)
+      }
+    }
+  }
+
+  /// VoiceOver presses the chip as the button it names: `Stop`, or dismiss.
+  private func accessibilityPress() -> Bool {
+    guard placedFor != nil, let look = view.chip?.look else { return false }
+    let action = gesture.press(look)
+    guard action != .nothing else { return false }
+    onAction?(action)
+    return true
   }
 
   private func expand(_ open: Bool) {
     guard let window else { return }
     let target: CGFloat = open ? 1 : 0
     let start = view.expansion
-    expandedAt = nil
     guard !OverlayMotion.reduced, start != target else {
       clock.stop()
       setExpansion(target, on: window)
-      if open { expandedAt = now() }
       return
     }
     let began = now()
@@ -153,47 +215,90 @@ final class WindowChip {
       guard let self, let window = self.window, self.placedFor != nil else { return false }
       let progress = CGFloat(Spring.critical(time - began, duration: OverlayStyle.expandDuration))
       self.setExpansion(start + (target - start) * progress, on: window)
-      guard progress < 1 else {
-        if open { self.expandedAt = self.now() }
-        return false
-      }
-      return true
+      return progress < 1
     }
   }
 
   private func setExpansion(_ expansion: CGFloat, on window: TrackedWindow) {
+    guard let anchor else { return }
     view.expansion = expansion
     let chip = OverlayGeometry.chipFrame(
-      window: window.frame, size: view.chipSize(expansion: expansion),
-      placement: view.placement, scale: view.scale)
-    let margin = OverlayStyle.chipMargin
+      anchor: anchor, size: view.chipSize(expansion: expansion), scale: view.scale)
     let frame = OverlayGeometry.appKitRect(
-      fromCoreGraphics: chip.insetBy(dx: -margin, dy: -margin),
-      primaryHeight: ScreenGeometry.primaryHeight)
+      fromCoreGraphics: chip, primaryHeight: ScreenGeometry.primaryHeight)
     if panel.frame != frame { panel.setFrame(frame, display: true) }
     view.needsLayout = true
     view.layoutSubtreeIfNeeded()
   }
 
-  /// Each screen, with the top of the area below its menu bar, in
-  /// CoreGraphics coordinates.
-  private static func usableTops() -> [(screen: CGRect, top: CGFloat)] {
+  /// Each screen's area below its menu bar, in CoreGraphics coordinates.
+  static func screenAreas() -> [CGRect] {
     let primary = ScreenGeometry.primaryHeight
     return NSScreen.screens.map { screen in
-      (
-        OverlayGeometry.appKitRect(fromCoreGraphics: screen.frame, primaryHeight: primary),
-        primary - screen.visibleFrame.maxY
-      )
+      let frame = OverlayGeometry.appKitRect(fromCoreGraphics: screen.frame, primaryHeight: primary)
+      let top = primary - screen.visibleFrame.maxY
+      return CGRect(x: frame.minX, y: top, width: frame.width, height: frame.maxY - top)
     }
   }
 
-  /// The pixel density of the screen the window's top edge is on.
-  private static func scale(for window: CGRect) -> CGFloat {
-    let primary = ScreenGeometry.primaryHeight
-    // Just inside the edge, so a window flush with the screen's top is on it.
-    let anchor = CGPoint(x: window.midX, y: primary - window.minY - 1)
+  /// The pixel density of the screen a CoreGraphics point is on.
+  private static func scale(at point: CGPoint) -> CGFloat {
+    let anchor = CGPoint(x: point.x, y: ScreenGeometry.primaryHeight - point.y)
     return NSScreen.screens.first { $0.frame.contains(anchor) }?.backingScaleFactor
       ?? OverlayStyle.contentsScale
+  }
+}
+
+/// One press on the chip, as a plain value.
+///
+/// What a press does is decided at mouse-down from what the chip shows under
+/// the pointer then: nothing, open, `Stop` (only once the word is fully
+/// shown) or dismiss (the amber notice, at rest or open). It is carried to
+/// mouse-up and dropped if the pointer leaves the chip's shape before the
+/// release, even if it comes back. `Stop` and dismiss act once per showing:
+/// a double click stops once.
+struct ChipGesture {
+  /// The press under way and what it will do.
+  private(set) var pending: ChipAction?
+  /// `Stop` or dismiss already acted for this showing.
+  private(set) var spent = false
+
+  static func action(
+    look: OverlayModel.Chip.Look?, expansion: CGFloat, inside: Bool
+  ) -> ChipAction {
+    guard inside, let look else { return .nothing }
+    switch look {
+    case .connectionLost: return .dismiss
+    case .agent: return expansion >= 1 ? .stop : .open
+    }
+  }
+
+  mutating func down(_ action: ChipAction) {
+    pending = spent && action != .open ? ChipAction.nothing : action
+  }
+
+  mutating func dragged(inside: Bool) {
+    if !inside, pending != nil { pending = .nothing }
+  }
+
+  mutating func up(inside: Bool) -> ChipAction {
+    defer { pending = nil }
+    guard let action = pending, inside else { return .nothing }
+    if action == .stop || action == .dismiss { spent = true }
+    return action
+  }
+
+  /// VoiceOver's press: the action the chip names, once.
+  mutating func press(_ look: OverlayModel.Chip.Look) -> ChipAction {
+    guard !spent else { return .nothing }
+    spent = true
+    return look == .connectionLost ? .dismiss : .stop
+  }
+
+  /// The chip went, moved to another window, or appeared anew.
+  mutating func reset() {
+    pending = nil
+    spent = false
   }
 }
 
@@ -238,20 +343,25 @@ struct ChipSettling {
   }
 }
 
-/// The chip's drawing: a near-black capsule with a hairline edge, the dots,
+/// The chip's drawing: a near-black capsule with a one-pixel rim, one dot,
 /// and the one word that widens into view when the person points at it.
 ///
 /// `expansion` runs from 0, at rest, to 1, with the word showing; every
-/// frame of the widening is a plain layout of it.
+/// frame of the widening is a plain layout of it. The view is the whole
+/// panel, so its shape is everything the chip takes from the person's
+/// pointer.
 final class ChipView: NSView {
   override var isFlipped: Bool { true }
 
+  enum MousePhase { case down, dragged, up }
+
   var onHover: (@MainActor (Bool) -> Void)?
-  var onClick: (@MainActor () -> Void)?
-  /// An accessibility press: it acts at once.
-  var onPress: (@MainActor () -> Void)?
+  /// A press's phase, and whether the pointer is on the chip's shape.
+  var onMouse: (@MainActor (MousePhase, Bool) -> Void)?
+  /// An accessibility press. Returns whether it acted.
+  var onPress: (@MainActor () -> Bool)?
   var placement: OverlayGeometry.ChipPlacement = .edge {
-    didSet { if placement != oldValue { rebuildDots() } }
+    didSet { if placement != oldValue { needsLayout = true } }
   }
   var scale: CGFloat = 2 {
     didSet { if scale != oldValue { applyScale() } }
@@ -261,39 +371,28 @@ final class ChipView: NSView {
   }
   private(set) var chip: OverlayModel.Chip?
 
-  /// The capsule, its shadow, and what is in it.
   let root = CALayer()
+  /// The capsule, its dot and its word.
   let body = CALayer()
-  private let shade = CALayer()
-  /// Each dot's fill, which is what breathes, in an opaque ring of the
-  /// chip's colour that keeps overlapping dots apart.
-  private(set) var dots: [CALayer] = []
-  private var rings: [CALayer] = []
-  let count = CATextLayer()
+  let dot = CALayer()
   let word = CATextLayer()
   private var reduceMotion = false
-  private var pressed = false
 
   init() {
-    super.init(frame: NSRect(x: 0, y: 0, width: 30, height: 30))
+    super.init(frame: NSRect(x: 0, y: 0, width: 28, height: 22))
     // Layer-hosting, in the view's own top-left coordinates.
     layer = root
     wantsLayer = true
     root.isGeometryFlipped = true
     root.frame = bounds
-    shade.shadowColor = NSColor.black.cgColor
-    shade.shadowOpacity = OverlayStyle.shadowOpacity
-    shade.shadowRadius = OverlayStyle.shadowRadius
-    shade.shadowOffset = CGSize(width: 0, height: -OverlayStyle.shadowOffset)
     body.cornerCurve = .continuous
     body.masksToBounds = true
-    for text in [count, word] {
-      text.alignmentMode = .left
-      text.truncationMode = .none
-      text.isWrapped = false
-      body.addSublayer(text)
-    }
-    root.addSublayer(shade)
+    body.backgroundColor = OverlayStyle.surface.cgColor
+    word.alignmentMode = .left
+    word.truncationMode = .none
+    word.isWrapped = false
+    body.addSublayer(dot)
+    body.addSublayer(word)
     root.addSublayer(body)
     applyScale()
   }
@@ -307,58 +406,47 @@ final class ChipView: NSView {
   func configure(_ next: OverlayModel.Chip, reduceMotion: Bool) -> Bool {
     guard next != chip || reduceMotion != self.reduceMotion else { return false }
     let before = (chipSize(expansion: 0), chipSize(expansion: 1))
-    let previous = chip
     chip = next
     self.reduceMotion = reduceMotion
-    if previous?.look.dotCount != next.look.dotCount || previous?.look.isNotice != next.look.isNotice {
-      rebuildDots()
-    }
+    let notice = next.look == .connectionLost
     CATransaction.begin()
     CATransaction.setDisableActions(true)
-    let notice = next.look.isNotice
-    body.backgroundColor = (notice ? OverlayStyle.amber : OverlayStyle.surface).cgColor
     body.borderColor =
       (notice
-      ? NSColor.black.withAlphaComponent(0.25)
-      : NSColor.white.withAlphaComponent(OverlayStyle.hairlineOpacity)).cgColor
-    colorDots()
-    if case .agents(_, let more) = next.look, more > 0 {
-      count.string = Self.text("+\(more)", font: OverlayStyle.countFont,
-        color: OverlayStyle.text.withAlphaComponent(OverlayStyle.countOpacity))
-    } else {
-      count.string = nil
-    }
-    word.string = notice
-      ? Self.text(OverlayModel.connectionLostSentence, font: OverlayStyle.wordFont, color: OverlayStyle.inkOnEmber)
-      : Self.text("Stop", font: OverlayStyle.wordFont, color: OverlayStyle.red)
+      ? OverlayStyle.amber.withAlphaComponent(0.9)
+      : NSColor.white.withAlphaComponent(OverlayStyle.rimOpacity)).cgColor
+    dot.backgroundColor = (notice ? OverlayStyle.amber : OverlayStyle.ember).cgColor
+    word.string = NSAttributedString(
+      string: notice ? OverlayModel.connectionLostSentence : "Stop",
+      attributes: [
+        .font: OverlayStyle.wordFont, .foregroundColor: notice ? OverlayStyle.text : OverlayStyle.red,
+      ])
     CATransaction.commit()
     applyMotion(reduceMotion: reduceMotion)
     needsLayout = true
     return before != (chipSize(expansion: 0), chipSize(expansion: 1))
   }
 
-  /// Working dots breathe; still ones are lit and still.
-  /// Under Reduce Motion a working dot is simply bright.
+  /// A working dot breathes; a still one is lit and still, as is the
+  /// notice's. Under Reduce Motion a working dot is simply bright.
   func applyMotion(reduceMotion: Bool) {
     self.reduceMotion = reduceMotion
-    let activities: [OverlayModel.Activity]
-    if case .agents(let shown, _) = chip?.look { activities = shown } else { activities = [] }
     CATransaction.begin()
     CATransaction.setDisableActions(true)
-    for (index, dot) in dots.enumerated() {
-      let working = index < activities.count && activities[index] == .working
-      let notice = chip?.look.isNotice == true
-      guard working, !notice else {
-        dot.removeAnimation(forKey: "breath")
-        dot.opacity = notice ? 1 : OverlayStyle.stillDotOpacity
-        continue
-      }
+    switch chip?.look {
+    case .agent(.working)?:
       dot.opacity = 1
       if reduceMotion {
         dot.removeAnimation(forKey: "breath")
       } else if dot.animation(forKey: "breath") == nil {
         dot.add(Breath.animation(low: OverlayStyle.breathLow, high: 1), forKey: "breath")
       }
+    case .agent(.still)?:
+      dot.removeAnimation(forKey: "breath")
+      dot.opacity = OverlayStyle.stillDotOpacity
+    case .connectionLost?, nil:
+      dot.removeAnimation(forKey: "breath")
+      dot.opacity = 1
     }
     CATransaction.commit()
   }
@@ -366,152 +454,97 @@ final class ChipView: NSView {
   // MARK: - Size and layout
 
   private var isNotch: Bool { placement == .notch }
-  private var dotSize: CGFloat {
-    chip?.look.isNotice == true || isNotch ? OverlayStyle.notchDotSize : OverlayStyle.dotSize
+  private var dotSize: CGFloat { isNotch ? OverlayStyle.notchDotSize : OverlayStyle.dotSize }
+
+  private var wordWidth: CGFloat {
+    ceil((word.string as? NSAttributedString)?.size().width ?? 0)
   }
 
-  private var dotsWidth: CGFloat {
-    let count = CGFloat(max(1, dots.count))
-    return count * dotSize - (count - 1) * OverlayStyle.dotOverlap
-  }
-
-  private var countWidth: CGFloat {
-    guard count.string != nil else { return 0 }
-    return OverlayStyle.chipGap - 2 + Self.width(of: count.string)
-  }
-
-  /// The chip's own size, without its shadow's margin.
+  /// The chip's size: a short capsule at rest; open, as wide as the dot and
+  /// the word and, as a notch, only as tall as the word needs.
   func chipSize(expansion: CGFloat) -> CGSize {
-    let restHeight = isNotch ? OverlayStyle.notchHeight : OverlayStyle.chipHeight
-    let restPadding = isNotch ? 8 : OverlayStyle.chipPadding
-    // At rest a lone dot is a circle on the edge, and as wide a notch.
-    let restWidth = max(
-      OverlayStyle.chipHeight, restPadding * 2 + dotsWidth + (isNotch ? 0 : countWidth))
-    let openWidth =
-      OverlayStyle.chipPadding + dotsWidth + countWidth + OverlayStyle.chipGap
-      + Self.width(of: word.string) + OverlayStyle.chipPadding + 2
-    let width = restWidth + (max(openWidth, restWidth) - restWidth) * expansion
-    let height = restHeight + (OverlayStyle.chipHeight - restHeight) * expansion
-    return CGSize(width: width, height: height)
+    let rest =
+      isNotch
+      ? CGSize(width: OverlayStyle.notchRestWidth, height: OverlayStyle.notchHeight)
+      : CGSize(width: OverlayStyle.chipRestWidth, height: OverlayStyle.chipHeight)
+    let open = CGSize(
+      width: OverlayStyle.chipPadding + dotSize + OverlayStyle.chipGap + wordWidth
+        + OverlayStyle.chipPadding,
+      height: isNotch ? OverlayStyle.notchOpenHeight : OverlayStyle.chipHeight)
+    return CGSize(
+      width: rest.width + (max(open.width, rest.width) - rest.width) * expansion,
+      height: rest.height + (open.height - rest.height) * expansion)
   }
 
-  /// Whether a point of the view is on the chip itself.
-  func chipContains(_ point: NSPoint) -> Bool {
-    body.frame.contains(point)
+  /// The chip's shape in the view: a capsule, or a notch square where it
+  /// meets the window's edge.
+  func shape() -> CGPath {
+    let rect = bounds
+    let radius = min(rect.height / 2, rect.width / 2)
+    guard isNotch else {
+      return CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+    }
+    let path = CGMutablePath()
+    path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+    path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+    path.addArc(
+      tangent1End: CGPoint(x: rect.maxX, y: rect.maxY),
+      tangent2End: CGPoint(x: rect.minX, y: rect.maxY), radius: radius)
+    path.addArc(
+      tangent1End: CGPoint(x: rect.minX, y: rect.maxY),
+      tangent2End: CGPoint(x: rect.minX, y: rect.minY), radius: radius)
+    path.closeSubpath()
+    return path
   }
 
   override func layout() {
     super.layout()
-    let margin = OverlayStyle.chipMargin
-    let size = chipSize(expansion: expansion)
-    let frame = CGRect(x: margin, y: margin, width: size.width, height: size.height)
-    let radius = isNotch ? min(size.height / 2, OverlayStyle.chipHeight / 2) : size.height / 2
+    let size = bounds.size
     CATransaction.begin()
     CATransaction.setDisableActions(true)
     root.frame = bounds
-    body.frame = frame
-    body.cornerRadius = radius
+    body.frame = bounds
+    body.cornerRadius = min(size.height / 2, size.width / 2)
     // A notch hangs from the window's edge: square where it meets it.
     body.maskedCorners =
       isNotch
       ? [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
       : [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
-    shade.frame = frame
-    shade.shadowPath = CGPath(
-      roundedRect: CGRect(origin: .zero, size: size), cornerWidth: radius, cornerHeight: radius,
-      transform: nil)
-
-    // Dots: on the rest centre line, which moves to the open chip's centre as
-    // a notch grows.
-    let restHeight = isNotch ? OverlayStyle.notchHeight : OverlayStyle.chipHeight
-    let centerY = pixel(restHeight / 2 + (size.height - restHeight) / 2 * expansion)
-    let openLeading = OverlayStyle.chipPadding
-    let restLeading = (chipSize(expansion: 0).width - dotsWidth - (isNotch ? 0 : countWidth)) / 2
-    var x = pixel(restLeading + (openLeading - restLeading) * expansion)
-    let ring = OverlayStyle.dotRing
-    for (dot, holder) in zip(dots, rings) {
-      holder.frame = CGRect(
-        x: x - ring, y: centerY - dotSize / 2 - ring, width: dotSize + ring * 2,
-        height: dotSize + ring * 2)
-      holder.cornerRadius = dotSize / 2 + ring
-      dot.frame = CGRect(x: ring, y: ring, width: dotSize, height: dotSize)
-      dot.cornerRadius = dotSize / 2
-      x += dotSize - OverlayStyle.dotOverlap
-    }
-    x += OverlayStyle.dotOverlap
-    if count.string != nil {
-      x += OverlayStyle.chipGap - 2
-      count.frame = textFrame(count, x: x, centerY: centerY, font: OverlayStyle.countFont)
-      count.opacity = isNotch ? Float(expansion) : 1
-      x += Self.width(of: count.string)
-    }
-    x += OverlayStyle.chipGap
-    word.frame = textFrame(word, x: x, centerY: centerY, font: OverlayStyle.wordFont)
+    let restWidth = chipSize(expansion: 0).width
+    let restX = (restWidth - dotSize) / 2
+    let openX = OverlayStyle.chipPadding
+    let x = pixel(restX + (openX - restX) * expansion)
+    let centerY = size.height / 2
+    dot.frame = CGRect(x: x, y: pixel(centerY - dotSize / 2), width: dotSize, height: dotSize)
+    dot.cornerRadius = dotSize / 2
+    let font = OverlayStyle.wordFont
+    // The capitals' middle on the centre line.
+    word.frame = CGRect(
+      x: pixel(x + dotSize + OverlayStyle.chipGap),
+      y: pixel(centerY + font.capHeight / 2 - font.ascender),
+      width: wordWidth + 1, height: ceil(font.ascender - font.descender + font.leading))
     word.opacity = Float(min(1, max(0, (expansion - 0.35) / 0.65)))
     CATransaction.commit()
   }
 
-  private func textFrame(_ layer: CATextLayer, x: CGFloat, centerY: CGFloat, font: NSFont) -> CGRect {
-    // The capitals' middle on the centre line.
-    let top = pixel(centerY + font.capHeight / 2 - font.ascender)
-    return CGRect(
-      x: pixel(x), y: top, width: ceil(Self.width(of: layer.string)) + 1,
-      height: ceil(font.ascender - font.descender + font.leading))
-  }
-
   private func pixel(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
 
-  private func rebuildDots() {
-    CATransaction.begin()
-    CATransaction.setDisableActions(true)
-    for ring in rings { ring.removeFromSuperlayer() }
-    rings = []
-    dots = (0..<(chip?.look.dotCount ?? 0)).map { _ in
-      let ring = CALayer(), dot = CALayer()
-      ring.contentsScale = scale
-      dot.contentsScale = scale
-      ring.addSublayer(dot)
-      body.insertSublayer(ring, below: count)
-      rings.append(ring)
-      return dot
-    }
-    colorDots()
-    CATransaction.commit()
-    applyMotion(reduceMotion: reduceMotion)
-    needsLayout = true
-  }
-
-  private func colorDots() {
-    let notice = chip?.look.isNotice == true
-    for (dot, ring) in zip(dots, rings) {
-      ring.backgroundColor = (notice ? OverlayStyle.amber : OverlayStyle.surface).cgColor
-      dot.backgroundColor = (notice ? OverlayStyle.inkOnEmber : OverlayStyle.ember).cgColor
-    }
-  }
-
   private func applyScale() {
-    for layer in [root, shade, body, count, word] + dots + rings {
-      layer.contentsScale = scale
-    }
+    for layer in [root, body, dot, word] { layer.contentsScale = scale }
     body.borderWidth = 1 / scale
-  }
-
-  private static func text(_ string: String, font: NSFont, color: NSColor) -> NSAttributedString {
-    NSAttributedString(string: string, attributes: [.font: font, .foregroundColor: color])
-  }
-
-  private static func width(of string: Any?) -> CGFloat {
-    guard let string = string as? NSAttributedString else { return 0 }
-    return ceil(string.size().width)
   }
 
   // MARK: - The person
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+  private func inside(_ event: NSEvent) -> Bool {
+    shape().contains(convert(event.locationInWindow, from: nil))
+  }
+
   override func hitTest(_ point: NSPoint) -> NSView? {
     guard let superview else { return nil }
-    return chipContains(convert(point, from: superview)) ? self : nil
+    return shape().contains(convert(point, from: superview)) ? self : nil
   }
 
   override func updateTrackingAreas() {
@@ -525,16 +558,9 @@ final class ChipView: NSView {
 
   override func mouseEntered(with event: NSEvent) { onHover?(true) }
   override func mouseExited(with event: NSEvent) { onHover?(false) }
-
-  override func mouseDown(with event: NSEvent) {
-    pressed = chipContains(convert(event.locationInWindow, from: nil))
-  }
-
-  override func mouseUp(with event: NSEvent) {
-    defer { pressed = false }
-    guard pressed, chipContains(convert(event.locationInWindow, from: nil)) else { return }
-    onClick?()
-  }
+  override func mouseDown(with event: NSEvent) { onMouse?(.down, inside(event)) }
+  override func mouseDragged(with event: NSEvent) { onMouse?(.dragged, inside(event)) }
+  override func mouseUp(with event: NSEvent) { onMouse?(.up, inside(event)) }
 
   // MARK: - Accessibility
 
@@ -544,32 +570,16 @@ final class ChipView: NSView {
   override func accessibilityLabel() -> String? {
     guard let chip else { return nil }
     switch chip.look {
-    case .connectionLost:
-      return OverlayModel.connectionLostSentence
-    case .agents(let dots, let more):
-      let agents = dots.count + more == 1 ? "the agent" : "the agents"
-      return "Stop \(agents) working in \(chip.app.name)"
+    case .connectionLost: return OverlayModel.connectionLostSentence
+    case .agent: return "Stop the agent working in \(chip.app.name)"
     }
   }
 
   override func accessibilityHelp() -> String? {
-    chip?.look.isNotice == true ? "Dismiss" : nil
+    chip?.look == .connectionLost ? "Dismiss" : nil
   }
 
   override func accessibilityPerformPress() -> Bool {
-    onPress?()
-    return onPress != nil
-  }
-}
-
-extension OverlayModel.Chip.Look {
-  var isNotice: Bool { self == .connectionLost }
-
-  /// The dots drawn: one per agent shown, and one on a notice.
-  var dotCount: Int {
-    switch self {
-    case .agents(let dots, _): return dots.count
-    case .connectionLost: return 1
-    }
+    onPress?() ?? false
   }
 }

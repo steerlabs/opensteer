@@ -321,6 +321,14 @@ public enum ActionRunner {
     }
   }
 
+  /// The person's Stop goes on the very window an action was verified
+  /// against before anything reaches the app, and a Stop pressed there from
+  /// then on stops the action: the check comes after the chip is on it.
+  static func showStop(on binding: Binding, _ context: Context) async throws {
+    await context.overlay?.bind(app: context.app.key, window: binding.keyWindow.windowID)
+    try context.cancellation.check()
+  }
+
   /// Returns what the action did, in the words `performed` carries.
   private static func perform(
     _ action: ActionRequest, _ context: Context,
@@ -338,6 +346,7 @@ public enum ActionRunner {
       check: {
         try context.cancellation.check(); try context.budget.check()
       }, isHidden: context.isHidden)
+    try await showStop(on: binding, context)
 
     return try await inAct(context, processIdentifier: processIdentifier) {
       try await perform(action, context, savedBatch: savedBatch, index: index, binding: binding)

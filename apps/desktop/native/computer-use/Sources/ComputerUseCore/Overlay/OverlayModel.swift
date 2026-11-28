@@ -7,19 +7,18 @@ import Foundation
 /// `presentation(at:)`. Time is always passed in, so every state, the timed
 /// ones included, is a plain value a test can check.
 ///
-/// What it draws is one chip per held app, on the window the agents work in:
-/// a dot per agent session holding the app, breathing while that agent's work
-/// is in flight (or in its short hold), still between calls. A connection
-/// that dropped with an action under way leaves that app's chip amber until
-/// the connection is back or the person dismisses it. The person's own
-/// viewing and typing through Opensteer is never shown here.
+/// What it draws is one chip per held app, on the window the agent works in:
+/// one dot, breathing while the agent's work is in flight (or in its short
+/// hold), still between calls. The session registry admits one holder per
+/// app, so a window never has more than one agent. A connection that dropped
+/// with an action under way leaves that app's chip amber until that app is
+/// reached again or the person dismisses it. The person's own viewing and
+/// typing through Opensteer is never shown here.
 struct OverlayModel {
   /// How long an agent still counts as working after its work ends.
   /// Back-to-back calls, or two Runs taking turns on the serial executor,
   /// read as one stretch of work instead of a flicker.
   static let holdAfterWork: TimeInterval = 0.3
-  /// A chip shows this many dots, then a count.
-  static let maxDots = 3
   /// What the amber chip says when the person points at it.
   static let connectionLostSentence = "Connection lost · last action unconfirmed"
 
@@ -37,7 +36,7 @@ struct OverlayModel {
     let apps: [App]
   }
 
-  /// One session's hold on one app: what a dot stands for.
+  /// One session's hold on one app.
   struct Holder: Hashable {
     let session: String
     let app: String
@@ -62,8 +61,8 @@ struct OverlayModel {
 
   struct Chip: Equatable {
     enum Look: Equatable {
-      /// The first `maxDots` agents, then how many more.
-      case agents(dots: [Activity], more: Int)
+      /// The agent holding the app.
+      case agent(Activity)
       /// The connection dropped with an action under way here.
       case connectionLost
     }
@@ -81,8 +80,8 @@ struct OverlayModel {
   private(set) var sessions: [Session] = []
   private var inFlight: [Holder: Int] = [:]
   private var workEndedAt: [Holder: Date] = [:]
-  /// Apps whose last action is unconfirmed, until the connection is back or
-  /// the person dismisses them.
+  /// Apps whose last action is unconfirmed, until that app is reached again
+  /// or the person dismisses them.
   private var notices: [String: App] = [:]
 
   static func holders(_ sessions: [Session]) -> [Holder] {
@@ -98,20 +97,17 @@ struct OverlayModel {
     // outcome no one confirmed; a dropped connection with nothing in flight
     // lost nothing.
     let unconfirmed = inFlight.keys.filter { !nextHolders.contains($0) }
-    let arrived = !Set(next.map(\.id)).isSubset(of: Set(previous.map(\.id)))
     sessions = next
     inFlight = inFlight.filter { nextHolders.contains($0.key) }
     workEndedAt = workEndedAt.filter { nextHolders.contains($0.key) }
-    // An agent connection back with a live session is the connection back.
-    if arrived { notices = [:] }
     if ending == .connectionLost {
       let apps = previous.flatMap(\.apps)
       for holder in unconfirmed {
         if let app = apps.first(where: { $0.key == holder.app }) { notices[app.key] = app }
       }
     }
-    // A held app shows its agents: the live session is what the person may
-    // need to stop.
+    // A held app shows its agent: the live session is what the person may
+    // need to stop. Sessions in other apps leave the notice alone.
     for app in next.flatMap(\.apps) { notices[app.key] = nil }
   }
 
@@ -127,37 +123,23 @@ struct OverlayModel {
     workEndedAt[holder] = now
   }
 
-  /// The person clicked an amber chip. Returns whether it changed anything.
-  mutating func dismiss(app key: String) -> Bool {
+  /// The person dismissed an amber chip, or reached its app again through
+  /// Opensteer. Returns whether there was a notice to clear: a second
+  /// dismissal changes nothing.
+  mutating func clearNotice(app key: String) -> Bool {
     notices.removeValue(forKey: key) != nil
-  }
-
-  /// The person's viewer reached this Mac again.
-  mutating func connectionRestored() -> Bool {
-    guard !notices.isEmpty else { return false }
-    notices = [:]
-    return true
   }
 
   // MARK: - What the windows draw
 
   func presentation(at now: Date) -> Presentation {
-    var dots: [String: [Activity]] = [:]
-    var apps: [String: App] = [:]
+    var chips: [String: Chip] = [:]
     for session in sessions {
       for app in session.apps {
-        apps[app.key] = app
-        let holder = Holder(session: session.id, app: app.key)
-        dots[app.key, default: []].append(isWorking(holder, at: now) ? .working : .still)
+        let working = isWorking(Holder(session: session.id, app: app.key), at: now)
+        if case .agent(.working) = chips[app.key]?.look { continue }
+        chips[app.key] = Chip(app: app, look: .agent(working ? .working : .still))
       }
-    }
-    var chips: [String: Chip] = [:]
-    for (key, all) in dots {
-      guard let app = apps[key] else { continue }
-      chips[key] = Chip(
-        app: app,
-        look: .agents(
-          dots: Array(all.prefix(Self.maxDots)), more: max(0, all.count - Self.maxDots)))
     }
     for (key, app) in notices where chips[key] == nil {
       chips[key] = Chip(app: app, look: .connectionLost)

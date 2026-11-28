@@ -16,8 +16,12 @@ import Darwin
 //   overlay  the agent's connection dropped while idle, then while an act is under way: only
 //            the second turns Safari's chip amber
 //   chip     the window chip, photographed in each state (Chip.swift): its Stop ends the agent
-//            in that app and leaves another app's agent working, and the person's own input
-//            through an owner view draws nothing
+//            in that app and leaves another app's agent working, the notch takes none of the
+//            address field's clicks, one click dismisses the amber notice, and the person's own
+//            input through an owner view draws nothing
+//   chip-bind  an agent's keys to window A after its session bound a window B the person then
+//            minimized: the chip is on A by the first key (run red, without the bind, to see it
+//            fail)
 
 enum JourneyFailure: Error { case failed(String) }
 func require(_ condition: Bool, _ message: String) throws {
@@ -34,6 +38,7 @@ func sleepSeconds(_ seconds: Double) async { try? await Task.sleep(nanoseconds: 
 
 enum SafariFrontCase: String {
   case front, stop, typing, control, choice, churn, overlay, chip
+  case chipBind = "chip-bind"
   case typeInto = "type-into"
   case ownerBurst = "owner-burst"
   case ownerStall = "owner-stall"
@@ -504,6 +509,7 @@ final class FrontSampler {
         case .churn: row = try await churnCase(caseOut)
         case .overlay: row = try await overlayCase(caseOut)
         case .chip: row = try await chipCase(caseOut)
+        case .chipBind: row = try await chipBindCase(caseOut)
         case .ownerBurst, .ownerStall, .ownerExpiredRelease:
           row = try await ownerBurstCase(caseOut, kind: kind)
         }
@@ -1092,11 +1098,10 @@ final class FrontSampler {
 
   /// The chips the helper is showing now, by the look each draws.
   func shownChips() -> [(view: ChipView, frame: CGRect)] {
-    NSApp.windows.compactMap { window in
+    NSApp.windows.compactMap { window -> (view: ChipView, frame: CGRect)? in
       guard let view = window.contentView as? ChipView, window.isVisible, window.alphaValue > 0
       else { return nil }
       let frame = OverlayGeometry.appKitRect(fromCoreGraphics: window.frame, primaryHeight: ScreenGeometry.primaryHeight)
-        .insetBy(dx: OverlayStyle.chipMargin, dy: OverlayStyle.chipMargin)
       return (view, frame)
     }
   }

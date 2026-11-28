@@ -10,7 +10,7 @@ fixtures=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$fixtures/../../../../.."
 owner_cases=owner-burst,owner-stall,owner-expired-release
 suite_mode=${1:-}
-default_cases=front-watch,front,stop-watch,typing-watch,choice-watch,overlay,chip,control,type-into
+default_cases=front-watch,front,stop-watch,typing-watch,choice-watch,overlay,chip-bind,chip,control,type-into
 
 compile() {
   local output=$1 replacements=${2:-}

@@ -147,7 +147,7 @@ final class OwnerInputAttachmentTests: XCTestCase {
       let state = try await runtime.appState(
         session, SessionApp(access: .readWrite, identity: app), needsControl: false)
       XCTAssertEqual(
-        overlay.presentation(at: Date()).chips[state.key]?.look, .agents(dots: [.still], more: 0))
+        overlay.presentation(at: Date()).chips[state.key]?.look, .agent(.still))
 
       runtime.stopFromOverlay(app: state.key)
       XCTAssertEqual(session.cancellation.reason, .stoppedByUser)
