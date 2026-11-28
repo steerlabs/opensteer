@@ -190,7 +190,8 @@ final class WindowChip {
   /// The pixel density of the screen the window's top edge is on.
   private static func scale(for window: CGRect) -> CGFloat {
     let primary = ScreenGeometry.primaryHeight
-    let anchor = CGPoint(x: window.midX, y: primary - window.minY)
+    // Just inside the edge, so a window flush with the screen's top is on it.
+    let anchor = CGPoint(x: window.midX, y: primary - window.minY - 1)
     return NSScreen.screens.first { $0.frame.contains(anchor) }?.backingScaleFactor
       ?? OverlayStyle.contentsScale
   }
