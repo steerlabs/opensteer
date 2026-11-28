@@ -10,7 +10,7 @@ fixtures=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$fixtures/../../../../.."
 owner_cases=owner-burst,owner-stall,owner-expired-release
 suite_mode=${1:-}
-default_cases=front-watch,front,stop-watch,typing-watch,choice-watch,overlay,control,type-into
+default_cases=front-watch,front,stop-watch,typing-watch,choice-watch,overlay,chip-bind,chip,control,type-into
 
 compile() {
   local output=$1 replacements=${2:-}
@@ -35,7 +35,7 @@ compile() {
     if [[ -z "$replacements" ]]; then flags+=(-D SAFARI_OWNER_RELEASE_FIXTURE); fi
   fi
   xcrun swiftc -parse-as-library -module-name ComputerUseCore -swift-version 5 \
-    "${flags[@]}" "${sources[@]}" "$fixtures/Journey.swift" "$fixtures/Reminders.swift"
+    "${flags[@]}" "${sources[@]}" "$fixtures/Journey.swift" "$fixtures/Chip.swift" "$fixtures/Reminders.swift"
 }
 
 if [[ "${1:-}" == --check ]]; then
@@ -187,7 +187,9 @@ if [[ "${OPENSTEER_SAFARI_FRONT_REMINDERS:-1}" == 1 ]]; then
   echo "reminders finished with $status at $((SECONDS - began)) s (log stream $log_pid stopped)"
 fi
 
-# Last, up to the suite's deadline: about 2,000 single-key acts in bursts of 64.
-run_journey churn "$work/Green" "${OPENSTEER_SAFARI_FRONT_CHURN_CASES:-churn-watch}"
+# Last, up to the suite's deadline: about 2,000 single-key acts in bursts of 64 (none: skipped).
+if [[ "${OPENSTEER_SAFARI_FRONT_CHURN_CASES:-}" != none ]]; then
+  run_journey churn "$work/Green" "${OPENSTEER_SAFARI_FRONT_CHURN_CASES:-churn-watch}"
+fi
 ls "$HOME/Library/Logs/DiagnosticReports" > "$out/diagnostic-reports-after.txt" 2>/dev/null || true
 exit "$result"

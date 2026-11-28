@@ -1271,6 +1271,23 @@ final class MacWindowVideoRegistry {
     }
   }
 
+  /// The app a person's picture request was for, once it succeeded: the
+  /// overlay clears that app's connection notice and no other.
+  func app(of envelope: RequestEnvelope, connection: IPCConnection) -> AppIdentity? {
+    switch envelope.method {
+    case "display.start":
+      let params = try? envelope.decodeParams(StartParams.self, method: envelope.method)
+      return params.flatMap { bindings[$0.target.bindingId] }?.target.app
+    case "display.attach":
+      return attachments[connection.id]?.producer.binding.target.app
+    case "display.demand":
+      let params = try? envelope.decodeParams(DemandParams.self, method: envelope.method)
+      return params.flatMap { streams[$0.streamId] }?.producer.binding.target.app
+    default:
+      return nil
+    }
+  }
+
   func binding(for target: CaptureTarget) -> MacVideoBinding? {
     bindings.values.first { $0.matches(target) && $0.unavailable != "window-closed" }
   }

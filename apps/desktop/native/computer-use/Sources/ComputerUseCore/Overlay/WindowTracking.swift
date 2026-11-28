@@ -11,7 +11,7 @@ struct TrackedWindow: Equatable {
   let id: CGWindowID
   /// Screen points, top-left origin (CoreGraphics space).
   let frame: CGRect
-  /// The window server layer, which the drawn pointer and outline share so
+  /// The window server layer, which the chip and the click ring share so
   /// they can be ordered directly above the window.
   let level: Int
   /// On the Space the person is looking at, not minimized, and its app not
@@ -55,7 +55,7 @@ enum WindowOrdering: Equatable {
 }
 
 /// The windows something is drawn over, read from the window server once per
-/// placement and shared by every pointer and outline.
+/// placement and shared by every chip.
 @MainActor
 final class WindowSnapshot {
   private let windows: [CGWindowID: TrackedWindow]

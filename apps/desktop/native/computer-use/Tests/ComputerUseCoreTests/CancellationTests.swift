@@ -290,7 +290,7 @@ final class CancellationTests: XCTestCase {
   }
 
   /// The work executor is blocked the way an app that stops answering blocks
-  /// an Accessibility call. `session.close`, the pill's `Stop` and a new
+  /// an Accessibility call. `session.close`, a chip's `Stop` and a new
   /// connection's `hello` still answer at once, because none of them runs
   /// there.
   @MainActor
@@ -324,7 +324,9 @@ final class CancellationTests: XCTestCase {
       frame: Data(#"{"id":4,"method":"session.close","params":{"sessionId":"first"}}"#.utf8))
     let frame2 = try await Self.readFrameAsync(pair.client)
     XCTAssertEqual(try Self.responseID(frame2), 4)
-    runtime.stopFromOverlay()
+    let second = try XCTUnwrap(runtime.registry.sessions["second"])
+    let held = Self.heldApp("com.opensteer.test.held", in: second, runtime)
+    runtime.stopFromOverlay(app: held.key)
     let stopped = try Self.object(try await Self.readFrameAsync(pair.client))
     XCTAssertEqual(stopped["event"] as? String, "session.stopped")
     runtime.receive(connection: other.connection, frame: Self.hello(1))
@@ -334,27 +336,46 @@ final class CancellationTests: XCTestCase {
     await gate.open()
   }
 
+  /// A session holding an app with a chip, and that app.
   @MainActor
-  func testPillStopEmitsOneEventPerSessionAndRefusesFurtherCalls() async throws {
+  static func heldApp(_ bundleId: String, in session: HelperSession, _ runtime: HelperRuntime)
+    -> AppSessionState
+  {
+    let state = hostApp(
+      identity: AppIdentity(bundleId: bundleId, displayName: bundleId, teamId: nil),
+      path: "/Applications/\(bundleId).app")
+    session.add(state)
+    XCTAssertNoThrow(try runtime.registry.claim(state, for: session))
+    return state
+  }
+
+  /// A chip's `Stop` ends the session holding that app, with the person's
+  /// reason, and refuses its later calls; a session holding another app
+  /// keeps working.
+  @MainActor
+  func testChipStopEndsOnlyTheSessionsHoldingThatAppAndRefusesTheirCalls() async throws {
     let pair = try Self.pair(id: 9)
     defer { pair.close() }
     let runtime = hostRuntime(helperVersion: "test", peerRequirement: .sameUser)
     defer { runtime.stop() }
     await runtime.handle(connection: pair.connection, frame: Self.hello(1))
     _ = try await Self.readFrameAsync(pair.client)
-    for id in ["first", "second"] {
-      runtime.registry.insert(HelperSession(sessionId: id, connectionID: 9))
-    }
-    runtime.stopFromOverlay()
-    var stopped = Set<String>()
-    for _ in 0..<2 {
-      let event = try Self.object(try await Self.readFrameAsync(pair.client))
-      XCTAssertEqual(event["event"] as? String, "session.stopped")
-      let params = try XCTUnwrap(event["params"] as? [String: Any])
-      XCTAssertEqual(params["reason"] as? String, "user")
-      stopped.insert(try XCTUnwrap(params["sessionId"] as? String))
-    }
-    XCTAssertEqual(stopped, ["first", "second"])
+    let first = HelperSession(sessionId: "first", connectionID: 9)
+    let second = HelperSession(sessionId: "second", connectionID: 9)
+    runtime.registry.insert(first)
+    runtime.registry.insert(second)
+    let safari = Self.heldApp("com.apple.safari", in: first, runtime)
+    _ = Self.heldApp("com.apple.notes", in: second, runtime)
+    runtime.stopFromOverlay(app: safari.key)
+    let event = try Self.object(try await Self.readFrameAsync(pair.client))
+    XCTAssertEqual(event["event"] as? String, "session.stopped")
+    let params = try XCTUnwrap(event["params"] as? [String: Any])
+    XCTAssertEqual(params["reason"] as? String, "user")
+    XCTAssertEqual(params["sessionId"] as? String, "first")
+    XCTAssertEqual(first.cancellation.reason, .stoppedByUser)
+    XCTAssertNil(second.cancellation.reason, "The other app keeps working.")
+    XCTAssertTrue(runtime.registry.sessions["second"] === second)
+    XCTAssertEqual(runtime.registry.owners, ["com.apple.notes": "second"])
     await runtime.handle(
       connection: pair.connection,
       frame: Data(
@@ -390,7 +411,7 @@ final class CancellationTests: XCTestCase {
       identity: AppIdentity(
         bundleId: "com.opensteer.test.never-running", displayName: "Gone", teamId: nil),
       path: "/Applications/Gone.app")
-    session.add(state, access: .readWrite)
+    session.add(state)
     session.processIdentifiers[state.key] = 424_242
     runtime.registry.insert(session)
     runtime.noticeQuitApps()

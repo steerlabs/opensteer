@@ -7,7 +7,7 @@ import Foundation
 /// It is the control plane and lives on the main actor with the overlay.
 /// Accessibility reads and posted events run on the work executor
 /// (`WorkActor`); passive capture runs in its own bounded lane. That lets
-/// the pill's `Stop`, `session.close`,
+/// a window chip's `Stop`, `session.close`,
 /// `session.open` and `hello` answer at once while an app is not answering.
 @MainActor
 public final class HelperRuntime {
@@ -156,9 +156,9 @@ public final class HelperRuntime {
         }
       }
     }
-    let overlay = OverlayController(onStop: { [weak self] in self?.stopFromOverlay() })
+    let overlay = OverlayController(onStop: { [weak self] key in self?.stopFromOverlay(app: key) })
     self.overlay = overlay
-    // The drawn pointer and outline follow the windows they sit on.
+    // The chips follow the windows they sit on.
     monitor.onWindowEvent = { [weak overlay] in
       Task { @MainActor in overlay?.windowsChanged() }
     }
@@ -447,11 +447,13 @@ public final class HelperRuntime {
       return try await ownerInput(envelope, connection: connection, budget: budget)
     case "display.start":
       let result = try await video.start(envelope, connection: connection, budget: budget)
-      overlay?.connectionRestored()
+      restoreConnection(video.app(of: envelope, connection: connection))
       return result
     case "display.resolve", "display.demand", "display.refresh", "display.stop", "display.attach":
       let result = try video.perform(envelope, connection: connection)
-      if method == "display.attach" || method == "display.demand" { overlay?.connectionRestored() }
+      if method == "display.attach" || method == "display.demand" {
+        restoreConnection(video.app(of: envelope, connection: connection))
+      }
       tickOwnerInput()
       for attachment in ownerAttachments.values where !attachment.active.current {
         await waitForOwnerCleanup(attachment)
@@ -740,7 +742,7 @@ public final class HelperRuntime {
       connectionClosed(other, ending: .ended)
       other.close()
     }
-    // A quit is not a lost connection: the pill says the work ended.
+    // A quit is not a lost connection: no chip turns amber.
     connectionClosed(connection, ending: .ended)
     guard connections.isEmpty, registry.sessions.isEmpty else {
       Log.lifecycle.notice("Another desktop still uses this helper; staying.")
@@ -791,7 +793,7 @@ public final class HelperRuntime {
     return session
   }
 
-  /// Bookkeeping only: it names the session and the task the pill shows. It
+  /// Bookkeeping only: it names the session. It
   /// claims nothing, resolves nothing and waits on nothing, so it is never
   /// `busy` and never slow.
   private func openSession(
@@ -813,8 +815,6 @@ public final class HelperRuntime {
       }
       guard existing.runId == params.runId else { throw LoginEnvelopeCrypto.refusal }
       existing.lastUsedAt = Date()
-      existing.threadTitle = params.threadTitle
-      updateOverlay()
       return Wire.SessionOpenResult(sessionId: existing.sessionId)
     }
     if quitOnceIdleReason != nil, registry.sessions.isEmpty {
@@ -823,8 +823,7 @@ public final class HelperRuntime {
         "Opensteer Computer Use is restarting to finish Screen Recording setup.")
     }
     let opened = HelperSession(
-      sessionId: params.sessionId, connectionID: connection.id, threadTitle: params.threadTitle,
-      runId: params.runId)
+      sessionId: params.sessionId, connectionID: connection.id, runId: params.runId)
     registry.insert(opened)
     idleSince = nil
     updateOverlay()
@@ -837,26 +836,29 @@ public final class HelperRuntime {
   /// How the last sessions that went away were shown as ending.
   private(set) var lastOverlayEnding: OverlayModel.Ending?
 
+  /// The person reached `app` again through Opensteer: only that app's
+  /// connection notice goes.
+  private func restoreConnection(_ app: AppIdentity?) {
+    guard let app else { return }
+    overlay?.connectionRestored(app: app.bundleId.lowercased())
+  }
+
+  /// The agents' sessions only: the person's own viewing and typing through
+  /// Opensteer draws nothing on this Mac.
   private func updateOverlay(ending: OverlayModel.Ending = .ended) {
-    let ownerInput = ownerAttachments.values.filter { $0.active.current }.map { lease in
-      OverlayModel.Session(id: lease.id, threadTitle: nil,
-        apps: [.init(key: lease.binding.target.app.bundleId.lowercased(), name: lease.binding.target.app.displayName,
-          access: .readWrite, path: lease.path)], ownerInput: true)
-    }
     lastOverlayEnding = ending
-    overlay?.update(sessions: registry.sessions.values, owners: registry.owners, ending: ending, ownerInput: ownerInput)
+    overlay?.update(sessions: registry.sessions.values, owners: registry.owners, ending: ending)
   }
 
   private func closeAllSessions(reason: SessionStoppedReason?) {
     for id in Array(registry.sessions.keys) {
       closeSession(id, reason: reason, overlayEnding: nil)
     }
-    updateOverlay(ending: reason == .user ? .stopped : .ended)
+    updateOverlay()
   }
 
   /// `overlayEnding` is nil while several sessions close at once; the caller
-  /// then updates the overlay once, so its notice names every Thread that
-  /// ended together.
+  /// then updates the overlay once, for every session that ended together.
   private func closeSession(
     _ id: String, reason: SessionStoppedReason?, overlayEnding: OverlayModel.Ending? = .ended
   ) {
@@ -899,7 +901,13 @@ public final class HelperRuntime {
     closeSession(sessionId, reason: nil)
   }
 
-  func stopFromOverlay() {
+  /// The person pressed `Stop` on the chip of the app `key`: every agent
+  /// session holding that app ends, with the person's reason, and so do that
+  /// session's holds on any other app. Sessions holding only other apps keep
+  /// working. The person's own input through Opensteer is still released
+  /// everywhere on this Mac, as every `Stop` here always has: someone at the
+  /// Mac pressing it is never left with remote input still going.
+  func stopFromOverlay(app key: String) {
     Log.session.notice("The person pressed Stop.")
     for attachment in ownerAttachments.values {
       if let id = attachment.source.viewId, let generation = attachment.source.generation {
@@ -907,7 +915,11 @@ public final class HelperRuntime {
       }
     }
     releaseAllOwnerInput(reason: "stopped")
-    closeAllSessions(reason: .user)
+    let holding = registry.sessions.values.filter { registry.owners[key] == $0.sessionId }
+    for session in holding {
+      closeSession(session.sessionId, reason: .user, overlayEnding: nil)
+    }
+    updateOverlay()
   }
 
   nonisolated static func requireUnlocked(
@@ -944,7 +956,6 @@ public final class HelperRuntime {
 
     if let cached = session.app(key), AppCatalog.sameIdentity(cached.identity, requested.identity) {
       try registry.claim(cached, for: session)
-      session.noteAccess(requested.access, for: cached)
       updateOverlay()
       return cached
     }
@@ -968,7 +979,7 @@ public final class HelperRuntime {
       session.remove(replaced)
     }
     try registry.claim(state, for: session)
-    session.add(state, access: requested.access)
+    session.add(state)
     updateOverlay()
     return state
   }
@@ -1013,7 +1024,7 @@ public final class HelperRuntime {
       if method == "view.open", target.process.isCurrent,
         view.window?.unavailableReason != "window-closed"
       {
-        overlay?.connectionRestored()
+        restoreConnection(target.app)
       }
       return state(view)
     }
@@ -1107,10 +1118,12 @@ public final class HelperRuntime {
     overlay?.workStarted(on: state)
     defer { overlay?.workEnded(on: state) }
     let cancellation = opened.cancellation
+    let key = state.key, overlay = overlay
     let observation = try await AppObserver.observe(
       app: state, window: params.window, monitor: monitor, budget: budget,
       includeScreenshot: includeScreenshot, cancellation: cancellation,
-      check: { try cancellation.check() })
+      check: { try cancellation.check() },
+      verified: { window in await overlay?.bind(app: key, window: window) })
     try await commit(observation, of: state, in: opened, connectionID: connection.id)
     return observation
   }
@@ -1321,7 +1334,6 @@ public final class HelperRuntime {
       connection: connection, binding: binding, producer: producer,
       mutations: mutations(for: binding.target.app.bundleId.lowercased()), path: path, verification: verification)
     ownerAttachments[id] = attachment
-    updateOverlay()
     return attachment
   }
 
@@ -1445,7 +1457,6 @@ public final class HelperRuntime {
     if exitRequested { exitIfUnused() }
     let counts = lease.counters.current.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
     Log.session.notice("Owner input released: reason=\(reason, privacy: .public) counters=\(counts, privacy: .public)")
-    updateOverlay()
   }
   private func releaseAllOwnerInput(reason: String) {
     for lease in ownerAttachments.values { releaseOwnerInput(lease, reason: reason) }

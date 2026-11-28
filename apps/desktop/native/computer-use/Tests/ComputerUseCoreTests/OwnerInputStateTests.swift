@@ -162,34 +162,6 @@ final class OwnerInputStateTests: XCTestCase {
     XCTAssertThrowsError(try lane.admit(sequence: 3, bytes: 1))
   }
 
-  func testIndependentPersonInputHasVisibleStopPill() {
-    var model = OverlayModel()
-    let app = OverlayModel.App(key: "fixture", name: "Fixture", access: .readWrite, path: "/Fixture.app")
-    let now = Date()
-    model.update(sessions: [.init(id: "owner", threadTitle: nil, apps: [app], ownerInput: true)],
-      ending: .ended, at: now, pointerNear: false)
-    let pill = model.presentation(at: now).pill
-    XCTAssertEqual(pill?.controls, .session)
-    XCTAssertEqual(pill?.status, "Sharing Fixture")
-  }
-
-  func testConcurrentViewsOfOneAppKeepSharingUntilTheLastViewLeaves() {
-    var model = OverlayModel()
-    let app = OverlayModel.App(key: "fixture", name: "Fixture", access: .readWrite, path: "/Fixture.app")
-    let first = OverlayModel.Session(id: "phone", threadTitle: nil, apps: [app], ownerInput: true)
-    let second = OverlayModel.Session(id: "tablet", threadTitle: nil, apps: [app], ownerInput: true)
-    let now = Date()
-    model.update(sessions: [first, second], ending: .ended, at: now)
-    XCTAssertEqual(model.presentation(at: now).pill?.status, "Sharing Fixture")
-    XCTAssertEqual(model.presentation(at: now).pill?.icons.count, 1)
-    model.update(sessions: [second, first], ending: .ended, at: now)
-    XCTAssertEqual(model.presentation(at: now).pill?.controls, .session)
-    model.update(sessions: [second], ending: .ended, at: now)
-    XCTAssertEqual(model.presentation(at: now).pill?.status, "Sharing Fixture")
-    model.update(sessions: [], ending: .ended, at: now)
-    XCTAssertEqual(model.presentation(at: now).pill?.status, "Computer use ended")
-  }
-
   func testCaptureIncarnationNeverAcceptsRetiredSamples() {
     let fence = OwnerSampleFence()
     let old = fence.current

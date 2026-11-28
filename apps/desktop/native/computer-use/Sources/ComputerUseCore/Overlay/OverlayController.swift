@@ -18,30 +18,32 @@ protocol ActionFeedback: AnyObject, Sendable {
   func show(_ feedback: OverlayFeedback, in app: AppSessionState)
 }
 
-/// Everything the person sees on this Mac: the pill, and in each held app
-/// the agent's pointer and the outline of its window. `OverlayModel` decides
-/// what shows; this draws it, keeps the clock
-/// that moves the timed states along, and keeps what is drawn over an app's
-/// windows following those windows.
+/// Everything the person sees on this Mac: a chip on the window of each held
+/// app, and a ring where an agent clicks. `OverlayModel` decides what shows;
+/// this draws it, keeps the clock that moves the timed states along, and
+/// keeps each chip on its window.
 @MainActor
 public final class OverlayController: ActionFeedback {
   private var model = OverlayModel()
-  private let onStop: @MainActor () -> Void
-  private(set) var pill: PillWindow?
-  private var cursors: [String: AgentCursor] = [:]
-  private var outlines: [String: WorkingOutline] = [:]
+  /// The person pressed a chip's `Stop`: the app it marks.
+  private let onStop: @MainActor (String) -> Void
+  private var chips: [String: WindowChip] = [:]
   /// Each app's key window, as its latest observation or action found it.
   private var keyWindows: [String: CGWindowID] = [:]
-  private var appInstances: [String: ObjectIdentifier] = [:]
+  /// Where each app's agent last aimed input, and the window there.
+  private var aims: [String: (point: CGPoint, window: CGWindowID)] = [:]
+  private var rings: [String: [ClickRing]] = [:]
+  /// Which session holds each live `AppSessionState`.
+  private var holders: [ObjectIdentifier: OverlayModel.Holder] = [:]
   private var timer: Timer?
   private let tracker = WindowTracker()
   private let drawsWindows: Bool
 
-  public convenience init(onStop: @escaping @MainActor () -> Void) {
+  public convenience init(onStop: @escaping @MainActor (String) -> Void) {
     self.init(drawsWindows: true, onStop: onStop)
   }
 
-  init(drawsWindows: Bool, onStop: @escaping @MainActor () -> Void) {
+  init(drawsWindows: Bool, onStop: @escaping @MainActor (String) -> Void) {
     self.drawsWindows = drawsWindows
     self.onStop = onStop
     tracker.refresh = { [weak self] ordering in self?.placeOverWindows(ordering) ?? false }
@@ -59,34 +61,48 @@ public final class OverlayController: ActionFeedback {
   func update(
     sessions: some Collection<HelperSession>,
     owners: [String: String],
-    ending: OverlayModel.Ending,
-    ownerInput: [OverlayModel.Session] = []
+    ending: OverlayModel.Ending
   ) {
-    let controlled = Set(ownerInput.flatMap(\.apps).map(\.key))
-    let next = Self.sessions(sessions, owners: owners).map {
-      OverlayModel.Session(id: $0.id, threadTitle: $0.threadTitle, apps: $0.apps.filter { !controlled.contains($0.key) })
-    } + ownerInput
-    let previousOwners = OverlayModel.owners(model.sessions)
-    let nextOwners = OverlayModel.owners(next)
-    let nextInstances = Dictionary(
-      uniqueKeysWithValues: sessions.flatMap { session in
-        session.orderedApps.compactMap { app in
-          let key = Self.key(app)
-          return owners[key] == session.sessionId ? (key, ObjectIdentifier(app)) : nil
-        }
-      })
-    keyWindows = keyWindows.filter {
-      nextOwners[$0.key] != nil && previousOwners[$0.key] == nextOwners[$0.key]
-        && appInstances[$0.key] == nextInstances[$0.key]
+    let before = Dictionary(holders.map { ($0.value.app, $0.key) }, uniquingKeysWith: { a, _ in a })
+    holders = [:]
+    for session in sessions {
+      for app in session.orderedApps where owners[Self.key(app)] == session.sessionId {
+        holders[ObjectIdentifier(app)] = OverlayModel.Holder(
+          session: session.sessionId, app: Self.key(app))
+      }
     }
-    appInstances = nextInstances
-    model.update(
-      sessions: next, ending: ending, at: Date(), pointerNear: pill?.pointerIsNear() ?? false)
+    // A held app whose state was replaced (it restarted as another build) is
+    // found again by its next observation.
+    for (instance, holder) in holders where before[holder.app].map({ $0 != instance }) == true {
+      keyWindows[holder.app] = nil
+    }
+    let next = Self.sessions(sessions, owners: owners)
+    let previous = Set(OverlayModel.holders(model.sessions))
+    let current = Set(OverlayModel.holders(next))
+    model.update(sessions: next, ending: ending, at: Date())
+    let kept = model.shownApps
+    // A window found for an app stays only while the same sessions hold it,
+    // or while its notice sits on it.
+    let previousByApp = Dictionary(grouping: previous, by: \.app)
+    let currentByApp = Dictionary(grouping: current, by: \.app)
+    keyWindows = keyWindows.filter { key, _ in
+      kept.contains(key)
+        && (currentByApp[key] == nil || previousByApp[key].map(Set.init) == currentByApp[key].map(Set.init))
+    }
+    let held = Set(current.map(\.app))
+    aims = aims.filter { held.contains($0.key) }
+    for (key, list) in rings where !held.contains(key) {
+      for ring in list { ring.cancel() }
+      rings[key] = nil
+    }
     render()
   }
 
-  func connectionRestored() {
-    if model.connectionRestored() { render() }
+  /// The person reached the app `key` through Opensteer again (a view of it
+  /// opened, or its picture started or was asked for): its amber notice, if
+  /// any, has been seen there.
+  func connectionRestored(app key: String) {
+    if model.clearNotice(app: key) { render() }
   }
 
   /// The live sessions in the order they opened, each with only the apps it
@@ -100,88 +116,75 @@ public final class OverlayController: ActionFeedback {
       .map { session in
         OverlayModel.Session(
           id: session.sessionId,
-          threadTitle: session.threadTitle,
           apps: session.orderedApps
             .filter { owners[key($0)] == session.sessionId }
-            .map {
-              OverlayModel.App(
-                key: key($0), name: $0.identity.displayName,
-                access: session.access[key($0)] ?? .read, path: $0.path)
-            }
+            .map { OverlayModel.App(key: key($0), name: $0.identity.displayName) }
         )
       }
   }
 
   /// An observation or an action batch, including its closing observation.
   func workStarted(on app: AppSessionState) {
-    model.workStarted(app: Self.key(app), at: Date())
-    render()
+    guard let holder = holders[ObjectIdentifier(app)] else { return }
+    workStarted(holder)
   }
 
   func workEnded(on app: AppSessionState) {
-    model.workEnded(app: Self.key(app), at: Date())
+    guard let holder = holders[ObjectIdentifier(app)] else { return }
+    workEnded(holder)
+  }
+
+  func workStarted(_ holder: OverlayModel.Holder) {
+    model.workStarted(holder)
     render()
   }
 
-  func typingStarted(in app: AppSessionState) {
-    model.typingStarted(app: Self.key(app))
+  func workEnded(_ holder: OverlayModel.Holder) {
+    model.workEnded(holder, at: Date())
     render()
   }
 
-  func typingEnded(in app: AppSessionState) {
-    model.typingEnded(app: Self.key(app))
-    render()
-  }
-
-  /// Sends the pointer to a screen point inside `window` — the frontmost of
-  /// the app's windows under that point, which is the one the input is
-  /// stamped with — and returns once it has arrived, so input is never posted
-  /// ahead of what the person sees.
-  func movePointer(
-    in app: AppSessionState, toScreenPoint point: CGPoint, window: CGWindowID,
-    keyWindow: CGWindowID
-  ) async {
+  /// Input is about to land at a screen point inside `window` — the
+  /// frontmost of the app's windows under that point, which is the one the
+  /// input is stamped with. Nothing moves to it: a click there draws its
+  /// ring, and nothing else does.
+  func aim(
+    in app: AppSessionState, at point: CGPoint, window: CGWindowID, keyWindow: CGWindowID
+  ) {
     let key = Self.key(app)
-    keyWindows[key] = keyWindow
-    guard
-      let move = model.movePointer(
-        app: key, to: point, at: Date(), reduceMotion: OverlayMotion.reduced)
-    else { return }
-    let cursor = cursors[key] ?? AgentCursor()
-    cursors[key] = cursor
-    let wait = cursor.move(
-      move, window: window, keyWindow: keyWindow,
-      in: WindowSnapshot.read([window, keyWindow]))
-    render()
-    guard wait > 0 else { return }
-    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+    aims[key] = (point, window)
+    bind(app: key, window: keyWindow)
   }
 
   func show(_ feedback: OverlayFeedback, in app: AppSessionState) {
-    // The badge shows the work even where no pointer is drawn: a window on
-    // another Space.
-    pill?.mirror(feedback, app: Self.key(app))
-    guard let cursor = cursors[Self.key(app)] else { return }
-    switch feedback {
-    case .click: cursor.click()
-    case .pulse: cursor.pulse()
-    case .scroll(let direction): cursor.scrolled(direction)
+    guard OverlayStyle.showsClickRing, feedback == .click, drawsWindows else { return }
+    let key = Self.key(app)
+    guard model.shownApps.contains(key), let aim = aims[key],
+      let window = WindowSnapshot.read([aim.window]).window(aim.window), window.onScreen
+    else { return }
+    let ring = ClickRing(center: aim.point)
+    rings[key, default: []].append(ring)
+    ring.show(above: window, reduced: OverlayMotion.reduced) { [weak self, weak ring] in
+      self?.rings[key]?.removeAll { $0 === ring }
     }
   }
 
   func bound(_ app: AppSessionState, windowID: CGWindowID) {
-    keyWindows[app.key] = windowID
-    cursors[app.key]?.bind(windowID, in: WindowSnapshot.read([windowID]))
-    render()
-    windowsChanged()
+    bind(app: Self.key(app), window: windowID)
   }
 
   func captured(_: Observation, in app: AppSessionState, keyWindow: CGWindowID?) {
-    let key = Self.key(app)
-    if let keyWindow {
-      keyWindows[key] = keyWindow
-      cursors[key]?.bind(keyWindow, in: WindowSnapshot.read([keyWindow]))
-    }
+    guard let keyWindow else { return }
+    bind(app: Self.key(app), window: keyWindow)
+  }
+
+  /// The window an app's chip is on.
+  func keyWindow(for key: String) -> CGWindowID? { keyWindows[key] }
+
+  /// The window the agent in an app works in.
+  func bind(app key: String, window: CGWindowID) {
+    guard keyWindows[key] != window else { return }
+    keyWindows[key] = window
     render()
   }
 
@@ -191,19 +194,9 @@ public final class OverlayController: ActionFeedback {
     tracker.windowEvent()
   }
 
-  /// The pill keeps to the screen the person is working on, and every
-  /// surface takes up a new Reduce Motion setting as it changes.
   private func workspaceChanged(_ event: WorkspaceEvent) {
-    switch event {
-    case .activated, .spaceChanged, .screensChanged:
-      pill?.follow()
-    case .motionPreferenceChanged:
-      for cursor in cursors.values { cursor.motionChanged() }
-      for outline in outlines.values { outline.motionChanged() }
-      pill?.motionChanged()
-    case .deactivated, .hidden, .unhidden, .terminated:
-      break
-    }
+    guard event == .motionPreferenceChanged else { return }
+    for chip in chips.values { chip.motionChanged() }
   }
 
   // MARK: - Drawing
@@ -212,86 +205,65 @@ public final class OverlayController: ActionFeedback {
     guard drawsWindows else { return }
     let now = Date()
     let presentation = model.presentation(at: now)
-    if let state = presentation.pill {
-      pillWindow().show(state)
-    } else {
-      pill?.hide()
+    // A chip leaves at once when its app is released: it must never remain
+    // over a window another task owns. Its panel goes with it.
+    for (key, chip) in Array(chips) where presentation.chips[key] == nil || keyWindows[key] == nil {
+      chip.hide()
+      chips[key] = nil
     }
-    // A pointer can finish its fade. An outline leaves immediately when its
-    // app is released; it must never remain over a window another task owns.
-    for (key, cursor) in cursors where presentation.cursors[key] == nil {
-      cursor.hide()
+    let shown = presentation.chips.compactMap { key, state in
+      keyWindows[key].map { (key, state, $0) }
     }
-    for (key, state) in presentation.cursors {
-      cursors[key]?.setActivity(state.activity)
-    }
-    for (key, outline) in outlines where !presentation.outlined.contains(key) {
-      outline.hide()
-    }
-    let outlined = presentation.outlined.compactMap { key in keyWindows[key].map { (key, $0) } }
-    if !outlined.isEmpty {
-      let snapshot = WindowSnapshot.read(outlined.map(\.1))
-      for (key, window) in outlined {
-        let outline = outlines[key] ?? WorkingOutline()
-        outlines[key] = outline
-        outline.setWorking(presentation.sweeping.contains(key))
-        outline.show(window, in: snapshot)
+    if !shown.isEmpty {
+      let snapshot = WindowSnapshot.read(shown.map(\.2))
+      for (key, state, window) in shown {
+        let chip = chips[key] ?? makeChip(key)
+        chip.show(state, on: window, in: snapshot)
       }
     }
-    let held = Set(model.sessions.flatMap { $0.apps.map(\.key) })
-    keyWindows = keyWindows.filter { held.contains($0.key) }
     updateTracking()
     schedule(model.nextChange(after: now))
   }
 
-  private func updateTracking() {
-    tracker.isActive =
-      cursors.values.contains { $0.isWanted } || outlines.values.contains { $0.isWanted }
-    tracker.isDrawing =
-      cursors.values.contains { $0.isDrawn } || outlines.values.contains { $0.isDrawn }
+  private func makeChip(_ key: String) -> WindowChip {
+    let chip = WindowChip()
+    chip.onAction = { [weak self] action in self?.press(action, app: key) }
+    chips[key] = chip
+    return chip
   }
 
-  /// Follows every app window something is drawn over, from one read of the
-  /// window server. Returns whether any of them moved.
+  /// The person pressed the chip of the app `key`. `Stop` reaches the
+  /// runtime only from a live agent's chip that is showing; a dismissal
+  /// clears that app's notice once, and never stops anything.
+  func press(_ action: ChipAction, app key: String) {
+    let look = model.presentation(at: Date()).chips[key]?.look
+    switch action {
+    case .dismiss:
+      guard look == .connectionLost, model.clearNotice(app: key) else { return }
+      render()
+    case .stop:
+      guard case .agent = look, chips[key]?.isShowing == true else { return }
+      onStop(key)
+    case .open, .nothing:
+      break
+    }
+  }
+
+  private func updateTracking() {
+    tracker.isActive = chips.values.contains { $0.isWanted }
+    tracker.isDrawing = chips.values.contains { $0.isDrawn }
+  }
+
+  /// Follows every window a chip is on, from one read of the window server.
+  /// Returns whether any of them moved.
   private func placeOverWindows(_ ordering: WindowOrdering) -> Bool {
-    let ids =
-      outlines.values.compactMap(\.trackedWindowID) + cursors.values.flatMap(\.trackedWindowIDs)
+    let ids = chips.values.compactMap(\.trackedWindowID)
     guard !ids.isEmpty else { return false }
     let snapshot = WindowSnapshot.read(ids)
     var moved = false
-    for outline in outlines.values {
-      let before = outline.window?.frame
-      outline.place(in: snapshot, ordering)
-      if outline.window?.frame != before { moved = true }
-    }
-    for cursor in cursors.values {
-      let before = cursor.anchor?.frame
-      cursor.place(in: snapshot, ordering)
-      if cursor.anchor?.frame != before { moved = true }
-    }
+    for chip in chips.values where chip.place(in: snapshot, ordering) { moved = true }
     updateTracking()
     return moved
-  }
-
-  private func pillWindow() -> PillWindow {
-    if let pill { return pill }
-    let created = PillWindow(
-      onStop: { [weak self] in self?.onStop() },
-      onDismiss: { [weak self] in
-        self?.model.dismiss()
-        self?.render()
-      },
-      onToggle: { [weak self] in
-        self?.model.toggleExpanded(at: Date())
-        self?.render()
-      },
-      onPointer: { [weak self] inside in
-        self?.model.pointerOverPill(inside, at: Date())
-        self?.render()
-      }
-    )
-    pill = created
-    return created
   }
 
   private func schedule(_ date: Date?) {

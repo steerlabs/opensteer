@@ -117,11 +117,9 @@ final class NativeSafetyRegressionTests: XCTestCase {
     let identity = AppIdentity(bundleId: "com.example.Fixture", displayName: "Fixture", teamId: nil)
     let old = HelperSession(sessionId: "same", connectionID: 7)
     let oldApp = hostApp(identity: identity, path: "/tmp/Fixture.app")
-    old.add(oldApp, access: .readWrite)
+    old.add(oldApp)
     let replacement = HelperSession(sessionId: "same", connectionID: 7)
-    replacement.add(
-      hostApp(identity: identity, path: "/tmp/Fixture.app"), access: .readWrite
-    )
+    replacement.add(hostApp(identity: identity, path: "/tmp/Fixture.app"))
 
     XCTAssertThrowsError(
       try HelperRuntime.validateObservationCommit(

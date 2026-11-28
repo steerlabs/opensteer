@@ -198,20 +198,23 @@ import Darwin
     }
     return try (envelope["result"] as? [String: Any]).unwrap("wire result")
   }
-  func assertOutline(_ window: CGWindowID, name: String, cursorOffset: CGPoint? = nil) async throws {
-    let frame = try KeyWindow.currentFrame(window).unwrap("outline target")
-    let expected = OverlayGeometry.outlinePanelFrame(window: frame, primaryHeight: ScreenGeometry.primaryHeight)
+  /// The chip sits on the centre of `window`'s top edge (or hangs inside it
+  /// as a notch), shown, once the window has settled.
+  func assertChip(_ window: CGWindowID, name: String) async throws {
+    let frame = try KeyWindow.currentFrame(window).unwrap("chip target")
+    func onWindow(_ panel: NSWindow) -> Bool {
+      guard panel.contentView is ChipView, panel.isVisible, panel.alphaValue > 0 else { return false }
+      let chip = OverlayGeometry.appKitRect(fromCoreGraphics: panel.frame, primaryHeight: ScreenGeometry.primaryHeight)
+      return abs(chip.midX - frame.midX) <= 1
+        && (abs(chip.midY - frame.minY) <= 1 || abs(chip.minY - frame.minY) <= 1)
+    }
     let deadline = Date().addingTimeInterval(2)
-    while !NSApp.windows.contains(where: { $0.contentView is WorkingOutlineView && $0.isVisible && $0.frame == expected }), Date() < deadline {
+    while !NSApp.windows.contains(where: onWindow), Date() < deadline {
       try await Task.sleep(nanoseconds: 20_000_000)
     }
-    let outlines = NSApp.windows.filter { $0.contentView is WorkingOutlineView }.map { ["id": $0.windowNumber, "visible": $0.isVisible, "frame": NSStringFromRect($0.frame)] as [String: Any] }
-    try JSONSerialization.data(withJSONObject: outlines).write(to: out.appendingPathComponent("N4-outline-" + name + ".json"))
-    try require(NSApp.windows.contains(where: { $0.contentView is WorkingOutlineView && $0.isVisible && $0.frame == expected }), "N4 outline did not follow " + name)
-    if let cursorOffset {
-      let pointerFrame = OverlayGeometry.pointerPanelFrame(tip: CGPoint(x: frame.minX + cursorOffset.x, y: frame.minY + cursorOffset.y), primaryHeight: ScreenGeometry.primaryHeight)
-      try require(NSApp.windows.contains(where: { $0.contentView is AgentCursorView && $0.isVisible && $0.frame == pointerFrame }), "N4 cursor did not follow " + name)
-    }
+    let chips = NSApp.windows.filter { $0.contentView is ChipView }.map { ["id": $0.windowNumber, "visible": $0.isVisible, "frame": NSStringFromRect($0.frame)] as [String: Any] }
+    try JSONSerialization.data(withJSONObject: chips).write(to: out.appendingPathComponent("N4-chip-" + name + ".json"))
+    try require(NSApp.windows.contains(where: onWindow), "N4 chip did not follow " + name)
   }
   func run(app: AppIdentity, a: WindowInfo, b: WindowInfo) async throws {
     let aWindowId = a.windowId, bWindowId = b.windowId
@@ -230,22 +233,21 @@ import Darwin
       let aSource = try await request("display.resolve", ["source": source])
       let pictured = try await request("session.observe", ["sessionId": session, "app": target, "window": ref, "includeScreenshot": false])
       let picture = try (pictured["observation"] as? [String: Any]).unwrap("N4 observation")
-      let cursorSnapshot = try (picture["snapshot"] as? String).unwrap("N4 snapshot")
+      let clickSnapshot = try (picture["snapshot"] as? String).unwrap("N4 snapshot")
       let scale = ((picture["window"] as? [String: Any])?["scale"] as? NSNumber)?.doubleValue ?? 1
-      _ = try await request("session.act", ["sessionId": session, "app": target, "window": ref, "snapshot": cursorSnapshot, "actions": [["type": "click", "target": ["x": 60 * scale, "y": 100 * scale]]]])
-      let cursorOffset = CGPoint(x: 60, y: 100)
-      try await assertOutline(a, name: "A", cursorOffset: cursorOffset)
+      _ = try await request("session.act", ["sessionId": session, "app": target, "window": ref, "snapshot": clickSnapshot, "actions": [["type": "click", "target": ["x": 60 * scale, "y": 100 * scale]]]])
+      try await assertChip(a, name: "A")
       _ = try await request("session.bind", ["sessionId": session, "app": target, "windowId": bWindowId])
       let bSource = try await request("display.resolve", ["source": source])
       try require((aSource["target"] as? [String: Any])?["bindingId"] as? String != (bSource["target"] as? [String: Any])?["bindingId"] as? String, "N4 video binding did not follow B")
-      try await assertOutline(b, name: "B", cursorOffset: cursorOffset)
+      try await assertChip(b, name: "B")
       try await Contracts.command(out, "focus", "C")
       let afterFocus = try await request("display.resolve", ["source": source])
       try require((bSource["target"] as? [String: Any])?["bindingId"] as? String == (afterFocus["target"] as? [String: Any])?["bindingId"] as? String, "N4 person focusing C changed task video")
-      try await assertOutline(b, name: "B-after-C", cursorOffset: cursorOffset)
+      try await assertChip(b, name: "B-after-C")
       _ = try await request("session.bind", ["sessionId": session, "app": target, "windowId": aWindowId])
-      try await assertOutline(a, name: "A-again", cursorOffset: cursorOffset)
-      try Data("Current-window video and outline assertions passed\n".utf8).write(to: out.appendingPathComponent("N4-passed.txt"))
+      try await assertChip(a, name: "A-again")
+      try Data("Current-window video and chip assertions passed\n".utf8).write(to: out.appendingPathComponent("N4-passed.txt"))
     }
     let beforeCount = helper.registry.sessions.count
     let picker = try await request("view.windows", ["app": identity])
@@ -850,7 +852,7 @@ extension WireJourney {
         && result["error"] is NSNull && (result["performed"] as? [String])?.count == 2,
         "Shared input interrupted the agent or lost the waiting person batch")
     } catch {
-      helper.stopFromOverlay()
+      helper.stopFromOverlay(app: app.bundleId.lowercased())
       _ = try? await agentTask.value
       throw error
     }
@@ -1401,7 +1403,7 @@ extension WireJourney {
     let held = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
       "geometry": currentB, "sequence": 1, "events": shiftDown])
     try require(held["outcome"] as? String == "dispatched", "Held-key fixture failed")
-    helper.stopFromOverlay()
+    helper.stopFromOverlay(app: app.bundleId.lowercased())
     try await waitForModifierRelease(after: beforeStop, seconds: 2)
     let stopped = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
       "geometry": currentB, "sequence": 2, "events": [["kind": "copy", "contextId": "00000000-0000-4000-8000-000000000001"]]])

@@ -13,7 +13,15 @@ import Darwin
 //   control  TextEdit in front, 30 calls of six kinds, the person typing 960 letters
 //   choice   the person clicks into Safari during the agent's typing, and keeps it
 //   churn    about 2,000 single-key acts in bursts of 64 through the focus guard
-//   overlay  the agent's connection dropped while idle, then while an act is under way
+//   overlay  the agent's connection dropped while idle, then while an act is under way: only
+//            the second turns Safari's chip amber
+//   chip     the window chip, photographed in each state (Chip.swift): its Stop ends the agent
+//            in that app and leaves another app's agent working, the notch takes none of the
+//            address field's clicks, one click dismisses the amber notice, and the person's own
+//            input through an owner view draws nothing
+//   chip-bind  an agent's keys to window A after its session bound a window B the person then
+//            minimized: the chip is on A by the first key (run red, without the bind, to see it
+//            fail)
 
 enum JourneyFailure: Error { case failed(String) }
 func require(_ condition: Bool, _ message: String) throws {
@@ -29,7 +37,8 @@ func wallMs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 func sleepSeconds(_ seconds: Double) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9)) }
 
 enum SafariFrontCase: String {
-  case front, stop, typing, control, choice, churn, overlay
+  case front, stop, typing, control, choice, churn, overlay, chip
+  case chipBind = "chip-bind"
   case typeInto = "type-into"
   case ownerBurst = "owner-burst"
   case ownerStall = "owner-stall"
@@ -47,6 +56,10 @@ enum SafariFrontCase: String {
     if arguments.count >= 4, arguments[1] == "--person-click",
       let x = Double(arguments[2]), let y = Double(arguments[3])
     { PersonInput.click(x: x, y: y) }
+    if arguments.count == 2, arguments[1] == "--person-escape" { PersonInput.escape() }
+    if arguments.count == 4, arguments[1] == "--person-move",
+      let x = Double(arguments[2]), let y = Double(arguments[3])
+    { PersonInput.move(x: x, y: y) }
     if arguments.count == 5, arguments[1] == "--person-keys",
       let interval = UInt32(arguments[3])
     { PersonInput.keys(arguments[2], intervalMs: interval, log: arguments[4]) }
@@ -133,6 +146,24 @@ enum PersonInput {
       event.post(tap: .cghidEventTap)
       usleep(40_000)
     }
+    exit(0)
+  }
+  /// The Escape key, as the person presses it.
+  static func escape() -> Never {
+    guard CGPreflightPostEventAccess() else { exit(3) }
+    for down in [true, false] {
+      guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down) else { exit(4) }
+      event.post(tap: .cghidEventTap)
+      usleep(30_000)
+    }
+    exit(0)
+  }
+  /// The pointer goes there and stays: a hover.
+  static func move(x: Double, y: Double) -> Never {
+    guard CGPreflightPostEventAccess(),
+      let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+        mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left) else { exit(3) }
+    event.post(tap: .cghidEventTap)
     exit(0)
   }
   static func keys(_ text: String, intervalMs: UInt32, log: String) -> Never {
@@ -262,7 +293,7 @@ enum PersonInput {
   var snapshot: String?
   var tree = ""
   init(wire: AgentWire, identity: Any) { self.wire = wire; target = ["identity": identity, "access": "read-write"] }
-  func open(title: String) async throws {
+  func open(title: String, page: Bool = true) async throws {
     _ = try await wire.request("hello", ["protocolVersion": 11, "ownerViewVersion": 3])
     _ = try await wire.request("session.open", ["sessionId": session, "threadTitle": "Safari front journey"])
     let listed = try await wire.request("session.windows", ["sessionId": session, "app": target])
@@ -273,7 +304,7 @@ enum PersonInput {
     ref = try ((bound["window"] as? [String: Any])?["ref"] as? String).unwrap("bound ref")
     // The page at its top, where its field and link are in view.
     try await observe()
-    if !tree.contains("Fixture field") {
+    if page, !tree.contains("Fixture field") {
       _ = try await act([["type": "scroll", "target": ["index": 0], "direction": "up", "amount": 50]], snapshot: true)
       try await observe()
     }
@@ -488,6 +519,8 @@ final class FrontSampler {
         case .choice: row = try await choiceCase(caseOut)
         case .churn: row = try await churnCase(caseOut)
         case .overlay: row = try await overlayCase(caseOut)
+        case .chip: row = try await chipCase(caseOut)
+        case .chipBind: row = try await chipBindCase(caseOut)
         case .ownerBurst, .ownerStall, .ownerExpiredRelease:
           row = try await ownerBurstCase(caseOut, kind: kind)
         }
@@ -1012,7 +1045,6 @@ final class FrontSampler {
       if let error = receipt["error"], !(error is NSNull) { errors += 1; errorMessages.append(String(describing: error).prefix(160).description) }
       if step == 3 {
         // Safari's own field: the window comes forward and the page keeps its field's focus.
-        // (The helper's overlay pill covers the exposed part of Safari's toolbar.)
         try await personClick(fieldPoint)
         await sleepSeconds(0.5)
         frontAfterClick.append(Int(PrivateAPI.focusPID(front: true) ?? 0))
@@ -1075,21 +1107,23 @@ final class FrontSampler {
 
   // MARK: - h: the overlay's connection-lost notice
 
-  /// Every overlay status shown during `seconds`, in order.
-  func pillStatuses(seconds: Double) async -> [String] {
-    var seen: [String] = []
+  /// The chips the helper is showing now, by the look each draws.
+  func shownChips() -> [(view: ChipView, frame: CGRect)] {
+    NSApp.windows.compactMap { window -> (view: ChipView, frame: CGRect)? in
+      guard let view = window.contentView as? ChipView, window.isVisible, window.alphaValue > 0
+      else { return nil }
+      let frame = OverlayGeometry.appKitRect(fromCoreGraphics: window.frame, primaryHeight: ScreenGeometry.primaryHeight)
+      return (view, frame)
+    }
+  }
+  /// Whether an amber chip showed at any moment during `seconds`.
+  func amberShown(seconds: Double) async -> Bool {
     let deadline = Date().addingTimeInterval(seconds)
     while Date() < deadline {
-      for window in NSApp.windows where window.isVisible {
-        for text in Self.texts(window.contentView) where !text.isEmpty && seen.last != text { seen.append(text) }
-      }
+      if shownChips().contains(where: { $0.view.chip?.look == .connectionLost }) { return true }
       await sleepSeconds(0.05)
     }
-    return seen
-  }
-  static func texts(_ view: NSView?) -> [String] {
-    guard let view else { return [] }
-    return ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap { texts($0) }
+    return false
   }
   func overlayCase(_ caseOut: URL) async throws -> [String: Any] {
     // Idle: the act has returned when the connection drops.
@@ -1101,7 +1135,8 @@ final class FrontSampler {
     _ = try await idle.act([["type": "key", "keys": "z"]])
     await sleepSeconds(0.6)
     idleWire.drop()
-    let idleSeen = await pillStatuses(seconds: 3)
+    let idleAmber = await amberShown(seconds: 2)
+    let idleChips = shownChips().count
     await screenshot(caseOut, "idle-drop")
     // In flight: dropped while a long act is going out.
     let busyWire = try AgentWire(helper: helper)
@@ -1122,14 +1157,19 @@ final class FrontSampler {
     }
     let inFlight = helper.registry.sessions.count
     busyWire.drop()
-    let busySeen = await pillStatuses(seconds: 3)
+    let busyAmber = await amberShown(seconds: 3)
     await screenshot(caseOut, "busy-drop")
-    let lost = "Connection lost · last action unconfirmed"
+    // The person dismisses it.
+    let amber = shownChips().first { $0.view.chip?.look == .connectionLost }
+    if let amber { _ = amber.view.accessibilityPerformPress() }
+    await sleepSeconds(0.3)
+    let dismissed = !shownChips().contains { $0.view.chip?.look == .connectionLost }
     return [
-      "met": underWay && !idleSeen.contains(lost) && idleSeen.contains("Computer use ended") && busySeen.contains(lost),
+      "met": underWay && !idleAmber && idleChips == 0 && busyAmber && dismissed,
       "firstKeyReachedThePageBeforeTheDrop": underWay,
       "dropped": "the agent's IPC connection closed: HelperRuntime.connectionClosed, as the helper's server reports a dropped socket, then both socket ends closed",
-      "idleStatuses": idleSeen, "inFlightStatuses": busySeen, "sessionsWhenDropped": inFlight,
+      "idleDropShowedAmber": idleAmber, "chipsAfterIdleDrop": idleChips,
+      "inFlightDropShowedAmber": busyAmber, "dismissedByPress": dismissed, "sessionsWhenDropped": inFlight,
     ]
   }
 }

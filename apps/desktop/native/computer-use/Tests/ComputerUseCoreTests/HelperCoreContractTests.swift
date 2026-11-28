@@ -62,7 +62,7 @@ final class HelperCoreContractTests: XCTestCase {
     } catch let error as HelperError { XCTAssertEqual(error.code, .appNotAllowed) }
 
     let held = app("com.example.Held")
-    other.add(held, access: .readWrite)
+    other.add(held)
     try runtime.registry.claim(held, for: other)
     do {
       _ = try await runtime.appState(
@@ -71,21 +71,18 @@ final class HelperCoreContractTests: XCTestCase {
     } catch let error as HelperError { XCTAssertEqual(error, SessionRegistry.busy) }
 
     let cached = app("com.example.Mine")
-    mine.add(cached, access: .readWrite)
+    mine.add(cached)
     try runtime.registry.claim(cached, for: mine)
     do {
       _ = try await runtime.appState(
         mine, SessionApp(access: .read, identity: cached.identity), needsControl: true)
       XCTFail("Acting needs Can see and control.")
     } catch let error as HelperError { XCTAssertEqual(error, HelperRuntime.readOnly) }
-    XCTAssertEqual(mine.access[cached.key], .readWrite, "A refusal changes nothing.")
 
-    // The same identity again is the same app state; its access follows the
-    // latest call, which is what the pill reads.
+    // The same identity again is the same app state.
     let again = try await runtime.appState(
       mine, SessionApp(access: .read, identity: cached.identity), needsControl: false)
     XCTAssertTrue(again === cached)
-    XCTAssertEqual(mine.access[cached.key], .read)
 
     // A different identity for the same bundle is resolved again against the
     // installed app, and here there is none.
@@ -111,7 +108,7 @@ final class HelperCoreContractTests: XCTestCase {
     let session = HelperSession(sessionId: "full", connectionID: 1)
     runtime.registry.insert(session)
     for index in 0..<HelperRuntime.maxSessionApps {
-      session.add(app("com.example.App\(index)"), access: .read)
+      session.add(app("com.example.App\(index)"))
     }
     do {
       _ = try await runtime.appState(
@@ -154,7 +151,7 @@ final class HelperCoreContractTests: XCTestCase {
   }
 
   @MainActor
-  func testStopClosesEverySessionAndIdleExpiryRemainsPerSession() throws {
+  func testStopClosesTheSessionsHoldingThatAppAndIdleExpiryRemainsPerSession() throws {
     let runtime = hostRuntime(helperVersion: "test", peerRequirement: .sameUser)
     defer { runtime.stop() }
     let first = HelperSession(sessionId: "first", connectionID: 1)
@@ -167,11 +164,24 @@ final class HelperCoreContractTests: XCTestCase {
     runtime.expireIdleSession()
     XCTAssertEqual(first.cancellation.reason, .closed)
     XCTAssertEqual(runtime.registry.sessions.count, 2)
-    runtime.stopFromOverlay()
-    XCTAssertTrue(runtime.registry.sessions.isEmpty)
-    XCTAssertTrue(runtime.registry.owners.isEmpty)
+    func held(_ bundleId: String, _ session: HelperSession) throws -> AppSessionState {
+      let state = hostApp(
+        identity: AppIdentity(bundleId: bundleId, displayName: bundleId, teamId: nil),
+        path: "/Applications/\(bundleId).app")
+      session.add(state)
+      try runtime.registry.claim(state, for: session)
+      return state
+    }
+    let safari = try held("com.apple.Safari", second)
+    _ = try held("com.apple.Notes", second)
+    _ = try held("com.apple.TextEdit", third)
+    runtime.stopFromOverlay(app: safari.key)
     XCTAssertEqual(second.cancellation.reason, .stoppedByUser)
-    XCTAssertEqual(third.cancellation.reason, .stoppedByUser)
+    XCTAssertNil(third.cancellation.reason, "Another app's agent keeps working.")
+    XCTAssertEqual(Array(runtime.registry.sessions.keys), ["third"])
+    XCTAssertEqual(
+      runtime.registry.owners, ["com.apple.textedit": "third"],
+      "A session ends whole: its other apps are released with it.")
   }
 
   @MainActor
