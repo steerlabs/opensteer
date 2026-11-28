@@ -2,6 +2,7 @@ import { clientSendKeyWireReserve } from "@opensteer/protocol/transcript";
 import type { DatabaseSchema } from "./schema.js";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
+  AgentSessionId,
   DeploymentId,
   EnvironmentId,
   ExecutionNodeId,
@@ -92,7 +93,7 @@ function validChangeScope(identity: ChangeIdentity) {
   return true;
 }
 
-interface CommitNotice {
+export interface CommitNotice {
   readonly deploymentId: DeploymentId;
   readonly head: string;
   readonly floor: string;
@@ -100,6 +101,8 @@ interface CommitNotice {
   readonly resourceKinds: ReadonlySet<DurablePersonalResourceKind>;
   /** The catalog tabs this commit changed, so a listener can tell whose they are. */
   readonly changedTabs: ReadonlySet<string>;
+  /** Clear the in-memory places of sessions ended by Done before waking the task's readers. */
+  readonly doneAgentSessions?: readonly AgentSessionId[];
 }
 
 export type PersonalCommitReaction =
@@ -234,6 +237,7 @@ class Mutation {
   readonly #resetScopes = new Set<PersonalScopeKey>();
   readonly #reactions = new Set<() => void | Promise<unknown>>();
   readonly #ownerReactions: PersonalCommitReaction[] = [];
+  #doneAgentSessions?: readonly AgentSessionId[];
   readonly #transcript = new Map<
     string,
     { placement?: TranscriptPlacement; writes: ProjectionWrite[] }
@@ -418,6 +422,9 @@ class Mutation {
 
   reaction(dispatch: () => void | Promise<unknown>) {
     this.#reactions.add(dispatch);
+  }
+  sessionsEndedByDone(ids: readonly AgentSessionId[]) {
+    if (ids.length) this.#doneAgentSessions = [...(this.#doneAgentSessions ?? []), ...ids];
   }
   react(reaction: PersonalCommitReaction) {
     if (
@@ -606,6 +613,7 @@ class Mutation {
       floor,
       resourceKinds: this.resourceKinds,
       changedTabs: this.changedTabs,
+      ...(this.#doneAgentSessions ? { doneAgentSessions: this.#doneAgentSessions } : {}),
       changedScopes: new Set([
         ...this.#scopes.keys(),
         ...(Object.values(this.#counters).some(Boolean) || this.#pendingRequestsChanged
@@ -645,6 +653,7 @@ export type PersonalMutation = Pick<
   | "pendingRequestsChanged"
   | "bumpResource"
   | "changeTabs"
+  | "sessionsEndedByDone"
   | "purge"
   | "fence"
   | "receipt"

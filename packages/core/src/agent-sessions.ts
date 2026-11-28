@@ -20,6 +20,7 @@ export const AgentSessionStatusSchema = z.enum(["active", "ended"]);
 export type AgentSessionStatus = z.infer<typeof AgentSessionStatusSchema>;
 /** `stopped` is the person's Stop; the others are authority ending or the session going quiet. */
 export const AgentSessionEndReasonSchema = z.enum([
+  "done",
   "stopped",
   "revoked",
   "expired",

@@ -15,7 +15,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
-import { ExecutionCoordinator } from "@opensteer/orchestration";
+import {
+  CommandService,
+  ExecutionCoordinator,
+  KeyedAdmissionQueue,
+} from "@opensteer/orchestration";
 import { TabService } from "../tabs/tab-service.js";
 import { OwnerProfileService } from "../administration/owner-profile.js";
 import { MemoryPassService } from "../agents/memory-pass-service.js";
@@ -70,6 +74,48 @@ function traceQueries(record: (sql: string) => void) {
     return Reflect.apply(query, this, args);
   });
 }
+
+it.skipIf(Boolean(reportPath))(
+  "marks a task without an agent session Done within its query budget",
+  async () => {
+    const database = await cloneTestDatabase("host");
+    const own = new AsyncLocalStorage<string[]>();
+    const trace = traceQueries((statement) => own.getStore()?.push(statement));
+    let host: Awaited<ReturnType<typeof startPrivateMachineHost>> | undefined;
+    try {
+      const personal = await startPrivateMachineHost(database.url, { logger: false });
+      host = personal;
+      const { threadId } = await createPersonalRunFixturePort(personal.store).createTask({
+        ownerId: personal.ownerId,
+        suffix: "done-budget",
+      });
+      const statements: string[] = [];
+      const commands = new CommandService({
+        store: personal.store,
+        admission: new KeyedAdmissionQueue({
+          maxInFlight: 2,
+          maxQueuedBytes: 64_000,
+          maxQueuedCommands: 8,
+        }),
+        onExecutionQueued: () => undefined,
+      });
+      const result = await own.run(statements, () =>
+        commands.setThreadDone({
+          threadId,
+          done: true,
+          requestedBy: personal.ownerId,
+          idempotencyKey: "done-budget",
+        }),
+      );
+      expect(result.thread.doneAt).not.toBeNull();
+      expect(statements).toHaveLength(37);
+    } finally {
+      trace.mockRestore();
+      await host?.close();
+      await database.drop();
+    }
+  },
+);
 
 it.skipIf(Boolean(reportPath))(
   "keeps Personal shell and warm tab reads within their query budgets",

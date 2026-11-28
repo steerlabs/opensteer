@@ -734,6 +734,7 @@ export async function createHostRuntime(
     removeMutationHooks = installPersonalMutationHooks(database, {
       wake: (notice) => {
         if (BigInt(notice.head) > BigInt(syncHead)) syncHead = notice.head;
+        if (notice.doneAgentSessions) agentSessionsLate?.taskDone(notice.doneAgentSessions);
         // Invalidate the warm tab catalog before publishing durable `tab` / `tab-layout`
         // revisions so clients reacting immediately to the durable notice never read stale rows.
         if (notice.changedTabs.size > 0)

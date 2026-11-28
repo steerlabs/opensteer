@@ -315,7 +315,12 @@ function operationDetail(operation: AgentOperationView): string | null {
   if (operation.outcome === "refused" && decision?.by === "refused") {
     if (decision.reason === "stopped") return workWords("op.unsent.stopped");
     const { ending } = operation;
-    if (ending === "disconnected" || ending === "expired" || ending === "narrowed")
+    if (
+      ending === "task-done" ||
+      ending === "disconnected" ||
+      ending === "expired" ||
+      ending === "narrowed"
+    )
       return workWords(`op.unsent.${ending}`);
     if (decision.reason === "changed") return decision.message;
   }
@@ -487,6 +492,7 @@ export function sessionTaskView(input: {
   const agent = sessionAgent(slot?.connection, input.withdrawnAt);
   const agentName = sessionAgentPart(agent);
   const ended = slot?.status === "ended";
+  const endReason = slot?.endReason ?? "idle";
   const state: SessionTaskState = ended
     ? slot.endReason === "stopped"
       ? "stopped"
@@ -503,11 +509,9 @@ export function sessionTaskView(input: {
         ? workSentence("work.waiting", { agent: agentName })
         : state === "idle"
           ? workSentence("work.idle", { agent: agentName })
-          : state === "stopped"
+          : endReason === "stopped"
             ? [workWords("work.stopped")]
-            : workSentence(`work.ended.${slot?.endReason ?? "idle"}` as "work.ended.idle", {
-                agent: agentName,
-              });
+            : workSentence(`work.ended.${endReason}`, { agent: agentName });
   const noComposerParts = workSentence("work.noComposer", { agent: agentName });
   const stopLabelParts = workSentence("work.stop", { agent: agentName });
   const stopDetailParts = workSentence("work.stopDetail", { agent: agentName });

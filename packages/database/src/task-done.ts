@@ -18,6 +18,8 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
+import { jsonArrayFrom } from "kysely/helpers/postgres";
+import { endAgentSessionRows } from "./agent-session-store.js";
 import { TransactionScopeChanged } from "./connection.js";
 import type { DatabaseSchema, ThreadRow } from "./schema.js";
 import {
@@ -212,7 +214,7 @@ export async function setThreadDone(
 ) {
   return commitPersonalMutation(
     database,
-    async (transaction) => {
+    async (transaction, mutation) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
       const payload = {
         threadId: input.threadId,
@@ -240,6 +242,45 @@ export async function setThreadDone(
       )
         throw idempotencyConflict(input.idempotencyKey);
       const scope = await discoverDoneScope(transaction, input);
+      const personDone =
+        !existing &&
+        input.done &&
+        !input.quiet &&
+        !input.authority &&
+        !input.actorRunId &&
+        !input.admission;
+      const observed = await transaction
+        .selectFrom("threads")
+        .select("threads.id")
+        .$if(personDone, (query) =>
+          query.select((eb) =>
+            jsonArrayFrom(
+              eb
+                .selectFrom("agentSessions")
+                .select("agentSessions.id")
+                .where("agentSessions.threadId", "in", scope.threadIds)
+                .where("agentSessions.userId", "=", input.requestedBy)
+                .where("agentSessions.status", "=", "active")
+                .$if(scope.threadIds.length === 1, (sessions) =>
+                  sessions.where("threads.worker", "=", "external"),
+                )
+                .orderBy("agentSessions.id"),
+            ).as("activeSessions"),
+          ),
+        )
+        .where("threads.id", "=", input.threadId)
+        .executeTakeFirst();
+      const sessions = observed?.activeSessions;
+      if (sessions?.length) {
+        // End authority in the Done transaction before its Run, thread and Request locks.
+        // The task's existing Request cancellation and projection below complete the transition.
+        const ended = await endAgentSessionRows(
+          transaction,
+          sessions.map(({ id }) => id),
+          "done",
+        );
+        mutation.sessionsEndedByDone(ended.map(({ id }) => id));
+      }
       await lockThreadCaller(
         transaction,
         input.authority,
@@ -280,11 +321,6 @@ export async function setThreadDone(
             .execute()
         : [];
       await admitThreadWrite(transaction, input);
-      const observed = await transaction
-        .selectFrom("threads")
-        .selectAll()
-        .where("id", "=", input.threadId)
-        .executeTakeFirst();
       if (!observed)
         throw new OpensteerError({
           code: "not_found",

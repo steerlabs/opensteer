@@ -7,6 +7,7 @@ import {
   reachesTarget,
   upsertSelfDeviceInTransaction,
 } from "@opensteer/database";
+import { installPersonalMutationHooks } from "@opensteer/database/personal-mutation";
 import { computer_use as computerUseTool } from "@opensteer/agent-tools/tools";
 import {
   AgentGrantSchema,
@@ -6074,6 +6075,131 @@ integration.sequential("Computer use for a connected agent, through its session"
 
   const tapScript =
     'const p=await phone("Pixel 8"); await p.observe(); await p.tap(1); return "tapped"';
+
+  async function setDone(
+    s: Awaited<ReturnType<typeof connectedAgent>>,
+    threadId: ThreadId,
+    done: boolean,
+  ) {
+    const removeHooks = installPersonalMutationHooks(database, {
+      wake: (notice) => {
+        if (notice.doneAgentSessions) {
+          s.sessions.taskDone(notice.doneAgentSessions);
+          expect(s.sessions.workingIn.current(s.world.owner.userId)).toEqual([]);
+        }
+      },
+      onFailure: (error) => {
+        throw error;
+      },
+    });
+    const commands = new CommandService({
+      store: s.world.store,
+      admission: new KeyedAdmissionQueue({
+        maxInFlight: 2,
+        maxQueuedBytes: 64_000,
+        maxQueuedCommands: 8,
+      }),
+      onExecutionQueued: () => undefined,
+    });
+    try {
+      return await commands.setThreadDone({
+        threadId,
+        done,
+        requestedBy: s.world.owner.userId,
+        idempotencyKey: randomUUID(),
+      });
+    } finally {
+      removeHooks();
+    }
+  }
+
+  it("ends an idle Mac session when the person marks its task Done and keeps it ended on reopen", async () => {
+    const s = await connectedAgent("full-access", { target: "mac" });
+    const closing = Promise.withResolvers<void>();
+    try {
+      const ready = await s.call(
+        { code: "await (await (await target).window()).observe()" },
+        "hold-for-done",
+      );
+      expect(ready.status).toBe("completed");
+      const { sessionId } = await s.operation("hold-for-done");
+      const row = () =>
+        database
+          .selectFrom("agentSessions")
+          .select(["status", "endReason"])
+          .where("id", "=", sessionId)
+          .executeTakeFirstOrThrow();
+      const evidence = () =>
+        database
+          .selectFrom("agentSessionDeviceHolds")
+          .select("id")
+          .where("sessionId", "=", sessionId)
+          .execute();
+      expect(await evidence()).toHaveLength(1);
+      s.sessions.workingIn.note(`session:${sessionId}`, createId("tab"));
+      expect(s.sessions.workingIn.current(s.world.owner.userId)).toHaveLength(1);
+      s.world.fakeMac.closeGate = closing.promise;
+      expect((await setDone(s, ready.taskId, true)).thread.doneAt).not.toBeNull();
+      expect(await row()).toEqual({ status: "ended", endReason: "done" });
+      expect(s.sessions.workingIn.current(s.world.owner.userId)).toEqual([]);
+      expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
+      await s.world.fakeMac.reached("close");
+      expect(await evidence()).toHaveLength(1);
+      closing.resolve();
+      await vi.waitFor(async () => expect(await evidence()).toEqual([]));
+      expect(s.world.fakeMac.openSessions()).toEqual([]);
+      await expect(s.call({ taskId: ready.taskId, code: "return 2" })).rejects.toThrow(
+        "This task's session ended. Leave out taskId to start a new one.",
+      );
+      expect((await setDone(s, ready.taskId, false)).thread.doneAt).toBeNull();
+      expect(await row()).toEqual({ status: "ended", endReason: "done" });
+      await expect(s.call({ taskId: ready.taskId, code: "return 3" })).rejects.toThrow(
+        "This task's session ended. Leave out taskId to start a new one.",
+      );
+      const fresh = await s.call({ code: "return 4" });
+      expect(fresh.status).toBe("completed");
+      expect(fresh.taskId).not.toBe(ready.taskId);
+    } finally {
+      closing.resolve();
+      await s.world.close();
+    }
+  });
+
+  it("interrupts a sent Mac call on Done and records why its effect is unknown", async () => {
+    const s = await connectedAgent("full-access", { target: "mac" });
+    const gate = Promise.withResolvers<void>();
+    try {
+      const ready = await s.call({
+        code: "globalThis.w = await (await target).window(); await w.observe()",
+      });
+      expect(ready.status).toBe("completed");
+      s.world.fakeMac.actGate = gate.promise;
+      const running = s.call(
+        { taskId: ready.taskId, code: 'await w.type("hello")' },
+        "done-in-flight",
+      );
+      const settled = running.catch((error: unknown) => error);
+      await s.world.fakeMac.reached("act");
+      expect((await setDone(s, ready.taskId, true)).thread.doneAt).not.toBeNull();
+      expect(
+        await database
+          .selectFrom("agentSessions")
+          .select(["status", "endReason"])
+          .where("threadId", "=", ready.taskId)
+          .executeTakeFirst(),
+      ).toEqual({ status: "ended", endReason: "done" });
+      expect(await settled).toMatchObject({
+        message: "The person marked this task Done.",
+      });
+      expect(await s.operation("done-in-flight")).toMatchObject({
+        outcome: "unknown",
+        ending: "task-done",
+      });
+    } finally {
+      gate.resolve();
+      await s.world.close();
+    }
+  });
 
   async function disconnect(s: Awaited<ReturnType<typeof connectedAgent>>) {
     await s.agents.revoke(s.world.owner.userId, s.record.id);

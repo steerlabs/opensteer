@@ -315,6 +315,7 @@ export function unknownOperationNext(ending: AgentOperationEnding | null | undef
 }
 
 const sessionEnding: Readonly<Record<AgentSessionEndReason, AgentOperationEnding | null>> = {
+  done: "task-done",
   stopped: "stopped",
   revoked: "disconnected",
   expired: "expired",
@@ -718,6 +719,14 @@ export class AgentSessionService {
     }
   }
 
+  /** Done committed with these sessions ended. Release their places before the Done publish. */
+  taskDone(sessionIds: readonly AgentSessionId[]): void {
+    this.#ended(
+      sessionIds.map((id) => ({ id })),
+      "done",
+    );
+  }
+
   #ended(sessions: readonly { readonly id: AgentSessionId }[], reason: AgentSessionEndReason) {
     for (const session of sessions)
       void this.#abort(session.id, sessionEnding[reason]).catch(this.#onError);
@@ -731,6 +740,7 @@ export class AgentSessionService {
     this.#worked.delete(sessionId);
     this.#resetRevision.delete(sessionId);
     this.workingIn.close(sessionId);
+    if (ending === "task-done") this.#releaseBindingPlaces(`session:${sessionId}`);
     await this.#closeBinding(`session:${sessionId}`, error.message);
     if (this.#sessions.get(sessionId) === entry) this.#sessions.delete(sessionId);
   }
@@ -1536,6 +1546,8 @@ function unsentRefusal(
   const refusal = ended ?? (error instanceof OpensteerError ? error : null);
   if (!refusal) return undefined;
   const { message } = refusal;
+  if (endingOfAbort(refusal) === "task-done")
+    return { code: "access_denied", reason: "changed", message };
   if (refusal.reason === "agent-session-stopped")
     return { code: "stopped_by_person", reason: "stopped", message };
   if (refusal.reason === "authority-changed")

@@ -227,6 +227,16 @@ describe("a task a connected agent works itself", () => {
     expect(sessionTaskView({ thread: { status: "running" }, slot: null })).toBeNull();
   });
 
+  it("names Done as the reason a connected agent's session ended", () => {
+    const session = slot("ended");
+    expect(
+      sessionTaskView({
+        thread: { status: "idle", agentSessionId: session.sessionId },
+        slot: { ...session, endReason: "done" },
+      }),
+    ).toMatchObject({ state: "ended", statusLine: "You marked this task Done", stop: null });
+  });
+
   it("names the agent and what it is using in Tasks", () => {
     expect(sessionTaskRow({ thread: { status: "running" }, slot: slot("working") })).toMatchObject({
       agent: { name: "Claude", providerId: "anthropic" },

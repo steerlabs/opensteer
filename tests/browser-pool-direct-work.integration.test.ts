@@ -3570,6 +3570,51 @@ it("keeps each connection's workingIn to its own task, and starts over after the
   }
 });
 
+it("clears the tab badge and Watch before publishing a connected agent's task as Done", async () => {
+  const { site, origin } = await pagesSite();
+  const j = await journey("direct-working-in-done", { profile: true });
+  try {
+    const home = await j.startHome();
+    const work = await directWork(j, () => home, { endsBrowserWork: true });
+    const tabId = tabOf(await work.use(`return (await newPage("${origin}/done")).tabId;`));
+    const { id, threadId } = await sessionOf(j, work.agent.id);
+    expect(await watchLands(j, home, threadId, work.workingIn)).toBe(tabId);
+    const holder = async () =>
+      (await home.service.pageTabs.state!(j.task.userId, await row(j, tabId))).usedBy;
+    expect(await holder()).toContainEqual(expect.objectContaining({ taskId: threadId }));
+    const published = Promise.withResolvers<{
+      watch: readonly AgentWorkingIn[];
+      holders: Awaited<ReturnType<typeof holder>>;
+    }>();
+    const removeHooks = j.fixture.observePersonalReactions({
+      notice: (notice) => {
+        if (!notice.doneAgentSessions) return;
+        work.sessions.taskDone(notice.doneAgentSessions);
+        const watch = work.sessions.workingIn.current(j.task.userId);
+        void holder().then((holders) => published.resolve({ watch, holders }), published.reject);
+      },
+      reaction: () => undefined,
+    });
+    try {
+      const result = await j.store.setThreadDone({
+        threadId: threadId as ThreadId,
+        requestedBy: j.task.userId,
+        idempotencyKey: "done-connected-task",
+        done: true,
+      });
+      expect(result.thread.doneAt).not.toBeNull();
+      expect(await published.promise).toEqual({ watch: [], holders: [] });
+      expect(work.workingIn.at(-1)?.notice).toEqual({ threadId, sessionId: id, tabId: null });
+      expect(await watchLands(j, home, threadId, work.workingIn)).toBeNull();
+    } finally {
+      removeHooks();
+    }
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
 it("names no tab for a whole-context browser_connect client: neither at its attach nor at its frames", async () => {
   // The narrow look, finding 2: a whole-context client may work in any page of its context; the
   // ticket's own tab is not where its frames go.

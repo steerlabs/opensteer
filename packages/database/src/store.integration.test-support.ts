@@ -92,10 +92,7 @@ export async function createStoreFixture() {
     const reactions: import("./personal-mutation.js").PersonalCommitReaction[] = [];
     const commitListeners = new Set<(head: string, scopes: ReadonlySet<string>) => void>();
     const noticeListeners = new Set<
-      (notice: {
-        readonly resourceKinds: ReadonlySet<string>;
-        readonly changedTabs: ReadonlySet<string>;
-      }) => void
+      (notice: import("./personal-mutation.js").CommitNotice) => void
     >();
     const reactionListeners = new Set<
       (reaction: import("./personal-mutation.js").PersonalCommitReaction) => void
@@ -779,10 +776,7 @@ export async function createStoreFixture() {
       reactions,
       /** Each commit's resource kinds and reactions, as the Host's own hooks receive them. */
       observePersonalReactions(listeners: {
-        readonly notice: (notice: {
-          readonly resourceKinds: ReadonlySet<string>;
-          readonly changedTabs: ReadonlySet<string>;
-        }) => void;
+        readonly notice: (notice: import("./personal-mutation.js").CommitNotice) => void;
         readonly reaction: (
           reaction: import("./personal-mutation.js").PersonalCommitReaction,
         ) => void;
