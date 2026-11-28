@@ -1,8 +1,9 @@
-import type { IphoneRunnerPort } from "@opensteer/protocol/iphone-bridge";
+import type { DesktopIphoneRunnerPort } from "../iphone/iphone-service.js";
 import type {
   DesktopUseComputerViewInput,
   DesktopUseComputerViewResult,
 } from "@opensteer/protocol/desktop";
+import { desktopComputerUseUnsupported } from "@opensteer/protocol/desktop";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
   ComputerViewHelperRequestSchema,
@@ -22,6 +23,7 @@ import {
 import {
   ComputerUseBridgeServer,
   ComputerUseSessionOwnership,
+  type ComputerUseAgentSession,
   type ComputerUseBridgeHelperPort,
   type ComputerUseBridgeServerOptions,
   type PasswordsAuthorityPort,
@@ -54,6 +56,31 @@ const defaultIdleDisconnectMs = 60_000;
  * an approval's app lookup — which names none of its own.
  */
 const defaultRequestTimeoutMs = 30_000;
+/**
+ * How long quitting waits for the helper to take `helper.exit`. Over a live
+ * connection that is one round trip; after an idle disconnect it is the
+ * reconnect without a launch (the lifecycle lock, the installed bundle's
+ * signature, peer verification, hello), which takes a few hundred
+ * milliseconds. It fits inside the two seconds the shutdown gives computer use,
+ * beside closing the bridges. A helper that misses it stays until its own
+ * fifteen-minute idle exit, which is also what ends a helper after a crash.
+ */
+export const computerUseHelperExitTimeoutMs = 1_000;
+
+/**
+ * Computer use's place in the desktop's shutdown, which every way this app
+ * quits runs: Quit Completely, a restart to install an update, and macOS
+ * ending it. Its two seconds cover the bridges and the bounded exit request.
+ */
+export function computerUseShutdownStep(computerUse: Pick<ComputerUseService, "stop">) {
+  return {
+    component: "computer-use",
+    step: "stop",
+    order: 50,
+    timeoutMs: 2_000,
+    stop: () => computerUse.stop(),
+  } as const;
+}
 
 /** A Mac whose helper was never installed has neither grant, and was never asked for one. */
 const notSetUpPermissions: ComputerUsePermissions = {
@@ -96,12 +123,17 @@ export interface ComputerUseServiceOptions {
   readonly bundledHelperPath: () => string;
   readonly homeDirectory?: string;
   readonly idleDisconnectMs?: number;
+  /** How long quitting waits for the helper to take `helper.exit`. */
+  readonly exitTimeoutMs?: number;
   readonly log?: (event: string, fields?: Readonly<Record<string, string>>) => void;
   /** The one clock every deadline on this Mac is read against. */
   readonly now?: () => number;
   readonly platform?: NodeJS.Platform;
+  /** Why computer use is off on a platform without the helper, as the person reads it. */
+  readonly unsupported?: string;
   readonly run?: ComputerUseHelperProcess;
   readonly teamId: string | null;
+  /** The menu bar's Stop: closed, no agent's request reaches the helper. */
 }
 
 /**
@@ -183,7 +215,7 @@ export class ComputerUseService {
   async startForSlot(
     deploymentIdInput: string,
     passwords?: PasswordsAuthorityPort,
-    iphone?: IphoneRunnerPort,
+    iphone?: DesktopIphoneRunnerPort,
   ): Promise<ComputerUseBridgeHandle | null> {
     if (!this.supported || this.#stopped) return null;
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
@@ -193,7 +225,13 @@ export class ComputerUseService {
       helper: this.#helperPort(),
       ...(iphone ? { iphone } : {}),
       ...(passwords ? { passwords } : {}),
-      ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
+      // Every slot's Runner shares one helper: each line says which Home's Runner asked.
+      ...(this.#options.log === undefined
+        ? {}
+        : {
+            log: (event: string, fields?: Readonly<Record<string, string>>) =>
+              this.#options.log?.(event, { ...fields, deploymentId }),
+          }),
       now: this.#now,
       onDataPermissionRequired: (input) => this.#dataPermissionRequired?.(input),
       ownership: this.#ownership,
@@ -257,6 +295,10 @@ export class ComputerUseService {
    * The person's answer, to the Runner of the slot the approval came from.
    * False when that Runner is not connected to this desktop right now.
    */
+
+  async workerDisconnected(deploymentId: string): Promise<boolean> {
+    return (await this.#bridges.get(deploymentId)?.workerDisconnected()) ?? true;
+  }
 
   async stopForSlot(deploymentId: string): Promise<void> {
     const server = this.#bridges.get(deploymentId);
@@ -353,6 +395,27 @@ export class ComputerUseService {
     );
   }
 
+  /** Agent sessions open on this Mac's apps, across every slot. */
+  get agentSessions(): number {
+    return this.#ownership.sessions;
+  }
+
+  /** Each agent session on this Mac's apps, as far as this Mac knows it. */
+  agentSessionDetails(): readonly ComputerUseAgentSession[] {
+    return this.#ownership.agentSessions();
+  }
+
+  onAgentSessionsChanged(listener: () => void): () => void {
+    return this.#ownership.subscribe(listener);
+  }
+
+  /**
+   * This app is quitting — Quit Completely, a restart to install an update, or
+   * macOS ending it. Every bridge closes, then the helper this app used is
+   * asked to exit with it (`helper.exit`), and the connection closes. Quitting
+   * never waits on the helper past `exitTimeoutMs`: a helper that does not
+   * answer stays until its own idle exit.
+   */
   async stop(): Promise<void> {
     this.#stopped = true;
     this.#cancelIdleDisconnect();
@@ -366,6 +429,7 @@ export class ComputerUseService {
     this.#client = null;
     this.#loginReceiver = null;
     this.#clientPromise = null;
+    if (client) await this.#askHelperToExit(client);
     try {
       await client?.close();
     } catch (error) {
@@ -374,11 +438,30 @@ export class ComputerUseService {
     if (errors.length) throw new AggregateError(errors, "Computer-use shutdown failed.");
   }
 
+  /** Never throws and never outlasts `exitTimeoutMs`; the outcome is only logged. */
+  async #askHelperToExit(client: ComputerUseHelperClient): Promise<void> {
+    const limit = this.#options.exitTimeoutMs ?? computerUseHelperExitTimeoutMs;
+    const deadline = this.#now() + limit;
+    let timer: NodeJS.Timeout | undefined;
+    const outcome = await Promise.race([
+      client.requestExit(deadline).then(
+        (exit) => exit,
+        () => "failed" as const,
+      ),
+      new Promise<"unanswered">((resolvePromise) => {
+        timer = setTimeout(() => resolvePromise("unanswered"), limit);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    this.#options.log?.("desktop.computer-use.helper-exit", { outcome });
+  }
+
   #assertSupported(): void {
     if (!this.supported) {
       throw new ComputerUseHelperFailure(
         "unsupported",
-        "Computer use runs on macOS only, on the Mac the person is using.",
+        this.#options.unsupported ?? desktopComputerUseUnsupported,
       );
     }
   }
@@ -500,10 +583,6 @@ export class ComputerUseService {
             "failed",
             "This computer use request could not be read.",
           );
-        if (request.data.method === "session.open" && !this.#loginReceiver) {
-          const { runId: _runId, ...legacy } = request.data.params;
-          params = legacy;
-        }
         if (request.data.method === "session.act") {
           const receiver = this.#loginReceiver;
           for (const action of request.data.params.actions) {
@@ -664,15 +743,15 @@ export class ComputerUseService {
           ownerInputVersion,
           videoProfile,
           loginText,
-          protocolVersion,
         }) => {
           this.#loginReceiver = loginText ?? null;
           this.#ownerViewVersion = ownerViewVersion;
           this.#ownerInputVersion = ownerInputVersion;
           this.#videoProfile = videoProfile;
-          // A Mac whose macOS lacks window groups still speaks this version; the
-          // helper refuses each window call with the sentence that says why.
-          this.#computerUseVersion = protocolVersion === 10 ? 2 : undefined;
+          // Only a helper of this app's own protocol gets this far. A Mac whose
+          // macOS lacks window groups still speaks it; the helper refuses each
+          // window call with the sentence that says why.
+          this.#computerUseVersion = 2;
           this.#lastKnownPermissions = permissions;
           for (const listener of this.#capabilityListeners) listener();
         },

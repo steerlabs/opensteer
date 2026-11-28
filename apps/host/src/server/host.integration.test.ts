@@ -1,3 +1,4 @@
+import type { ThreadServiceStore } from "../threads/thread-service.js";
 import { injectTestResource } from "./test-host-api-request.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
@@ -71,6 +72,7 @@ const fixtureOwnerId = createId("user");
 let personalFixture: Awaited<
   ReturnType<typeof import("@opensteer/database/test-support/store").createStoreFixture>
 >;
+let hostingPlace: { environmentId: EnvironmentId; runnerId: RunnerId };
 beforeAll(async () => {
   personalFixture = await (
     await import("@opensteer/database/test-support/store")
@@ -92,7 +94,7 @@ beforeAll(async () => {
       disabledAt: null,
     })
     .execute();
-  await (
+  hostingPlace = await (
     await import("@opensteer/database/test-support/personal")
   ).seedPersonalOwnerResources(personalFixture.database, {
     deploymentId: deployment.id,
@@ -113,6 +115,8 @@ function createHostServer(dependencies: HostServerTestOverrides) {
   >;
   const runners = Object.assign(
     {
+      agentsStoppedSince: () => null,
+      asleepSince: () => null,
       identityForRunner: () => undefined,
       isRunnerConnected: () => false,
       moduleReadiness: () => undefined,
@@ -201,7 +205,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
       : testAuthenticatedSession(await partialAuthenticator.authenticateUser(headers, options));
   return createProductionHostServer({
     ...complete,
-    execution: { canExecute: () => true },
+    execution: { canExecute: () => true, initialized: () => true },
     authenticator:
       authenticator instanceof HostAuthenticator
         ? authenticator
@@ -444,7 +448,6 @@ describe("Host signing keys", () => {
       credentials: {} as never,
       discovery: testDiscovery,
       egress: {} as never,
-      harnessAuthenticationCoordinator: {} as never,
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
       runners: {} as never,
@@ -791,6 +794,22 @@ describe("rpc envelope", () => {
         ok: false,
       });
       expect(response.body).not.toContain("hunter2");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("answers a request it cannot read as invalid-request, through its own HTTP mapping", async () => {
+    const app = await machinesServer();
+    try {
+      // A body the declared schema refuses: a person's app never draws what follows.
+      const response = await injectRpcRequest(app, "machines.list", { unexpected: true });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        error: { code: "bad_request", reason: "invalid-request", retryable: false },
+        ok: false,
+      });
+      expect(response.json().error.message).toMatch(/^Request is invalid: /u);
     } finally {
       await app.close();
     }
@@ -2018,7 +2037,6 @@ describe("Optional subsystem registration", () => {
       credentials: {} as never,
       discovery: testDiscovery,
       egress: {} as never,
-      harnessAuthenticationCoordinator: {} as never,
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
       runners: {} as never,
@@ -2051,7 +2069,6 @@ describe("Optional subsystem registration", () => {
       credentials: {} as never,
       discovery: testDiscovery,
       egress: {} as never,
-      harnessAuthenticationCoordinator: {} as never,
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
       runners: {} as never,
@@ -2166,7 +2183,6 @@ describe("Thread input command boundary", () => {
     title: "Boundary",
     updatedAt: now,
     purpose: "task" as const,
-    teamOrigin: null,
   };
 
   function messageResult(policy: "queue" | "steer") {
@@ -2184,8 +2200,6 @@ describe("Thread input command boundary", () => {
         messageId,
         policy,
         replyTarget: null,
-        teamRequestId: null,
-        teamSource: null,
         runId: null,
         state: "pending" as const,
         threadId,
@@ -2465,6 +2479,7 @@ describe("durable harness catalogs", () => {
     readonly harnessDrivers?: readonly TestRunnerHarnessDriver[];
     /** What the Runner advertises; defaults to a current Runner. */
     readonly runnerCapabilities?: readonly string[];
+    readonly resourcePlace?: typeof hostingPlace;
     /** Defaults to the Deployment administrator the older cases assume. */
     readonly instanceRole?: "administrator" | "user";
     /** A managed Runner outside this person's listing is not disclosed. */
@@ -2475,7 +2490,7 @@ describe("durable harness catalogs", () => {
     /** An existing-CLI profile belongs to the machine; a private one does not. */
     readonly stateKind?: "ambient" | "isolated";
   }) {
-    const runnerId = createId("runner");
+    const runnerId = options.resourcePlace?.runnerId ?? createId("runner");
     const environment = {
       capabilities: [],
       id: environmentId,
@@ -2514,7 +2529,6 @@ describe("durable harness catalogs", () => {
         title: "Created",
         updatedAt: "2026-09-15T09:00:00.000Z",
         purpose: "task" as const,
-        teamOrigin: null,
       },
       asOfSequence: "0",
       wasDuplicate: false,
@@ -2559,14 +2573,14 @@ describe("durable harness catalogs", () => {
       // declaring nothing is enforceable.
       harnessAccessModes: () =>
         options.connected ? (options.accessModes ?? ThreadAccessModeSchema.options) : undefined,
-      identityForEnvironment: () =>
-        options.connected
+      identityForEnvironment: (id: EnvironmentId) =>
+        options.connected && id === (options.resourcePlace?.environmentId ?? environmentId)
           ? {
+              runnerId,
               capabilities: options.runnerCapabilities ?? ["agent-tools-plan-v1"],
               modules: {
                 agents: {
                   harnessDrivers: options.harnessDrivers ?? [],
-                  providerStateModes: ["ambient", "isolated"],
                 },
               },
             }
@@ -2601,7 +2615,6 @@ describe("durable harness catalogs", () => {
           title: "Moved",
           updatedAt: "2026-09-15T09:00:00.000Z",
           purpose: "task" as const,
-          teamOrigin: null,
         },
       }),
     );
@@ -2653,10 +2666,18 @@ describe("durable harness catalogs", () => {
         harnessInstanceId,
         id: threadId,
       }),
+      hasAcceptedThreadInput: async () => false,
+      // A command on a task reads it through the reader rule (`readTask`), as the real store does.
+      readTask: async () => ({
+        accessMode: "full-access" as const,
+        environmentId,
+        harnessInstanceId,
+        id: threadId,
+      }),
       notificationState: {
         quietTaskDaysFor: async () => 3,
         listWorkspacePreferences: async () => [
-          { purpose: "task" as const, teamOrigin: null, muted: false, revision: "0" },
+          { purpose: "task" as const, muted: false, revision: "0" },
         ],
       },
       listEnvironmentsForUser: async () => (options.visibleToUser === false ? [] : [environment]),
@@ -2676,6 +2697,9 @@ describe("durable harness catalogs", () => {
         ],
       }),
       recordHarnessCatalogs,
+      clearThreadStartHold: async () => false,
+      confirmThreadUnconfirmedStop: async () => false,
+      readThreadUnconfirmedStop: async () => null,
       rememberExecutionChoice: rememberChoice,
       removeHarnessInstance,
       updateHarnessInstance,
@@ -2685,6 +2709,11 @@ describe("durable harness catalogs", () => {
         window: { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
       }),
     };
+    // A ThreadService runs on this stand-in: it has every method the service reads.
+    const threadStore: {
+      readonly [Name in keyof ThreadServiceStore]: (...args: never[]) => unknown;
+    } = store;
+    void threadStore;
     const authenticateSession = vi.fn(
       async () =>
         ({
@@ -2702,6 +2731,7 @@ describe("durable harness catalogs", () => {
           },
         }) as const,
     );
+    const lowerStandardCdpTaskMode = vi.fn();
     const updateThreadAccessMode = vi.fn(
       async (input: { readonly accessMode: ThreadAccessMode }) => ({
         asOfSequence: "0",
@@ -2723,7 +2753,6 @@ describe("durable harness catalogs", () => {
           title: "Access",
           updatedAt: "2026-09-15T09:00:00.000Z",
           purpose: "task" as const,
-          teamOrigin: null,
         },
       }),
     );
@@ -2731,6 +2760,7 @@ describe("durable harness catalogs", () => {
       authenticateSession,
       createHarnessInstance: store.createHarnessInstance,
       createThread,
+      lowerStandardCdpTaskMode,
       rememberExecutionChoice: rememberChoice,
       updateThreadAccessMode,
       updateThreadExecutionSelection,
@@ -2771,6 +2801,7 @@ describe("durable harness catalogs", () => {
         } as never,
         browser: {
           latestPlaces: async () => [],
+          lowerStandardCdpTaskMode,
           workspaceBootstrap: async () => ({
             available: false,
             placements: [],
@@ -2791,6 +2822,7 @@ describe("durable harness catalogs", () => {
         realtime: testRealtime(),
         runnerAuthenticator: {} as never,
         runners: runners as never,
+        // Cast for the rest of the server; checked below for every method a ThreadService reads.
         store: store as never,
       } satisfies HostServerTestOverrides),
     };
@@ -2998,7 +3030,7 @@ describe("durable harness catalogs", () => {
   it("leaves an access-mode change alone while the work location is away", async () => {
     // Silence is not a declaration: an engine that has not advertised its modes
     // refuses none of them, and a Thread nobody can run is already blocked.
-    const { server, updateThreadAccessMode } = harnessCatalogServer({
+    const { server, updateThreadAccessMode, lowerStandardCdpTaskMode } = harnessCatalogServer({
       catalog: readyCatalog,
       connected: false,
       environmentKind: "main",
@@ -3016,6 +3048,7 @@ describe("durable harness catalogs", () => {
       expect(updateThreadAccessMode).toHaveBeenCalledWith(
         expect.objectContaining({ accessMode: "auto" }),
       );
+      expect(lowerStandardCdpTaskMode).toHaveBeenCalledWith(threadId, "auto");
     } finally {
       await app.close();
     }
@@ -3092,11 +3125,6 @@ describe("durable harness catalogs", () => {
 
   it("serves the committed catalog resource without asking a Runner", async () => {
     const harness = await createCatalogResourceHarness("Committed catalog");
-    await personalFixture.store.recordHarnessCatalogs({
-      catalogs: [{ ...readyCatalog, harnessInstanceId: harness.id }],
-      environmentId: harness.environmentId,
-      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
-    });
     const { inspectHarnesses, reconcileHarnesses, server } = harnessCatalogServer({
       connected: false,
       environmentKind: "main",
@@ -3130,9 +3158,9 @@ describe("durable harness catalogs", () => {
   it("marks every engine on a Runner without the tool plan as needing an update", async () => {
     const harness = await createCatalogResourceHarness("Unavailable engine");
     const fixture = harnessCatalogServer({
-      catalog: readyCatalog,
       connected: true,
       environmentKind: "main",
+      resourcePlace: hostingPlace,
       harnessDrivers: [
         {
           accessModes: [...ThreadAccessModeSchema.options],
@@ -3157,7 +3185,7 @@ describe("durable harness catalogs", () => {
     try {
       const { environments } = await injectTestResource(app, "harness-catalog");
       const { harnesses } = await injectTestResource(app, "harness");
-      expect(environments[0]?.harnessDrivers).toEqual([
+      expect(environments.find(({ id }) => id === harness.environmentId)?.harnessDrivers).toEqual([
         {
           driverKind: "native",
           readiness: "unavailable",
@@ -3178,22 +3206,19 @@ describe("durable harness catalogs", () => {
   });
 
   async function createCatalogResourceHarness(name: string) {
-    const { id } = await personalFixture.database
-      .selectFrom("executionEnvironments")
-      .innerJoin(
-        "personalSettings",
-        "personalSettings.agentHomeComputerId",
-        "executionEnvironments.runnerId",
-      )
-      .select("executionEnvironments.id")
-      .executeTakeFirstOrThrow();
-    return personalFixture.store.createHarnessInstance({
+    const harness = await personalFixture.store.createHarnessInstance({
       config: {},
       driverKind: readyCatalog.driverKind,
-      environmentId: id,
+      environmentId: hostingPlace.environmentId,
       name,
       stateKind: "isolated",
     });
+    await personalFixture.store.recordHarnessCatalogs({
+      catalogs: [{ ...readyCatalog, harnessInstanceId: harness.id }],
+      environmentId: harness.environmentId,
+      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
+    });
+    return harness;
   }
 
   it("keeps the hosting computer's status two-valued", async () => {
@@ -3889,7 +3914,6 @@ async function requestRouteServer(options: {
     credentials: {} as never,
     discovery: testDiscovery,
     egress: {} as never,
-    harnessAuthenticationCoordinator: {} as never,
     realtime: testRealtime(),
     runnerAuthenticator: {} as never,
     runners: {} as never,

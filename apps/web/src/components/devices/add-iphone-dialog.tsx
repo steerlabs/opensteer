@@ -1,4 +1,5 @@
 import { type DeploymentId } from "@opensteer/core";
+import { deviceSwitchOn } from "@opensteer/client/computers";
 import { type HostClient, type HostSnapshot, type IphoneSetupPort } from "@opensteer/client/host";
 import {
   iphoneScreenKeepAwakeTip,
@@ -349,7 +350,7 @@ export function AddIphoneDialog({
                 </p>
               </div>
             ) : null,
-          detail: again ? `${reach} Your agent can use it as you allowed before.` : reach,
+          detail: again ? `${reach} Your own agents can use it as you allowed before.` : reach,
           title: again ? `${shown} is set up again` : `${shown} is added`,
           tone: "done",
         };
@@ -700,17 +701,17 @@ const accessChoices: readonly {
   {
     value: "read-write",
     title: "View and control",
-    detail: "Your agent can see the screen, tap, swipe, press buttons and open apps.",
+    detail: "Your own agents can see the screen, tap, swipe, press buttons and open apps.",
   },
   {
     value: "read",
     title: "View only",
-    detail: "Your agent can see the screen but can’t touch it.",
+    detail: "Your own agents can see the screen but can’t touch it.",
   },
   {
     value: "none",
     title: "Not yet",
-    detail: "Your agent can’t use it. You can allow it on its page any time.",
+    detail: "Your own agents can’t use it. You can allow it on its page any time.",
   },
 ];
 
@@ -728,7 +729,7 @@ function AgentAccessChoice({
   const [error, setError] = useState<string | null>(null);
   const name = useId();
   const view = apps.data ? phoneUseView({ ...apps.data, hostConnected: true, machine }) : null;
-  const appsOn = machine.capabilities?.apps.enabled !== false;
+  const appsOn = deviceSwitchOn(machine, "apps") !== false;
   const current: IphoneAgentAccess = appsOn && view?.access ? view.access : "none";
   const shown = pending ?? current;
 
@@ -750,7 +751,7 @@ function AgentAccessChoice({
 
   return (
     <fieldset className="iphone-setup__access" disabled={!view}>
-      <legend>What can your agent do with it?</legend>
+      <legend>What can your own agents do with it?</legend>
       {accessChoices.map((choice) => (
         <OptionRow
           as="radio"

@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
-import type { ProtocolError, RunnerCommand } from "@opensteer/protocol";
+import type { AttemptStopState, ProtocolError, RunnerCommand } from "@opensteer/protocol";
 
 export type CommandDecision =
-  | { readonly status: "accepted"; readonly workspacePath?: string }
+  | {
+      readonly status: "accepted";
+      readonly workspacePath?: string;
+      readonly stopState?: AttemptStopState;
+    }
   | { readonly message: string; readonly status: "uncertain" }
   | { readonly error: ProtocolError; readonly status: "rejected" };
 

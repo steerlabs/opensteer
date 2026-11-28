@@ -99,6 +99,19 @@ export function showDesktopUpdateMenuItem(menu: Menu | null, state: DesktopUpdat
   }
 }
 
+function updateItems(updates: {
+  readonly check: () => void;
+  readonly download: () => void;
+  readonly restart: () => void;
+}): MenuItemConstructorOptions[] {
+  return [
+    { id: "check-for-updates", label: "Check for Updates…", click: updates.check },
+    { id: "download-update", label: "Download Update…", visible: false, click: updates.download },
+    { id: "downloading-update", label: "Downloading Update…", visible: false, enabled: false },
+    { id: "restart-to-update", label: "Restart to Update", visible: false, click: updates.restart },
+  ];
+}
+
 /**
  * Workspace tab accelerators reach the workspace even when a field or live
  * page has focus. Browser accelerators run after Chromium gives the focused
@@ -111,10 +124,27 @@ export function createDesktopApplicationMenu(options: {
     readonly download: () => void;
     readonly restart: () => void;
   };
+  /** Quit puts the app away in the menu bar; only Quit Completely stops it. */
+  readonly quit?: {
+    readonly hide: () => void;
+    readonly completely: () => void;
+  };
   readonly workspaceContents: (window: BaseWindow) => WebContents | null;
   readonly browserKey?: (key: DesktopForwardedKey) => void;
 }): Menu {
   const mac = process.platform === "darwin";
+  const name = options.displayName ?? "Opensteer";
+  const quitItems: MenuItemConstructorOptions[] = options.quit
+    ? [
+        {
+          id: "quit",
+          label: `Quit ${name}`,
+          accelerator: "CommandOrControl+Q",
+          click: options.quit.hide,
+        },
+        { id: "quit-completely", label: `Quit ${name} Completely`, click: options.quit.completely },
+      ]
+    : [{ role: "quit", label: `Quit ${name}` }];
   const command = (
     label: string,
     accelerator: string,
@@ -153,45 +183,23 @@ export function createDesktopApplicationMenu(options: {
       ? [
           {
             role: "appMenu" as const,
-            label: options.displayName ?? "Opensteer",
-            ...(options.updates
+            label: name,
+            ...(options.updates || options.quit
               ? {
                   submenu: [
                     {
                       role: "about" as const,
-                      label: `About ${options.displayName ?? "Opensteer"}`,
+                      label: `About ${name}`,
                     },
-                    {
-                      id: "check-for-updates",
-                      label: "Check for Updates…",
-                      click: options.updates.check,
-                    },
-                    {
-                      id: "download-update",
-                      label: "Download Update…",
-                      visible: false,
-                      click: options.updates.download,
-                    },
-                    {
-                      id: "downloading-update",
-                      label: "Downloading Update…",
-                      visible: false,
-                      enabled: false,
-                    },
-                    {
-                      id: "restart-to-update",
-                      label: "Restart to Update",
-                      visible: false,
-                      click: options.updates.restart,
-                    },
+                    ...(options.updates ? updateItems(options.updates) : []),
                     { type: "separator" as const },
                     { role: "services" as const },
                     { type: "separator" as const },
-                    { role: "hide" as const, label: `Hide ${options.displayName ?? "Opensteer"}` },
+                    { role: "hide" as const, label: `Hide ${name}` },
                     { role: "hideOthers" as const },
                     { role: "unhide" as const },
                     { type: "separator" as const },
-                    { role: "quit" as const, label: `Quit ${options.displayName ?? "Opensteer"}` },
+                    ...quitItems,
                   ],
                 }
               : {}),
@@ -211,9 +219,7 @@ export function createDesktopApplicationMenu(options: {
           enabled: false,
         },
         command("Close Tab", "CommandOrControl+W", { type: "close-tab" }),
-        ...(mac
-          ? []
-          : [{ role: "quit" as const, label: `Quit ${options.displayName ?? "Opensteer"}` }]),
+        ...(mac ? [] : quitItems),
       ],
     },
     { role: "editMenu" },

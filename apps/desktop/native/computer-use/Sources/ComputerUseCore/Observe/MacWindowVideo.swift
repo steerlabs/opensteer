@@ -886,6 +886,13 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       return (state.generation, key, state.encodePts)
     }
     guard let (generation, key, pts) = admitted else { return }
+    // A refresh or retry re-encodes a sample under a later encoder timestamp;
+    // this row, on disk before any output exists, names the capture it shows.
+    if MacVideoDiagnostic.path != nil {
+      MacVideoDiagnostic.write(["event": "encode-pts", "streamId": id, "generation": generation,
+        "ptsUs": CMTimeConvertScale(pts, timescale: 1_000_000, method: .default).value,
+        "capturePtsUs": CMTimeConvertScale(sample.pts, timescale: 1_000_000, method: .default).value])
+    }
     let properties = key ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
     let status = VTCompressionSessionEncodeFrame(
       encoder, imageBuffer: sample.buffer,
@@ -1264,6 +1271,23 @@ final class MacWindowVideoRegistry {
     }
   }
 
+  /// The app a person's picture request was for, once it succeeded: the
+  /// overlay clears that app's connection notice and no other.
+  func app(of envelope: RequestEnvelope, connection: IPCConnection) -> AppIdentity? {
+    switch envelope.method {
+    case "display.start":
+      let params = try? envelope.decodeParams(StartParams.self, method: envelope.method)
+      return params.flatMap { bindings[$0.target.bindingId] }?.target.app
+    case "display.attach":
+      return attachments[connection.id]?.producer.binding.target.app
+    case "display.demand":
+      let params = try? envelope.decodeParams(DemandParams.self, method: envelope.method)
+      return params.flatMap { streams[$0.streamId] }?.producer.binding.target.app
+    default:
+      return nil
+    }
+  }
+
   func binding(for target: CaptureTarget) -> MacVideoBinding? {
     bindings.values.first { $0.matches(target) && $0.unavailable != "window-closed" }
   }
@@ -1604,6 +1628,11 @@ final class MacWindowVideoRegistry {
 
   func attachmentReady(_ connection: IPCConnection) {
     attachments[connection.id]?.producer.refresh()
+  }
+
+  /// Media sockets attached to streams owned by `control`.
+  func attachedMediaConnectionIDs(for control: IPCConnection) -> [Int] {
+    attachments.compactMap { id, entry in entry.control === control ? id : nil }
   }
 
   private func require(_ id: String, _ connection: IPCConnection) throws -> Entry {

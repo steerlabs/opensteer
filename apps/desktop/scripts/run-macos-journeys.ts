@@ -21,6 +21,7 @@ import {
   authorizeRun,
   JOURNEY_NAMES,
   JOURNEY_TMP_PREFIX,
+  NAMED_ONLY_JOURNEYS,
   journeyTemporaryDirectory,
   journeyApplicationDirectory,
   InventorySchema,
@@ -215,7 +216,8 @@ async function main() {
   mkdirSync(out, { recursive: true });
   validatePathBinding(initialOutput);
   if (phase !== "run") return flight(phase);
-  if (!selected.length) selected.push(...names);
+  if (!selected.length)
+    selected.push(...names.filter((name) => !NAMED_ONLY_JOURNEYS.includes(name)));
   if (legacy && (await flight("preflight")) !== 0) return 3;
   const pre = authorizeRun(read(path.join(out, "preflight.json")), runId, sha, head());
   if (

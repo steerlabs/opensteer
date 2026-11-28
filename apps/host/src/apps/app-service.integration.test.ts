@@ -1,11 +1,12 @@
 import { DeviceIdSchema } from "@opensteer/core";
 import Fastify from "fastify";
-import { createChannelId, slackChannelProviderManifest } from "@opensteer/channel-core";
+import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import { once } from "node:events";
 import { createServer, request, type Server } from "node:http";
 import { Readable } from "node:stream";
 import { IdentityService } from "@opensteer/identity";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { appOriginKey } from "@opensteer/shared/appFrame";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
 import { AppGateway } from "./app-gateway.js";
@@ -26,6 +27,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
+  AgentConnectionStore,
   AppStore,
   TabStore,
   ChannelStore,
@@ -81,6 +83,8 @@ function toolScope(f: Fixture): RunToolScope {
   };
 }
 
+const htmlFileRevision = `${"a".repeat(43)}.${"b".repeat(43)}`;
+
 function htmlFiles(read: () => Buffer) {
   return {
     list: vi.fn(async () => ({
@@ -96,6 +100,7 @@ function htmlFiles(read: () => Buffer) {
           hidden: false,
           mode: 0o600,
           sizeBytes: read().length,
+          revision: htmlFileRevision,
           modifiedAt: null,
         },
       ],
@@ -366,7 +371,12 @@ describeStore("published app HTML", (it) => {
         name: "Budget",
       });
       expect(first).toEqual({ appId: expect.stringMatching(/^app_/u), version: 1 });
-      expect(files.download).toHaveBeenCalledWith("opaque_html_key", expect.any(AbortSignal));
+      expect(files.download).toHaveBeenCalledWith(
+        "opaque_html_key",
+        expect.any(AbortSignal),
+        "app-html",
+        htmlFileRevision,
+      );
       expect(changes).toContainEqual([first.appId]);
       expect(await appCards(database, f.run.id)).toMatchObject([
         { appId: first.appId, view: { version: 1, title: "Budget" } },
@@ -559,14 +569,6 @@ describeStore("published app HTML", (it) => {
       .execute();
     const configured = await new ChannelStore(f.database).createConnection({
       createdBy: run.userId,
-      accessPolicy: {
-        directMessages: { mode: "anyone", allowedExternalUserIds: [] },
-        channels: {
-          conversationIds: [],
-          scope: "all",
-          sender: { mode: "anyone", allowedExternalUserIds: [] },
-        },
-      },
       account: {
         displayName: "Restricted",
         externalAccountId: "restricted-app-context",
@@ -589,30 +591,29 @@ describeStore("published app HTML", (it) => {
         ownerId: run.userId,
         provider: "channel:slack",
       },
-      executionPolicy: { harness: "specific", harnessInstanceId: run.harnessInstance.id },
-      selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
     });
-    const conversationId = createChannelId("conversation");
-    await f.database
-      .insertInto("channelConversations")
-      .values({
-        id: conversationId,
-        accountId: configured.account.id,
-        provider: "slack",
-        externalAccountId: "restricted-app-context",
-        bindingId: configured.binding.id,
-        bindingRevision: 1,
-        externalScopeId: null,
-        externalConversationId: "group",
-        externalThreadId: null,
-        conversationType: "group",
-        displayName: "Group",
-        activeThreadId: run.threadId,
-        providerState: {},
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .execute();
+    // Work for a bridge anyone in a group may speak to has no personal context.
+    const bridge = await new AgentConnectionStore(f.database).createBridge({
+      userId: run.userId,
+      accountId: configured.account.id,
+      conversation: { id: "group", name: "Group" },
+      senders: "anyone",
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const lineage = async (connectionId: string | null) => {
+      await f.database
+        .updateTable("threads")
+        .set({ originConnectionId: connectionId })
+        .where("id", "=", run.threadId)
+        .execute();
+      await f.database
+        .updateTable("runs")
+        .set({ connectionId })
+        .where("id", "=", run.runId)
+        .execute();
+    };
+    await lineage(bridge.id);
     for (const call of [
       () => service.list(actor),
       () => service.stop(actor, reservation.appId),
@@ -620,7 +621,7 @@ describeStore("published app HTML", (it) => {
       () => service.publish(scope, "restricted-html", { path: "index.html", name: "Denied" }),
     ])
       await expect(call()).rejects.toMatchObject({ code: "not_found" });
-    await f.database.deleteFrom("channelConversations").where("id", "=", conversationId).execute();
+    await lineage(null);
     const aborted = new AbortController();
     aborted.abort();
     await expect(
@@ -674,8 +675,23 @@ describeStore("published app HTML", (it) => {
     await writeFile(join(folder, "README.md"), "GET / returns the app ID");
     let service!: AppService;
     const runner = fakeRunner(f.runnerId, () => service);
-    const build = () =>
-      serviceFor(database, f.agentHome, { tunnels: new AppTunnelHub(runner.runners) });
+    const build = () => {
+      const apps = new AppStore(appDatabase(database));
+      const reserve = apps.reserve.bind(apps);
+      apps.reserve = async (...args) => {
+        const reserved = await reserve(...args);
+        if (reserved.published) return reserved;
+        // Stay inside app_servers' [49152, 65535] check and outside Linux's ephemeral range.
+        const port = await freePort([61_000, 65_535]);
+        await database
+          .updateTable("appServers")
+          .set({ port })
+          .where("appId", "=", reserved.appId)
+          .execute();
+        return { ...reserved, port };
+      };
+      return serviceFor(database, f.agentHome, { apps, tunnels: new AppTunnelHub(runner.runners) });
+    };
     let built = build();
     service = built.service;
     const person = { kind: "person", ownerId: f.userId } as const;
@@ -971,6 +987,59 @@ describeStore("app lifecycle admission", (it) => {
     admitted = false;
     release.resolve();
     await rejected;
+    expect(b.tunnels.start).not.toHaveBeenCalled();
+    expect((await b.store.get(f.userId, reserved.appId)).server?.desiredState).toBe("stopped");
+  });
+
+  it("puts a start to the person when the Run is in a connected agent's lineage: its server outlives that Disconnect", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const f = await storeFixture.startRunFixture("app-start-lineage");
+    const connection = await new AgentConnectionStore(database).create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "everything" },
+    });
+    await new AgentConnectionStore(database).activate(connection.id, `hash-${crypto.randomUUID()}`);
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: connection.id, accessMode: "full-access" })
+      .where("id", "=", f.threadId)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ accessMode: "full-access", connectionId: connection.id })
+      .where("id", "=", f.run.id)
+      .execute();
+    const b = await setup(database, f.agentHome);
+    const reserved = await b.store.reserve({
+      scope: runScope(f),
+      creationKey: "lineage",
+      name: "Lineage",
+      computerId: f.runnerId,
+    });
+    await b.store.commit({
+      scope: runScope(f),
+      appId: reserved.appId,
+      name: "Lineage",
+      publishKey: "lineage",
+      server: { folder: f.agentHome, command: "serve" },
+      serverGeneration: reserved.generation,
+    });
+    await b.store.setDesiredState(f.userId, reserved.appId, "stopped");
+    const service = serviceFor(database, f.agentHome, {
+      tunnels: b.tunnels as unknown as ConstructorParameters<typeof AppService>[0]["tunnels"],
+    }).service;
+    await service.onRunnerConnected(f.runnerId);
+    // The door's app.start asks under a connection (its lineage face): the same answer here.
+    await expect(
+      service.start({ kind: "run", claims: toolScope(f) }, reserved.appId),
+    ).rejects.toMatchObject({ code: "conflict", reason: "asks-person" });
     expect(b.tunnels.start).not.toHaveBeenCalled();
     expect((await b.store.get(f.userId, reserved.appId)).server?.desiredState).toBe("stopped");
   });

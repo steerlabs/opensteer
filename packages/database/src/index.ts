@@ -6,6 +6,9 @@ export * from "./app-store.js";
 export * from "./automation-failure-store.js";
 export * from "./browser-source-store.js";
 export * from "./channel-store.js";
+export * from "./bridge-ingress.js";
+export * from "./bridge-admission.js";
+export * from "./task-reader.js";
 export * from "./command-delivery.js";
 export * from "./node-control.js";
 export * from "./connection.js";
@@ -37,20 +40,25 @@ export {
 } from "./operation-budget.js";
 
 export * from "./resource-access.js";
+export * from "./run-personal-context.js";
+export * from "./command-attempts.js";
+export * from "./connection-liveness.js";
+export * from "./agent-grant-targets.js";
 
 export { readIntegrationAccountBinding } from "./integration-account-binding.js";
 
 export { requestSettlementActor } from "./request-settlement.js";
 export * from "./memory-pass-store.js";
-export * from "./message-team-sources.js";
 
 export * from "./agent-connection-store.js";
+export * from "./agent-session-store.js";
 
 export * from "./thread-caller.js";
 
 export { readThreadWaitSnapshot } from "./thread-wait.js";
 export {
   readAssignmentResult,
+  readConnectionChildResult,
   beginAssignmentResultWait,
   endAssignmentResultWait,
   recoverAssignmentResultWaits,
@@ -67,8 +75,12 @@ export {
   readThreadHistory,
 } from "./thread-history.js";
 export { assignmentSummaryInTransaction } from "./assignment-store.js";
-export { personalDeploymentOwner } from "./machine-store.js";
-export * from "./team-knowledge-store.js";
+export {
+  personalDeploymentOwner,
+  personalShellSessionState,
+  type ShellConnectionWitness,
+  type ShellStopIdempotency,
+} from "./machine-store.js";
 
 export {
   hasEligibleBrowserPlacement,
@@ -77,6 +89,7 @@ export {
 } from "./browser-home-store.js";
 export { readHarnessCatalogModelPage } from "./harness-store.js";
 export * from "./request-agent-response.js";
+export { earlierBootProvenContained, type ThreadUnconfirmedStop } from "./execution-recovery.js";
 export { deliverTaskQuestionNotice, cancelSettledTaskQuestionNotice } from "./thread-inbox.js";
 
 export * from "./private-resource-store.js";
@@ -93,28 +106,12 @@ export {
   type AgentHomeSettingsState,
 } from "./agent-home-settings-store.js";
 
-export * from "./team-access-store.js";
-export * from "./team-bus.js";
-export * from "./team-members-store.js";
-export * from "./team-groups-store.js";
-export * from "./team-invites-store.js";
-export * from "./team-chat-store.js";
-export * from "./team-files-store.js";
-export * from "./team-audit-store.js";
-export * from "./team-notices-store.js";
-export * from "./team-outbox-store.js";
-export * from "./team-requests-store.js";
-export type * from "./team-requests-port.js";
 export * from "./personal-settings-store.js";
 export * from "./personal-transaction.js";
-export * from "./task-admission-store.js";
 export * from "./needs-you-store.js";
-export * from "./run-personal-context.js";
 export { readPersonalDetailSnapshot, readPersonalShellSnapshot } from "./snapshot-store.js";
 export { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 export { readTranscriptOverlays } from "./personal-overlay-store.js";
-
-export { personalTeamRunOutcome, type PersonalTeamRunOutcome } from "./personal-team-run-store.js";
 
 export * from "./deployment-store.js";
 
@@ -140,11 +137,25 @@ export { readPersonalTaskPage, readTaskPageThreads } from "./personal-task-store
 export type { RequestResponseSendFence } from "./command-store.js";
 export { createRunFinishDrain, drainRunFinish } from "./run-finalization.js";
 export { transcriptIdentity, toolCallId } from "./transcript-store.js";
-export { getThreadForOwner } from "./thread-store.js";
+export { getThreadForOwner, wakeChatQueues } from "./thread-store.js";
 export { requestFromRow } from "./request-persistence.js";
 export { executionNodeFromRow } from "./thread-row-mappers.js";
 export { isEligibleBrowserRunner } from "./browser-home-store.js";
 export { decorateQueueEntries, readQueueLeaseHolders } from "./personal-queue-view.js";
 export { republishThreads } from "./thread-status.js";
-export { returnHintResources } from "./personal-snapshot-store.js";
+export { externalWorkView, returnHintResources } from "./personal-snapshot-store.js";
+
+export {
+  acquireBrowserStandardCdpLease,
+  listBrowserStandardCdpLeases,
+  type BrowserStandardCdpLease,
+  releaseBrowserStandardCdpLease,
+} from "./browser-standard-cdp-lease.js";
+
+export * from "./shared-chrome-attempts.js";
+
 export type { BrowserSessionCut, BrowserBindingRefusal } from "./browser-session-store.js";
+export * from "./browser-pool-store.js";
+export * from "./command-request-store.js";
+export * from "./command-proposal-reach.js";
+export * from "./home-problems.js";

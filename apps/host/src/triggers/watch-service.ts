@@ -1,16 +1,18 @@
 import {
-  triggerProgramCompatibilityReason,
-  type TriggerProgramRunnerStore,
-} from "./trigger-program-compatibility.js";
-import { runnerAgentToolsFailure, type EnvironmentId, type TriggerId } from "@opensteer/core";
+  automationScriptCompatibilityReason,
+  type AutomationScriptRunnerStore,
+} from "./automation-script-compatibility.js";
+import {
+  OpensteerError,
+  runnerAgentToolsFailure,
+  type EnvironmentId,
+  type TriggerId,
+} from "@opensteer/core";
 import type { TriggerStore } from "@opensteer/database";
 import type { RunnerIdentity, RunnerRegistry } from "@opensteer/orchestration";
 import type { WatchReconcileActivation } from "@opensteer/protocol";
-import {
-  TRIGGER_PROGRAM_VERSION_REFUSAL,
-  WATCH_CAPABILITY_RENEWAL_MS,
-  WATCH_START_RETRY_MS,
-} from "@opensteer/triggers";
+import { attemptStopStateCapability } from "@opensteer/protocol";
+import { WATCH_START_RETRY_MS } from "@opensteer/triggers";
 import type { BrowserService } from "../browser/browser-service.js";
 import type {
   WatchCapabilityScope,
@@ -23,7 +25,7 @@ type WatchBrowserTokenService = WatchCapabilityTokenService<"opensteer-watch-bro
 type WatchStore = Pick<
   TriggerStore,
   | "applyWatchStatus"
-  | "recordWatchUnavailable"
+  | "assertActiveWatchBinding"
   | "reconcileWatchesForRunner"
   | "watchEnvironmentForTrigger"
   | "watchEnvironments"
@@ -37,7 +39,7 @@ export interface WatchServiceOptions {
   readonly onError: (error: unknown, environmentId: EnvironmentId) => void;
   readonly runners: Pick<RunnerRegistry, "identityForEnvironment" | "reconcileWatches">;
   readonly store: WatchStore;
-  readonly runnerStore: TriggerProgramRunnerStore;
+  readonly runnerStore: AutomationScriptRunnerStore;
   readonly watchBrowserTokens: Pick<WatchBrowserTokenService, "issue">;
 }
 export class WatchService {
@@ -49,16 +51,17 @@ export class WatchService {
   readonly #onError: WatchServiceOptions["onError"];
   readonly #runners: WatchServiceOptions["runners"];
   readonly #store: WatchStore;
-  readonly #runnerStore: TriggerProgramRunnerStore;
+  readonly #runnerStore: AutomationScriptRunnerStore;
   readonly #watchBrowserTokens: WatchServiceOptions["watchBrowserTokens"];
   readonly #lifetime = new AbortController();
   readonly #pending = new Map<EnvironmentId, Promise<void>>();
   readonly #knownEnvironments = new Set<EnvironmentId>();
   readonly #reconcileRetryAttempts = new Map<EnvironmentId, number>();
   readonly #reconcileRetryTimers = new Map<EnvironmentId, NodeJS.Timeout>();
+  readonly #triggerLookupRetryAttempts = new Map<TriggerId, number>();
+  readonly #triggerLookupRetryTimers = new Map<TriggerId, NodeJS.Timeout>();
   readonly #startRetryTimers = new Map<EnvironmentId, NodeJS.Timeout>();
   #closed = false;
-  #renewalTimer: NodeJS.Timeout | undefined;
   constructor(options: WatchServiceOptions) {
     this.#browser = options.browser;
     this.#browserCdpUrl = options.browserCdpUrl;
@@ -72,22 +75,19 @@ export class WatchService {
     this.#watchBrowserTokens = options.watchBrowserTokens;
   }
   start(): void {
-    if (this.#closed || this.#renewalTimer) return;
-    this.#renewalTimer = setInterval(() => {
-      for (const environmentId of this.#connectedEnvironments()) this.changed(environmentId);
-    }, WATCH_CAPABILITY_RENEWAL_MS);
-    this.#renewalTimer.unref();
+    // No periodic renewal interval on the Host (Y2 / Rule 7): Runners request fresh tokens on demand.
   }
   async close(): Promise<void> {
     this.#closed = true;
     this.#lifetime.abort(new Error("Watch service is closing"));
-    if (this.#renewalTimer) clearInterval(this.#renewalTimer);
-    this.#renewalTimer = undefined;
     for (const timer of this.#startRetryTimers.values()) clearTimeout(timer);
     this.#startRetryTimers.clear();
     for (const timer of this.#reconcileRetryTimers.values()) clearTimeout(timer);
     this.#reconcileRetryTimers.clear();
     this.#reconcileRetryAttempts.clear();
+    for (const timer of this.#triggerLookupRetryTimers.values()) clearTimeout(timer);
+    this.#triggerLookupRetryTimers.clear();
+    this.#triggerLookupRetryAttempts.clear();
     await Promise.allSettled(this.#pending.values());
   }
   changed(environmentId: EnvironmentId): void {
@@ -120,8 +120,15 @@ export class WatchService {
     return next;
   }
   async triggerChanged(triggerId: TriggerId): Promise<void> {
-    const environmentId = await this.#store.watchEnvironmentForTrigger(triggerId);
-    if (environmentId) this.changed(environmentId);
+    if (this.#closed) return;
+    this.#clearTriggerLookupRetry(triggerId);
+    try {
+      const environmentId = await this.#store.watchEnvironmentForTrigger(triggerId);
+      this.#triggerLookupRetryAttempts.delete(triggerId);
+      if (environmentId) this.changed(environmentId);
+    } catch {
+      this.#scheduleTriggerLookupRetry(triggerId);
+    }
   }
   async deploymentChanged(): Promise<void> {
     const environmentIds = await this.#store.watchEnvironments();
@@ -143,6 +150,7 @@ export class WatchService {
     >,
   ): Promise<void> {
     const result = await this.#store.applyWatchStatus({
+      verifiedContainment: identity.capabilities.includes(attemptStopStateCapability),
       activationId: status.activationId,
       executionGeneration: status.executionGeneration,
       healthySince: status.healthySince ? new Date(status.healthySince) : null,
@@ -157,13 +165,22 @@ export class WatchService {
       stdoutTail: status.stdoutTail,
     });
     this.#onChanged();
-    if (result.autoPaused) this.changed(result.activation.environmentId);
+    if (
+      (status.observed === "stopped" || status.observed === "expired") &&
+      result.activation.desired === "active"
+    )
+      this.changed(result.activation.environmentId);
   }
   async reconcile(environmentId: EnvironmentId): Promise<void> {
     const identity = this.#runners.identityForEnvironment(environmentId);
     if (!identity) return;
     const leaseExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
+    const unavailableReason =
+      runnerAgentToolsFailure(identity.capabilities) ??
+      (await automationScriptCompatibilityReason(this.#runnerStore, environmentId));
     const snapshot = await this.#store.reconcileWatchesForRunner({
+      ...(unavailableReason !== null ? { unavailableReason } : {}),
+      earlierBootsContained: identity.capabilities.includes("earlier-boots-contained-v1"),
       environmentId,
       leaseExpiresAt,
       runnerBootId: identity.bootId,
@@ -171,27 +188,8 @@ export class WatchService {
       runnerId: identity.runnerId,
     });
     const desired: WatchReconcileActivation[] = [];
-    const unavailable: {
-      readonly activationId: (typeof snapshot.activations)[number]["activation"]["id"];
-      readonly executionGeneration: number;
-      readonly reason: string;
-    }[] = [];
+    const toVerify: WatchCapabilityScope[] = [];
     for (const context of snapshot.activations) {
-      const incompatibility =
-        runnerAgentToolsFailure(identity.capabilities) ??
-        (await triggerProgramCompatibilityReason(
-          this.#runnerStore,
-          context.activation.environmentId,
-          context.toolContractVersion,
-        ));
-      if (incompatibility || context.toolContractVersion !== 5) {
-        unavailable.push({
-          activationId: context.activation.id,
-          executionGeneration: context.activation.executionGeneration,
-          reason: incompatibility ?? TRIGGER_PROGRAM_VERSION_REFUSAL,
-        });
-        continue;
-      }
       const scope: WatchCapabilityScope = {
         activationId: context.activation.id,
         anchorThreadId: context.activation.anchorThreadId,
@@ -200,11 +198,14 @@ export class WatchService {
         executionGeneration: context.activation.executionGeneration,
         revisionId: context.activation.revisionId,
         triggerId: context.activation.triggerId,
-        toolContractVersion: context.toolContractVersion,
       };
       const mcp = this.#controlTokens.issue(scope);
-      const hasBrowser = await this.#browser.hasBrowserProfiles(context.activation.createdBy);
+      const hasBrowser = await this.#browser.hasBrowserProfiles(
+        context.activation.createdBy,
+        `watch:${context.activation.id}`,
+      );
       const browserCdp = hasBrowser ? this.#watchBrowserTokens.issue(scope) : null;
+      toVerify.push(scope);
       desired.push({
         activationId: context.activation.id,
         anchorThreadId: context.activation.anchorThreadId,
@@ -226,22 +227,31 @@ export class WatchService {
         agentHome: context.agentHome,
       });
     }
+    if (snapshot.unavailable || snapshot.halted) this.#onChanged();
     await this.#runners.reconcileWatches(
       environmentId,
       snapshot.reconcileGeneration,
       desired,
       AbortSignal.any([this.#lifetime.signal, AbortSignal.timeout(30_000)]),
+      {
+        connectionGeneration: identity.connectionGeneration,
+        filterDesired: async () => {
+          for (const scope of toVerify) {
+            try {
+              await this.#store.assertActiveWatchBinding({ ...scope, rejectHeldAnchor: true });
+            } catch (error) {
+              if (!(error instanceof OpensteerError) || error.code !== "forbidden") throw error;
+              const index = desired.findIndex(
+                ({ activationId }) => activationId === scope.activationId,
+              );
+              if (index !== -1) desired.splice(index, 1);
+            }
+          }
+          return desired;
+        },
+      },
     );
-    for (const activation of unavailable) {
-      await this.#store.recordWatchUnavailable({
-        ...activation,
-        runnerBootId: identity.bootId,
-        runnerConnectionGeneration: identity.connectionGeneration,
-        runnerId: identity.runnerId,
-      });
-      this.#onChanged();
-    }
-    this.#scheduleStartRetry(environmentId, unavailable.length > 0);
+    this.#scheduleStartRetry(environmentId, snapshot.unavailable === true);
   }
   #scheduleStartRetry(environmentId: EnvironmentId, waiting: boolean): void {
     this.#clearStartRetry(environmentId);
@@ -278,9 +288,24 @@ export class WatchService {
     if (timer) clearTimeout(timer);
     this.#reconcileRetryTimers.delete(environmentId);
   }
-  *#connectedEnvironments(): Iterable<EnvironmentId> {
-    for (const environmentId of this.#knownEnvironments) {
-      if (this.#runners.identityForEnvironment(environmentId)) yield environmentId;
-    }
+  #scheduleTriggerLookupRetry(triggerId: TriggerId): void {
+    if (this.#closed || this.#triggerLookupRetryTimers.has(triggerId)) return;
+    const attempt = (this.#triggerLookupRetryAttempts.get(triggerId) ?? 0) + 1;
+    this.#triggerLookupRetryAttempts.set(triggerId, attempt);
+    const delayMs = Math.min(
+      watchReconcileRetryMaximumMs,
+      watchReconcileRetryInitialMs * 2 ** Math.min(attempt - 1, 4),
+    );
+    const timer = setTimeout(() => {
+      this.#triggerLookupRetryTimers.delete(triggerId);
+      void this.triggerChanged(triggerId);
+    }, delayMs);
+    timer.unref();
+    this.#triggerLookupRetryTimers.set(triggerId, timer);
+  }
+  #clearTriggerLookupRetry(triggerId: TriggerId): void {
+    const timer = this.#triggerLookupRetryTimers.get(triggerId);
+    if (timer) clearTimeout(timer);
+    this.#triggerLookupRetryTimers.delete(triggerId);
   }
 }

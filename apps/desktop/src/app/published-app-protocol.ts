@@ -1,6 +1,10 @@
-import { appFrameHeaders, appFrameScheme } from "@opensteer/shared/appFrame";
+import {
+  appFrameContentSecurityPolicy,
+  appFrameHeaders,
+  appFrameScheme,
+} from "@opensteer/shared/appFrame";
 import type { DesktopHostTransport } from "../connections/host-transport.js";
-import type { DesktopProtocolRegistrar } from "./app-protocol.js";
+import { desktopAppOrigin, type DesktopProtocolRegistrar } from "./app-protocol.js";
 
 export function isPublishedAppUrl(value: string): boolean {
   try {
@@ -71,6 +75,12 @@ export function createPublishedAppProtocolHandler(
       const responseHeaders = new Headers(result.headers);
       for (const [name, value] of Object.entries(appFrameHeaders()))
         if (name !== "content-type") responseHeaders.set(name, value);
+      // Here the Mac app frames it, and only the Mac app may (M3): its own origin, no other.
+      responseHeaders.set(
+        "content-security-policy",
+        `${appFrameContentSecurityPolicy}; frame-ancestors ${desktopAppOrigin}`,
+      );
+      responseHeaders.delete("x-frame-options");
       const location = responseHeaders.get("location");
       if (location && location.startsWith("/v1/apps/"))
         responseHeaders.set("location", `${appFrameScheme}://view${location}`);

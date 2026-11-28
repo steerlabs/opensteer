@@ -1,10 +1,23 @@
+import { directWorkConsentVersion } from "@opensteer/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { AgentGrant, ThreadAccessMode } from "@opensteer/core";
 import type { AgentCallerKind } from "@opensteer/agent-tools";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 
-export async function measureMcpContext(kind: AgentCallerKind) {
+export async function measureMcpContext(
+  kind: AgentCallerKind,
+  options?: {
+    grant?: AgentGrant;
+    accessMode?: ThreadAccessMode;
+    /** The consent the connection gave: the current one unless said. */
+    consentVersion?: number;
+    connectionPasswords?: ConstructorParameters<
+      typeof OpensteerMcpService
+    >[0]["connectionPasswords"];
+  },
+) {
   const unavailable = new Proxy(
     {},
     {
@@ -16,14 +29,31 @@ export async function measureMcpContext(kind: AgentCallerKind) {
   const service = new OpensteerMcpService({
     publicUrl: new URL("http://localhost"),
     handlers: unavailable as never,
+    ...(options?.connectionPasswords === undefined
+      ? {}
+      : { connectionPasswords: options.connectionPasswords }),
     callers: unavailable as never,
     store: unavailable as never,
   });
   const server = await service.createServer({
     kind,
     key: "context-budget",
-    accessMode: "full-access",
-    ...(kind === "run" ? { thread: { teamOrigin: null } } : {}),
+    accessMode: options?.accessMode ?? "full-access",
+    ...(kind === "run" ? { thread: {} } : {}),
+    ...(kind === "connection"
+      ? {
+          grant: options?.grant ?? { scope: "everything" },
+          grantRevision: 1,
+          agentConnection: {
+            agentConnectionId: "context-budget",
+            grant: options?.grant ?? { scope: "everything" },
+            grantRevision: 1,
+            consentVersion: options?.consentVersion ?? directWorkConsentVersion,
+            accessMode: options?.accessMode ?? "full-access",
+            bridgeSenders: null,
+          },
+        }
+      : {}),
   } as unknown as AgentCaller);
   const client = new Client({ name: "context-budget", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -33,8 +63,11 @@ export async function measureMcpContext(kind: AgentCallerKind) {
     const { tools } = await client.listTools();
     return {
       instructions: client.getInstructions() ?? "",
+      tools,
       toolsJson: JSON.stringify(
-        tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+        kind === "connection"
+          ? tools
+          : tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
       ),
     };
   } finally {

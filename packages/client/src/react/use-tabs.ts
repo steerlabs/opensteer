@@ -2,6 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { App, AppId, Tab, TabId, TabLayout } from "@opensteer/core";
 import { AppsList, type AppsListState } from "../host/apps.js";
 import type { HostClient, HostSnapshot } from "../host/client.js";
+import {
+  requestPageTab,
+  threadAgentPlace,
+  type BrowserTabDestination,
+  type ThreadAgentPlace,
+} from "../host/agent-place-links.js";
 import { hostSnapshotStore } from "../host/host-snapshot-store.js";
 import type { PlaceListSource } from "../host/places.js";
 import type { TabStrip } from "../host/tab-strip.js";
@@ -40,6 +46,55 @@ export function useTab(hostClient: HostClient, tabId: string | null): Tab | unde
     () => (tabId === null ? undefined : tabs.get(tabId as TabId)),
     [tabs, tabId],
   );
+  return useSyncExternalStore(subscribe, get, get);
+}
+
+/**
+ * The page, Mac app or phone screen a task's agent is working in now; the same object
+ * returns while that place and its name stay the same.
+ */
+export function useThreadAgentPlace(
+  hostClient: HostClient,
+  threadId: string | null,
+): ThreadAgentPlace | null {
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
+  const held = useMemo(() => ({ current: null as ThreadAgentPlace | null }), [threadId, tabs]);
+  const get = useCallback(() => {
+    const next = threadId === null ? null : threadAgentPlace({ tabs }, threadId);
+    const last = held.current;
+    if (
+      next === null ||
+      last === null ||
+      next.tabId !== last.tabId ||
+      next.kind !== last.kind ||
+      next.title !== last.title
+    )
+      held.current = next;
+    return held.current;
+  }, [held, tabs, threadId]);
+  return useSyncExternalStore(subscribe, get, get);
+}
+
+/**
+ * The page a Request is about, from the tab list alone (see `requestPageTab`): its own tab,
+ * or its task's only page. Null for no Request, or when that is not one page.
+ */
+export function useRequestPageTab(
+  hostClient: HostClient,
+  request: Parameters<typeof requestPageTab>[1] | null,
+): BrowserTabDestination | null {
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback(
+    (listener: () => void) => tabs?.subscribe(listener) ?? (() => {}),
+    [tabs],
+  );
+  const held = useMemo(() => ({ current: null as BrowserTabDestination | null }), [request, tabs]);
+  const get = useCallback(() => {
+    const next = request === null || !tabs ? null : requestPageTab({ tabs }, request);
+    if (next?.tabId !== held.current?.tabId) held.current = next;
+    return held.current;
+  }, [held, request, tabs]);
   return useSyncExternalStore(subscribe, get, get);
 }
 

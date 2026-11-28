@@ -753,10 +753,9 @@ describeStore("PostgreSQL store", (it) => {
         runnerId: fixture.runnerId,
         runtimeId: `browser-terminal-${terminal}`,
       });
-      await store.transitionBrowserSession({
-        sessionId,
-        state: terminal,
-      });
+      // A close is the unpooled writer's (W5); any other state the general transition's.
+      if (terminal === "closed") await store.closeUnpooledBrowserSession({ sessionId });
+      else await store.transitionBrowserSession({ sessionId, state: terminal });
       const before = await database
         .selectFrom("browserSessions")
         .selectAll()
@@ -765,15 +764,14 @@ describeStore("PostgreSQL store", (it) => {
       const writes = [];
       for (const from of [undefined, [terminal]] as const) {
         for (const state of ["starting", "ready", "closing", "closed", "failed"] as const) {
-          const result = await store.transitionBrowserSession({
-            ...(from
-              ? {
-                  from,
-                }
-              : {}),
-            sessionId,
-            state,
-          });
+          const result =
+            state === "closed"
+              ? await store.closeUnpooledBrowserSession({ ...(from ? { from } : {}), sessionId })
+              : await store.transitionBrowserSession({
+                  ...(from ? { from } : {}),
+                  sessionId,
+                  state,
+                });
           writes.push({
             from,
             requested: state,

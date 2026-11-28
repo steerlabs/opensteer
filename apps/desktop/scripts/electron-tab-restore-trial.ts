@@ -42,7 +42,6 @@ export async function runTabRestoreTrial(input: {
   trial: string;
   window: BrowserWindow;
   rpc: (method: string, body?: object) => Promise<unknown>;
-  checkpointed: () => boolean;
 }): Promise<void> {
   const { root, trial, window, rpc } = input;
   const fixture = z.url().parse(process.env.OPENSTEER_TAB_RESTORE_FIXTURE);
@@ -200,7 +199,7 @@ export async function runTabRestoreTrial(input: {
     }
   };
   const select = async (id: string) => {
-    const selector = `li[data-place-key$=":${id}"] .side-tab__main`;
+    const selector = `li[data-place-key="${id}"] .side-tab__main`;
     await wait(
       async () =>
         Boolean(
@@ -299,7 +298,7 @@ export async function runTabRestoreTrial(input: {
           await window.webContents.executeJavaScript(`(() => {
       const images=${JSON.stringify(images)};
       return images.every(({id,src}) => {
-        const row=[...document.querySelectorAll('li[data-place-key]')].find(node=>node.dataset.placeKey.endsWith(':'+id));
+        const row=[...document.querySelectorAll('li[data-place-key]')].find(node=>node.dataset.placeKey===id);
         if (!row) return false;
         const image=row.querySelector('img');
         return image?.complete && image.src===src && image.naturalWidth===32 && image.naturalHeight===32;
@@ -354,7 +353,7 @@ export async function runTabRestoreTrial(input: {
     window.webContents.sendInputEvent({ type: "keyUp", keyCode });
   };
   const addMenu = async (id: string) => {
-    const selector = `li[data-place-key$=":${id}"] .side-tab__main`;
+    const selector = `li[data-place-key="${id}"] .side-tab__main`;
     await wait(() => has(selector), `tab menu row ${id}`);
     await click(selector, window.webContents, { button: "right" });
     await wait(() => has(".popover--tab-menu"), "tab menu opened");
@@ -395,7 +394,7 @@ export async function runTabRestoreTrial(input: {
         expanded:header?.querySelector('.side-tab-group__main')?.getAttribute('aria-expanded')??null,
         active:header?.classList.contains('is-active')??false,
         color:header?.style.getPropertyValue('--tab-group-color').trim()??null,
-        members:${JSON.stringify(memberIds())}.map(id=>{const row=rows.find(node=>node.dataset.placeKey.endsWith(':'+id)); return {id,present:!!row,grouped:row?.classList.contains('side-tab--grouped')??false};})
+        members:${JSON.stringify(memberIds())}.map(id=>{const row=rows.find(node=>node.dataset.placeKey===id); return {id,present:!!row,grouped:row?.classList.contains('side-tab--grouped')??false};})
       };
     })()`),
       );
@@ -445,26 +444,34 @@ export async function runTabRestoreTrial(input: {
     await screenshot(phase, true);
     return value;
   };
-  const tabRow = (id: string) => `li[data-place-key$=":${id}"]`;
+  const tabRow = (id: string) => `li[data-place-key="${id}"]`;
   const headerRow = () => {
     assert(state?.tabGroup);
     return `li[data-tab-group-id="${state.tabGroup.id}"]`;
   };
-  const rowPoint = async (selector: string) =>
-    z.object({ x: z.number(), y: z.number(), height: z.number(), right: z.number() }).parse(
-      await dom(`(() => {
-        const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+  const rowPoint = async (selector: string) => {
+    const point = z
+      .object({ x: z.number(), y: z.number(), height: z.number(), right: z.number() })
+      .nullable()
+      .parse(
+        await dom(`(() => {
+        const node=document.querySelector(${JSON.stringify(selector)});
+        if (!node) return null;
+        const r=node.getBoundingClientRect();
         const side=document.querySelector('.sidebar').getBoundingClientRect();
         return {x:r.x+Math.min(60,r.width/3),y:r.y+r.height/2,height:r.height,right:side.right};
       })()`),
-    );
+      );
+    assert(point, `The sidebar shows no row ${selector}`);
+    return point;
+  };
   /** The web rows as the sidebar shows them: tab IDs, and `group:` for a header. */
   const sidebarOrder = async () =>
     z
       .array(z.string())
       .parse(
         await dom(
-          `[...document.querySelector('.side-section--tabs .side-list').children].flatMap(node => node.dataset.tabGroupId ? ['group:'+node.dataset.tabGroupId] : node.dataset.group==='web' ? [node.dataset.placeKey.split(':').pop()] : [])`,
+          `[...document.querySelector('.side-section--tabs .side-list').children].flatMap(node => node.dataset.tabGroupId ? ['group:'+node.dataset.tabGroupId] : node.dataset.kind==='page' ? [node.dataset.placeKey] : [])`,
         ),
       );
   const pointer = (type: "mouseMove" | "mouseDown" | "mouseUp", x: number, y: number) =>
@@ -491,11 +498,17 @@ export async function runTabRestoreTrial(input: {
    * Presses a row, lifts it, then glides to the y `target` gives once it has lifted
    * (a group folds first), optionally out over the native page and back, and drops.
    */
-  const dragRow = async (
+  const dragRowSteps = async (
     selector: string,
     target: () => Promise<number>,
     options: { readonly overPage?: boolean; readonly escape?: boolean } = {},
   ) => {
+    // As click() does: rows still sliding from the last move are not where they will stand,
+    // and a press at a sliding row's middle can land on the row passing under it.
+    await wait(
+      async () => !(await has(".side-list[data-moving]")),
+      "rows settled before the press",
+    );
     const start = await rowPoint(selector);
     await dom(`(() => {
       const log = [];
@@ -522,6 +535,12 @@ export async function runTabRestoreTrial(input: {
     pressed = true;
     await glide(start, { x: start.x, y: start.y + 10 });
     await wait(() => has('.side-list > [data-sort="lifted"]'), "row lifted");
+    assert(
+      await dom(
+        `document.querySelector('.side-list > [data-sort="lifted"]')?.matches(${JSON.stringify(selector)}) === true`,
+      ),
+      `The press lifted another row than ${selector}`,
+    );
     await dom(`(() => {
       const list = document.querySelector(".side-section--tabs .side-list");
       window.__dragLog?.push([Math.round(performance.now()), "lifted", list.scrollTop, list.clientHeight, list.scrollHeight,
@@ -553,6 +572,36 @@ export async function runTabRestoreTrial(input: {
     pressed = false;
     await wait(async () => !(await has(".side-list[data-sorting]")), "drag finished");
     await wait(async () => !(await has(".side-list[data-moving]")), "dropped rows settled");
+  };
+  /** A drag that fails leaves the list as it was found and its log, for the report. */
+  const dragRow = async (
+    selector: string,
+    target: () => Promise<number>,
+    options: { readonly overPage?: boolean; readonly escape?: boolean } = {},
+  ) => {
+    try {
+      await dragRowSteps(selector, target, options);
+    } catch (error) {
+      if (pressed) {
+        pointer("mouseUp", 0, 0);
+        pressed = false;
+      }
+      writeFileSync(
+        path.join(root, `${trial}.drag-failed.json`),
+        JSON.stringify(
+          {
+            drag: selector,
+            options,
+            error: error instanceof Error ? error.message : String(error),
+            shown: await sidebarOrder().catch(() => null),
+            log: await dom("window.__dragLog ?? null").catch(() => null),
+          },
+          null,
+          2,
+        ),
+      );
+      throw error;
+    }
   };
   const expectOrder = async (phase: string, shown: string[], saved: string[]) => {
     assert(state);
@@ -728,7 +777,6 @@ export async function runTabRestoreTrial(input: {
     const popup = rows(await bootstrap()).find((row) => row.title === "Restore /pop")!;
     await close(p2.tabId);
     await select(popup.id);
-    await wait(() => input.checkpointed(), "profile checkpoint");
     await wait(
       async () =>
         rows(await bootstrap()).length === 3 && rows(await bootstrap()).every((row) => row.iconRef),
@@ -804,7 +852,7 @@ export async function runTabRestoreTrial(input: {
       await expectOrder("keyboard-into-group", [group, pop, p1, f1], [pop, p1, f1]);
       assert(
         await dom(
-          `document.activeElement?.closest('li')?.dataset.placeKey?.endsWith(':${pop}') ?? false`,
+          `document.activeElement?.closest('li')?.dataset.placeKey === ${JSON.stringify(pop)}`,
         ),
         "the moved tab keeps focus",
       );
@@ -816,6 +864,10 @@ export async function runTabRestoreTrial(input: {
       await click(groupHeader());
       await checkGroup("drag-collapsed", true);
       state.order = [pop, p1, f1];
+      // What a quit must bring back is the list as the person left it: after the drags.
+      const settled = rows(await bootstrap());
+      state.rows = settled.map(({ id, title, order }) => ({ id, title, order }));
+      state.icons = settled.map((row) => ({ id: row.id, ref: z.string().parse(row.iconRef) }));
       save();
     });
   } else {
@@ -953,6 +1005,21 @@ export async function runTabRestoreTrial(input: {
       );
       const value = await record("recovered");
       assert.equal(new Set(rows(value).map((row) => row.id)).size, rows(value).length);
+      if (!rows(value).some((row) => row.id === state!.f1 && row.title === "Restore /f1b")) {
+        // Seen twice: the wait above saw this title and this read did not. What the tab's
+        // title and its page's own title do next tells a passing state from a lost title.
+        const timeline: unknown[] = [];
+        for (const started = Date.now(); Date.now() - started < 4_000; await delay(100)) {
+          const live = page("/f1b");
+          timeline.push([
+            Date.now() - started,
+            rows(await bootstrap()).find((row) => row.id === state!.f1)?.title ?? null,
+            live?.getTitle() ?? null,
+            live?.isLoading() ?? null,
+          ]);
+        }
+        writeFileSync(path.join(root, `${trial}.title-timeline.json`), JSON.stringify(timeline));
+      }
       assert(rows(value).some((row) => row.id === state!.f1 && row.title === "Restore /f1b"));
       await groupPhase("groups-survive-crash", async () => {
         await checkGroup("tab-groups-crash-restored-collapsed", true);
@@ -1002,7 +1069,7 @@ export async function runTabRestoreTrial(input: {
             .sort(),
         );
         assert.deepEqual(liveIds(after), liveIds(before));
-        for (const id of memberIds()) assert(await has(`li[data-place-key$=":${id}"]`));
+        for (const id of memberIds()) assert(await has(`li[data-place-key="${id}"]`));
         await screenshot("tab-groups-ungrouped", true);
       });
       await groupPhase("groups-close-exact-members", async () => {
@@ -1037,7 +1104,7 @@ export async function runTabRestoreTrial(input: {
           liveIds(before).filter((id) => !ids.has(id)),
         );
         assert(rows(after).some((tab) => tab.id === control.tabId));
-        for (const id of memberIds()) assert(!(await has(`li[data-place-key$=":${id}"]`)));
+        for (const id of memberIds()) assert(!(await has(`li[data-place-key="${id}"]`)));
         await screenshot("tab-groups-closed", true);
       });
     } else throw new Error(`Unknown restore phase ${trial}`);

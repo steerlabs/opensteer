@@ -1,4 +1,5 @@
-import { DeviceIdSchema } from "@opensteer/core";
+import { AgentGrantSchema, DeviceIdSchema } from "@opensteer/core";
+import { randomUUID } from "node:crypto";
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import { testResourceData } from "../server/test-host-api-request.js";
 import { browserRows } from "./browser-rows.test-support.js";
@@ -12,7 +13,7 @@ import {
 } from "@opensteer/protocol/browser-actions";
 import { BrowserSurfaceIdSchema, createBrowserSessionId } from "@opensteer/protocol/browser";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { TabStore } from "@opensteer/database";
+import { AgentConnectionStore, TabStore } from "@opensteer/database";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -653,6 +654,160 @@ integration("session-scoped browser agent backends", () => {
     expect(f.phone.protocolErrors()).toEqual([]);
   });
 
+  it("holds the standard lists on the Android phone's browser for a Run in a connection's lineage", async () => {
+    const f = await setup();
+    const phone = await startBrowserRuntime(
+      f.host.hostPort,
+      await enrollmentToken(f.host, {
+        allowedModules: ["browser", "integrations"],
+        idempotencyKey: "lineage-phone",
+        name: "Lineage phone",
+      }),
+      {
+        agentReady: true,
+        agentActions: true,
+        browserEngine: "android-webview",
+        device: { form: "phone", platform: "android" },
+      },
+    );
+    cleanups.push(() => phone.close());
+    await vi.waitFor(
+      () =>
+        expect(f.host.runtime.browser.workspaceBootstrap(f.host.ownerId)).resolves.toMatchObject({
+          placements: expect.arrayContaining([
+            expect.objectContaining({ runnerId: phone.runnerId, available: true }),
+          ]),
+        }),
+      { timeout: 2_000 },
+    );
+    // A connection's work runs only in a saved profile, never in Guest.
+    const profile = await f.host.store.createBrowserProfile({
+      name: "Phone profile",
+      ownerId: f.host.ownerId,
+      homeRunnerId: phone.runnerId,
+      idempotencyKey: "lineage-phone-profile",
+    });
+    const opened = await f.host.runtime.browser.start({
+      ownerId: f.host.ownerId,
+      profileId: profile.id,
+    });
+    // The phone Run's task and Run join a connected agent's lineage.
+    const database = f.host.store.database;
+    const lineage = await new AgentConnectionStore(database).create({
+      userId: f.host.ownerId,
+      label: "Lineage",
+      clientName: "Fixture",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: AgentGrantSchema.parse({ scope: "everything" }),
+    });
+    expect(await new AgentConnectionStore(database).activate(lineage.id, randomUUID())).toBe(true);
+    const row = await database
+      .selectFrom("runs")
+      .innerJoin("threads", "threads.id", "runs.threadId")
+      .select(["runs.id as runId", "threads.id as threadId"])
+      .where("threads.title", "=", "Phone browser")
+      .executeTakeFirstOrThrow();
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: lineage.id })
+      .where("id", "=", row.threadId)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ connectionId: lineage.id })
+      .where("id", "=", row.runId)
+      .execute();
+    const cdp = await connect(
+      `ws://127.0.0.1:${f.host.hostPort}/internal/v1/browser-cdp/${opened.session.id}`,
+      f.bearer(f.run.toolsToken),
+    );
+    const refused = waitForMessage(cdp, (message) => "id" in message && message.id === 1, 2_000);
+    cdp.send(JSON.stringify({ id: 1, method: "Tracing.start", params: {} }));
+    expect(await refused).toMatchObject({
+      error: {
+        message: expect.stringMatching(
+          /^Tracing\.start is not available to a connected agent\. Its CDP acts on its own pages through /u,
+        ),
+      },
+    });
+    expect(
+      phone
+        .receivedCommands()
+        .filter((message) => message.type === "cdp.command")
+        .map((message) => (message as { command: { method: string } }).command.method),
+    ).not.toContain("Tracing.start");
+    cdp.close();
+  });
+
+  it("closes a connection-led Run's actions attachment at its connection's Disconnect (P1)", async () => {
+    const f = await setup();
+    // The phone Run's task and Run join a connected agent's lineage.
+    const database = f.host.store.database;
+    const lineage = await new AgentConnectionStore(database).create({
+      userId: f.host.ownerId,
+      label: "Lineage",
+      clientName: "Fixture",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: AgentGrantSchema.parse({ scope: "everything" }),
+    });
+    expect(await new AgentConnectionStore(database).activate(lineage.id, randomUUID())).toBe(true);
+    const row = await database
+      .selectFrom("runs")
+      .innerJoin("threads", "threads.id", "runs.threadId")
+      .select(["runs.id as runId", "threads.id as threadId"])
+      .where("threads.title", "=", "Phone browser")
+      .executeTakeFirstOrThrow();
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: lineage.id })
+      .where("id", "=", row.threadId)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ connectionId: lineage.id })
+      .where("id", "=", row.runId)
+      .execute();
+    // A connection's work runs only in a saved profile, never in Guest.
+    const profile = await f.host.store.createBrowserProfile({
+      name: "Phone profile",
+      ownerId: f.host.ownerId,
+      homeRunnerId: f.phone.runnerId,
+      idempotencyKey: "disconnect-phone-profile",
+    });
+    const opened = await f.host.runtime.browser.start({
+      ownerId: f.host.ownerId,
+      profileId: profile.id,
+    });
+    const socket = await f.actions(f.run.toolsToken, opened.session.id);
+    await vi.waitFor(
+      () =>
+        expect(f.phone.receivedCommands().some((message) => message.type === "agent.attach")).toBe(
+          true,
+        ),
+      { timeout: 2_000 },
+    );
+    const ended = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    // Disconnect's own close: its actions attachment is closed with it, nothing more reaches it.
+    f.host.runtime.browser.closeStandardCdpForConnection(
+      lineage.id,
+      "Agent connection authority ended.",
+    );
+    await withTimeout(ended, 2_000, {
+      timeoutError: () => new Error("The actions attachment outlived its connection's Disconnect"),
+    });
+    await vi.waitFor(
+      () =>
+        expect(f.phone.receivedCommands().some((message) => message.type === "agent.detach")).toBe(
+          true,
+        ),
+      { timeout: 2_000 },
+    );
+  });
+
   it("relays attributed actions only within the admitted Run/session and fences suspension, stale provenance and revocation", async () => {
     const f = await setup();
     const socket = await f.actions();
@@ -785,7 +940,7 @@ integration("session-scoped browser agent backends", () => {
     const commands = f.phone.receivedCommands();
     const send = (message: Record<string, unknown>) =>
       viewer.send(JSON.stringify({ surfaceId: "page-integration", ...message }));
-    send({ type: "input.command", command: "selectAll" });
+    send({ type: "input.command", command: "selectAll", contextId: crypto.randomUUID() });
     await vi.waitFor(
       () =>
         expect(commands).toContainEqual(
@@ -799,12 +954,13 @@ integration("session-scoped browser agent backends", () => {
       { timeout: 2_000 },
     );
     for (const message of [
-      { type: "input.command", command: "undo" },
-      { type: "clipboard.cut", operationId: crypto.randomUUID() },
+      { type: "input.command", command: "undo", contextId: crypto.randomUUID() },
+      { type: "clipboard.cut", operationId: crypto.randomUUID(), contextId: crypto.randomUUID() },
       {
         type: "clipboard.paste-data",
         operationId: crypto.randomUUID(),
         items: [{ type: "text/html", size: 1 }],
+        contextId: crypto.randomUUID(),
       },
       { type: "input.key", action: "down", key: "Tab", code: "Tab", modifiers: [] },
       {
@@ -817,7 +973,7 @@ integration("session-scoped browser agent backends", () => {
       expect(await refused).toMatchObject({ error: { reason: "unsupported-operation" } });
     }
     const operationId = crypto.randomUUID();
-    send({ type: "clipboard.copy", operationId });
+    send({ type: "clipboard.copy", operationId, contextId: crypto.randomUUID() });
     await vi.waitFor(
       () =>
         expect(commands).toContainEqual(
@@ -883,6 +1039,7 @@ integration("session-scoped browser agent backends", () => {
         type: "input.command",
         surfaceId: "page-integration",
         command: "selectAll",
+        contextId: crypto.randomUUID(),
       }),
     );
     expect(await notNegotiated).toEqual({
@@ -903,7 +1060,7 @@ integration("session-scoped browser agent backends", () => {
     });
     await changed;
     const refused = waitForMessage(viewer, (message) => message.type === "browser.error", 2_000);
-    send({ type: "clipboard.paste", text: "Do not type" });
+    send({ type: "clipboard.paste", text: "Do not type", contextId: crypto.randomUUID() });
     expect(await refused).toMatchObject({ error: { reason: "target-suspended" } });
     expect(f.phone.protocolErrors()).toEqual([]);
   });

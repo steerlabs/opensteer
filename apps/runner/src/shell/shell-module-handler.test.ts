@@ -1,3 +1,4 @@
+import { nodeTrustVariable } from "../../../../deploy/container/opensteer-node-trust.mjs";
 import { createId } from "@opensteer/core";
 import {
   RunnerAuxiliaryStreamIdSchema,
@@ -23,12 +24,15 @@ import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ShellModuleHandler,
+  shellAgentsStoppedSentence,
   pumpReadableToWebSocket,
   pumpWebSocketToWritable,
+  runnerTrustVariable,
   shellHelperEnvironment,
 } from "./shell-module-handler.js";
 
 const directories: string[] = [];
+
 const handlers: ShellModuleHandler[] = [];
 const cleanups: Array<() => void> = [];
 const servers: Array<{
@@ -75,6 +79,21 @@ describe("ShellModuleHandler", () => {
       USER: "test",
       XDG_CONFIG_HOME: "/Users/test/.config",
     });
+  });
+
+  it("keeps the Runner's own certificate switch out of the person's shells", () => {
+    expect(runnerTrustVariable).toBe(nodeTrustVariable);
+    expect(
+      shellHelperEnvironment({
+        HOME: "/Users/test",
+        NODE_USE_SYSTEM_CA: "1",
+        node_use_system_ca: "1",
+        Node_Use_System_Ca: "1",
+        opensteer_secret: "never",
+        Opensteer_Token: "never",
+        PATH: "/usr/bin",
+      }),
+    ).toEqual({ HOME: "/Users/test", PATH: "/usr/bin" });
   });
 
   it("bounds a stalled output pump at 1 MiB without blocking a sibling pump", async () => {
@@ -290,6 +309,25 @@ describe("ShellModuleHandler", () => {
       type: "runner.shell.session.closed",
     });
     expect(reports.at(-1)).not.toHaveProperty("auditDropped");
+    await handler.detach();
+  });
+
+  it("refuses an agent's shell in stopped mode", async () => {
+    const { handler, reports } = handlerFor(
+      process.execPath,
+      new URL("http://127.0.0.1:1"),
+      100,
+      undefined,
+      undefined,
+      true,
+    );
+    const refused = openMessage();
+    await handler.handleFrame(Buffer.from(JSON.stringify(refused)), false);
+    expect(reports.at(-1)).toMatchObject({
+      error: { code: "computer_stopped", message: shellAgentsStoppedSentence },
+      sessionId: refused.sessionId,
+      type: "runner.shell.session.rejected",
+    });
     await handler.detach();
   });
 
@@ -581,6 +619,7 @@ function handlerFor(
   cleanupWaitMs = 100,
   resolveDataTransport?: typeof import("@opensteer/runner-client").runnerWebSocketTransport,
   sendReport?: (report: ShellModuleEvent) => Promise<void>,
+  stopped = false,
 ) {
   const reports: ShellModuleEvent[] = [];
   const received = new EventEmitter();
@@ -598,6 +637,7 @@ function handlerFor(
     logger: { error: () => undefined, info: () => undefined },
     ...(resolveDataTransport ? { resolveDataTransport } : {}),
     transport: { controlCaPath: undefined, hostUrl, mode: "development" },
+    stopped,
   });
   const stream: RunnerModuleStream = {
     browserAttachPublicKeys: undefined,

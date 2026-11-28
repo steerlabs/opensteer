@@ -18,6 +18,8 @@ export interface DeploymentAccessCatalogDeployment extends DesktopDeploymentSumm
   readonly authorityKey?: string | undefined;
   readonly capabilities?: readonly HostCapability[] | null;
   readonly accountAccess: "owner" | "member" | null;
+  /** Which Opensteer account listed this row; null for a row no account listed. */
+  readonly accountOwner: { readonly issuer: string; readonly subject: string } | null;
   readonly accountLivenessExpiresAt: string | null;
   readonly hasAccountConnectRoute: boolean;
   readonly hasVerifiedAccountRoute: boolean;
@@ -74,6 +76,10 @@ export class DesktopAccessProjection {
           // The Account relation, not a route: it says what this Account may do
           // with the listing, which the live access kind never answers.
           accountAccess: fromAccount ? connection.accountAccess : null,
+          accountOwner:
+            connection.source.kind === "account"
+              ? { issuer: connection.source.issuer, subject: connection.source.subject }
+              : null,
           accountLivenessExpiresAt: facts.accountLivenessExpiresAt,
           activeOrigin: facts.origin,
           canonicalOrigin: document.canonicalOrigin,

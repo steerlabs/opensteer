@@ -156,4 +156,20 @@ describe("Antigravity SQLite turn outcome inspection", () => {
     const check = await watchAntigravityPromptOutcome(profileDirectory, sessionId);
     expect(await check({ stopReason: "end_turn" }, { assistantText: "" })).toBeUndefined();
   });
+
+  it("does not truncate a SQLite failure message mid-secret before named-secret redaction (X4)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-antigravity-truncate-"));
+    temporaryDirectories.push(root);
+    const profileDirectory = join(root, "profile");
+    const conversations = join(profileDirectory, "antigravity-acp", "conversations");
+    await mkdir(conversations, { recursive: true });
+    const dbPath = join(conversations, `${sessionId}.db`);
+
+    const secret = "synthetic-boundary-secret-9M4X";
+    const check = await watchAntigravityPromptOutcome(profileDirectory, sessionId);
+    appendStep(dbPath, 0, 17, `INTERNAL (code 500): ${"x".repeat(1_990)}${secret} tail`);
+
+    const failure = await check({ stopReason: "end_turn" }, { assistantText: "" });
+    expect(failure?.error.message).toContain(secret);
+  });
 });

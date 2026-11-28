@@ -266,3 +266,310 @@ it("refreshes an authorized hidden worker on a scoped connection and ignores unr
   await vi.waitFor(() => expect(button(node, "Resume worker")).toBeUndefined(), { timeout: 2000 });
   expect(read).toHaveBeenCalledTimes(5);
 });
+
+it("shows live webhook address, marks legacy automations as needing an update without prefilling code, and preserves spaces in interpreter argv (AA5)", async () => {
+  client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  harness.client = client;
+  const triggers = unwrapRpcResult(await client.rpc["triggers.list"]({})).triggers;
+  const webhookTrigger = triggers.find((t) => t.source.kind === "webhook")!;
+  const cronTrigger = triggers.find(
+    (t) => t.source.kind === "schedule" && t.source.schedule.kind === "cron",
+  )!;
+  const baseRead = client.rpc["triggers.get"];
+  const legacySource = "export default async function ({ opensteer }) { return opensteer; }";
+  const webhookUrl = "https://home.opensteer.example/hooks/v1/whk_live_addr_123";
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(client.rpc, {
+      get(target, key) {
+        if (key !== "triggers.get") return Reflect.get(target, key);
+        return async (input: { triggerId: string }) => {
+          const detail = unwrapRpcResult(await baseRead(input));
+          if (input.triggerId === webhookTrigger.id) {
+            return {
+              ok: true,
+              data: {
+                ...detail,
+                webhook: { scope: "public" as const, url: webhookUrl },
+              },
+            };
+          }
+          if (input.triggerId === cronTrigger.id) {
+            return {
+              ok: true,
+              data: {
+                ...detail,
+                revision: {
+                  ...detail.revision,
+                  legacySource,
+                  script: null,
+                },
+              },
+            };
+          }
+          return { ok: true, data: detail };
+        };
+      },
+    }),
+  });
+  const dispatch = vi.spyOn(client, "dispatch").mockResolvedValue({} as never);
+
+  // 1. Webhook detail shows live address, never "secret were shown once".
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () =>
+    root!.render(
+      <MemoryRouter key="webhook" initialEntries={[`/automations/${webhookTrigger.id}`]}>
+        <Routes>
+          <Route path="/automations/:triggerId" element={<AutomationDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
+  await vi.waitFor(() => expect(node.textContent).toContain(webhookTrigger.name), {
+    timeout: 2000,
+  });
+  expect(node.textContent).toContain(webhookUrl);
+  expect(node.textContent).not.toContain("secret were shown once");
+
+  // 2. Legacy detail says "Needs an update: ask your agent", never "Legacy program".
+  await act(async () =>
+    root!.render(
+      <MemoryRouter key="legacy-detail" initialEntries={[`/automations/${cronTrigger.id}`]}>
+        <Routes>
+          <Route path="/automations/:triggerId" element={<AutomationDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
+  await vi.waitFor(() => expect(node.textContent).toContain(cronTrigger.name), { timeout: 2000 });
+  expect(node.textContent).toContain("Needs an update: ask your agent");
+  expect(node.textContent).not.toContain("Legacy program");
+
+  // 3. Editor keeps editable script empty for legacy automation and preserves spaces in interpreter argv.
+  await act(async () =>
+    root!.render(
+      <MemoryRouter key="legacy-edit" initialEntries={[`/automations/${cronTrigger.id}/edit`]}>
+        <Routes>
+          <Route path="/automations/:triggerId" element={<AutomationDetailPage />} />
+          <Route path="/automations/:triggerId/edit" element={<AutomationEditorPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
+  await vi.waitFor(() => expect(node.querySelector("textarea")).not.toBeNull(), { timeout: 2000 });
+  const textarea = node.querySelector("textarea")!;
+  expect(textarea.value).toBe("");
+  expect(node.textContent).toContain("Needs an update: ask your agent");
+  expect(node.textContent).toContain(legacySource);
+
+  const setNativeValue = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+    const proto =
+      el instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const exeInput = node.querySelector<HTMLInputElement>(
+    'input[aria-label="Interpreter executable"]',
+  )!;
+  expect(exeInput).not.toBeNull();
+  await act(async () => setNativeValue(exeInput, "/Applications/My App/python3"));
+  const addArg = button(node, "Add argument");
+  expect(addArg).toBeDefined();
+  await act(async () => addArg.click());
+  const arg1Input = node.querySelector<HTMLInputElement>(
+    'input[aria-label="Interpreter argument 1"]',
+  )!;
+  await act(async () => setNativeValue(arg1Input, "-u"));
+  await act(async () => setNativeValue(textarea, "print('ok')"));
+  await act(async () => {
+    node
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  await vi.waitFor(() => expect(dispatch).toHaveBeenCalled(), { timeout: 2000 });
+  expect(dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: "trigger.update",
+      input: expect.objectContaining({
+        script: {
+          interpreter: ["/Applications/My App/python3", "-u"],
+          text: "print('ok')",
+        },
+      }),
+    }),
+  );
+});
+
+it("shows a plain notice instead of empty output when a firing's output was pruned", async () => {
+  client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  harness.client = client;
+  const trigger = unwrapRpcResult(await client.rpc["triggers.list"]({})).triggers.find(
+    (t) => t.source.kind === "schedule" && t.source.schedule.kind === "cron",
+  )!;
+  const baseDetail = unwrapRpcResult(await client.rpc["triggers.get"]({ triggerId: trigger.id }));
+  const prunedDetail = {
+    ...baseDetail,
+    occurrences: [
+      {
+        ...baseDetail.occurrences[0]!,
+        outputPrunedAt: "2026-11-23T00:00:00.000Z",
+        result: null,
+        status: "succeeded" as const,
+        stderr: "",
+        stdout: "",
+      },
+    ],
+  };
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(client.rpc, {
+      get(target, key) {
+        if (key !== "triggers.get") return Reflect.get(target, key);
+        return async () => ({ ok: true as const, data: prunedDetail });
+      },
+    }),
+  });
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () =>
+    root!.render(
+      <MemoryRouter initialEntries={[`/automations/${trigger.id}`]}>
+        <Routes>
+          <Route path="/automations/:triggerId" element={<AutomationDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
+  await vi.waitFor(
+    () => expect(node.textContent).toContain("Opensteer no longer keeps this firing's output."),
+    { timeout: 2000 },
+  );
+  expect(node.querySelector("details.automation-run__output")).toBeNull();
+});
+
+it("lists secret names and lets the person add, replace, and remove secrets with honest copy", async () => {
+  const { node } = await mount();
+  expect(node.textContent).toContain("Secrets");
+  expect(node.textContent).toContain("can read them there");
+  expect(node.textContent).toContain("prints a secret");
+  expect(node.textContent?.toLowerCase()).not.toContain("agent cannot see");
+
+  // Add a secret
+  await act(async () => button(node, "Add").click());
+  const nameInput = node.querySelector<HTMLInputElement>('input[name="secret-name"]')!;
+  const valueInput = node.querySelector<HTMLInputElement>('input[name="secret-value"]')!;
+  expect(nameInput).not.toBeNull();
+  expect(valueInput.type).toBe("password");
+  const setInput = (el: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  await act(async () => {
+    setInput(nameInput, "API_TOKEN");
+    setInput(valueInput, "secret-value-1");
+  });
+  await act(async () => button(node, "Save").click());
+  await vi.waitFor(() => expect(node.textContent).toContain("API_TOKEN"), { timeout: 2000 });
+  expect(node.textContent).not.toContain("secret-value-1");
+
+  // Add mode warns when entering a name that already exists (S7).
+  await act(async () => button(node, "Add").click());
+  const dupNameInput = node.querySelector<HTMLInputElement>('input[name="secret-name"]')!;
+  await act(async () => {
+    setInput(dupNameInput, "API_TOKEN");
+  });
+  expect(node.textContent).toContain("replaces");
+  await act(async () => button(node, "Cancel").click());
+
+  // Replace the secret
+  await act(async () => button(node, "Replace").click());
+  const replaceInput = node.querySelector<HTMLInputElement>('input[name="secret-value"]')!;
+  expect(replaceInput.type).toBe("password");
+  await act(async () => {
+    setInput(replaceInput, "secret-value-2");
+  });
+  await act(async () => button(node, "Save").click());
+  await vi.waitFor(() => expect(node.querySelector('input[name="secret-value"]')).toBeNull(), {
+    timeout: 2000,
+  });
+  expect(node.textContent).toContain("API_TOKEN");
+  expect(node.textContent).not.toContain("secret-value-2");
+
+  // Remove requires confirmation before deleting (S7).
+  await act(async () => button(node, "Remove").click());
+  expect(node.textContent).toContain("API_TOKEN");
+  expect(node.textContent).toContain("Confirm remove");
+  await act(async () => button(node, "Confirm remove").click());
+  await vi.waitFor(() => expect(node.textContent).not.toContain("API_TOKEN"), { timeout: 2000 });
+});
+
+it("shows an explicit recovery state with confirmation when secrets can no longer be read (R6)", async () => {
+  client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  harness.client = client;
+  const trigger = unwrapRpcResult(await client.rpc["triggers.list"]({})).triggers.find(
+    (t) => t.source.kind === "schedule" && t.source.schedule.kind === "cron",
+  )!;
+  const baseRead = client.rpc["triggers.get"];
+  const baseDispatch = client.dispatch.bind(client);
+  let unreadable = true;
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(client.rpc, {
+      get(target, key) {
+        if (key !== "triggers.get") return Reflect.get(target, key);
+        return async (input: { triggerId: string }) => {
+          const res = unwrapRpcResult(await baseRead(input));
+          return {
+            ok: true as const,
+            data: {
+              ...res,
+              secretNames: unreadable ? [] : res.secretNames,
+              secretsUnreadable: unreadable,
+            },
+          };
+        };
+      },
+    }),
+  });
+  const dispatchSpy = vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+    if (command.type === "trigger.secrets.set" && command.clearAll) {
+      unreadable = false;
+    }
+    return baseDispatch(command);
+  });
+
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () =>
+    root!.render(
+      <MemoryRouter initialEntries={[`/automations/${trigger.id}`]}>
+        <Routes>
+          <Route path="/automations/:triggerId" element={<AutomationDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
+  await vi.waitFor(
+    () => expect(node.textContent).toContain("These secrets can no longer be read."),
+    {
+      timeout: 2000,
+    },
+  );
+  expect(button(node, "Add")).toBeUndefined();
+  expect(button(node, "Clear all secrets")).toBeDefined();
+  await act(async () => button(node, "Clear all secrets").click());
+  expect(button(node, "Confirm clear all")).toBeDefined();
+  await act(async () => button(node, "Confirm clear all").click());
+  await vi.waitFor(() => expect(node.textContent).toContain("No secrets yet."), { timeout: 2000 });
+  expect(dispatchSpy).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "trigger.secrets.set", triggerId: trigger.id, clearAll: true }),
+  );
+});

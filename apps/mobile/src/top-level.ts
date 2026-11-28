@@ -1,6 +1,6 @@
 import type { NavigationAction } from "@react-navigation/native";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { isTeamSideRoot, sideMemory } from "./side-memory.js";
+import { sideMemory } from "./side-memory.js";
 import { presentedFrom } from "./navigation-presentations.js";
 
 /**
@@ -18,11 +18,6 @@ const topLevelRoutes: ReadonlySet<string> = new Set([
   "Schedules",
   "Tabs",
   "TaskSearch",
-  "TeamChannel",
-  "TeamChannels",
-  "TeamKnowledge",
-  "TeamSearch",
-  "Teams",
   "Thread",
   "WorkspaceBrowser",
 ]);
@@ -52,9 +47,7 @@ export interface TopLevelTarget {
 export function topLevelIndex(state: StackView): 0 | 1 | null {
   if (state.routes[0]?.name !== "Home") return null;
   const above = state.routes[1];
-  return above !== undefined &&
-    presentedFrom(state) !== 1 &&
-    (topLevelRoutes.has(above.name) || isTeamSideRoot(state, above.key))
+  return above !== undefined && presentedFrom(state) !== 1 && topLevelRoutes.has(above.name)
     ? 1
     : 0;
 }
@@ -70,6 +63,19 @@ export function topLevelRoute<T extends StackRoute>(state: {
 
 export function isTopLevel(state: StackView, key: string): boolean {
   return topLevelRoute(state)?.key === key;
+}
+
+/**
+ * Whether this screen sits inside a Home's stack (not on the list of Homes,
+ * and not inside a presented modal/sheet flow) and therefore carries the
+ * sidebar Menu in its bar.
+ */
+export function showsSidebarMenu(state: StackView, key: string): boolean {
+  if (state.routes[0]?.name !== "Home") return false;
+  const index = state.routes.findIndex((route) => route.key === key);
+  if (index < 0) return false;
+  const from = presentedFrom(state);
+  return from < 0 || index < from;
 }
 
 /** Whether the screen in front, sheets aside, is top-level and its edge swipe may open the sidebar. */
@@ -89,7 +95,7 @@ export const topLevelScreenOptions: NativeStackNavigationOptions = {
   headerBackVisible: false,
 };
 
-/** An explicit sidebar/link destination, preserving the other sides' addresses. */
+/** An explicit sidebar/link destination. */
 export function openTopLevel(state: StackView, target: TopLevelTarget): NavigationAction | null {
   return sideMemory.enter(state, target);
 }

@@ -134,7 +134,7 @@ export function personalSessionFrom(
   response: SessionExchangeResponse,
 ): PersonalRemoteSession {
   if (response.credentialDelivery !== "header") {
-    throw new Error("This deployment returned a session this app cannot hold.");
+    throw new Error("This Opensteer returned a session this app cannot hold.");
   }
   return PersonalRemoteSessionSchema.parse({
     viewLoginId: globalThis.crypto.randomUUID(),

@@ -1,0 +1,4 @@
+services:
+  browser-egress:
+    environment:
+      OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED: "true"

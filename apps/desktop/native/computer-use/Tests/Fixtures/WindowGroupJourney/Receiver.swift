@@ -205,6 +205,9 @@ mainMenu.addItem(fileItem)
 let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
 let editMenu = NSMenu(title: "Edit")
 editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+let redoItem = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+redoItem.keyEquivalentModifierMask = [.command, .shift]
+editMenu.addItem(redoItem)
 editMenu.addItem(withTitle: "Select All", action: Selector(("selectAll:")), keyEquivalent: "a")
 editItem.submenu = editMenu
 mainMenu.addItem(editItem)
@@ -272,18 +275,34 @@ let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
   case "owner-resume": a.makeFirstResponder(ownerNote)
   case "owner-end": ownerNote.setSelectedRange(NSRange(location: (ownerNote.string as NSString).length, length: 0))
   case "owner-middle": ownerNote.setSelectedRange(NSRange(location: 2, length: 0))
+  case "owner-rewrite-last":
+    let current = ownerNote.string
+    if let last = current.last {
+      let rewritten = String(current.dropLast()) + String(last).uppercased()
+      ownerNote.string = rewritten
+      ownerNote.setSelectedRange(NSRange(location: (rewritten as NSString).length, length: 0))
+    }
   case "owner-close-child":
     if let child = windows.removeValue(forKey: "Child") {
       child.parent?.removeChildWindow(child)
       child.close()
     }
     a.makeFirstResponder(ownerNote)
+  case "owner-other":
+    username.stringValue = ""
+    a.makeFirstResponder(username)
   case "owner-secure":
     password.stringValue = "owner-fixture-secret"
     a.makeFirstResponder(password)
   case "owner-state":
-    try? JSONSerialization.data(withJSONObject: ["text": ownerNote.string, "saves": ownerSaveCount,
-      "latencyChanges": ownerLatencyCount])
+    try? JSONSerialization.data(withJSONObject: ["text": ownerNote.string,
+      "other": username.currentEditor()?.string ?? username.stringValue, "saves": ownerSaveCount,
+      "latencyChanges": ownerLatencyCount,
+      "canUndo": ownerNote.undoManager?.canUndo ?? false,
+      "canRedo": ownerNote.undoManager?.canRedo ?? false,
+      "redoEnabled": redoItem.isEnabled,
+      "appActive": app.isActive,
+      "keyWindow": app.keyWindow?.title ?? ""])
       .write(to: output.appendingPathComponent("owner-state.json"))
   case "owner-latency":
     ownerLatencyCount = 0
@@ -384,6 +403,9 @@ let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
   case "fullscreen": root.toggleFullScreen(nil)
   case "minimize": root.miniaturize(nil)
   case "restore": root.deminiaturize(nil)
+  case "close-all":
+    for (_, window) in windows { window.close() }
+    windows.removeAll()
   case "close":
     if let name = row["window"], ["Liveness", "Unreadable"].contains(name) {
       windows.removeValue(forKey: name)?.close()

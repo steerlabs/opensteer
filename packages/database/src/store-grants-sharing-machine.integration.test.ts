@@ -4,7 +4,7 @@ import type { StoreFixture } from "./store.integration.test-support.js";
 
 import { createHash, randomUUID } from "node:crypto";
 
-import { createId, type RunId, type RunnerId } from "@opensteer/core";
+import { createId, OpensteerError, type RunId, type RunnerId } from "@opensteer/core";
 import { ShellSessionIdSchema } from "@opensteer/protocol";
 import { sql } from "kysely";
 
@@ -24,6 +24,7 @@ describeStore("PostgreSQL store", (it) => {
     const { createRunFixture, enqueueHumanTrigger, store, bindAgentControlRun, database } =
       storeFixture;
     const fixture = await createRunFixture("person-message");
+    const other = await createRunFixture("unrelated-to-person-message");
     const source = await enqueueHumanTrigger({
       content: [
         {
@@ -80,6 +81,13 @@ describeStore("PostgreSQL store", (it) => {
         .where("messageId", "=", results[0]!.message.id)
         .execute(),
     ).toEqual([{ id: results[0]!.message.id, visible: true }]);
+    await expect(
+      database
+        .selectFrom("threads")
+        .select("lastReplyMessageId")
+        .where("id", "=", other.thread.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ lastReplyMessageId: null });
     const row = await database
       .selectFrom("messages")
       .selectAll()
@@ -600,7 +608,10 @@ describeStore("PostgreSQL store", (it) => {
           status: "active",
         },
       ]);
-      await expect(store.assertActiveGrant(capability(started))).resolves.toBeUndefined();
+      await expect(store.assertActiveGrant(capability(started))).resolves.toEqual({
+        agentConnectionId: null,
+        taskOriginConnectionId: null,
+      });
     });
     it("cuts tool authority on Stop while the Runner can still report the Run's end", async ({
       storeFixture,
@@ -683,7 +694,10 @@ describeStore("PostgreSQL store", (it) => {
       await expect(
         store.revokeRunner(started.runnerId, started.userId, { allowDeployment: true }),
       ).rejects.toMatchObject({ code: "forbidden" });
-      await expect(store.assertActiveGrant(capability(started))).resolves.toBeUndefined();
+      await expect(store.assertActiveGrant(capability(started))).resolves.toEqual({
+        agentConnectionId: null,
+        taskOriginConnectionId: null,
+      });
     });
     it("revokes a worker's grant when its Assignment is cancelled", async ({ storeFixture }) => {
       const { startRunFixture, store } = storeFixture;
@@ -1391,6 +1405,73 @@ describeStore("PostgreSQL store", (it) => {
       ).rejects.toMatchObject({
         code: "conflict",
       });
+    });
+
+    it("admits an agent's Stop where it commits, and records the agent as its sender (AD3)", async ({
+      storeFixture,
+    }) => {
+      const { store, database } = storeFixture;
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
+      const target = await shellMachine(storeFixture, {
+        ownerId,
+        name: "Target",
+        tokenSuffix: "agent-stop",
+      });
+      const caller = await shellMachine(storeFixture, {
+        ownerId,
+        name: "Caller",
+        tokenSuffix: "agent-stop-c",
+      });
+      const sessionId = await reserve(storeFixture, {
+        callerRunnerId: caller,
+        ownerId,
+        runnerId: target,
+      });
+      const authoritySource = { kind: "mcp", callerKind: "connection", callerKey: "connection:c1" };
+      // Its authority ended before the Stop committed: nothing ends, and nothing is recorded.
+      await expect(
+        store.endShellSession({
+          idempotency: {
+            key: "agent-stop-1",
+            requestedBy: ownerId,
+            authoritySource,
+            admit: async () => {
+              throw new OpensteerError({ code: "not_found", message: "Not found" });
+            },
+          },
+          reason: "stopped-by-owner",
+          sessionId,
+        }),
+      ).rejects.toMatchObject({ code: "not_found" });
+      const open = await database
+        .selectFrom("machineAccessSessions")
+        .select("endedAt")
+        .where("id", "=", sessionId)
+        .executeTakeFirstOrThrow();
+      expect(open.endedAt).toBeNull();
+      // Admitted: it ends, and the ledger names the agent, not the person.
+      const admitted: unknown[] = [];
+      await expect(
+        store.endShellSession({
+          idempotency: {
+            key: "agent-stop-2",
+            requestedBy: ownerId,
+            authoritySource,
+            admit: async (transaction) => {
+              admitted.push(transaction);
+            },
+          },
+          reason: "stopped-by-owner",
+          sessionId,
+        }),
+      ).resolves.toEqual({ ended: true });
+      expect(admitted).toHaveLength(1);
+      const recorded = await database
+        .selectFrom("commands")
+        .select(["authoritySource"])
+        .where("idempotencyKey", "in", ["agent-stop-1", "agent-stop-2"])
+        .execute();
+      expect(recorded).toEqual([{ authoritySource }]);
     });
 
     it("reports effective owners for a page of computers in one read", async ({ storeFixture }) => {

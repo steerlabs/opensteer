@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router";
+import { mockConnectedAgents } from "@opensteer/client/mock";
 import { createId } from "@opensteer/core";
 import { MockHostClient } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,12 +13,113 @@ let host: MockHostClient | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   host?.dispose();
+  vi.restoreAllMocks();
   document.body.replaceChildren();
 });
 
 describe("signed-in MCP connection consent", () => {
+  it.each([390, 1440])(
+    "keeps an unverified claim separate and grants eligible Chrome at %d px",
+    async (width) => {
+      const sourceId = createId("browserSource");
+      host = new MockHostClient({
+        latencyMs: 0,
+        connectionConsent: {
+          requestId: "r".repeat(43),
+          // The preview, as the Home, cleans the name where the client registers it.
+          clientName: "Grok\u202e\nVerified",
+          redirectUri: "https://example.agent/callback",
+          resource: "https://host.example/internal/v1/mcp",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          chromeTabs: [{ sourceId, computerName: "Work Mac", paired: true }],
+          chromeTabsNeedPairing: true,
+          chromeTabsRepairNames: ["Home Mac"],
+        },
+      });
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
+      const container = document.body.appendChild(document.createElement("div"));
+      container.style.width = `${width}px`;
+      root = createRoot(container);
+      await act(async () =>
+        root!.render(
+          <MemoryRouter>
+            <McpAuthorization client={host!} requestId={"r".repeat(43)} />
+          </MemoryRouter>,
+        ),
+      );
+      expect(container.querySelector("h1, h2")?.textContent).toBe("An agent wants to connect");
+      expect(container.querySelector(".agent-mark")).toBeNull();
+      expect(container.querySelector(".agent-who__claim")?.textContent).toBe(
+        "It calls itself: “Grok Verified”",
+      );
+      expect(
+        container.querySelector<HTMLInputElement>('input[placeholder="Connection name"]')?.value,
+      ).toBe("Grok Verified");
+      expect(container.textContent).toContain(
+        "To share tabs from Chrome on Home Mac, pair it again.",
+      );
+      expect(
+        container.querySelector('[aria-label="Tabs you share from Chrome on Home Mac"]'),
+      ).toBeNull();
+      const chrome = container.querySelector<HTMLInputElement>(
+        '[aria-label="Tabs you share from Chrome on Work Mac"]',
+      )!;
+      await act(async () => chrome.click());
+      expect(chrome.checked).toBe(true);
+      expect(container.textContent).toContain("only while you share it from Chrome’s toolbar");
+    },
+  );
+
+  it.each([390, 1440])(
+    "shows both verified origins and a quiet pairing hint at %d px",
+    async (width) => {
+      const { identity, identityAtConsent } = mockConnectedAgents("seeded").connections.find(
+        ({ label }) => label === "Errand",
+      )!;
+      host = new MockHostClient({
+        latencyMs: 0,
+        connectionConsent: {
+          requestId: "r".repeat(43),
+          clientName: "Untrusted name",
+          redirectUri: "https://agentpay.example/callback",
+          resource: "https://host.example/internal/v1/mcp",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          ...(identity ? { identity } : {}),
+          ...(identityAtConsent ? { identityAtConsent } : {}),
+          chromeTabs: [],
+          chromeTabsNeedPairing: true,
+        },
+      });
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
+      const container = document.body.appendChild(document.createElement("div"));
+      container.style.width = `${width}px`;
+      root = createRoot(container);
+      await act(async () =>
+        root!.render(
+          <MemoryRouter>
+            <McpAuthorization client={host!} requestId={"r".repeat(43)} />
+          </MemoryRouter>,
+        ),
+      );
+      expect(container.querySelector("h1, h2")?.textContent).toBe("AgentPay");
+      expect(container.querySelector(".agent-mark")).not.toBeNull();
+      expect(container.textContent).not.toContain("Asked for this");
+      expect(container.textContent).toContain(
+        "Holds the access: “AgentPay” · https://agentpay.example",
+      );
+      expect(container.textContent).not.toContain("Untrusted name");
+      // The verified name is the heading; the line under it says only that it is verified.
+      expect(container.querySelector(".agent-who__name")?.textContent).toBe("Verified");
+      expect(container.textContent).not.toContain("Access goes to");
+      expect(container.textContent).toContain(
+        "To share tabs with a connected agent, pair Chrome again.",
+      );
+      expect(container.querySelector('[aria-label^="Tabs you share from Chrome"]')).toBeNull();
+    },
+  );
+
   it("discards an old approval response after the window receives another request", async () => {
-    host = new MockHostClient({ latencyMs: 0 });
+    host = new MockHostClient({ latencyMs: 0, grantsAvailable: false });
     Object.defineProperty(host.rpc, "connections.authorization.get", {
       value: vi.fn(async ({ requestId }: { requestId: string }) => ({
         ok: true,
@@ -173,8 +276,8 @@ describe("signed-in MCP connection consent", () => {
     });
     expect(onClose).toHaveBeenCalledOnce();
   });
-  it("requires a deliberate approval and defaults to an approval ceiling", async () => {
-    host = new MockHostClient({ latencyMs: 0 });
+  it("keeps the simple consent on a Home without grants, and defaults to an approval ceiling", async () => {
+    host = new MockHostClient({ latencyMs: 0, grantsAvailable: false });
     Object.defineProperty(host.rpc, "connections.authorization.get", {
       value: vi.fn(async () => ({
         ok: true,
@@ -196,8 +299,16 @@ describe("signed-in MCP connection consent", () => {
       root!.render(<McpAuthorization client={host!} requestId={"r".repeat(43)} />),
     );
     expect(dispatch).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("not verified");
+    expect(container.querySelector("h1, h2")?.textContent).toBe("An agent wants to connect");
+    expect(container.textContent).toContain("It calls itself: “Example agent”");
+    // Where access goes is said once, as the destination; not again as "Returns to".
+    expect(container.textContent).not.toContain("Returns to");
     expect(container.textContent).toContain("Access goes to example.agent.");
+    expect(container.textContent).not.toContain("What it can use");
+    // The mode reads as it does for a connection: its work never runs with
+    // the person's own engine settings.
+    expect(container.textContent).not.toContain("a rule you set in the engine");
+    expect(container.textContent).toContain("Asks you before anything that changes something.");
     expect(container.querySelector<HTMLInputElement>('input[type="radio"]:checked')!.value).toBe(
       "approval-required",
     );
@@ -215,9 +326,8 @@ describe("signed-in MCP connection consent", () => {
         },
       }),
     );
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "could not be approved",
-    );
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("approved");
   });
   it("never approves an expired or unreadable request", async () => {
     host = new MockHostClient({ latencyMs: 0 });

@@ -1,11 +1,13 @@
+import type {
+  DesktopIphoneRunnerPort,
+  DesktopIphoneRunnerConnection,
+} from "../iphone/iphone-service.js";
 import {
   iphoneRunnerBridgeHeader,
   iphoneRunnerMethodSchema,
   iphoneRunnerResults,
   iphoneRunnerParams,
-  type IphoneRunnerPort,
   type IphoneMediaAttachment,
-  type IphoneRunnerConnection,
 } from "@opensteer/protocol/iphone-bridge";
 import { IphoneServiceError } from "../iphone/iphone-store.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -125,8 +127,26 @@ export interface ComputerUseBridgeHelperPort {
  * Runner's session must be refused here rather than answered by the helper,
  * which only knows that this one desktop opened it.
  */
+/** What this Mac itself knows about one agent session on its apps. */
+export interface ComputerUseAgentSession {
+  readonly sessionId: ComputerUseSessionId;
+  /** The task the session was opened for, as the Run named it. */
+  readonly threadTitle: string | null;
+  /** The app it last observed or acted on. */
+  readonly app: string | null;
+  /**
+   * `stopping` from the person's Stop until the helper confirms the close,
+   * `failed` when it did not confirm; the session is refused all use meanwhile.
+   */
+}
+
 export class ComputerUseSessionOwnership {
   readonly #owners = new Map<ComputerUseSessionId, object>();
+  readonly #details = new Map<
+    ComputerUseSessionId,
+    { threadTitle: string | null; app: string | null }
+  >();
+  readonly #listeners = new Set<() => void>();
   readonly #viewOwners = new Map<string, object>();
   readonly #videoOwners = new Map<string, object>();
   readonly #passwordOwners = new Map<string, object>();
@@ -170,11 +190,52 @@ export class ComputerUseSessionOwnership {
     return this.#owners.size + this.#viewOwners.size + this.#videoOwners.size;
   }
 
-  claim(sessionId: ComputerUseSessionId, owner: object): void {
-    this.#owners.set(sessionId, owner);
+  /** Agent sessions alone: views and video are someone watching. */
+  get sessions(): number {
+    return this.#owners.size;
   }
 
-  /** True when nobody holds it, or this owner does. */
+  claim(sessionId: ComputerUseSessionId, owner: object): void {
+    this.#owners.set(sessionId, owner);
+    this.#changed();
+  }
+
+  /** Remembers what a session is for, once the helper accepted it. */
+  describe(
+    sessionId: ComputerUseSessionId,
+    detail: { readonly threadTitle?: string | null; readonly app?: string },
+  ): void {
+    if (!this.#owners.has(sessionId)) return;
+    const current = this.#details.get(sessionId) ?? { threadTitle: null, app: null };
+    const next = {
+      threadTitle: detail.threadTitle === undefined ? current.threadTitle : detail.threadTitle,
+      app: detail.app ?? current.app,
+    };
+    if (next.threadTitle === current.threadTitle && next.app === current.app) return;
+    this.#details.set(sessionId, next);
+    this.#changed();
+  }
+
+  agentSessions(): readonly ComputerUseAgentSession[] {
+    return [...this.#owners.keys()].map((sessionId) => ({
+      sessionId,
+      threadTitle: this.#details.get(sessionId)?.threadTitle ?? null,
+      app: this.#details.get(sessionId)?.app ?? null,
+    }));
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #changed(): void {
+    for (const sessionId of this.#details.keys())
+      if (!this.#owners.has(sessionId)) this.#details.delete(sessionId);
+    for (const listener of this.#listeners) listener();
+  }
+
+  /** True when nobody holds it, or this owner does and the person has not stopped it. */
   mayUse(sessionId: ComputerUseSessionId, owner: object): boolean {
     const holder = this.#owners.get(sessionId);
     return holder === undefined || holder === owner;
@@ -182,12 +243,14 @@ export class ComputerUseSessionOwnership {
 
   /** Gives the session back, but only on behalf of the owner that holds it. */
   release(sessionId: ComputerUseSessionId, owner: object): void {
-    if (this.#owners.get(sessionId) === owner) this.#owners.delete(sessionId);
+    if (this.#owners.get(sessionId) !== owner) return;
+    this.#owners.delete(sessionId);
+    this.#changed();
   }
 
   /** Gives the session back whoever holds it: the helper said it ended. */
   ended(sessionId: ComputerUseSessionId): void {
-    this.#owners.delete(sessionId);
+    if (this.#owners.delete(sessionId)) this.#changed();
   }
 
   releaseAll(owner: object): readonly ComputerUseSessionId[] {
@@ -197,6 +260,7 @@ export class ComputerUseSessionOwnership {
       released.push(sessionId);
       this.#owners.delete(sessionId);
     }
+    if (released.length) this.#changed();
     return released;
   }
 
@@ -214,7 +278,8 @@ export interface PasswordsAuthorityPort {
 }
 
 export interface ComputerUseBridgeServerOptions {
-  readonly iphone?: IphoneRunnerPort;
+  /** The menu bar's Stop; an agent's work is refused while it is closed. */
+  readonly iphone?: DesktopIphoneRunnerPort;
   readonly passwords?: PasswordsAuthorityPort;
   /** How long past a deadline to wait; `computerUseBridgeGraceMs` unless a test shortens it. */
   readonly graceMs?: number;
@@ -243,19 +308,22 @@ export interface ComputerUseBridgeServerOptions {
 }
 
 interface BridgeConnection {
+  readonly drained: Promise<boolean>;
   readonly detachEvents: () => void;
+  readonly owner: BridgeOwner;
   readonly socket: WebSocket;
 }
 
 /** One connection's ownership identity, liveness fence, and in-flight opens. */
 interface BridgeOwner {
   alive: boolean;
+  cleanupUnconfirmed: boolean;
+  readonly lifetime: AbortController;
   readonly ownerInputVersion: 2 | undefined;
   readonly videoProfile: 1 | undefined;
   readonly opening: Set<ComputerUseSessionId>;
-  readonly iphoneLifetime: AbortController;
   readonly passwords: Set<string>;
-  iphone?: IphoneRunnerConnection | undefined;
+  iphone?: DesktopIphoneRunnerConnection | undefined;
 }
 
 /** The slot's one authenticated connection, held from the upgrade on. */
@@ -287,8 +355,9 @@ type Outcome<Value> =
  */
 export class ComputerUseBridgeServer {
   readonly #connections = new Set<BridgeConnection>();
+  #cleanupUnconfirmed = false;
   readonly #passwords: PasswordsAuthorityPort | undefined;
-  readonly #iphone: IphoneRunnerPort | undefined;
+  readonly #iphone: DesktopIphoneRunnerPort | undefined;
   readonly #iphoneMediaSockets = new Set<WebSocket>();
   readonly #graceMs: number;
   readonly #helper: ComputerUseBridgeHelperPort;
@@ -729,7 +798,8 @@ export class ComputerUseBridgeServer {
     // does not try to close a session the helper has not opened yet.
     const owner: BridgeOwner = {
       alive: true,
-      iphoneLifetime: new AbortController(),
+      cleanupUnconfirmed: false,
+      lifetime: new AbortController(),
       ownerInputVersion,
       videoProfile,
       opening: new Set(),
@@ -773,36 +843,40 @@ export class ComputerUseBridgeServer {
     const detachDisconnect = this.#helper.onDisconnect(() => {
       changed();
       this.#releaseViews(owner, false);
-      // The helper is gone and so are its sessions; tell the Runner at once so
-      // its local session cache and the Host's live-session projection do not
-      // outlive native ownership. The connection is shared across slots, so
-      // this reaches every bridge server on this Mac.
       for (const sessionId of this.#ownership.releaseAll(owner)) {
         owner.opening.delete(sessionId);
         if (!owner.alive) continue;
         send(socket, {
           event: "session.stopped",
           kind: "event",
-          params: { reason: "app-quit", sessionId },
+          params: { reason: "app-quit", sessionId, unconfirmed: true },
         });
       }
     });
+    const drained = Promise.withResolvers<boolean>();
+    const requests = new Set<Promise<void>>();
     const connection: BridgeConnection = {
+      drained: drained.promise,
       detachEvents: () => {
         detachEvents();
         detachDisconnect();
         detachCapabilities?.();
       },
+      owner,
       socket,
     };
     this.#connections.add(connection);
     socket.on("message", (data: RawData) => {
-      void this.#handle(socket, owner, data);
+      const request = this.#handle(socket, owner, data).catch(() => {
+        owner.cleanupUnconfirmed = true;
+      });
+      requests.add(request);
+      void request.then(() => requests.delete(request));
     });
     socket.once("close", () => {
       owner.alive = false;
-      owner.iphoneLifetime.abort();
-      owner.iphone?.close();
+      owner.lifetime.abort();
+      const iphoneClosed = Promise.resolve(owner.iphone?.close()).catch(() => false);
       for (const id of owner.passwords) {
         this.#ownership.releasePassword(id, owner);
         void this.#passwords?.end(id).catch(() => undefined);
@@ -810,23 +884,32 @@ export class ComputerUseBridgeServer {
       owner.passwords.clear();
       this.#releaseViews(owner);
       connection.detachEvents();
-      this.#connections.delete(connection);
       releaseClaim();
-      // A Runner's socket dropping ends its sessions on this Mac: the helper
-      // is told, rather than left holding a session no live Run can reach. A
-      // session whose open has not answered yet is closed by that answer
-      // instead — closing one the helper has not opened would be a no-session
-      // refusal now and a session nobody owns a moment later.
-      for (const sessionId of this.#ownership.releaseAll(owner)) {
-        if (owner.opening.has(sessionId)) continue;
-        this.#endSession(sessionId, "runner-left");
-      }
+      const closes = this.#ownership
+        .releaseAll(owner)
+        .filter((sessionId) => !owner.opening.has(sessionId))
+        .map((sessionId) => this.#endSession(sessionId, "runner-left"));
+      void Promise.all([iphoneClosed, ...closes, ...requests]).then((results) => {
+        const confirmed = !owner.cleanupUnconfirmed && results.every((result) => result !== false);
+        if (!confirmed) this.#cleanupUnconfirmed = true;
+        this.#connections.delete(connection);
+        drained.resolve(confirmed);
+      });
     });
     socket.once("error", () => socket.close());
   }
 
+  async workerDisconnected(): Promise<boolean> {
+    const outcome = await this.#within(
+      Promise.all([...this.#connections].map((connection) => connection.drained)),
+      this.#now() + sessionCloseTimeoutMs,
+    );
+    return !this.#cleanupUnconfirmed && outcome.kind === "answer" && outcome.value.every(Boolean);
+  }
+
   async #handle(socket: WebSocket, owner: BridgeOwner, data: RawData): Promise<void> {
     const receivedAt = this.#now();
+    const inputReceivedAt = performance.now();
     this.#pruneViews();
     let frame: unknown;
     try {
@@ -843,7 +926,9 @@ export class ComputerUseBridgeServer {
     const { id, method, params } = parsed.data;
     // One instant, fixed as the frame arrives: installing, connecting and the
     // helper frame all spend from it, and the helper frame carries what is left.
-    const deadline = receivedAt + (parsed.data.timeoutMs ?? defaultBridgeTimeoutMs);
+    const timeoutMs = parsed.data.timeoutMs ?? defaultBridgeTimeoutMs;
+    const deadline = receivedAt + timeoutMs;
+    const ownerInputDeadline = inputReceivedAt + timeoutMs;
     const answer = (result: unknown): void => {
       if (owner.alive) send(socket, { id, kind: "response", result });
     };
@@ -861,7 +946,7 @@ export class ComputerUseBridgeServer {
         const call = owner.iphone.request(
           phoneMethod.data,
           iphoneRunnerParams[phoneMethod.data].parse(params),
-          { deadline, signal: AbortSignal.any([request.signal, owner.iphoneLifetime.signal]) },
+          { deadline, signal: AbortSignal.any([request.signal, owner.lifetime.signal]) },
         );
         const outcome = await this.#within(call, deadline);
         if (outcome.kind === "answer")
@@ -869,14 +954,14 @@ export class ComputerUseBridgeServer {
         else if (outcome.kind === "late") {
           request.abort();
           const session = iphoneRunnerParams["iphone.session.close"].strip().safeParse(params);
-          if (session.success)
+          if (session.success && method !== "iphone.session.close" && method !== "iphone.cancel")
             void owner.iphone
               .request("iphone.cancel", session.data, {
                 deadline: this.#now() + sessionCloseTimeoutMs,
               })
               .catch(() => undefined);
           refuse(
-            method === "iphone.perform" ? "outcome-unknown" : "failed",
+            computerUseRequestMayHaveEffect(method, params) ? "outcome-unknown" : "failed",
             "The iPhone did not answer in time.",
           );
         } else {
@@ -1059,7 +1144,18 @@ export class ComputerUseBridgeServer {
             forwarded = demand;
           }
         }
-        const result = await this.#helper.request(method, forwarded, { deadline });
+        const result = await this.#helper.request(
+          method,
+          forwarded,
+          method === "display.input" ? { ownerInputDeadline } : { deadline },
+        );
+        if (method === "display.input" && performance.now() >= ownerInputDeadline) {
+          refuse(
+            "outcome-unknown",
+            "The Mac answered after the input deadline. Check what arrived.",
+          );
+          return;
+        }
         if (streamId && method === "display.start" && "attachmentToken" in result) {
           const entry = this.#videos.get(streamId);
           if (!entry || entry !== startingVideo || !owner.alive || this.#now() >= deadline) {
@@ -1257,19 +1353,23 @@ export class ComputerUseBridgeServer {
       owner.opening.add(sessionId);
     }
     const outcome = await this.#within(
-      this.#helper.request(request.data.method, request.data.params, { deadline }),
+      this.#helper.request(request.data.method, request.data.params, {
+        deadline,
+        admitted: () => owner.alive,
+      }),
       deadline,
     );
     if (opening && sessionId) owner.opening.delete(sessionId);
 
     if (outcome.kind === "answer") {
       if (method === "session.close" && sessionId) this.#ownership.release(sessionId, owner);
+      else if (sessionId) this.#ownership.describe(sessionId, sessionDetail(request.data));
       // The Runner that asked is gone, so this session has no owner that can
       // ever use it. Give it back to the Mac rather than leaving the helper
       // busy for a Run nobody can reach.
       if (!owner.alive && opening && sessionId) {
         this.#ownership.release(sessionId, owner);
-        this.#endSession(sessionId, "runner-left");
+        if (!(await this.#endSession(sessionId, "runner-left"))) owner.cleanupUnconfirmed = true;
         return;
       }
       answer(outcome.value);
@@ -1286,7 +1386,8 @@ export class ComputerUseBridgeServer {
       // for a request nobody is waiting for. That one session ends; every
       // other session on the helper connection carries on.
       this.#ownership.release(sessionId, owner);
-      this.#endSession(sessionId, "late");
+      if (!owner.alive) owner.cleanupUnconfirmed = true;
+      void this.#endSession(sessionId, "late");
     } else if (sessionId && method === "session.close") {
       // A close the helper refused or never confirmed still ends this
       // Runner's claim, so an idle helper connection can go and take the
@@ -1309,13 +1410,13 @@ export class ComputerUseBridgeServer {
       }
     }
     this.#refuseWith(refuse, method, params, outcome);
-    // After the answer, so the Runner reads the refusal first: the session it
-    // named is gone, and its Host must start another rather than reuse it.
+    // Fence the binding after the Runner reads the refusal. The helper has
+    // not confirmed that the session is gone.
     if (endedLate && sessionId && owner.alive) {
       send(socket, {
         event: "session.stopped",
         kind: "event",
-        params: { reason: "app-quit", sessionId },
+        params: { reason: "app-quit", sessionId, unconfirmed: true },
       });
     }
   }
@@ -1365,16 +1466,27 @@ export class ComputerUseBridgeServer {
     }
   }
 
-  /** Ends one session on the helper; the answer is logged, never waited on by a Runner. */
-  #endSession(sessionId: ComputerUseSessionId, reason: CloseReason, attempt = 0): void {
-    void this.#helper
-      .request("session.close", { sessionId }, { deadline: this.#now() + sessionCloseTimeoutMs })
-      .catch((error: unknown) => {
-        const failure = asFailure(error);
-        if (failure.code === "no-session") return;
-        this.#log("desktop.computer-use.session-close-failed", { code: failure.code, reason });
-        this.#retryClose(sessionId, reason, attempt);
-      });
+  async #endSession(
+    sessionId: ComputerUseSessionId,
+    reason: CloseReason,
+    attempt = 0,
+  ): Promise<boolean> {
+    try {
+      await this.#helper.request(
+        "session.close",
+        { sessionId },
+        {
+          deadline: this.#now() + sessionCloseTimeoutMs,
+        },
+      );
+      return true;
+    } catch (error) {
+      const failure = asFailure(error);
+      if (failure.code === "no-session") return true;
+      this.#log("desktop.computer-use.session-close-failed", { code: failure.code, reason });
+      this.#retryClose(sessionId, reason, attempt);
+      return false;
+    }
   }
 
   #retryClose(sessionId: ComputerUseSessionId, reason: CloseReason, attempt: number): void {
@@ -1382,14 +1494,31 @@ export class ComputerUseBridgeServer {
     if (delay === undefined || this.#closed) return;
     const timer = setTimeout(() => {
       this.#closeRetries.delete(timer);
-      if (!this.#closed) this.#endSession(sessionId, reason, attempt + 1);
+      if (!this.#closed) void this.#endSession(sessionId, reason, attempt + 1);
     }, delay);
     timer.unref();
     this.#closeRetries.add(timer);
   }
 }
 
-type CloseReason = "late" | "runner-left" | "unconfirmed";
+type CloseReason = "late" | "runner-left" | "stopped" | "unconfirmed";
+
+function sessionDetail(request: { readonly method: string; readonly params: unknown }): {
+  readonly threadTitle?: string | null;
+  readonly app?: string;
+} {
+  const params = request.params as {
+    readonly threadTitle?: unknown;
+    readonly app?: { readonly identity?: { readonly displayName?: unknown } };
+  };
+  const app = params.app?.identity?.displayName;
+  return {
+    ...(request.method === "session.open" && typeof params.threadTitle === "string"
+      ? { threadTitle: params.threadTitle.trim() || null }
+      : {}),
+    ...(typeof app === "string" ? { app } : {}),
+  };
+}
 
 function sessionIdOf(params: unknown): ComputerUseSessionId | null {
   if (typeof params !== "object" || params === null) return null;

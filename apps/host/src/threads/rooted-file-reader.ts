@@ -1,8 +1,12 @@
-import { createHash } from "node:crypto";
-import path from "node:path";
-import { isNetworkPath } from "@opensteer/shared/fileHref";
-import { OpensteerError } from "@opensteer/core";
-import { NativeFsHelper } from "@opensteer/shared/files/native-fs-helper";
+import { OpensteerError, type RunnerId } from "@opensteer/core";
+import type { RunnerRegistry } from "@opensteer/orchestration";
+import type { HomeFileRootKind, RunnerHomeFileResult } from "@opensteer/protocol";
+import type { RunFileRelay } from "../agents/run-file-relay.js";
+
+export interface HomeFilesTransport {
+  readonly requestHomeFile: RunnerRegistry["requestHomeFile"];
+  readonly relay: RunFileRelay;
+}
 
 export function fileUnavailable() {
   return new OpensteerError({ code: "not_found", message: "File unavailable" });
@@ -44,64 +48,84 @@ export function rootedFileSegments(key: string): string[] {
     throw fileUnavailable();
   return parts.map((p) => p.toString("base64url"));
 }
-export function absoluteFileKey(root: string, absolutePath: string) {
-  if (
-    !path.isAbsolute(absolutePath) ||
-    /\p{Cc}/u.test(absolutePath) ||
-    (process.platform !== "win32" && absolutePath.includes("\\")) ||
-    isNetworkPath(absolutePath) ||
-    absolutePath.split(/[/\\]/u).some((p) => p === "." || p === "..")
-  )
-    throw fileUnavailable();
-  const relative = path.relative(root, absolutePath);
-  if (
-    !relative ||
-    relative === ".." ||
-    relative.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(relative)
-  )
-    throw fileUnavailable();
-  return rootedFileKey(relative.split(path.sep).map((p) => Buffer.from(p).toString("base64url")));
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : fileUnavailable();
 }
 
-/** No caller can substitute a root; revisions bind the captured root and the opened file. */
+function mapReaderError(result: RunnerHomeFileResult, maxBytes?: number): OpensteerError {
+  if (result.errorCode === "file_too_large" && maxBytes !== undefined) {
+    return fileTooLarge(result.sizeBytes ?? maxBytes + 1, maxBytes);
+  }
+  return fileUnavailable();
+}
+
+export function parseScopedRevision(expectedRevision: string): {
+  readonly rootScope: string;
+  readonly fileRevision: string;
+} {
+  if (!/^[\w-]{43}\.[\w-]{43}$/u.test(expectedRevision)) throw fileUnavailable();
+  return {
+    rootScope: expectedRevision.slice(0, 43),
+    fileRevision: expectedRevision.slice(44),
+  };
+}
+
+/** Proxies rooted reads to the owning Runner; revisions bind the Runner's root identity and file. */
 export class RootedFileReader {
   readonly #lifetime = new AbortController();
-  readonly options: { root: () => Promise<string>; helperPath: string | undefined };
+  readonly options: {
+    readonly computerId: () => Promise<RunnerId>;
+    readonly transport: HomeFilesTransport;
+    readonly root?: HomeFileRootKind;
+  };
   constructor(options: RootedFileReader["options"]) {
     this.options = options;
   }
-  async #root(signal: AbortSignal) {
-    signal.throwIfAborted();
-    if (!this.options.helperPath) throw fileUnavailable();
-    const root = await this.options.root();
-    const helper = new NativeFsHelper({
-      binary: this.options.helperPath,
-      rootPolicy: "managed-local",
-    });
-    const expectedRootIdentity = await helper.directoryIdentity({ root, path: "." }, signal);
-    const scope = createHash("sha256")
-      .update(JSON.stringify([root, expectedRootIdentity]))
-      .digest("base64url");
-    return { helper, root, expectedRootIdentity, scope };
-  }
+
   async resolveAbsolutePath(absolutePath: string, signal = AbortSignal.timeout(15000)) {
-    // Reject syntax and containment before invoking the native helper.
-    const key = absoluteFileKey(await this.options.root(), absolutePath);
-    const result = await this.read(key, { maxBytes: 1 }, signal);
-    return {
-      key,
-      revision: result.metadata.revision,
-      name: path.basename(absolutePath),
-      sizeBytes: result.metadata.sizeBytes,
-    };
+    return this.resolvePath(absolutePath, {}, signal);
   }
-  async read(
-    key: string,
-    options: { maxBytes: number; expectedRevision?: string },
+
+  async resolvePath(
+    rawPath: string,
+    options: { readonly allowRelative?: boolean; readonly allowTilde?: boolean } = {},
     signal = AbortSignal.timeout(15000),
   ) {
     signal = AbortSignal.any([signal, this.#lifetime.signal]);
+    signal.throwIfAborted();
+    if (!rawPath || rawPath.length > 4_096) throw fileUnavailable();
+    const runnerId = await this.options.computerId();
+    const result = await this.options.transport.requestHomeFile(
+      runnerId,
+      {
+        ...(options.allowRelative ? { allowRelative: true } : {}),
+        ...(options.allowTilde ? { allowTilde: true } : {}),
+        path: rawPath,
+        type: "host.home-files.resolve",
+      },
+      signal,
+    );
+    if (!result.ok || result.data?.kind !== "resolve") throw mapReaderError(result);
+    return {
+      key: result.data.key,
+      revision: `${result.data.rootScope}.${result.data.metadata.revision}`,
+      name: result.data.name,
+      sizeBytes: result.data.metadata.sizeBytes,
+    };
+  }
+
+  async read(
+    key: string,
+    options: {
+      readonly maxBytes: number;
+      readonly expectedRevision?: string;
+      readonly root?: HomeFileRootKind;
+      readonly computerId?: RunnerId;
+    },
+    signal = AbortSignal.timeout(15000),
+  ) {
+    signal = AbortSignal.any([signal, this.#lifetime.signal]);
+    signal.throwIfAborted();
     if (
       !Number.isSafeInteger(options.maxBytes) ||
       options.maxBytes < 1 ||
@@ -109,77 +133,136 @@ export class RootedFileReader {
     )
       throw fileUnavailable();
     const segments = rootedFileSegments(key);
-    const { helper, scope, ...root } = await this.#root(signal);
-    const expected = options.expectedRevision;
-    if (
-      expected &&
-      (!expected.startsWith(scope + ".") || !/^[\w-]{43}\.[\w-]{43}$/u.test(expected))
-    )
-      throw fileUnavailable();
-    const result = await helper.filesReadRange(
+    const expected = options.expectedRevision
+      ? parseScopedRevision(options.expectedRevision)
+      : undefined;
+    const root = options.root ?? this.options.root;
+    const runnerId = options.computerId ?? (await this.options.computerId());
+    const result = await this.options.transport.requestHomeFile(
+      runnerId,
       {
-        ...root,
-        pathSegmentsBase64: segments,
-        offset: 0,
+        ...(expected
+          ? {
+              expectedFileRevision: expected.fileRevision,
+              expectedRootScope: expected.rootScope,
+            }
+          : {}),
         maxBytes: options.maxBytes,
-        ...(expected ? { expectedFileRevision: expected.slice(44) } : {}),
+        offset: 0,
+        pathSegmentsBase64: segments,
+        ...(root ? { root } : {}),
+        type: "host.home-files.read",
       },
       signal,
     );
+    if (!result.ok || result.data?.kind !== "read") throw mapReaderError(result, options.maxBytes);
+    const bytes = Buffer.from(result.data.contentBase64, "base64");
+    if (
+      bytes.byteLength !== result.data.bytesRead ||
+      bytes.toString("base64") !== result.data.contentBase64
+    )
+      throw fileUnavailable();
     return {
-      ...result,
-      metadata: { ...result.metadata, revision: `${scope}.${result.metadata.revision}` },
+      bytes,
+      bytesRead: result.data.bytesRead,
+      eof: result.data.eof,
+      offset: result.data.offset,
+      metadata: {
+        ...result.data.metadata,
+        revision: `${result.data.rootScope}.${result.data.metadata.revision}`,
+      },
     };
   }
+
   async readContent(
     key: string,
-    options: { expectedRevision: string; maxBytes: number },
+    options: {
+      readonly expectedRevision: string;
+      readonly maxBytes: number;
+      readonly root?: HomeFileRootKind;
+      readonly computerId?: RunnerId;
+    },
     signal = AbortSignal.timeout(60000),
   ) {
     signal = AbortSignal.any([signal, this.#lifetime.signal]);
+    signal.throwIfAborted();
     if (
       !Number.isSafeInteger(options.maxBytes) ||
       options.maxBytes < 1 ||
       options.maxBytes > 32 * 1024 * 1024
     )
       throw fileUnavailable();
-    const probe = await this.read(
-      key,
-      { maxBytes: 1, expectedRevision: options.expectedRevision },
-      signal,
-    );
-    if (probe.metadata.sizeBytes > options.maxBytes)
-      throw fileTooLarge(probe.metadata.sizeBytes, options.maxBytes);
-    const { helper, scope, ...root } = await this.#root(signal);
-    if (!options.expectedRevision.startsWith(scope + ".")) throw fileUnavailable();
-    const download = await helper.filesDownload(
+    const segments = rootedFileSegments(key);
+    const expected = parseScopedRevision(options.expectedRevision);
+    const root = options.root ?? this.options.root;
+    const runnerId = options.computerId ?? (await this.options.computerId());
+    const { relay, requestHomeFile } = this.options.transport;
+    const transfer = relay.open(options.maxBytes);
+    const close = () =>
+      transfer.close(
+        signal.reason instanceof Error ? signal.reason : new Error("File read was aborted"),
+      );
+    signal.addEventListener("abort", close, { once: true });
+    if (signal.aborted) close();
+    const sending = requestHomeFile(
+      runnerId,
       {
-        ...root,
-        pathSegmentsBase64: rootedFileSegments(key),
-        expectedFileRevision: options.expectedRevision.slice(44),
-        offset: 0,
-        length: 0,
+        expectedFileRevision: expected.fileRevision,
+        expectedRootScope: expected.rootScope,
+        maxBytes: options.maxBytes,
+        pathSegmentsBase64: segments,
+        ...(root ? { root } : {}),
+        transfer: transfer.upload,
+        type: "host.home-files.download",
       },
       signal,
-    );
-    try {
-      if (download.length > options.maxBytes) throw fileTooLarge(download.length, options.maxBytes);
-      const chunks: Buffer[] = [];
-      let size = 0;
-      for await (const chunk of download.stream) {
-        signal.throwIfAborted();
-        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        size += bytes.length;
-        if (size > options.maxBytes) throw fileTooLarge(size, options.maxBytes);
-        chunks.push(bytes);
+    ).then((result) => {
+      if (!result.ok || result.data?.kind !== "download") {
+        throw mapReaderError(result, options.maxBytes);
       }
-      if (size !== probe.metadata.sizeBytes) throw fileUnavailable();
-      return { bytes: Buffer.concat(chunks, size), metadata: probe.metadata, eof: true };
+      return result.data;
+    });
+    void sending.catch((error) => transfer.close(asError(error)));
+    try {
+      const incoming = await relay.download(transfer.download.id, transfer.download.token, signal);
+      try {
+        if (incoming.sizeBytes > options.maxBytes) {
+          throw fileTooLarge(incoming.sizeBytes, options.maxBytes);
+        }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of incoming.stream) {
+          signal.throwIfAborted();
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += bytes.byteLength;
+          if (size > options.maxBytes) throw fileTooLarge(size, options.maxBytes);
+          chunks.push(bytes);
+        }
+        if (size !== incoming.sizeBytes) throw fileUnavailable();
+        incoming.settled();
+        const data = await sending;
+        if (size !== data.length) throw fileUnavailable();
+        return {
+          bytes: Buffer.concat(chunks, size),
+          metadata: {
+            ...data.metadata,
+            revision: `${data.rootScope}.${data.metadata.revision}`,
+          },
+          eof: true,
+        };
+      } catch (error) {
+        incoming.settled(asError(error));
+        incoming.stream.destroy();
+        throw error;
+      }
     } finally {
-      download.stream.destroy();
+      transfer.close();
+      signal.removeEventListener("abort", close);
+      await sending.catch(() => undefined);
     }
   }
+
   close() {
-    this.#lifetime.abort();
+    this.#lifetime.abort(new Error("Home file access closed."));
   }
 }

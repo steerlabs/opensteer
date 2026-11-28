@@ -607,7 +607,7 @@ function NewTask(props: {
             userId={userId}
           />
           {line === null || held === null ? null : (
-            <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
+            <ActionLine line={line} onDismiss={() => setLine(null)} />
           )}
           {held && !sending ? (
             <ActionLine
@@ -617,7 +617,6 @@ function NewTask(props: {
                 tone: "muted",
                 link: { label: "Remove from Home", onPress: () => discardHeld(held) },
               }}
-              numberOfLines={2}
             />
           ) : null}
         </View>
@@ -640,10 +639,8 @@ function NewTask(props: {
               }}
             />
           ) : null}
-          {line === null ? null : (
-            <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
-          )}
-          {otherStartLine ? <ActionLine line={otherStartLine} numberOfLines={2} /> : null}
+          {line === null ? null : <ActionLine line={line} onDismiss={() => setLine(null)} />}
+          {otherStartLine ? <ActionLine line={otherStartLine} /> : null}
           {drafts.readDraftUnsaved(deploymentId, userId, draftKey) ? <DraftUnsaved /> : null}
         </Animated.View>
       )}
@@ -724,9 +721,7 @@ export function HeldNewTaskPane(props: {
             }}
           />
         ) : null}
-        {line === null ? null : (
-          <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
-        )}
+        {line === null ? null : <ActionLine line={line} onDismiss={() => setLine(null)} />}
         {drafts.readDraftUnsaved(deploymentId, userId, draftKey) ? <DraftUnsaved /> : null}
       </View>
     </FirstMessageComposer>

@@ -603,7 +603,7 @@ public final class Broker: IPCServerDelegate {
     do {
       found = try await vault.lookUp(
         withinSite: request.site, grant: request.grantKey,
-        permissionVersion: transaction.permissionVersion)
+        permissionVersion: transaction.permissionVersion, allowRemembered: !request.alwaysAsk)
     } catch {
       guard isCurrent(transaction, serial) else { return }
       return vaultFailed(transaction, error)
@@ -697,7 +697,8 @@ public final class Broker: IPCServerDelegate {
     }
     hold(transaction, .approve, call) { serial in
       await self.approve(
-        transaction, serial: serial, account: account, remember: params.remember, call: call)
+        transaction, serial: serial, account: account,
+        remember: params.remember && transaction.request?.alwaysAsk != true, call: call)
     }
   }
 

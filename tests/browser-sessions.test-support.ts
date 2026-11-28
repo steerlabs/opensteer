@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
+import { sql } from "kysely";
 import { expect } from "vitest";
 import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
 import { type VerticalStack } from "../apps/host/src/agents/vertical-stack.test-support.js";
@@ -103,15 +104,38 @@ export async function agentJourney(
       ),
     )
     .execute();
-  const sessionFor = (tabId: string) =>
-    tabs.find((tab) => tab.id === tabId)!.pageBinding!.lineageId;
+  // The lineage each tab's page ran in. An open row names it; a row the agent closed let go of
+  // its page in the close's commit, so its lineage is read from where it is still true: the
+  // session its open chose (the durable record of that open), and that session's lineage.
+  const opens = await stack.host.store.database
+    .selectFrom("browserTabOpens")
+    .innerJoin("browserSessions", (join) =>
+      join.on(sql<string>`browser_sessions.id`, "=", sql<string>`binding->>'chosenSessionId'`),
+    )
+    .select([sql<string>`binding->'outcome'->>'tabId'`.as("tabId"), "browserSessions.tabGroupId"])
+    .execute();
+  const sessionFor = (tabId: string) => {
+    const row = tabs.find((tab) => tab.id === tabId);
+    if (!row) throw new Error(`No tab row for ${tabId}.`);
+    if (row.pageBinding) return row.pageBinding.lineageId;
+    const opened = opens.find((open) => open.tabId === tabId);
+    if (!opened) throw new Error(`The closed tab ${tabId} has no recorded open.`);
+    return opened.tabGroupId;
+  };
   expect(sessionFor(tabA)).not.toBe(sessionFor(tabB));
   expect(sessionFor(report.profileSibling)).toBe(sessionFor(tabB));
   expect(sessionFor(report.guestReuse.second)).toBe(sessionFor(tabA));
   expect(report.listed).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ tabId: tabA, usedBy: [{ taskId: threadId }] }),
-      expect.objectContaining({ tabId: tabB, usedBy: [{ taskId: threadId }] }),
+      // Each holder says when its task's work last took the tab up.
+      expect.objectContaining({
+        tabId: tabA,
+        usedBy: [{ taskId: threadId, since: expect.any(String) }],
+      }),
+      expect.objectContaining({
+        tabId: tabB,
+        usedBy: [{ taskId: threadId, since: expect.any(String) }],
+      }),
     ]),
   );
   expect(report.reused).toEqual({ before: 3, after: 3, tabId: tabA });
@@ -892,11 +916,19 @@ export async function startBrowserService(stack: VerticalStack): Promise<{ reado
   addCleanup(
     "browser service process",
     async () => {
-      await owner.close(() => {
-        child.kill("SIGTERM");
-      }, 20_000);
-      if (child.exitCode !== 0)
-        throw new Error(`The browser service did not stop cleanly: ${output.join("")}`);
+      const startedAt = performance.now();
+      const formatFailure = () => {
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        return `The browser service did not stop cleanly (exitCode=${String(child.exitCode)}, signal=${String(child.signalCode)}, elapsedMs=${elapsedMs}): ${output.join("")}`;
+      };
+      try {
+        await owner.close(() => {
+          child.kill("SIGTERM");
+        }, 20_000);
+      } catch (error) {
+        throw new Error(formatFailure(), { cause: error });
+      }
+      if (child.exitCode !== 0) throw new Error(formatFailure());
     },
     0,
   );

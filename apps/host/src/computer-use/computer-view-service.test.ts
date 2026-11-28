@@ -2,6 +2,7 @@ import { DeviceIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { RunnerIdSchema, UserIdSchema, WindowIdSchema } from "@opensteer/core";
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import { ComputerViewRemovedSchema } from "@opensteer/protocol";
 import type {
   ComputerViewNativeResult,
   ComputerViewTarget,
@@ -28,9 +29,11 @@ function harness(phone = false) {
   let admission: (() => void) | undefined;
   let answer: Promise<void> | undefined;
   let openAnswer: Promise<void> | undefined;
+  let unanswered = false;
   let wrongWindow = false;
   let inAdmission = false;
   let windowRequests = 0;
+  let viewing: "supported" | "unsupported" | "unreported" = "supported";
   const logs: { event: string; details: Readonly<Record<string, unknown>> }[] = [];
   const service = new ComputerViewService({
     selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
@@ -50,7 +53,8 @@ function harness(phone = false) {
     changed: (_owner, notice) => notices.push(notice),
     hub: {
       attached: () => true,
-      ownerViewSupported: () => true,
+      ownerViewSupported: () => viewing === "supported",
+      ownerViewReported: () => viewing !== "unreported",
       ownerWindows: async () => {
         windowRequests++;
         await answer;
@@ -68,6 +72,12 @@ function harness(phone = false) {
       sendComputerView: async ({ request }) => {
         sends.push(request);
         if (request.operation === "open") await openAnswer;
+        if (request.operation === "open" && unanswered)
+          return {
+            kind: "error" as const,
+            code: "no-answer" as const,
+            message: "That computer did not answer in time.",
+          };
         const id =
           request.target.kind === "app" ? Number(request.target.windowId.slice(-12)) : focused;
         return {
@@ -96,6 +106,9 @@ function harness(phone = false) {
     wrongWindow: () => {
       wrongWindow = true;
     },
+    leaveOpensUnanswered: () => {
+      unanswered = true;
+    },
     holdOpen: (promise: Promise<void>) => {
       openAnswer = promise;
     },
@@ -110,6 +123,9 @@ function harness(phone = false) {
     },
     revoke: () => {
       approved = false;
+    },
+    setViewing: (next: typeof viewing) => {
+      viewing = next;
     },
     open: (window = focused, generation = 1) =>
       service.openForTab(
@@ -128,6 +144,28 @@ function harness(phone = false) {
 }
 
 describe("owner windows", () => {
+  it("reports a device restart on the exact removed owner view and leaves ordinary disconnects unchanged", async () => {
+    const h = harness();
+    try {
+      const view = await h.open();
+      h.service.forgetRunner(machine, "device-restarting");
+      expect(ComputerViewRemovedSchema.parse(h.notices.at(-1))).toEqual({
+        type: "host.computer-view.removed",
+        machineId: machine,
+        viewId: view.viewId,
+        generation: view.generation,
+        reason: "disconnected",
+        displayReason: "device-restarting",
+      });
+      const reopened = await h.open();
+      expect(reopened.generation).toBeGreaterThan(view.generation);
+      h.service.forgetRunner(machine);
+      expect(ComputerViewRemovedSchema.parse(h.notices.at(-1))).not.toHaveProperty("displayReason");
+    } finally {
+      h.service.shutdown();
+    }
+  });
+
   it("deduplicates exact windows and preserves independent viewing generations", async () => {
     const h = harness();
     try {
@@ -230,7 +268,40 @@ describe("owner windows", () => {
   });
 });
 
+describe("an open the computer does not answer", () => {
+  it("ends the view as unanswered, says so, and closes it on the computer", async () => {
+    const h = harness();
+    try {
+      h.leaveOpensUnanswered();
+      const view = await h.open(11);
+      expect(view).toMatchObject({ state: "unavailable", unavailableReason: "no-answer" });
+      await vi.waitFor(() =>
+        expect(h.sends.map((request) => request.operation)).toEqual(["open", "close"]),
+      );
+      expect(h.logs.at(-1)?.details).toMatchObject({ reason: "no-answer" });
+    } finally {
+      h.service.shutdown();
+    }
+  });
+});
+
 describe("independent Mac control authorization", () => {
+  it("answers a Mac that has not yet reported since it connected as connecting, never as unable to show views", async () => {
+    const h = harness();
+    try {
+      // Between a Mac's reconnect and its first status, the Home does not know its versions:
+      // the page retries an unavailable view, and stops for good on an unsupported one.
+      h.setViewing("unreported");
+      await expect(h.open(11)).rejects.toMatchObject({ reason: "computer-view-unavailable" });
+      h.setViewing("unsupported");
+      await expect(h.open(11)).rejects.toMatchObject({ reason: "computer-view-unsupported" });
+      h.setViewing("supported");
+      await expect(h.open(11)).resolves.toMatchObject({ state: "ready" });
+    } finally {
+      h.service.shutdown();
+    }
+  });
+
   it("requires the effective owner and a current read-write app approval", async () => {
     const h = harness();
     try {
@@ -396,6 +467,7 @@ it("keeps owner views on separate Devices and refuses a replaced driver generati
     changed: () => undefined,
     hub: {
       attached: () => true,
+      ownerViewReported: () => true,
       ownerViewSupported: () => true,
       withRunnerAdmission: async (_id, action) => action(),
       withDeviceAdmission: async (_id, action) => action(),

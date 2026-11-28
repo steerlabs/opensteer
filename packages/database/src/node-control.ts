@@ -28,17 +28,26 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import type { Kysely, Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import {
   assertThreadCaller,
   lockThreadCaller,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
-import "./store-primitives.js";
+import { lockThreadRow } from "./store-primitives.js";
 import { runHasActiveGrant } from "./run-grants.js";
 type Database = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
-export async function reachableNode(database: Database, nodeId: ExecutionNodeId, ownerId: UserId) {
+/**
+ * A subagent and its parent Run. With `selectedConnectionId`, only a node whose parent Run is in
+ * that connection's lineage is reachable.
+ */
+export async function reachableNode(
+  database: Database,
+  nodeId: ExecutionNodeId,
+  ownerId: UserId,
+  selectedConnectionId?: string,
+) {
   await requirePersonalOwner(database, ownerId);
   return database
     .selectFrom("executionNodes as node")
@@ -47,6 +56,13 @@ export async function reachableNode(database: Database, nodeId: ExecutionNodeId,
     .selectAll("node")
     .select(["runs.threadId", "runs.requestedBy"])
     .where("node.id", "=", nodeId)
+    .$if(selectedConnectionId !== undefined, (query) =>
+      query.where(
+        sql<string>`coalesce(runs.connection_id, threads.origin_connection_id)`,
+        "=",
+        selectedConnectionId!,
+      ),
+    )
     .executeTakeFirst();
 }
 export const NodeStopAuthoritySchema = z.object({
@@ -162,6 +178,9 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
       };
     }
     const { node, run, bindingGeneration } = await assertNodeStop(tx, input);
+    // Publishing the stopping node writes the task's transcript, so the task's row is held now,
+    // after its Run and before the command and the node, as the lock order ranks them.
+    await lockThreadRow(tx, run.threadId);
     const payload = {
       type: "node.stop",
       nodeId: node.id,
@@ -251,14 +270,9 @@ export async function failNodeStop(
       .where("node.id", "=", payload.nodeId)
       .where("runs.id", "=", command.runId)
       .executeTakeFirstOrThrow();
-    await tx
-      .updateTable("executionNodes")
-      .set({
-        stopping: false,
-      })
-      .where("id", "=", node.id)
-      .execute();
-    await publishExecutionNode(tx, node.id);
+    // In the lock order's ranks: the Run (held above), its task (the node's publication writes the
+    // task's transcript), the command, then the node.
+    await lockThreadRow(tx, node.threadId);
     await tx
       .updateTable("commands")
       .set({
@@ -272,6 +286,14 @@ export async function failNodeStop(
       })
       .where("id", "=", commandId)
       .execute();
+    await tx
+      .updateTable("executionNodes")
+      .set({
+        stopping: false,
+      })
+      .where("id", "=", node.id)
+      .execute();
+    await publishExecutionNode(tx, node.id);
     return;
   });
 }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import type { BrowserCommand } from "../host/client.js";
+import { createEditingState, reduceEditing, type EditingProxyEvent } from "../editing/index.js";
 import { MockBrowserInput } from "./mock-browser-input.js";
 import { MockHostClient } from "./mock-host-client.js";
 
@@ -34,7 +35,7 @@ describe("mock basic browser input", () => {
         kind: "edit",
         edit: { contextId, before: "", after: "", text: "hello👨‍👩‍👧" },
       });
-      await target.send({ kind: "command", command: "deleteBackward" });
+      await target.send({ kind: "command", command: "deleteBackward", contextId });
       await target.send({
         kind: "compose",
         composition: { contextId, text: "に", selectionStart: 1, selectionEnd: 1 },
@@ -44,19 +45,81 @@ describe("mock basic browser input", () => {
         composition: { contextId, text: "日本", selectionStart: 2, selectionEnd: 2 },
       });
       await target.send({ kind: "edit", edit: { contextId, before: "", after: "", text: "日本" } });
-      await target.send({ kind: "command", command: "selectAll" });
-      const copied = await target.send({ kind: "copy" });
+      await target.send({ kind: "command", command: "selectAll", contextId });
+      const copied = await target.send({ kind: "copy", contextId });
       expect(copied?.outcome).toBe("copied");
       expect(new TextDecoder().decode(copied!.items[0]!.bytes)).toBe("hello日本");
       expect(
         await target.send({
           kind: "paste",
           items: [{ type: "text/plain", bytes: new TextEncoder().encode("new text") }],
+          contextId,
         }),
       ).toMatchObject({ outcome: "pasted" });
-      await target.send({ kind: "command", command: "selectAll" });
-      const pasted = await target.send({ kind: "copy" });
+      await target.send({ kind: "command", command: "selectAll", contextId });
+      const pasted = await target.send({ kind: "copy", contextId });
       expect(new TextDecoder().decode(pasted!.items[0]!.bytes)).toBe("new text");
+      release();
+    } finally {
+      client.dispose();
+    }
+  });
+
+  // W2: typing and deleting in the mock tab the way the phone app does, through the shared
+  // reducer and the store. The tab publishes its first context when the viewer retains it; every
+  // command the reducer computes carries that context, and the tab applies it.
+  it("types hello and deletes two characters through the reducer on the mock tab", async () => {
+    vi.useFakeTimers();
+    const client = new MockHostClient({ latencyMs: 0 });
+    try {
+      const loading = client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      await loading;
+      const page = [...client.getSnapshot().tabs.rows.values()].find(
+        (row) => row.kind === "page" && row.profile?.profileId.endsWith("0003"),
+      )!;
+      const viewer = await client.activateTab(page.tabId);
+      if (viewer.kind !== "page") throw new Error("Expected a page viewer");
+      const release = client.retainBrowserViewer(viewer.sessionId, viewer.surfaceId);
+      const target = client.browserFrames.editing!.target(viewer.sessionId, viewer.surfaceId);
+      const context = target.get().context!;
+      let state = createEditingState("ios", target.get().abilities);
+      const step = async (event: EditingProxyEvent) => {
+        const result = reduceEditing(state, event);
+        state = result.state;
+        // The native field applies the answer: a target without range edits clears the mirror.
+        for (const operation of result.operations) await target.send(operation);
+        return result;
+      };
+      await step({ type: "context", context });
+      let mirror = "";
+      for (const letter of "hello") {
+        await step({ type: "beforeinput", inputType: "insertText", data: letter });
+        const typed = await step({
+          type: "input",
+          inputType: "insertText",
+          composing: false,
+          proxy: {
+            value: mirror + letter,
+            selectionStart: mirror.length + 1,
+            selectionEnd: mirror.length + 1,
+          },
+        });
+        mirror = typed.instruction.set ? typed.instruction.set.value : mirror + letter;
+      }
+      for (let press = 0; press < 2; press++) {
+        const pressed = await step({
+          type: "beforeinput",
+          inputType: "deleteContentBackward",
+          data: null,
+        });
+        expect(pressed.operations).toEqual([
+          { kind: "command", command: "deleteBackward", contextId: context.contextId },
+        ]);
+      }
+      await target.send({ kind: "command", command: "selectAll", contextId: context.contextId });
+      const copied = await target.send({ kind: "copy", contextId: context.contextId });
+      expect(new TextDecoder().decode(copied!.items[0]!.bytes)).toBe("hel");
       release();
     } finally {
       client.dispose();
@@ -68,9 +131,9 @@ describe("mock basic browser input", () => {
     input.retain("session", surfaceId);
     const receive = vi.spyOn(input.editing, "receive");
     const commands: BrowserCommand[] = [
-      { type: "input.command", surfaceId, command: "selectAll" },
-      { type: "input.command", surfaceId, command: "deleteBackward" },
-      { type: "input.command", surfaceId, command: "deleteWordBackward" },
+      { type: "input.command", surfaceId, command: "selectAll", contextId: operationId },
+      { type: "input.command", surfaceId, command: "deleteBackward", contextId: operationId },
+      { type: "input.command", surfaceId, command: "deleteWordBackward", contextId: operationId },
       {
         type: "input.text",
         surfaceId,
@@ -139,18 +202,20 @@ describe("mock basic browser input", () => {
       },
       { type: "input.key", surfaceId, action: "down", key: "Enter", code: "Enter", modifiers: [] },
       { type: "input.key", surfaceId, action: "down", key: "v", code: "KeyV", modifiers: ["meta"] },
-      { type: "clipboard.cut", surfaceId, operationId },
+      { type: "clipboard.cut", surfaceId, operationId, contextId: operationId },
       {
         type: "clipboard.paste-data",
         surfaceId,
         operationId,
         items: [{ type: "text/html", size: 1 }],
+        contextId: operationId,
       },
       {
         type: "clipboard.paste-data",
         surfaceId,
         operationId,
         items: [{ type: "text/plain", size: 1 }],
+        contextId: operationId,
       },
     ];
     for (const command of commands) {

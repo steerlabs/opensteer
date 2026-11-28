@@ -232,7 +232,7 @@ async function main(): Promise<void> {
       repositoryRoot,
     );
     await rm(path.join(staging, `${layout.pluginBridge}.map`), { force: true });
-    artifacts.push({ mode: "data", path: layout.pluginBridge });
+    artifacts.push(...(await pluginBridgeArtifacts(staging)));
     await timePhase("runtime.extension", () =>
       run(
         process.platform === "win32" ? "pnpm.cmd" : "pnpm",
@@ -324,16 +324,11 @@ async function main(): Promise<void> {
       stagedHarnesses.push({ entry, program });
     }
 
-    const nativeFsHelper = `${layout.nativeFsHelper}${executableSuffix}`;
-    await timePhase("runtime.native-fs", () =>
-      buildGo({
-        output: path.join(staging, nativeFsHelper),
-        sourceDirectory: path.join(repositoryRoot, "apps/runner/native-fs-helper"),
-        targetArch,
-        targetOs,
-      }),
+    const nativeFsArtifact = await timePhase("runtime.native-fs", () =>
+      stageNativeFsHelper(staging, targetOs, targetArch),
     );
-    artifacts.push({ mode: "executable", path: nativeFsHelper });
+    const nativeFsHelper = nativeFsArtifact.path;
+    artifacts.push(nativeFsArtifact);
 
     // The computer-use helper is built here, beside the other native helper,
     // so one command produces both. It is not staged into this bundle: it is
@@ -490,6 +485,21 @@ async function main(): Promise<void> {
   }
 }
 
+export async function stageNativeFsHelper(
+  staging: string,
+  targetOs: TargetOperatingSystem,
+  targetArch: TargetArchitecture,
+): Promise<StagedArtifact> {
+  const nativeFsHelper = `${layout.nativeFsHelper}${targetOs === "win32" ? ".exe" : ""}`;
+  await buildGo({
+    output: path.join(staging, ...nativeFsHelper.split("/")),
+    sourceDirectory: path.join(repositoryRoot, "apps/runner/native-fs-helper"),
+    targetArch,
+    targetOs,
+  });
+  return { mode: "executable", path: nativeFsHelper };
+}
+
 export async function stageDataTree(
   source: string,
   staging: string,
@@ -514,6 +524,20 @@ export async function stageDataTree(
     }
   };
   await walk(source, prefix);
+  return artifacts;
+}
+
+/** Every raw worker module must be in the hashed Personal runtime manifest. */
+export async function pluginBridgeArtifacts(staging: string): Promise<readonly StagedArtifact[]> {
+  const root = `${layout.pluginBridge}.modules`;
+  const artifacts: StagedArtifact[] = [{ mode: "data", path: layout.pluginBridge }];
+  for (const worker of ["runtime", "compiler"]) {
+    const prefix = `${root}/${worker}`;
+    for (const entry of await readdir(path.join(staging, prefix), { withFileTypes: true })) {
+      if (!entry.isFile()) throw new Error(`Invalid plugin runtime artifact ${entry.name}`);
+      artifacts.push({ mode: "data", path: `${prefix}/${entry.name}` });
+    }
+  }
   return artifacts;
 }
 

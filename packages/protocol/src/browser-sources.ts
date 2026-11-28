@@ -46,6 +46,7 @@ export {
 } from "@opensteer/browser-source-wire/frames";
 
 export const BrowserSourceSummarySchema = z.object({
+  capability: z.literal("live-tabs").optional(),
   connected: z.boolean(),
   createdAt: IsoDateTimeSchema,
   id: BrowserSourceIdSchema,
@@ -62,7 +63,22 @@ export const BrowserSiteGrantSchema = z.object({
 });
 export type BrowserSiteGrant = z.infer<typeof BrowserSiteGrantSchema>;
 
-export const BrowserSourcesStateSchema = z.object({
+export const ChromeTabGrantCatalogSchema = z.object({
+  chromeTabs: z
+    .array(
+      z.object({
+        sourceId: BrowserSourceIdSchema,
+        computerName: z.string().min(1).max(200),
+        paired: z.boolean(),
+      }),
+    )
+    .max(64)
+    .optional(),
+  chromeTabsNeedPairing: z.boolean().optional(),
+  chromeTabsRepairNames: z.array(BrowserSourceNameSchema).max(64).optional(),
+});
+
+export const BrowserSourcesStateSchema = ChromeTabGrantCatalogSchema.extend({
   /** The unpacked extension folder Opensteer's desktop app keeps current on the Host's computer. */
   extensionDirectory: z.string().min(1).max(4_096).nullable().default(null),
   sites: z.array(BrowserSiteGrantSchema).max(1_024),
@@ -125,6 +141,7 @@ export const ChromeCookiesUnavailableReasonSchema = z.union([
     "chrome-signed-out",
     "needs-approval",
     "session-closed",
+    "unconfirmed",
     "runtime-outdated",
     "unsupported-operation",
     "rate-limited",
@@ -176,6 +193,8 @@ export const BrowserSignInRequestResponseSchema = z.discriminatedUnion("outcome"
   z.strictObject({ outcome: z.literal("session-closed") }),
   /** Chrome connected after the Request opened, and no Chrome has a sign-in to the site. */
   z.strictObject({ outcome: z.literal("not-signed-in") }),
+  /** The sign-in crossed to the browser runtime, but the reply did not return. */
+  z.strictObject({ outcome: z.literal("unconfirmed") }),
 ]);
 export type BrowserSignInRequestResponse = z.infer<typeof BrowserSignInRequestResponseSchema>;
 
@@ -203,3 +222,5 @@ export type BrowserSourcePairing = z.infer<typeof BrowserSourcePairingSchema>;
  * build checks that the manifest key still derives this ID.
  */
 export const opensteerChromeExtensionId = "oikoblakkddmchfnkdmhfcnljnadohkp";
+
+export const opensteerChromeLiveTabsExtensionId = "dhlhcgfhcemohdolojennbgaamlhjnao";

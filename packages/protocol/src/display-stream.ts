@@ -178,6 +178,7 @@ export const DisplayStreamStateSchema = z.enum([
 ]);
 export type DisplayStreamState = z.infer<typeof DisplayStreamStateSchema>;
 export const DisplayStreamReasonSchema = z.enum([
+  "device-restarting",
   "permission-required",
   "encoder-failed",
   "capacity",
@@ -232,13 +233,18 @@ export const DisplayInputEventSchema = z.union([
   // The kinds below exist only for a producer and viewer that negotiated
   // editing (`editingVersion` in `display.state`); see editing.ts.
   z.strictObject({ kind: z.literal("key"), ...EditingKeystrokeSchema.shape }),
-  z.strictObject({ kind: z.literal("command"), command: EditingCommandSchema }),
+  z.strictObject({
+    kind: z.literal("command"),
+    command: EditingCommandSchema,
+    contextId: EditingContextSchema.shape.contextId,
+  }),
   z.strictObject({ kind: z.literal("edit"), edit: EditingTextEditSchema }),
-  z.strictObject({ kind: z.literal("copy") }),
+  z.strictObject({ kind: z.literal("copy"), contextId: EditingContextSchema.shape.contextId }),
   z.strictObject({ kind: z.literal("cut"), contextId: EditingContextSchema.shape.contextId }),
   z.strictObject({
     kind: z.literal("paste"),
     text: z.string().min(1).max(displayPasteTextMaxLength),
+    contextId: EditingContextSchema.shape.contextId,
   }),
   // Older viewers send rich clipboard metadata for the display to refuse; current ones paste text.
   z.strictObject({ kind: z.literal("paste"), items: EditingClipboardItemsSchema }),
@@ -337,6 +343,16 @@ export const DisplayInputRefusalSchema = z.enum([
   "contended",
 ]);
 export type DisplayInputRefusal = z.infer<typeof DisplayInputRefusalSchema>;
+// The viewer stops waiting after ten seconds, measured from submission.
+export const displayInputPatienceMs = 10_000;
+// The Home keeps a second for the reply to reach the viewer.
+export const macOwnerInputViewerReplyMs = 1_000;
+// The Runner keeps half a second for Desktop to reply.
+export const macOwnerInputDesktopReplyMs = 500;
+// Desktop keeps half a second to receive the helper's reply and hand it back.
+export const macOwnerInputHelperReplyMs = 500;
+export const DisplayInputTimeoutSchema = z.number().int().positive().max(displayInputPatienceMs);
+
 /**
  * What became of one `display.input` batch, for the viewer that sent it.
  * `dispatched` means the producer handed it to the target, never that the
@@ -345,7 +361,7 @@ export type DisplayInputRefusal = z.infer<typeof DisplayInputRefusalSchema>;
 export const DisplayInputResultSchema = z.strictObject({
   type: z.literal("display.input.result"),
   sequence: DisplaySequenceSchema,
-  outcome: z.enum(["dispatched", "refused", "stale"]),
+  outcome: z.enum(["dispatched", "refused", "stale", "unknown"]),
   reason: DisplayInputRefusalSchema.optional(),
 });
 export type DisplayInputResult = z.infer<typeof DisplayInputResultSchema>;
@@ -392,6 +408,7 @@ export const DisplayViewerClientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("display.input"),
     ...DisplayInputSchema.shape,
+    timeoutMs: DisplayInputTimeoutSchema.optional(),
     /** Sent only by a previous-release viewer; such a batch is never applied. */
     controlId: DisplayControlIdSchema.optional(),
   }),
@@ -532,6 +549,8 @@ export const DisplayClientDiagnosticSchema = z.strictObject({
     "retry-scheduled",
     "retry-cancelled",
     "protocol-violation",
+    /** The Host said the stream changed state or reason: one line per change. */
+    "display-state",
   ]),
   reason: z
     .enum([
@@ -596,6 +615,10 @@ export const DisplayClientDiagnosticSchema = z.strictObject({
     ])
     .optional(),
   connection: z.number().int().nonnegative().optional(),
+  displayState: z.enum([...DisplayStreamStateSchema.options, "unsupported"]).optional(),
+  displayReason: DisplayStreamReasonSchema.optional(),
+  /** A frame had reached this socket when the state came. */
+  framed: z.boolean().optional(),
   previousSequence: z.number().int().min(-1).optional(),
   incomingSequence: z.number().int().nonnegative().optional(),
   previousGeneration: z.number().int().nonnegative().optional(),

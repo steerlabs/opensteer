@@ -5,7 +5,6 @@ export * from "./use-thread-transcript.js";
 export * from "./use-running-now.js";
 export * from "./use-request-asker.js";
 export * from "./use-waiting-inputs.js";
-export * from "./use-waiting-body.js";
 export * from "./use-worker-transcripts.js";
 export * from "./use-thread-scope.js";
 export * from "./use-conversation-surfaces.js";
@@ -26,26 +25,28 @@ export * from "./use-computer-app-approval.js";
 export * from "./use-personal-remote-access.js";
 export * from "./use-remote-access.js";
 export * from "./use-app-view.js";
+export * from "./use-connected-agent-history.js";
+export * from "./use-connected-agent-row-distinctions.js";
+export * from "./use-connected-agent-sessions.js";
+export * from "./use-session-stop.js";
 export * from "./use-connected-agents.js";
+export * from "./use-approved-app-names.js";
 export { useVoice, useVoiceOn, useVoiceValue, VoiceContext } from "./use-voice.js";
 
 export * from "./use-thread-server-approvals.js";
-export * from "./use-team.js";
 export * from "./use-paged-list.js";
 export * from "./use-mounted.js";
 export * from "./use-tool-output.js";
 
 export * from "./use-browser-tabs.js";
+export * from "./use-browser-sleep.js";
+export * from "./use-viewer-grace.js";
 export * from "./use-tabs.js";
 export * from "./use-browser-tab-icon.js";
 export * from "./use-syncing-placeholder.js";
 export * from "./use-tab-filter.js";
 
 export * from "./use-thread-visits.js";
-export * from "./use-team-partner-settings.js";
-export * from "./use-team-channel-shares.js";
-export * from "./use-team-knowledge.js";
-export * from "./use-team-share-participants.js";
 export * from "./use-idle-compaction.js";
 
 export * from "./use-asset-image.js";
@@ -66,3 +67,5 @@ export * from "./use-client-action.js";
 export * from "./use-message-outbox.js";
 export * from "./use-quiet-moment.js";
 export * from "./use-unreadable-resources.js";
+export * from "./use-cloud-computer.js";
+export * from "./use-owner-view-reconnect.js";

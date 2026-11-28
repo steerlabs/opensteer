@@ -126,7 +126,7 @@ export function computerUseSetUpFrom(machineName: string): string {
  * macOS panels, so the instruction names the app rather than a URL.
  */
 export function computerUseSetUpFromSteps(machineName: string): string {
-  return `In the Opensteer desktop app there, open Settings → Computers → ${machineName}.`;
+  return `In the Opensteer desktop app there, open Settings → Devices → ${machineName}.`;
 }
 
 /** A blocked app requires another owner approval. */
@@ -261,7 +261,13 @@ export function computerUseView(input: {
   if (!definition) return null;
   const { machine } = input;
   if (machine.phoneDisplay) return null;
-  if (machine.capabilities && (!machine.capabilities.apps.supported || machine.kind === "unknown"))
+  // A machine of no known kind lends computer use only when it is a Mac (a Mac whose Runner was
+  // connected without the Opensteer app).
+  if (
+    machine.capabilities &&
+    (!machine.capabilities.apps.supported ||
+      (machine.kind === "unknown" && machine.device?.platform !== "macos"))
+  )
     return null;
   const report = machine.computerUse ?? null;
   // A disconnected Runner cannot have a confirmed live session. Keep its
@@ -645,7 +651,12 @@ export function phoneUseState(machine: MachineSummary): PhoneUseState {
     };
   }
   if (display.control.state === "ready") return { kind: "ready" };
-  if (reason?.kind === "driver-offline" && display.driver?.role !== "screen")
+  if (
+    (reason?.kind === "driver-offline" ||
+      reason?.kind === "driver-asleep" ||
+      reason?.kind === "driver-stopped") &&
+    display.driver?.role !== "screen"
+  )
     return { kind: "offline" };
   if (reason?.kind === "permission-required")
     return {
@@ -699,7 +710,7 @@ export function phoneUseTone(view: PhoneUseView): ComputerUseTone {
  * is set up over USB from a computer, never from itself.
  */
 export function addPhoneSteps(phone: string): string {
-  return `Plug ${phone} into a computer, open Opensteer there and choose Add a phone in Settings → Computers.`;
+  return `Plug ${phone} into a computer, open Opensteer there, and in Settings → Devices choose Add a device, then Add a phone.`;
 }
 
 /** No phone in this deployment can be used by agents yet. */
@@ -836,14 +847,15 @@ export async function cancelComputerUseSetup(
 }
 
 export async function stopComputerUseSession(
-  hostClient: Pick<HostClient, "rpc">,
+  hostClient: Pick<HostClient, "dispatch">,
   sessionId: ComputerUseSessionSummary["sessionId"],
-  signal?: AbortSignal,
 ): Promise<void> {
-  await hostClient.rpc["integration.computer.session.stop"](
-    { sessionId },
-    signal ? { signal } : undefined,
-  ).then(unwrapRpcResult);
+  // The person's command, through the one door (AD10).
+  await hostClient.dispatch({
+    idempotencyKey: mutationIdempotencyKey(`computer-use:stop:${sessionId}`),
+    sessionId,
+    type: "integration.computer.session.stop",
+  });
 }
 
 /** One owner-visible computer session that can show a live picture. */

@@ -149,7 +149,6 @@ async function main() {
     identity = {
       engine,
       accessMode: "full-access",
-      runtimeBoundary: "isolated-service",
       engineVersion: await engineVersion(engine),
       model: selection.modelId,
       providerId: selection.providerId,
@@ -242,6 +241,11 @@ async function main() {
                   await mkdir(dirname(target), { recursive: true });
                   await writeFile(target, content);
                 }
+                for (const [path, content] of Object.entries(stage.engineHomeFixtures)) {
+                  const target = join(p.providerHome, path);
+                  await mkdir(dirname(target), { recursive: true });
+                  await writeFile(target, content);
+                }
                 host = await startFakeHost(stage, p.workspace);
                 const result = await runEngine({
                   prepared: p,
@@ -285,6 +289,9 @@ async function main() {
                     p.workspace,
                   )),
                   ...(await gradeWorkspaceFiles(stage.expect, p.workspace)),
+                  ...(stage.expect.nativeApproval === "requested"
+                    ? [{ name: "nativeApproval:requested", pass: result.nativeApprovalRequested }]
+                    : []),
                 ];
                 fileChecks.push(
                   ...stageChecks.map((check) => ({ ...check, name: `${stage.id}:${check.name}` })),

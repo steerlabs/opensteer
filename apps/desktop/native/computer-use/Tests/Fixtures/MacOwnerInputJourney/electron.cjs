@@ -12,6 +12,7 @@ body { background: #b93435; font: 18px system-ui; margin: 24px; }
 textarea { width: 330px; height: 120px; font: 18px system-ui; }
 #latency { position: fixed; right: 12px; bottom: 12px; width: 64px; height: 32px; background: #f00; }
 </style><h1>Owner input fixture</h1><textarea id="note" aria-label="Owner input note"></textarea>
+<input type="text" id="other" aria-label="Owner other field">
 <input type="password" id="secure" aria-label="Fixture password">
 <div id="latency" aria-hidden="true"></div>
 <script>
@@ -33,6 +34,8 @@ for (const [name, type] of [['keydown', 10], ['keyup', 11]]) {
     key: event.key, trusted: event.isTrusted, shift: event.shiftKey}));
 }
 </script>`;
+// Electron's state stays in the journey's work directory, removed with it.
+app.setPath("userData", config.userData);
 app.commandLine.appendSwitch("force-renderer-accessibility");
 void app.whenReady().then(async () => {
   fs.mkdirSync(out, { recursive: true });
@@ -117,11 +120,21 @@ void app.whenReady().then(async () => {
           break;
         case "owner-end":
           await note(
-            'const n=document.querySelector("#note"); n.setSelectionRange(n.value.length,n.value.length)',
+            '(() => { const n=document.querySelector("#note"); n.setSelectionRange(n.value.length,n.value.length); })()',
           );
           break;
         case "owner-middle":
           await note('document.querySelector("#note").setSelectionRange(2,2)');
+          break;
+        case "owner-rewrite-last":
+          await note(
+            '(() => { const n=document.querySelector("#note"); if (n.value.length > 0) { n.value = n.value.slice(0, -1) + n.value.slice(-1).toUpperCase(); n.setSelectionRange(n.value.length, n.value.length); } })()',
+          );
+          break;
+        case "owner-other":
+          await note(
+            'document.querySelector("#other").value=""; document.querySelector("#other").focus()',
+          );
           break;
         case "owner-secure":
           await note(
@@ -131,6 +144,7 @@ void app.whenReady().then(async () => {
         case "owner-state":
           write("owner-state.json", {
             text: await note('document.querySelector("#note").value'),
+            other: await note('document.querySelector("#other").value'),
             saves,
             latencyChanges: await note("window.latencyChanges"),
           });

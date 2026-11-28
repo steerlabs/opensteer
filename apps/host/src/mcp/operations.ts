@@ -7,7 +7,7 @@ import type {
   ThreadMutationAdmission,
   ThreadCallerAuthority,
 } from "@opensteer/database";
-import { callerThread, type AgentCaller, type RunCaller } from "./agent-caller.js";
+import { callerLineage, callerThread, type AgentCaller, type RunCaller } from "./agent-caller.js";
 import { mcpToolCallId } from "./call-id.js";
 import { write as assertThreadAccess } from "./tool-access.js";
 
@@ -34,8 +34,12 @@ export function callerContext(caller: AgentCaller) {
     environmentId: thread.environmentId,
   };
 }
-export function callerListScope(_caller: AgentCaller): AgentThreadListScope {
-  return { kind: "personal" };
+/** A selected grant sees only its own lineage; everyone else keeps the person's view. */
+export function callerListScope(caller: AgentCaller): AgentThreadListScope {
+  const lineage = callerLineage(caller);
+  return lineage?.grant.scope === "selected"
+    ? { kind: "connection", connectionId: lineage.agentConnectionId }
+    : { kind: "personal" };
 }
 const actions = {
   computer_access_request: "device.access.request",
@@ -73,7 +77,7 @@ export function runAdmission(
 export function mutationAdmission(
   caller: AgentCaller,
   tool: "opensteer_task_delegate" | "opensteer_task_send",
-  input: { readonly observationId?: string | undefined },
+  input: unknown,
   requestId: string,
   targetThreadIds: readonly Thread["id"][] = [],
 ): ThreadMutationAdmission {
@@ -102,7 +106,6 @@ export function mutationAdmission(
     request: {
       ...p,
       action: actions[tool],
-      observationId: input.observationId ?? requestId,
       requestFingerprint: fingerprint(input),
       requestId,
       accessMode: caller.accessMode,
@@ -136,7 +139,11 @@ export function delegationOrigin(caller: AgentCaller, observationId: string) {
 }
 export function messageSource(caller: AgentCaller, observationId: string) {
   if (caller.kind === "connection")
-    return { kind: "connection" as const, connectionId: caller.connectionId };
+    return {
+      kind: "connection" as const,
+      connectionId: caller.connectionId,
+      ...(caller.chat ? { chat: caller.chat } : {}),
+    };
   const origin = delegationOrigin(caller, observationId);
   if (origin.kind === "run") return { kind: "agent" as const, runId: origin.parentRunId };
   if (origin.kind === "trigger")
@@ -153,20 +160,28 @@ export function assertMutableTarget(caller: AgentCaller, target: Thread) {
   assertThreadAccess(caller, [target]);
 }
 
-export function toolOperationKey(caller: AgentCaller, input: object, fallback: string): string {
+export function toolOperationKey(_caller: AgentCaller, input: object, fallback: string): string {
   if ("operationKey" in input && typeof input.operationKey === "string") return input.operationKey;
-  return caller.kind === "program" &&
-    caller.program.kind === "watch" &&
-    "observationId" in input &&
-    typeof input.observationId === "string"
-    ? input.observationId
-    : fallback;
+  return fallback;
 }
 
 export function threadCallerAuthority(caller: AgentCaller): ThreadCallerAuthority {
   const base = { userId: caller.userId, accessMode: caller.accessMode };
   if (caller.kind === "connection")
-    return { ...base, kind: "connection", connectionId: caller.connectionId };
+    return {
+      ...base,
+      kind: "connection",
+      connectionId: caller.connectionId,
+      ...(caller.chat
+        ? {
+            chat: {
+              conversationId: caller.chat.conversationId,
+              externalUserId: caller.chat.sender.externalUserId,
+              revision: caller.chat.revision,
+            },
+          }
+        : {}),
+    };
   if (caller.kind === "run") return { ...base, kind: "run", scope: caller.claims };
   return caller.program.kind === "trigger"
     ? { ...base, kind: "trigger", scope: caller.program }

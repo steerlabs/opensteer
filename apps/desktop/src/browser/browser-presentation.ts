@@ -208,6 +208,17 @@ export class DesktopBrowserPresentationManager {
     contents.on("zoom-changed", () => {
       if (owner.current) this.#stage(owner.current);
     });
+    // Closing the window only hides it; the tab shown there keeps rendering for
+    // a phone's Watch and an agent until the window comes back.
+    const park = () => {
+      const parked = window.isDestroyed() || !window.isVisible() || window.isMinimized();
+      for (const presentation of this.#presentations.values())
+        if (presentation.owner === owner)
+          for (const page of [presentation.page, presentation.pending])
+            page?.native.setParked(parked);
+    };
+    for (const event of ["hide", "minimize", "show", "restore"] as const)
+      windowEvents.on(event, park);
   }
 
   isLocal(sessionId: BrowserSessionId): boolean {
@@ -627,6 +638,7 @@ export class DesktopBrowserPresentationManager {
         if (presentation.page === page && owner.current === presentation)
           this.#placed(presentation, page);
       });
+      if (!owner.window.isVisible() || owner.window.isMinimized()) native.setParked(true);
       // A surface change cleared this presentation's scene; its glass goes now.
       this.#glass(owner);
       native.setStage(this.#dips(presentation), owner.window.isFocused());
@@ -1041,7 +1053,10 @@ export class DesktopBrowserPresentationManager {
       if (presentation.owner === owner && presentation.pending?.placement)
         pages.push(presentation.pending);
     if (owner.current?.page) pages.push(owner.current.page);
-    const views = pages.map((page) => page.native.view);
+    // The launcher alone moves a page between its own host and this window, so
+    // a page parked out of a hidden window is never pulled back in here.
+    const inWindow = new Set(owner.window.contentView.children);
+    const views = pages.map((page) => page.native.view).filter((view) => inWindow.has(view));
     if (owner.overlays.size || !owner.current?.page) views.push(owner.window.appView);
     const existing = owner.window.contentView.children.slice(-views.length);
     if (views.some((view, index) => existing[index] !== view)) {

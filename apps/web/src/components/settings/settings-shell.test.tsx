@@ -66,17 +66,20 @@ describe("Device settings placement", () => {
     }
   });
 
-  it("keeps Use from anywhere on Account and where you're signed in on Devices", () => {
+  it("keeps Remote access on Account and where you're signed in on Devices", () => {
     const context = placementFixtures()["personal-remote"];
     const landing = renderSettings(context, "/settings/account");
-    expect(landing).toContain("Use from anywhere");
+    expect(landing).toContain("Remote access");
     expect(landing).not.toContain("Signed-in devices");
     expect(renderSettings(context, "/settings/devices")).toContain("Loading devices");
-    expect(landing).not.toContain('href="/settings/account/');
+    // The Cloud Computer is the Account's one page of its own.
+    expect(landing.match(/href="\/settings\/account\/[^"]*"/gu) ?? []).toEqual([
+      'href="/settings/account/cloud-computer"',
+    ]);
     // External agents have their own page and load only when it opens.
     expect(landing).not.toContain("external agents");
     expect(renderSettings(context, "/settings/external-agents")).toContain(
-      "Loading external agents…",
+      "Loading connected agents…",
     );
   });
 
@@ -89,7 +92,7 @@ describe("Device settings placement", () => {
         { ...placementFixtures().browser, snapshot },
         "/settings/account",
       );
-      expect(html).toContain("Use from anywhere");
+      expect(html).toContain("Remote access");
       expect(html).not.toContain("turn on remote access in the Opensteer app");
     }
   });
@@ -154,7 +157,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     ...base,
     identityConfig: {
       ...base.identityConfig,
-      deployment: { kind: "team", name: null },
+      deployment: { kind: "personal", name: null },
       machineOwner: false,
       publicOrigin: "https://steer.example.test",
     } as HostSnapshot["identityConfig"],
@@ -214,7 +217,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
 
 function placementFixtures(): Readonly<Record<SettingsScenario, Partial<ShellContext>>> {
   const personal = personalDeployment();
-  const server = { ...serverDeployment(), kind: "team" as const, name: "home-server" };
+  const server = { ...serverDeployment(), name: "home-server" };
   return {
     browser: {},
     "personal-remote": {
@@ -280,7 +283,7 @@ function serverDeployment(): DesktopDeploymentSummary {
     activeOrigin: "https://server.example.test",
     canonicalOrigin: "https://server.example.test",
     id: createId("deployment"),
-    kind: "team",
+    kind: "personal",
     lastUsedAt: "2026-08-12T22:00:00.000Z",
     name: "Design server",
     access: "native",

@@ -23,8 +23,15 @@ export class AccountDeletionService {
   readonly #connectLifecycle: ConnectLifecycleService;
   readonly #fetch: typeof fetch;
   readonly #store: ControlPlaneStore;
+  readonly #afterDelete: (() => void) | undefined;
 
   constructor(dependencies: {
+    /**
+     * Told once an Account's deletion committed. Its Cloud Computers' deletion requests commit
+     * with it (the database records one when the Account's row goes), and the billing pass
+     * cancels their subscriptions; this asks the pass to look now, best effort.
+     */
+    readonly afterDelete?: () => void;
     readonly appleSignIn?: AppleSignInConfig;
     readonly auth: ControlPlaneAuth;
     readonly connectLifecycle: ConnectLifecycleService;
@@ -36,11 +43,11 @@ export class AccountDeletionService {
     this.#connectLifecycle = dependencies.connectLifecycle;
     this.#fetch = dependencies.fetch ?? fetch;
     this.#store = dependencies.store;
+    this.#afterDelete = dependencies.afterDelete;
   }
 
   async delete(accountId: ControlPlaneAccountId): Promise<void> {
-    // Before anything is undone: a hosted team the Account holds refuses here, and from here on
-    // nothing can give it one.
+    // Before anything is undone: another attempt already deleting the Account refuses here.
     let attemptId: string;
     try {
       attemptId = await this.#store.beginAccountDeletion(accountId);
@@ -77,6 +84,11 @@ export class AccountDeletionService {
       await this.#store.abandonAccountDeletion(accountId, attemptId).catch(() => undefined);
       if (isNotFound(error)) return;
       throw error;
+    }
+    try {
+      this.#afterDelete?.();
+    } catch {
+      // The pass runs every minute anyway.
     }
     if (this.#apple && appleRefreshToken) await this.#revokeApple(this.#apple, appleRefreshToken);
   }

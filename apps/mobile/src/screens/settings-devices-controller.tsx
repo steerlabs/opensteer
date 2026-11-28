@@ -2,12 +2,18 @@ import { useUnreadableResources } from "@opensteer/client/react";
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
+import { AddDeviceGuide, addDeviceGuideSections } from "./add-device-guide.js";
 import { unwrapRpcResult, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import { pluginChangeAffects } from "@opensteer/client/plugins";
-import { iphoneSetupNeeds, iphoneSetupOnMacSteps } from "@opensteer/client/integrations";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
 import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  selectHomeDeploymentId,
+  selectHomeExposure,
+  selectHomeKind,
+  usePhoneHome,
+} from "../computers/home-kind.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { movePhoneHere } from "../phone-setup/move-phone-here.js";
@@ -29,6 +35,7 @@ import { deviceListSections, type DeviceListRow, type PhoneHere } from "./device
 import type { NativeSettingsSection } from "./native-settings-page.types.js";
 import { otherDevicesSettingsRows } from "./settings-model.js";
 import { useSettingsHost } from "./use-settings-host.js";
+import { shareMacLink } from "./welcome-model.js";
 
 const machineKinds = ["machine"] as const;
 
@@ -83,6 +90,13 @@ export function DevicesSettingsController(): ReactNode {
   });
   const waiting = useHostValue(host, selectWaitingThreads, "");
   const iphoneAppsAvailable = useHostValue(host, (value) => value.iphoneAppsAvailable, false);
+  const devicesAvailable = useHostValue(host, selectDevicesAvailable, false);
+  const homeKind = usePhoneHome({
+    exposure: useHostValue(host, selectHomeExposure, undefined),
+    homeKind: useHostValue(host, selectHomeKind, undefined),
+    deploymentId: useHostValue(host, selectHomeDeploymentId, null),
+  }).kind;
+  const deploymentName = rows.find((row) => row.deploymentId === deploymentId)?.name ?? "";
 
   useLayoutEffect(() => {
     navigation.setOptions(
@@ -122,8 +136,11 @@ export function DevicesSettingsController(): ReactNode {
         sessions: sessions.data?.sessions ?? [],
         here,
         noun: thisPhoneNoun,
+        home: homeKind,
+        deploymentName,
+        devicesAvailable,
       }),
-    [here, sessions.data, snapshot?.machines],
+    [deploymentName, devicesAvailable, here, homeKind, sessions.data, snapshot?.machines],
   );
   const pluginRows = useMemo(
     () =>
@@ -220,6 +237,7 @@ export function DevicesSettingsController(): ReactNode {
           label: row.title,
           detail: row.detail,
           symbol: row.symbol,
+          ...(row.tone ? { tone: row.tone } : {}),
           opens:
             row.opens !== null && row.opens.kind !== "use-here" && row.opens.kind !== "session",
           onPress: () => open(row),
@@ -289,101 +307,29 @@ export function DevicesSettingsController(): ReactNode {
         {adding && selection.hostClient ? (
           <SettingsComputerEnrollment host={selection.hostClient} />
         ) : null}
-        <NativeSettingsPage
-          sections={[
-            {
-              key: "sign-in",
-              title: "Sign in on it",
-              rows: [
-                {
-                  key: "instructions",
-                  kind: "text",
-                  label:
-                    "Install Opensteer on the Mac or phone, then sign in with this account. It shows up here, and you choose what your agent can use.",
-                },
-              ],
+        <AddDeviceGuide
+          sections={addDeviceGuideSections({
+            mac: {
+              homeName:
+                selection.hostClient?.getSnapshot().identityConfig?.deployment.name ??
+                deploymentName,
+              portalOrigin:
+                selection.hostClient?.getSnapshot().identityConfig?.portalOrigin ?? null,
+              onShareLink: shareMacLink,
             },
-            {
-              key: "server",
-              title: "Server",
-              rows: [
-                {
-                  key: "instructions",
-                  kind: "text",
-                  label: "Create a command above, then run it on the server you want to add.",
-                },
-              ],
+            onConnectSomethingElse: () => {
+              setAdding(false);
+              void leave.openNewTask(connectDeviceDraftText);
             },
-            {
-              key: "iphone-screen",
-              title: "iPhone screen control",
-              rows: [
-                {
-                  key: "instructions",
-                  kind: "text",
-                  label:
-                    "Your agent sees and controls an iPhone’s screen through one of your Macs, plugged in or on the same Wi‑Fi. Setup happens in Opensteer on that Mac.",
-                },
-              ],
-            },
-            {
-              key: "iphone-screen-needs",
-              title: "You’ll need",
-              rows: iphoneSetupNeeds.map((need) => ({
-                key: need.id,
-                kind: "text" as const,
-                label: need.title,
-                detail: need.detail,
-              })),
-            },
-            {
-              key: "iphone-screen-steps",
-              title: "On your Mac",
-              rows: iphoneSetupOnMacSteps.map((step, index) => ({
-                key: `step-${index}`,
-                kind: "text" as const,
-                label: `${index + 1}. ${step}`,
-              })),
-            },
-            {
-              key: "phone",
-              title: "Agent Phone",
-              rows: [
-                {
-                  key: "instructions",
-                  kind: "text",
-                  label:
-                    "Connect your Android phone by USB to one of your Macs. Open Devices there and choose Set up Agent Phone.",
-                },
-              ],
-            },
-            {
-              key: "other",
-              title: "Something else",
-              rows: [
-                {
-                  key: "instructions",
-                  kind: "text",
-                  label:
-                    "A TV, speaker, light or anything else on your network. An agent sets it up in a new task.",
-                },
-                {
-                  key: "connect",
-                  kind: "button",
-                  label: "Connect something else",
-                  onPress: () => {
-                    setAdding(false);
-                    void leave.openNewTask(connectDeviceDraftText);
-                  },
-                },
-              ],
-            },
-          ]}
+          })}
         />
       </Sheet>
     </>
   );
 }
+
+const selectDevicesAvailable = (snapshot: HostSnapshot): boolean =>
+  snapshot.devicesAvailable === true;
 
 /** The Threads with a pending Request, as one string so a change elsewhere re-renders nothing. */
 const selectWaitingThreads = (snapshot: HostSnapshot): string =>

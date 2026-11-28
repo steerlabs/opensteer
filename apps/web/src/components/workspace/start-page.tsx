@@ -45,13 +45,16 @@ import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import { computerGlyph, orderDevices } from "@opensteer/client/computers";
 import type { ApprovedComputerApp, OwnerWindowInfo } from "@opensteer/protocol";
 import { classifyClientFailure } from "@opensteer/client/connections";
-import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
+import {
+  browserPoolRefusalWords,
+  clientIssue,
+  presentClientIssue,
+} from "@opensteer/client/feedback";
 import { act, failureWords } from "../use-action.js";
 import { AppMark } from "../computer-apps/app-icons.js";
 import { computerIcon } from "../computers/device-art.js";
 import { DeviceLabel } from "../computers/device-label.js";
 import { useHereId } from "../computers/here.js";
-import { WebTabNotice } from "../devices/web-tab-notice.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SiteMark } from "../site-mark.js";
@@ -151,10 +154,8 @@ export function openWorkspaceWebLink(
 export function useNewTab() {
   const { nav, selection, startPage } = useWorkspace();
   return useCallback(() => {
-    if (selection.kind === "launcher") {
-      startPage.focus();
-      return;
-    }
+    // The middle may show the app a task's agent is using in the launcher's place: then a new one.
+    if (selection.kind === "launcher" && startPage.focus()) return;
     nav.showLauncher();
   }, [nav, selection, startPage]);
 }
@@ -365,7 +366,9 @@ export const StartPage = memo(function StartPage({
     const issue = clientIssue(error, { operation: "action", label: "open this" });
     const words = issue ? presentClientIssue(issue).title : "";
     const name = selected.presentation.name;
-    if (reason === "browser-placement-ambiguous")
+    const poolWords = browserPoolRefusalWords(reason);
+    if (poolWords) setRefusal({ kind: "message", text: poolWords });
+    else if (reason === "browser-placement-ambiguous")
       setRefusal({
         kind: "choose-computer",
         result,
@@ -520,7 +523,6 @@ export const StartPage = memo(function StartPage({
         <span className="launcher__spacer" />
         {trailing}
       </div>
-      <WebTabNotice hostClient={hostClient} />
       <div className="start-page" onKeyDown={onPageKey} ref={stageRef}>
         <div className="start-page__column">
           <form

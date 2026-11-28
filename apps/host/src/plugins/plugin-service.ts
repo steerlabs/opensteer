@@ -1,12 +1,21 @@
 import { pluginEngineEntry, pluginEngineUnavailableReason } from "./engine-resources.js";
+import { firstToGoUnderMemoryPressure, memoryKills } from "./memory-pressure.js";
 import { PluginSkillCache } from "./plugin-skill-cache.js";
 import { fork, type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { hkdfSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { z } from "zod";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { engineActiveVersions, engineDemand } from "./engine-storage.js";
+import { engineActiveVersions, engineDemand, engineInventoryEmpty } from "./engine-storage.js";
+import {
+  engineProcessGroupGone,
+  engineProcessMachineId,
+  engineProcessNamespace,
+  type EngineProcess,
+} from "./engine-process.js";
 import {
   EngineMessageSchema,
   HostMessageSchema,
@@ -55,11 +64,14 @@ export type PluginAnswer = {
 };
 export interface PluginServiceOptions {
   readonly databaseUrl: string;
+  /** V8's old space for the engine in MiB (OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB); 1,024 unset. */
+  readonly engineOldSpaceMb?: number;
   readonly dataDirectory: string;
   readonly owner: string;
   readonly credentialKey: Uint8Array;
   readonly origin: string;
   readonly webhookOrigin?: () => Promise<string | undefined>;
+  readonly agentWorkStopped?: () => boolean;
   readonly bridge?: string;
   readonly processEntry?: URL;
   readonly catalogUrl?: string;
@@ -107,8 +119,14 @@ const keepForMs = 120_000;
 const wakeLeadMs = 15_000;
 const liveExecution = new Set(["running", "waiting", "answered"]);
 // Agent programs run in the engine process. An explicit heap bound stops a runaway one at 1 GiB
-// instead of V8's machine-sized default; the supervisor then restarts the lost process.
-const engineFlags = ["--max-old-space-size=1024", "--max-semi-space-size=16"];
+// instead of V8's machine-sized default, or at what a Cloud Computer's Home sized for the
+// container the engine shares with the Host (home_limits), so V8 collects before the kernel kills.
+const engineFlags = (oldSpaceMb = 1024) => [
+  `--max-old-space-size=${oldSpaceMb}`,
+  "--max-semi-space-size=16",
+];
+
+type BeforeSend = (engine: EngineProcess | null) => Promise<void>;
 
 interface Pending {
   resolve(value: unknown): void;
@@ -123,6 +141,13 @@ export class PluginService {
   readonly #options: PluginServiceOptions;
   readonly #pending = new Map<string, Pending>();
   readonly #callbacks = new Map<string, AbortController>();
+  readonly #executionCallbacks = new Map<string, Set<Promise<void>>>();
+  readonly #executionChildren = new Map<string, number>();
+  readonly #engineCallbacks = new Map<string, Map<Promise<void>, string | undefined>>();
+  #namespace: Promise<string | null> | undefined;
+  #machineId: Promise<string | null> | undefined;
+  #engine: EngineProcess | null = null;
+  readonly #drainedExecutions = new EventEmitter();
   readonly #elicits = new Map<
     string,
     { resolve(value: PluginAnswer): void; reject(error: Error): void }
@@ -198,6 +223,10 @@ export class PluginService {
   }
   state(): PluginServiceState {
     return { ...this.#state };
+  }
+  /** Resolves once any exited engine process group has finished being cleaned up. */
+  waitForCleanup(): Promise<void> {
+    return this.#cleaning;
   }
   #set(state: PluginServiceState) {
     this.#state = state;
@@ -358,18 +387,34 @@ export class PluginService {
   }
   async #launch() {
     await this.#cleaning;
+    const [namespace, machineId] = await Promise.all([
+      (this.#namespace ??= engineProcessNamespace()),
+      (this.#machineId ??= engineProcessMachineId()),
+    ]);
     if (this.#closed) return;
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
     const generation = this.#state.generation + 1;
     this.#set({ status: "starting", generation });
     const entry = this.#options.processEntry ?? pluginEngineEntry(import.meta.url);
     const child = fork(entry, [], {
-      execArgv: [...engineFlags, ...(entry.pathname.endsWith(".ts") ? ["--import", "tsx"] : [])],
+      execArgv: [
+        ...engineFlags(this.#options.engineOldSpaceMb),
+        ...(entry.pathname.endsWith(".ts") ? ["--import", "tsx"] : []),
+      ],
       detached: process.platform !== "win32",
       stdio: ["ignore", "ignore", "ignore", "ipc"],
       serialization: "json",
     });
+    // A script that outgrows the Host's memory limit ends the engine, not the Host.
+    firstToGoUnderMemoryPressure(child.pid);
+    const killsBefore = memoryKills();
     this.#child = child;
+    const launchId = randomUUID();
+    this.#engine =
+      namespace && child.pid
+        ? { namespace, pid: child.pid, launchId, ...(machineId ? { machineId } : {}) }
+        : null;
+    const callbacks = new Map<Promise<void>, string | undefined>();
     let ready = false;
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
@@ -378,6 +423,7 @@ export class PluginService {
       rejectReady = reject;
     });
     child.on("message", (raw: unknown) => {
+      if (this.#child !== child) return;
       const parsed = EngineMessageSchema.safeParse(raw);
       if (!parsed.success) {
         child.kill("SIGTERM");
@@ -405,9 +451,33 @@ export class PluginService {
         this.#pulls.get(message.id)?.resolve(message);
         this.#pulls.delete(message.id);
       } else if (message.type === "execution") {
-        this.#report(message.execution);
+        const execution = message.execution;
+        if (execution.drained) {
+          void this.#drainCallbacks(execution.id).then(() => this.#report(execution));
+        } else this.#report(execution);
       } else if (message.type === "callback") {
-        void this.#callback(child, message);
+        const execution = z.object({ execution: z.string() }).safeParse(message.input)
+          .data?.execution;
+        const pending = this.#callback(child, message);
+        this.#engineCallbacks.set(launchId, callbacks);
+        callbacks.set(pending, execution);
+        void pending
+          .finally(() => {
+            callbacks.delete(pending);
+            if (!callbacks.size) this.#engineCallbacks.delete(launchId);
+          })
+          .catch(() => {});
+        if (execution) {
+          const callbacks = this.#executionCallbacks.get(execution) ?? new Set<Promise<void>>();
+          this.#executionCallbacks.set(execution, callbacks);
+          callbacks.add(pending);
+          void pending
+            .finally(() => {
+              callbacks.delete(pending);
+              if (callbacks.size === 0) this.#executionCallbacks.delete(execution);
+            })
+            .catch(() => {});
+        }
       } else if (message.type === "callbackCancel") {
         this.#callbacks.get(message.id)?.abort();
       } else if (message.type === "elicitResult" || message.type === "elicitError") {
@@ -428,13 +498,28 @@ export class PluginService {
       }
     });
     child.once("error", (error) => rejectReady(error));
-    child.once("exit", () => {
+    child.once("exit", (_code, signal) => {
+      // Any SIGKILL ends the automatic relaunch (below). It is said as a memory kill only on the
+      // kernel's own record of one, made while this engine ran; either way what earlier calls
+      // did stays unknown.
+      const killed = signal === "SIGKILL";
+      const killsAfter =
+        killed && !this.#closed && this.#idleStop?.child !== child ? memoryKills() : undefined;
+      const outOfMemory =
+        killsBefore !== undefined && killsAfter !== undefined && killsAfter > killsBefore;
+      const killedReason = outOfMemory
+        ? "The plugin engine ran out of memory and was killed before it replied."
+        : "The plugin engine was killed before it replied.";
       const error = new PluginServiceError(
         "interrupted",
-        "Plugin engine stopped; earlier calls may have taken effect. Check current state before repeating them.",
+        killed
+          ? `${killedReason} Earlier calls may have taken effect. Check current state before repeating them.`
+          : "Plugin engine stopped; earlier calls may have taken effect. Check current state before repeating them.",
+        killed ? "engine-killed" : undefined,
       );
-      rejectReady(error);
+      rejectReady(killed && !ready ? new PluginServiceError("unavailable", killedReason) : error);
       this.#child = undefined;
+      this.#engine = null;
       for (const pending of this.#pending.values()) {
         pending.cleanup();
         pending.reject(error);
@@ -466,6 +551,18 @@ export class PluginService {
         this.#armWake(dueInMs);
         return;
       }
+      // A SIGKILL may be an OOM kill. With no proof of headroom, another fork
+      // can put the whole Home back under the same pressure.
+      if (killed) {
+        this.#set({
+          status: "unavailable",
+          generation,
+          reason: outOfMemory
+            ? "The plugin engine ran out of memory and was killed."
+            : "The plugin engine was killed.",
+        });
+        return;
+      }
       this.#failures = healthy ? 1 : this.#failures + 1;
       if (this.#failures >= 3) {
         this.#set({
@@ -488,7 +585,15 @@ export class PluginService {
         250 * 2 ** (this.#failures - 1),
       );
     });
-    this.#send(child, { type: "init", config: this.#config });
+    this.#send(child, {
+      type: "init",
+      config: {
+        ...this.#config,
+        ...(this.#options.agentWorkStopped
+          ? { agentWorkStopped: this.#options.agentWorkStopped() }
+          : {}),
+      },
+    });
     try {
       await withTimeout(started, 30_000, {
         timeoutError: () =>
@@ -514,6 +619,78 @@ export class PluginService {
     if (liveExecution.has(execution.state)) this.#executions.set(execution.id, execution);
     else this.#executions.delete(execution.id);
     this.#options.onExecution?.(execution);
+    if (execution.drained) this.#drainedExecutions.emit(execution.id, execution);
+  }
+  async #drainCallbacks(id: string): Promise<void> {
+    await Promise.allSettled(this.#executionCallbacks.get(id) ?? []);
+  }
+  async executionContactLost(id: string, engine: EngineProcess): Promise<boolean> {
+    if (engine.launchId === this.#engine?.launchId) return false;
+    const [namespace, machineId] = await Promise.all([
+      (this.#namespace ??= engineProcessNamespace()),
+      (this.#machineId ??= engineProcessMachineId()),
+    ]);
+    if (!engineProcessGroupGone(engine, namespace, machineId)) return false;
+    // Unscoped callbacks from this engine can also be in the middle of work for this call.
+    const callbacks = this.#engineCallbacks.get(engine.launchId);
+    return (
+      !callbacks || ![...callbacks.values()].some((execution) => !execution || execution === id)
+    );
+  }
+  async stopExecution(
+    id: string,
+    context: PluginCaller,
+    submitting: boolean,
+  ): Promise<PluginExecution | undefined> {
+    const generation = this.#executionChildren.get(id);
+    if (generation === undefined) {
+      if (submitting)
+        return { id, caller: context.caller, state: "cancelled", interaction: null, drained: true };
+      return;
+    }
+    const child = this.#child;
+    if (!child || this.#state.status !== "ready" || generation !== this.#state.generation) return;
+    const receipt = Promise.withResolvers<PluginExecution>();
+    const confirmed = (result: PluginExecution) =>
+      child === this.#child &&
+      result.id === id &&
+      result.caller === context.caller &&
+      result.drained &&
+      !liveExecution.has(result.state);
+    const onDrained = (result: PluginExecution) => {
+      if (confirmed(result)) receipt.resolve(result);
+    };
+    this.#drainedExecutions.on(id, onDrained);
+    const finished = new AbortController();
+    const timeout = AbortSignal.timeout(3_000);
+    try {
+      const reply = this.cancel(
+        { execution: id },
+        context,
+        AbortSignal.any([timeout, finished.signal]),
+        async () => {
+          if (child !== this.#child)
+            throw new PluginServiceError(
+              "interrupted",
+              "Plugin engine stopped before it could confirm the stop",
+            );
+        },
+      ).catch((error: unknown) => {
+        if (
+          error instanceof PluginServiceError &&
+          (error.code === "interrupted" || (timeout.aborted && error.code === "cancelled"))
+        )
+          return undefined;
+        throw error;
+      });
+      const result = await Promise.race([receipt.promise, reply]);
+      if (!result || !confirmed(result)) return;
+      await this.#drainCallbacks(id);
+      return result;
+    } finally {
+      this.#drainedExecutions.off(id, onDrained);
+      finished.abort();
+    }
   }
   #send(child: ChildProcess, value: unknown) {
     if (child.connected) child.send(parseIpcMessage(HostMessageSchema, value), () => {});
@@ -639,8 +816,9 @@ export class PluginService {
     input: PluginInput<K>,
     context: PluginCaller,
     signal?: AbortSignal,
+    beforeSend?: BeforeSend,
   ): Promise<PluginOutput<K>> {
-    const result = await this.#request(operation, input, context, signal);
+    const result = await this.#request(operation, input, context, signal, beforeSend);
     // A change of which version is active, an install replayed from its receipt included, is
     // answered once the skill record follows it.
     const plugin =
@@ -716,11 +894,18 @@ export class PluginService {
     input: PluginInput<K>,
     context: PluginCaller,
     signal?: AbortSignal,
+    beforeSend?: BeforeSend,
   ): Promise<PluginOutput<K>> {
     signal?.throwIfAborted();
     this.#touch();
     const child = await this.#ready(signal);
+    if (beforeSend) await beforeSend(this.#engine);
     signal?.throwIfAborted();
+    if (!child.connected || this.#child !== child)
+      throw new PluginServiceError(
+        "unavailable",
+        "Plugin engine changed before the request was sent",
+      );
     const id = randomUUID();
     const result = await new Promise<unknown>((resolve, reject) => {
       const abort = () => {
@@ -740,12 +925,20 @@ export class PluginService {
       });
       signal?.addEventListener("abort", abort, { once: true });
       try {
+        const parsed = operations[operation].input.parse(input);
+        if (operation === "call" || operation === "execute") {
+          const executionId = z
+            .object({ executionId: z.string().optional() })
+            .parse(parsed).executionId;
+          if (executionId && child.connected)
+            this.#executionChildren.set(executionId, this.#state.generation);
+        }
         this.#send(child, {
           type: "request",
           id,
           operation,
           context,
-          input: operations[operation].input.parse(input),
+          input: parsed,
         });
       } catch (error) {
         this.#pending.delete(id);
@@ -755,6 +948,8 @@ export class PluginService {
     }).finally(() => this.#touch());
     checkPluginOutputSize(operation, result);
     const parsed = operations[operation].output.parse(result) as PluginOutput<K>;
+    const execution = z.object({ id: z.string(), drained: z.literal(true) }).safeParse(parsed).data;
+    if (execution) await this.#drainCallbacks(execution.id);
     if (operation === "list") {
       const plugins = await Promise.all(
         operations.list.output.parse(parsed).map(async (plugin) => ({
@@ -807,26 +1002,46 @@ export class PluginService {
       this.#pulls.delete(id);
     }
   }
-  #method<K extends PluginOperation>(operation: K) {
-    return (
+  #inventoryEmpty(kind: "apps" | "accounts"): Promise<boolean> {
+    return engineInventoryEmpty(this.#options.databaseUrl, kind, this.#options.owner).catch(
+      () => false,
+    );
+  }
+  installedInventoryEmpty(): Promise<boolean> {
+    return this.#inventoryEmpty("apps");
+  }
+  #method<K extends PluginOperation>(operation: K, inventory?: "apps" | "accounts") {
+    return async (
       input: PluginInput<K>,
       context: PluginCaller,
       signal?: AbortSignal,
-    ): Promise<PluginOutput<K>> => this.request(operation, input, context, signal);
+      beforeSend?: BeforeSend,
+    ): Promise<PluginOutput<K>> => {
+      signal?.throwIfAborted();
+      if (inventory && !beforeSend && this.#state.status !== "ready") {
+        const empty = await this.#inventoryEmpty(inventory);
+        signal?.throwIfAborted();
+        if (empty) return operations[operation].output.parse([]) as PluginOutput<K>;
+      }
+      return this.request(operation, input, context, signal, beforeSend);
+    };
+  }
+  executionWasSent(id: string): boolean {
+    return this.#executionChildren.has(id);
   }
   readonly health = this.#method("health");
   readonly catalogList = this.#method("catalogList");
   readonly catalogDetail = this.#method("catalogDetail");
   readonly icons = this.#method("icons");
-  readonly list = this.#method("list");
-  readonly installed = this.#method("installed");
+  readonly list = this.#method("list", "apps");
+  readonly installed = this.#method("installed", "apps");
   readonly detail = this.#method("detail");
   readonly install = this.#method("install");
   readonly export = this.#method("export");
   readonly versions = this.#method("versions");
   readonly activate = this.#method("activate");
   readonly remove = this.#method("remove");
-  readonly accounts = this.#method("accounts");
+  readonly accounts = this.#method("accounts", "accounts");
   readonly pinOAuth = this.#method("pinOAuth");
   readonly prepareOAuth = this.#method("prepareOAuth");
   readonly oauthMethods = this.#method("oauthMethods");
@@ -845,6 +1060,7 @@ export class PluginService {
   readonly unlinkAccount = this.#method("unlinkAccount");
   readonly search = this.#method("search");
   readonly describe = this.#method("describe");
+  readonly resolveTools = this.#method("resolveTools");
   readonly call = this.#method("call");
   readonly execute = this.#method("execute");
   readonly resume = this.#method("resume");
@@ -854,6 +1070,7 @@ export class PluginService {
   readonly skills = this.#method("skills");
   readonly skillFiles = this.#method("skillFiles");
   readonly manage = this.#method("manage");
+  readonly agentWork = this.#method("agentWork");
   readonly webhook = this.#method("webhook");
   readonly page = this.#method("page");
   listExecutions(): PluginExecution[] {
@@ -871,6 +1088,9 @@ export class PluginService {
     if (child) await this.#stopChild(child);
     await this.#stopping;
     await this.#cleaning;
+    await Promise.allSettled(
+      [...this.#engineCallbacks.values()].flatMap((pending) => [...pending.keys()]),
+    );
     this.#config.secret = "0".repeat(64);
     this.#set({ status: "stopped", generation: this.#state.generation });
   }

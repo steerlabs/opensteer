@@ -3,6 +3,23 @@ import XCTest
 @testable import ComputerUseCore
 
 final class FocusRestorationTests: XCTestCase {
+  func testOwnerRestorationStillHasTimeAfterTheFirstBatchExpires() {
+    let time = Locked<TimeInterval>(10)
+    let firstBatch = OwnerInputAXBudget(deadline: 9, now: { time.current }, check: {})
+    XCTAssertNil(firstBatch.timeout())
+    let restoration = FocusEnforcer.ownerRestorationBudget(started: 10, now: firstBatch.now)
+    XCTAssertEqual(restoration.timeout(), 0.1)
+    time.withLock { $0 = 12 }
+    XCTAssertNil(restoration.timeout())
+  }
+
+  func testVerifiedAgentRestorationDoesNotRequireBothAppKitNotices() {
+    XCTAssertTrue(FocusEnforcer.restorationAcknowledged(
+      restored: true, originalActivated: true, targetDeactivated: false, afterAgentInput: true))
+    XCTAssertFalse(FocusEnforcer.restorationAcknowledged(
+      restored: true, originalActivated: true, targetDeactivated: false, afterAgentInput: false))
+  }
+
   func testSiblingEnforcerStopDeactivatesTheRemainingBeliefDespiteARound() {
     let (kind, deactivated, activated) = (FocusEvents.appKitDefined, FocusEvents.deactivated, FocusEvents.activated)
     let roundDropsAll: (UInt32, Int64) -> Bool = { _, _ in true }
@@ -23,6 +40,32 @@ final class FocusRestorationTests: XCTestCase {
       .pass(believesActive: nil, endsDelivery: false))
   }
 
+
+  /// Real Mac (tester run 11): with the Opensteer app in front and the person watching, every
+  /// typing call of an agent brought Safari forward over it, and the person's Stop clicks landed
+  /// in Safari. Only the target's preparation was guarded: an act after the first (the target
+  /// already believes it is active) had no guard at all, and none watched after the input.
+  func testAnAgentActGuardsThePersonsFrontAppThroughItsInputWhicheverAppItIs() {
+    let target: pid_t = 202
+    // The person's front app: the Opensteer app watching the agent, or any other.
+    for person: pid_t in [101, 303] {
+      for preparing in [true, false] {
+        let plan = FocusEnforcer.agentGuard(front: person, target: target, preparing: preparing)
+        XCTAssertEqual(plan.original, person, "preparing: \(preparing)")
+        XCTAssertTrue(plan.watchesAfterInput, "preparing: \(preparing)")
+        // The screen is held only while the target is prepared.
+        XCTAssertEqual(plan.holdsScreen, preparing)
+      }
+    }
+  }
+
+  func testAnAgentActInTheAppThePersonHasInFrontHasNoAppToPutBack() {
+    for front: pid_t? in [202, nil] {
+      XCTAssertEqual(
+        FocusEnforcer.agentGuard(front: front, target: 202, preparing: true),
+        FocusEnforcer.AgentGuard(original: nil, holdsScreen: false, watchesAfterInput: false))
+    }
+  }
 
   private struct Choice {
     var relinquished = false

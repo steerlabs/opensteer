@@ -16,8 +16,30 @@ import {
   type PersonalRemoteAdministrationStatus,
   type PersonalRemoteExecutorProgressSchema,
 } from "@opensteer/protocol";
+import { CloudComputerIdSchema } from "@opensteer/control-plane-protocol";
 import type { Kysely } from "kysely";
 import type { z } from "zod";
+
+/**
+ * A Cloud Computer is linked to the Account that bought it for as long as it
+ * exists: its link names that Cloud Computer, and unlinking is refused before
+ * anything is written. Ending it is deleting the Cloud Computer.
+ */
+export async function refuseManagedAccountUnlink(
+  database: Pick<Kysely<DatabaseSchema>, "selectFrom">,
+): Promise<void> {
+  const link = await database
+    .selectFrom("personalRemoteAccountLink")
+    .select("challengeId")
+    .where("singletonKey", "=", "opensteer-account")
+    .executeTakeFirst();
+  if (link && CloudComputerIdSchema.safeParse(link.challengeId).success)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "A Cloud Computer stays linked to the Opensteer account that owns it.",
+      reason: "managed-home-unlink-refused",
+    });
+}
 
 export class PersonalRemoteAdministration {
   readonly #database: Kysely<DatabaseSchema>;
@@ -92,6 +114,7 @@ export class PersonalRemoteAdministration {
   ): Promise<PersonalRemoteAdministrationOperation> {
     await requirePersonalAdministrator(this.#database, session);
     const intent = PersonalRemoteAdministrationIntentSchema.parse(intentInput);
+    if (intent.action === "unlink") await refuseManagedAccountUnlink(this.#database);
     if (
       (intent.action === "rotate" ||
         (intent.action === "configure" && intent.mode === "connect")) &&

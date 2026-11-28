@@ -20,9 +20,9 @@ import type { ActionLineValue } from "../action-line.js";
 import { actionLine } from "../use-action.js";
 
 /**
- * Closing removes tabs from the person's list and nothing more: it never
- * quits an app, stops a phone, stops an agent or stops a server, so it asks
- * nothing first. Nothing here changes what the middle shows: when the tab
+ * Closing removes tabs from the person's list and ends a page tab's page, as a
+ * regular browser does, whoever opened it; it never quits an app, stops a
+ * phone, stops an agent's task or stops a server, so it asks nothing first. Nothing here changes what the middle shows: when the tab
  * there leaves the list, its neighbour takes it ([succession](./place-succession.ts)).
  *
  * A close that didn't happen leaves the tab in the list, so its outcome is
@@ -44,11 +44,6 @@ function useCloser(): TabCloser {
 export function useTabCloser(): (place: Pick<PlaceItem, "key">) => void {
   const closer = useCloser();
   return useCallback((place) => closer.close([place.key]), [closer]);
-}
-
-export function useTabGroupCloser(): (tabIds: readonly TabId[]) => void {
-  const closer = useCloser();
-  return useCallback((tabIds) => closer.close(tabIds), [closer]);
 }
 
 const idle = { key: "", running: false, outcome: null, issue: null } as const;

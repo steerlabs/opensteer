@@ -1,5 +1,9 @@
 import { StreamedContextMenu } from "./browser/streamed-context-menu.js";
-import type { DisplayClientDiagnostic, PhoneDisplayView } from "@opensteer/protocol";
+import {
+  displayFirstFrameTimeoutMs,
+  type DisplayClientDiagnostic,
+  type PhoneDisplayView,
+} from "@opensteer/protocol";
 import { reportDisplayDiagnostic, displayDiagnosticSource } from "../display-diagnostics.js";
 import {
   useCallback,
@@ -28,7 +32,7 @@ import {
   type DisplaySnapshot,
   type PhoneNavigationTo,
 } from "@opensteer/client/integrations";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, type useOwnerViewReconnect } from "@opensteer/client/react";
 import {
   RemoteEditingProxy,
   type RemoteEditingProxyHandle,
@@ -47,6 +51,7 @@ import {
 } from "./phone-display-input.js";
 import {
   knownPhoneDisplayDecoding,
+  passingWindowPause,
   phoneDisplayDecoding,
   retainPhoneDisplayPicture,
   type PhoneDisplayPicture,
@@ -75,10 +80,17 @@ const noStore = {
   subscribe: () => () => undefined,
 };
 
+/** How long a passing pause of a Mac window's capture keeps its picture without a word. */
+export const passingWindowWordsMs = 2_000;
+
 /** One view's live display of a phone session, and its owner's hold on the phone. */
 export interface ComputerDisplayView {
   /** Why nothing current is shown, in the shared Watch words (`computerWatchStatus`). */
-  readonly reason: ReturnType<typeof computerDisplayStatus>["reason"] | "decoder-unsupported";
+  readonly reason:
+    | ReturnType<typeof computerDisplayStatus>["reason"]
+    | "decoder-unsupported"
+    /** A passing pause of a Mac window's capture outlasted its bound, over the kept picture. */
+    | "waiting";
   readonly retrying: boolean;
   /** A picture is shown that may lag the phone: the stream restarts, or awaits a keyframe. */
   readonly startingWords: string;
@@ -118,8 +130,10 @@ export function useComputerDisplay({
   streamable,
   macWindow,
   machineId,
+  ownerReconnect,
 }: {
   readonly machineId?: string | null;
+  readonly ownerReconnect?: ReturnType<typeof useOwnerViewReconnect>;
   readonly enabled: boolean;
   readonly disabledReason?: DisplayClientDiagnostic["reason"] | undefined;
   readonly hostClient: HostClient;
@@ -158,12 +172,14 @@ export function useComputerDisplay({
     readonly lease: DisplayLease;
     readonly media: PhoneDisplayPicture;
     readonly editing: DisplayEditingSession;
+    readonly sourceKey: string | null;
   } | null>(null);
   const [input, setInput] = useState<PhoneDisplayInput | null>(null);
   // Bumped when the Host invalidates this scope, so a scope that comes back
   // unchanged in the same batch still gets a fresh socket.
   const [generation, setGeneration] = useState(0);
   const sourceKey = source ? JSON.stringify(source) : null;
+  const { observe, picture: recovered } = ownerReconnect ?? {};
   const pictureOwner = useRef<{
     hostClient: HostClient;
     scope: string | null;
@@ -222,7 +238,7 @@ export function useComputerDisplay({
     });
     const cancel = () => {
       controller.cancel(performance.now());
-      lease.resetInput();
+      (editing ?? lease).resetInput();
     };
     const hidden = () => {
       if (document.visibilityState === "hidden") cancel();
@@ -234,7 +250,7 @@ export function useComputerDisplay({
       window.removeEventListener("blur", cancel);
       document.removeEventListener("visibilitychange", hidden);
       controller.dispose(performance.now());
-      lease.resetInput();
+      (editing ?? lease).resetInput();
       setInput(null);
     };
   }, [enabled, holding, lease, editing]);
@@ -267,14 +283,19 @@ export function useComputerDisplay({
     const streams = sharedDisplayStreams(hostClient, reportDisplayDiagnostic);
     const target = { scope, source, editing: 1 as const };
     const current = streams.retain(target);
-    const shared = retainPhoneDisplayPicture(streams, target, decoding);
+    const shared = retainPhoneDisplayPicture(streams, target, decoding, macWindow);
     reportDisplayDiagnostic({
       transition: "retain",
       reason: "visible",
       ...displayDiagnosticSource(source),
     });
     const editing = new DisplayEditingSession(current);
-    setHeld({ lease: current, media: shared.picture, editing });
+    setHeld({ lease: current, media: shared.picture, editing, sourceKey });
+    const observeDisplay = () => {
+      if (source.kind === "owner-view") observe?.(source, current.getSnapshot());
+    };
+    const unobserve = observe ? current.subscribe(observeDisplay) : undefined;
+    observeDisplay();
     let invalidated = false;
     // The old login's socket closes with the Host's change, not React's next effect.
     const unsubscribe = hostClient.subscribe(() => {
@@ -304,6 +325,7 @@ export function useComputerDisplay({
         ...displayDiagnosticSource(source),
       });
       unsubscribe();
+      unobserve?.();
       editing.dispose();
       current.resetInput();
       current.release();
@@ -315,6 +337,7 @@ export function useComputerDisplay({
     enabled,
     generation,
     hostClient,
+    observe,
     scope,
     source?.kind,
     source?.kind === "task-session" ? source.sessionId : source?.viewId,
@@ -345,6 +368,25 @@ export function useComputerDisplay({
     const timer = setTimeout(() => setStartingSlow(true), 5_000);
     return () => clearTimeout(timer);
   }, [enabled, awaiting]);
+  // The Mac's capture holding back its pictures of a window that is there (it re-reads the window
+  // while an agent's call runs, or after one changed it) is waiting, not a closed window; a closed
+  // window ends the stream with its own reason. Before any picture it says it waits. Once one was
+  // shown, the picture stays and the words come only if the pause outlasts a short bound. Past the
+  // Home's own first-picture bound the words are the stream's again.
+  const passing = macWindow && display.connection === "open" && passingWindowPause(display.display);
+  const [passingFor, setPassingFor] = useState<"new" | "long" | "expired">("new");
+  useEffect(() => {
+    setPassingFor("new");
+    if (!passing) return;
+    const long = setTimeout(() => setPassingFor("long"), passingWindowWordsMs);
+    const expired = setTimeout(() => setPassingFor("expired"), displayFirstFrameTimeoutMs);
+    return () => {
+      clearTimeout(long);
+      clearTimeout(expired);
+    };
+  }, [passing]);
+  const waitingForWindow = passing && passingFor !== "expired" && media.shown === null;
+  const pictureKeptWaiting = passing && passingFor !== "expired" && media.shown !== null;
   const shown = media.stale && startingSlow ? null : media.shown;
   const geometry =
     shown &&
@@ -354,16 +396,26 @@ export function useComputerDisplay({
       ? shown.generation
       : null;
   useLayoutEffect(() => editing?.setGeometry(geometry), [editing, geometry]);
+  useLayoutEffect(() => {
+    if (geometry !== null && held?.sourceKey === sourceKey && source?.kind === "owner-view")
+      recovered?.(source);
+  }, [geometry, held, recovered, sourceKey]);
   return {
     ...status,
     viewportEnabled: macWindow,
-    reason:
-      shown !== null && display.connection !== "closed" && status.reason === "display-failed"
+    reason: pictureKeptWaiting
+      ? passingFor === "long"
+        ? "waiting"
+        : null
+      : waitingForWindow ||
+          (shown !== null && display.connection !== "closed" && status.reason === "display-failed")
         ? null
         : status.reason,
-    startingWords: startingSlow
-      ? "macOS is taking longer to start sharing this window."
-      : "Starting window sharing…",
+    startingWords: waitingForWindow
+      ? "Waiting for the window…"
+      : startingSlow
+        ? "macOS is taking longer to start sharing this window."
+        : "Starting window sharing…",
     picture: shown,
     snapshot: display,
     generation: streamGeneration,
@@ -426,10 +478,17 @@ export function ComputerDisplayScreen({
   const [caret, setCaret] = useState<RemoteCaretPosition | null>(null);
   const wire = useMemo(
     () => ({
+      showsInputReceipts: true,
       send: (operation: Parameters<DisplayEditingSession["send"]>[0]) => {
         input?.flush();
         return display.editing
           ? display.editing.send(operation)
+          : Promise.reject(new Error("Input unavailable."));
+      },
+      sendBatch: (operations: readonly Parameters<DisplayEditingSession["send"]>[0][]) => {
+        input?.flush();
+        return display.editing
+          ? display.editing.sendBatch(operations)
           : Promise.reject(new Error("Input unavailable."));
       },
     }),
@@ -440,7 +499,7 @@ export function ComputerDisplayScreen({
     const focused = document.activeElement;
     if (focused instanceof HTMLElement && pictureRef.current?.contains(focused)) focused.blur();
     input?.cancel(performance.now());
-    display.lease?.resetInput();
+    (display.editing ?? display.lease)?.resetInput();
   };
   useEffect(() => {
     const reset = () => {
@@ -491,9 +550,9 @@ export function ComputerDisplayScreen({
       const focused = document.activeElement;
       if (focused instanceof HTMLElement && pictureRef.current?.contains(focused)) focused.blur();
       input?.cancel(performance.now());
-      display.lease?.resetInput();
+      (display.editing ?? display.lease)?.resetInput();
     },
-    [input, display.lease],
+    [input, display.editing, display.lease],
   );
 
   useLayoutEffect(() => {
@@ -712,7 +771,7 @@ export function ComputerDisplayScreen({
         if (!event.currentTarget.contains(event.relatedTarget)) {
           proxy.current?.cancel();
           input?.cancel(performance.now());
-          display.lease?.resetInput();
+          (display.editing ?? display.lease)?.resetInput();
         }
       }}
       onKeyDown={(event) => {
@@ -743,10 +802,15 @@ export function ComputerDisplayScreen({
           canCut={display.snapshot.display?.displayCut === 1}
           onDismiss={dismissMenu}
           onAction={(action) => {
-            if (action === "copy" || action === "cut") proxy.current?.perform({ kind: action });
-            else if (action === "paste") proxy.current?.pasteFromMenu();
+            if (action === "copy" || action === "cut")
+              proxy.current?.perform({ kind: action, contextId: menu.contextId });
+            else if (action === "paste") proxy.current?.pasteFromMenu(menu.contextId);
             else if (action === "select-all")
-              proxy.current?.perform({ kind: "command", command: "selectAll" });
+              proxy.current?.perform({
+                kind: "command",
+                command: "selectAll",
+                contextId: menu.contextId,
+              });
             dismissMenu();
           }}
         />

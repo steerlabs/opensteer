@@ -1,5 +1,4 @@
 import { realtimeIdleProbeDeadlineMs, realtimeIdleProbeMs } from "@opensteer/client/host";
-import { deploymentPolicy } from "@opensteer/core";
 import type { AgentConnectionAuthorizationTarget } from "@opensteer/protocol";
 import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -21,6 +20,7 @@ import {
   DesktopConnect,
   DesktopWelcome,
   type ConnectKind,
+  type StartedFrom,
 } from "../components/places/desktop-entry.js";
 import { DeviceRemovedScreen, DeviceSignInScreen } from "../components/devices/device-removed.js";
 import { membershipRecord } from "../components/devices/this-device.js";
@@ -29,6 +29,13 @@ import { DesktopPlacesProvider, type DesktopPlaces } from "./places-context.js";
 import { ComputerFactsStore, readComputerFacts } from "./computer-facts.js";
 import { thisComputerLabel } from "./places.js";
 import { pendingSetupStep } from "../components/first-run/setup-memory.js";
+import {
+  bindRemoteAccessOnStart,
+  forgetRemoteAccessOnStart,
+  wishRemoteAccessOnStart,
+} from "../components/first-run/remote-access-on-start.js";
+import { declineSignInInvite } from "../components/sign-in-invite.js";
+import { remoteAccessOnWhenSignedInStart } from "@opensteer/client/host";
 import { SetupOpening } from "../components/first-run/setup-opening.js";
 import { StartupFailure } from "../components/onboarding-card.js";
 import { StartFreshScreen } from "../components/start-fresh-screen.js";
@@ -44,9 +51,18 @@ import {
 import { ToastProvider } from "../components/toast.js";
 import { createBrowserHostClient } from "../host/browser-host-client.js";
 import { disposeMessageOutbox } from "@opensteer/client/host";
+import { UnreachableHomeLine } from "../components/asleep-moment.js";
 import { ConnectionGateView } from "../components/connection-shell.js";
-import { useClientConnectionEverReady } from "@opensteer/client/react";
+import {
+  cloudComputerStore,
+  useClientConnectionEverReady,
+  useCloudComputer,
+} from "@opensteer/client/react";
+import { currentCloudComputer } from "@opensteer/client/computers";
+import { DeploymentIdSchema } from "@opensteer/core";
+import { cloudComputerAccountFor } from "../components/settings/sections/cloud-computer.js";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
+import { desktopConnectFailure } from "./desktop-connect-failure.js";
 
 const SignedInApp = lazy(async () => {
   const module = await import("../app.js");
@@ -154,6 +170,10 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   // opens. A later launch resumes only a setup left unfinished; after that,
   // setup stays one menu away.
   const [settingUpHere, setSettingUpHere] = useState(false);
+  // Started through "Use without an account": once this computer's setup names the Home, its
+  // sign-in card is answered "Not now" for it (N9).
+  const [withoutAccount, setWithoutAccount] = useState(false);
+
   // Data an earlier Opensteer left, which this one can't open: offered a fresh
   // start until the person chooses another way on ("Not now").
   const startFresh = useStartFresh(bridge, snapshot?.personalSetup?.state === "repair-required");
@@ -219,15 +239,21 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     ({ id }) => id === snapshot.selectedDeploymentId,
   );
   const selected = selectedConnection ? desktopSummaryFromAccess(selectedConnection) : undefined;
+  // The Home this computer's setup is creating, once named: what a choice made before it
+  // existed is bound to.
+  const creatingId = snapshot?.personalSetup?.deploymentId ?? null;
+  useEffect(() => {
+    if (creatingId === null) return;
+    bindRemoteAccessOnStart(creatingId);
+    if (withoutAccount) {
+      declineSignInInvite(creatingId);
+      setWithoutAccount(false);
+    }
+  }, [creatingId, withoutAccount]);
   // A Mac removed from the Opensteer on screen shows that before anything
   // signs in again, whichever arrived first: the session ending or the 4010.
   const [membership, setMembership] = useState<DesktopLocalExecutionStatus | null>(null);
-  const membershipDeploymentId =
-    selected &&
-    deploymentPolicy({ kind: selected.kind }).services.personal &&
-    !selected.onThisComputer
-      ? selected.id
-      : null;
+  const membershipDeploymentId = selected && !selected.onThisComputer ? selected.id : null;
   useEffect(() => {
     setMembership(null);
     if (!membershipDeploymentId) return;
@@ -315,23 +341,73 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     () => new ComputerFactsStore((computer) => readComputerFacts(bridge, computer)),
     [bridge],
   );
+  // One bridge for the place screens for as long as the window's: what is read through it,
+  // such as the account's Cloud Computers, is kept across snapshots.
+  const placesBridge = useMemo<OpensteerDesktopBridge>(
+    () => ({
+      ...bridge,
+      select: async (input) => {
+        setChooserFor(null);
+        await bridge.select(input);
+      },
+    }),
+    [bridge],
+  );
+  // Checkout followed from this app (the Cloud Computer client's one fact): once the account
+  // lists the Cloud Computer it set up, and nothing is open, that Home opens.
+  const cloud = useCloudComputer(
+    snapshot?.account.status === "signed-in" ? cloudComputerAccountFor(placesBridge) : null,
+  );
+  const cloudHomeId = cloud.views
+    ? (currentCloudComputer(cloud.views.computers)?.deploymentId ?? null)
+    : null;
+  const awaitedId =
+    cloud.checkoutFollowed &&
+    cloudHomeId !== null &&
+    snapshot?.selectedDeploymentId === null &&
+    snapshot.deployments.some(({ id }) => id === cloudHomeId)
+      ? cloudHomeId
+      : null;
+  const stopFollowingCheckout = cloud.stopFollowingCheckout;
+  useEffect(() => {
+    if (awaitedId === null) return;
+    stopFollowingCheckout?.();
+    void bridge
+      .select({ deploymentId: DeploymentIdSchema.parse(awaitedId) })
+      .catch(() => undefined);
+  }, [awaitedId, bridge, stopFollowingCheckout]);
+
+  // Checkout is followed for the account that opened it. When that account signs out, or
+  // another signs in, by any path, following ends here, where the account is observed: the
+  // next account never lands on someone else's checkout, and nothing keeps reading for it.
+  const signedInAs =
+    snapshot?.account.status === "signed-in"
+      ? `${snapshot.account.issuer ?? ""}\u0000${snapshot.account.subject ?? ""}`
+      : snapshot?.account.status === "signed-out"
+        ? null
+        : undefined;
+  const followedFor = useRef<string | null>(null);
+  useEffect(() => {
+    // Signing in, or an error, says nothing yet about who; wait for the settled state.
+    if (signedInAs === undefined) return;
+    const previous = followedFor.current;
+    followedFor.current = signedInAs;
+    const account = cloudComputerAccountFor(placesBridge);
+    if (account && previous !== null && previous !== signedInAs)
+      cloudComputerStore(account).stopFollowingCheckout();
+  }, [placesBridge, signedInAs]);
+
   const places = useMemo<DesktopPlaces | null>(
     () =>
       snapshot
         ? {
-            bridge: {
-              ...bridge,
-              select: async (input) => {
-                setChooserFor(null);
-                await bridge.select(input);
-              },
-            },
+            bridge: placesBridge,
             facts,
             onAddPlace: () => setScreen("pairing"),
             snapshot,
           }
         : null,
-    [bridge, facts, snapshot],
+    [facts, placesBridge, snapshot],
   );
 
   useEffect(() => {
@@ -541,6 +617,23 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     // A place this app couldn't reach yet keeps trying through its own
     // connection, which explains itself on the shared clock; only a refusal is
     // final enough for main's own words.
+    // A Home reached at its own address is never a sleeping Mac; the line decides the rest.
+    const unreachableHome = (
+      <UnreachableHomeLine
+        desktopBridge={bridge}
+        home={() =>
+          selected
+            ? {
+                exposure: selected.access === "native" ? "networked" : "loopback",
+                deploymentId: selected.id,
+                hostedHere: selected.onThisComputer,
+                macName: selected.name,
+                portalOrigin: hostClient?.getSnapshot().identityConfig?.portalOrigin ?? null,
+              }
+            : null
+        }
+      />
+    );
     const otherComputers =
       snapshot.deployments.length > 1
         ? { label: "Other computers", onPress: () => selected && setChooserFor(selected.id) }
@@ -556,6 +649,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           connection={hostClient.connection}
           scope="app"
           secondary={otherComputers}
+          unreachableAside={unreachableHome}
         />
       );
     if (presentation === "blocked" && selectedConnection?.failure) {
@@ -584,9 +678,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
             setFormError(null);
             void bridge
               .connectPrivate(input)
-              .catch(() =>
-                setFormError("That couldn’t be connected. Check the address and try again."),
-              )
+              .catch((error: unknown) => setFormError(desktopConnectFailure(error)))
               .finally(() => setConnectingPrivate(false));
           }}
         />
@@ -598,9 +690,14 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       const canSetUpHere =
         setup?.deploymentId === null && setup.state === "stopped" && setup.canStart;
       const setUpHere = canSetUpHere
-        ? (name?: string) => {
+        ? (name: string | undefined, from: StartedFrom) => {
             setScreen(null);
             setSettingUpHere(true);
+            // Only "Where should your Opensteer live? › On this Mac" turns Remote access on.
+            if (from === "on-this-mac" && remoteAccessOnWhenSignedInStart)
+              wishRemoteAccessOnStart(snapshot.account);
+            else forgetRemoteAccessOnStart();
+            setWithoutAccount(from === "without-account");
             runBridgeOperation(bridge.createPersonalDeployment(name ? { name } : {}));
           }
         : null;
@@ -643,6 +740,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
             connection={hostClient.connection}
             scope="app"
             secondary={otherComputers}
+            unreachableAside={unreachableHome}
           />
         );
       return (

@@ -13,11 +13,15 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("cdp-boundary", 180_000);
 
 // Run only in a disposable VM. This fixture deliberately creates a privileged product target.
 const root = await mkdtemp(path.join(tmpdir(), "opensteer-cdp-boundary-"));
 app.setPath("userData", root);
 app.commandLine.appendSwitch("headless");
+app.on("window-all-closed", () => undefined);
 const artifactDirectory =
   process.argv.find((value) => value.startsWith("--artifact-dir="))?.slice(15) ??
   process.env.OPENSTEER_CDP_BOUNDARY_E2E_ARTIFACT_DIR ??

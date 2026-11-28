@@ -29,20 +29,6 @@ import { SettingsSectionRoute, SettingsShell } from "../settings/settings-shell.
 import { ThreadRoute } from "../thread-view.js";
 import { ToastProvider } from "../toast.js";
 import { LiveRedirect } from "./live-redirect.js";
-import { TeamRoutes } from "../../team/team-routes.js";
-import { TeamsProvider, type TeamAttachment } from "../../team/team-attachments.js";
-import {
-  MockTeamHost,
-  TeamSessionClient,
-  busyTeamIds,
-  createMemoryTeamPersistence,
-  mockAccountEmail,
-  mockAccountSubject,
-  type MockTeamWorld,
-} from "@opensteer/client/team";
-import { TeamDialogsProvider } from "../../team/hosted-teams.js";
-import { TeamsRoute } from "../../team/join-route.js";
-import { SettingsTeamRoute } from "../settings/settings-shell.js";
 import { composerField, rewrite } from "../composer-editor.test-support.js";
 
 /**
@@ -58,10 +44,6 @@ let root: Root | null = null;
 let client: MockHostClient;
 let sessionClient: HostClient | null = null;
 const messageRecords = new Map<string, string>();
-let teamHost: MockTeamHost | null = null;
-let teamSession: TeamSessionClient | null = null;
-/** Teams past the first, for a mount with more than one. */
-let moreTeams: { host: MockTeamHost; session: TeamSessionClient }[] = [];
 interface Step {
   readonly type: string;
   readonly path: string;
@@ -111,15 +93,6 @@ function cleanupWorkspace() {
   root = null;
   sessionClient?.dispose();
   sessionClient = null;
-  teamSession?.dispose();
-  teamSession = null;
-  teamHost?.dispose();
-  teamHost = null;
-  for (const team of moreTeams) {
-    team.session.dispose();
-    team.host.dispose();
-  }
-  moreTeams = [];
   client?.dispose();
   messageRecords.clear();
   history = [];
@@ -170,10 +143,6 @@ async function mount(
     latencyMs?: number;
     /** What else the mock Host starts with: plugins, say. */
     mock?: Omit<MockHostClientOptions, "latencyMs" | "now">;
-    /** One live mock team beside the person's own tasks, as a joined desktop has; a second named here. */
-    team?: boolean | { readonly second: string };
-    /** Hosted teams this app can create and join, in memory. */
-    world?: MockTeamWorld;
     /** The Host the last mount drew, as a page reload finds it. */
     sameHost?: boolean;
     shell?: Partial<
@@ -202,69 +171,6 @@ async function mount(
     write: async (key, value) => void messageRecords.set(key, value),
     remove: async (key) => void messageRecords.delete(key),
   });
-  let teams: readonly TeamAttachment[] = [];
-  if (options.team && options.sameHost && teamHost && teamSession) {
-    teams = [
-      {
-        teamId: teamHost.teamId,
-        name: teamHost.bootstrap.teamName,
-        origin: teamHost.origin,
-        client: teamSession,
-        link: null,
-      },
-      ...moreTeams.map(({ host, session }) => ({
-        teamId: host.teamId,
-        name: host.bootstrap.teamName,
-        origin: "https://chat.second.example",
-        client: session,
-        link: null,
-      })),
-    ];
-  } else if (options.team) {
-    const host = new MockTeamHost();
-    teamHost = host;
-    const session = new TeamSessionClient({
-      scope: { teamDeploymentId: host.teamId, userId: host.userId },
-      persistence: createMemoryTeamPersistence(),
-      rpc: host.rpc,
-      connect: host.connect,
-    });
-    await session.load();
-    teamSession = session;
-    teams = [
-      {
-        teamId: host.teamId,
-        name: host.bootstrap.teamName,
-        origin: "https://chat.acme.example",
-        client: session,
-        link: null,
-      },
-    ];
-    if (typeof options.team === "object") {
-      const second = new MockTeamHost({
-        teamId: busyTeamIds[1],
-        teamName: options.team.second,
-      });
-      const secondSession = new TeamSessionClient({
-        scope: { teamDeploymentId: second.teamId, userId: second.userId },
-        persistence: createMemoryTeamPersistence(),
-        rpc: second.rpc,
-        connect: second.connect,
-      });
-      await secondSession.load();
-      moreTeams.push({ host: second, session: secondSession });
-      teams = [
-        ...teams,
-        {
-          teamId: second.teamId,
-          name: second.bootstrap.teamName,
-          origin: "https://chat.second.example",
-          client: secondSession,
-          link: null,
-        },
-      ];
-    }
-  }
   const node = document.createElement("div");
   document.body.append(node);
   root = createRoot(node);
@@ -273,66 +179,46 @@ async function mount(
     root?.render(
       <Wrapper>
         <ToastProvider>
-          <TeamsProvider
-            account={
-              options.world ? { subject: mockAccountSubject, email: mockAccountEmail } : null
-            }
-            surface={{
-              kind: "preview",
-              hostClient: sessionClient ?? client,
-              teams,
-              world: options.world,
-            }}
-          >
-            <MemoryRouter initialEntries={[entry]}>
-              <History />
-              <TeamDialogsProvider>
-                <Routes>
-                  <Route
-                    element={
-                      <AppShell
-                        hostClient={sessionClient ?? client}
+          <MemoryRouter initialEntries={[entry]}>
+            <History />
+            <Routes>
+              <Route
+                element={
+                  <AppShell
+                    hostClient={sessionClient ?? client}
 
-                        {...options.shell}
-                      />
-                    }
-                  >
-                    <Route index element={<HomeRoute />} />
-                    <Route path="tasks/:threadId" element={<ThreadRoute />} />
-                    <Route path="teams" element={<TeamsRoute />} />
-                    <Route path="teams/:teamId/*" element={<TeamRoutes />} />
-                    <Route path="live" element={<LiveRedirect />} />
-                    <Route path="automations" element={<AutomationsPage />} />
-                    <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
-                    <Route
-                      path="computers/*"
-                      element={<SettingsRedirect from="/computers" to="/settings/devices" />}
-                    />
-                    <Route path="settings" element={<SettingsShell />}>
-                      <Route
-                        index
-                        element={<SettingsRedirect from="/settings" to="/settings/general" />}
-                      />
-                      <Route path="general" element={<SettingsSectionRoute section="general" />} />
-                      <Route
-                        path="ai-engines"
-                        element={<SettingsRedirect from="/settings/ai-engines" to="/settings/ai" />}
-                      />
-                      <Route path="ai" element={<SettingsSectionRoute section="ai" />} />
-                      <Route path="account" element={<SettingsSectionRoute section="account" />} />
-                      <Route
-                        path="plugins/*"
-                        element={<SettingsSectionRoute section="plugins" />}
-                      />
-                      <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
-                      <Route path="devices/:deviceId" element={<DevicePage />} />
-                      <Route path="teams/:teamId/:page" element={<SettingsTeamRoute />} />
-                    </Route>
-                  </Route>
-                </Routes>
-              </TeamDialogsProvider>
-            </MemoryRouter>
-          </TeamsProvider>
+                    {...options.shell}
+                  />
+                }
+              >
+                <Route index element={<HomeRoute />} />
+                <Route path="tasks/:threadId" element={<ThreadRoute />} />
+                <Route path="live" element={<LiveRedirect />} />
+                <Route path="automations" element={<AutomationsPage />} />
+                <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
+                <Route
+                  path="computers/*"
+                  element={<SettingsRedirect from="/computers" to="/settings/devices" />}
+                />
+                <Route path="settings" element={<SettingsShell />}>
+                  <Route
+                    index
+                    element={<SettingsRedirect from="/settings" to="/settings/general" />}
+                  />
+                  <Route path="general" element={<SettingsSectionRoute section="general" />} />
+                  <Route
+                    path="ai-engines"
+                    element={<SettingsRedirect from="/settings/ai-engines" to="/settings/ai" />}
+                  />
+                  <Route path="ai" element={<SettingsSectionRoute section="ai" />} />
+                  <Route path="account" element={<SettingsSectionRoute section="account" />} />
+                  <Route path="plugins/*" element={<SettingsSectionRoute section="plugins" />} />
+                  <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
+                  <Route path="devices/:deviceId" element={<DevicePage />} />
+                </Route>
+              </Route>
+            </Routes>
+          </MemoryRouter>
         </ToastProvider>
       </Wrapper>,
     ),
@@ -501,8 +387,6 @@ export {
   root,
   client,
   sessionClient,
-  teamHost,
-  teamSession,
   history,
   historyState,
   historyKey,

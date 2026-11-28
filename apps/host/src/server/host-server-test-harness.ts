@@ -1,3 +1,4 @@
+import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
 import { RealtimeHub } from "@opensteer/orchestration";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { ResourceRevisions } from "../runtime/personal-resource-revisions.js";
@@ -31,6 +32,7 @@ export function hostServerTestDependencies(
       bootstrap: async () => ({ tabs: [], layout: { revision: 0, items: [] }, complete: true }),
     } as unknown as HostServerDependencies["tabs"],
     toolActivity: inert(),
+    secretDigestKey: Buffer.alloc(32, 0x33),
     browserSources: inert(),
     passwordSignIns: inert(),
     signBrowserSourceInvitation: inert(),
@@ -62,8 +64,15 @@ export function hostServerTestDependencies(
     resourceRevisions: new ResourceRevisions(() => undefined),
     egress: inert(),
     execution: inert(),
-    teamLinks: inert(),
-    harnessAuthenticationCoordinator: inert(),
+    harnessAuthenticationCoordinator: new HarnessAuthenticationCoordinator({
+      harnesses: { getHarnessInstance: async () => null },
+      runners: {
+        isAvailable: () => false,
+        manageHarnessAuthentication: async () => {
+          throw new Error("No Runner is connected in this fixture");
+        },
+      },
+    }),
     integrations: {
       access: inert(),
       authAttempts: inert(),
@@ -91,7 +100,7 @@ export function hostServerTestDependencies(
     triggers: {
       controlTokens: inert(),
       watchBrowserTokens: inert(),
-      watchPrograms: inert(),
+      watchScripts: inert(),
       service: inert(),
     },
     ...overrides,

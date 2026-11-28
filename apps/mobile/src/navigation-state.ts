@@ -1,5 +1,4 @@
-import { computerForTeam, teamLinkTarget, type ApplicationLinkOutcome } from "./links.js";
-import type { MobileTeams } from "./team/mobile-teams.js";
+import type { ApplicationLinkOutcome } from "./links.js";
 import type { InitialState } from "@react-navigation/native";
 
 export interface ThreadDestination {
@@ -22,9 +21,6 @@ const modalWorkRoutes: ReadonlySet<string> = new Set([
   "AddPersonal",
   "AddServer",
   "DeploymentSwitcher",
-  // Joining a team from another computer selects it first; the sheet then
-  // leaves for that computer's Home itself.
-  "JoinTeam",
   "NotificationsIntro",
   "Settings",
 ]);
@@ -129,58 +125,35 @@ export function threadReturn(
     : "push-from-top";
 }
 
-/** Builds the stack before starting any personal Host connection. Team reads are independent. */
+/** Builds the stack before starting any personal Host connection. */
 export function applicationLinkState(
   outcome: Exclude<ApplicationLinkOutcome, { kind: "ignore" | "unknown-deployment" }>,
   ports: {
-    /** Stamped on a link-opened sheet so a newer link supersedes it even before it mounts. */
-    readonly externalIntent: number;
     readonly selectedDeploymentId: string | null;
     readonly select: (deploymentId: string) => Promise<void>;
-    readonly teams: Pick<MobileTeams, "team" | "teamAt" | "computersIn">;
   },
 ): InitialState {
-  let deploymentId = ports.selectedDeploymentId;
-  let state: InitialState;
   if (outcome.kind === "pairing") {
+    const deploymentId = ports.selectedDeploymentId;
     const base = deploymentId === null ? deploymentsRoot() : deploymentRoot(deploymentId);
     return {
       index: base.routes.length,
       routes: [...base.routes, { name: "AddPersonal", params: outcome.offer }],
     };
   }
-  if (outcome.kind === "team" || outcome.kind === "team-notice") {
-    const team =
-      outcome.kind === "team-notice"
-        ? ports.teams.team(outcome.teamId)
-        : ports.teams.teamAt(outcome.origin);
-    const target = teamLinkTarget(outcome, team, ports.externalIntent);
-    const move =
-      team === null
-        ? null
-        : computerForTeam({
-            shown: deploymentId,
-            computersInTeam: ports.teams.computersIn(team.teamId),
+  const deploymentId = outcome.deploymentId;
+  const state =
+    outcome.kind === "authorize-agent"
+      ? agentAuthorizationRoot(deploymentId, outcome.requestId)
+      : outcome.kind === "needs-you"
+        ? needsYouRoot(deploymentId)
+        : threadRoot({
+            deploymentId,
+            threadId: outcome.threadId,
+            ...(outcome.messageId === undefined ? {} : { messageId: outcome.messageId }),
+            ...(outcome.requestId === null ? {} : { requestId: outcome.requestId }),
           });
-    deploymentId = move ?? deploymentId;
-    const base = deploymentId === null ? deploymentsRoot() : deploymentRoot(deploymentId);
-    state = { index: base.routes.length, routes: [...base.routes, target] };
-    if (move === null) return state;
-  } else {
-    deploymentId = outcome.deploymentId;
-    state =
-      outcome.kind === "authorize-agent"
-        ? agentAuthorizationRoot(deploymentId, outcome.requestId)
-        : outcome.kind === "needs-you"
-          ? needsYouRoot(deploymentId)
-          : threadRoot({
-              deploymentId,
-              threadId: outcome.threadId,
-              ...(outcome.messageId === undefined ? {} : { messageId: outcome.messageId }),
-              ...(outcome.requestId === null ? {} : { requestId: outcome.requestId }),
-            });
-  }
   // The destination's gate shows connection failures; a dead Host cannot delay navigation.
-  if (deploymentId !== null) void ports.select(deploymentId).catch(() => undefined);
+  void ports.select(deploymentId).catch(() => undefined);
   return state;
 }

@@ -115,6 +115,7 @@ integration("the Host's shadow comparison of catalog and runtime", () => {
     const readCut = store.readBrowserSessionCut.bind(store);
     /** Every cut read, by session, and the most read at once. */
     const reads: string[] = [];
+    const completedReads: string[] = [];
     let reading = 0;
     let mostAtOnce = 0;
     const repository = Object.assign(personalBrowserRepository(store), {
@@ -127,6 +128,7 @@ integration("the Host's shadow comparison of catalog and runtime", () => {
           return await readCut(...args);
         } finally {
           reading--;
+          completedReads.push(args[1]);
         }
       },
     });
@@ -261,13 +263,14 @@ integration("the Host's shadow comparison of catalog and runtime", () => {
     );
     expect(shadow("browser.shadow.appeared"), "Logged once, however long it lasts").toHaveLength(1);
 
-    // Reopened: no longer closed, but the page the runtime holds was bound at an earlier
-    // generation of the tab, so it is the one that would be destroyed now.
+    // Reopened: no longer closed, but its close let go of the page the runtime holds (a reopen
+    // loads in a page of its own), so this session's catalog has no tab for that page: it is
+    // the one that would be destroyed now.
     await tabs.reopen(f.userId, descriptor.id, "reopen");
     await converges(() =>
       expect(shadow("browser.shadow.appeared").map((line) => line.reason)).toEqual([
         "closed",
-        "generation",
+        "never-admitted",
       ]),
     );
     expect(shadow("browser.shadow.resolved")).toEqual([
@@ -323,13 +326,19 @@ integration("the Host's shadow comparison of catalog and runtime", () => {
     expect(page.isClosed()).toBe(false);
 
     // Fifty more sessions: one tab commit reads the one session it touches, one read at a time.
+    const beforeFifty = completedReads.length;
     for (let index = 0; index < 50; index++)
       await browser.start({ fresh: true, ownerId: f.userId });
-    await converges(() => expect(reading).toBe(0));
+    await converges(() => expect(completedReads.length).toBe(beforeFifty + 50));
     await vi.advanceTimersByTimeAsync(1_000);
     const before = reads.length;
+    const beforeCompleted = completedReads.length;
     await tabs.reopen(f.userId, descriptor.id, "reopen-fanout");
-    await converges(() => expect(reads.length).toBeGreaterThan(before));
+    await converges(() => expect(completedReads.length).toBeGreaterThan(beforeCompleted));
+    // As above: the reopened tab let go of the page this session holds.
+    await converges(() =>
+      expect(shadow("browser.shadow.appeared").at(-1)).toMatchObject({ reason: "never-admitted" }),
+    );
     await vi.advanceTimersByTimeAsync(1_000);
     expect(reads.slice(before), "Only the session that holds the tab").toEqual([sessionId]);
     expect(mostAtOnce, "Never more than one cut, so one pooled connection, at a time").toBe(1);

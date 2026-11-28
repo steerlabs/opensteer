@@ -1,8 +1,28 @@
 import { DeviceAccessRefusal } from "../administration/device-access.js";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { HostApiErrorSchema } from "@opensteer/protocol";
 import { OpensteerError } from "@opensteer/core";
 import { formatIssues } from "@opensteer/shared/validationIssues";
+import { AUTOMATION_SECRET_NAME_ERROR } from "@opensteer/triggers";
 import { z } from "zod";
+
+function zodValidationReason(issues: readonly z.core.$ZodIssue[]): string | undefined {
+  for (const issue of issues) {
+    if (
+      issue.code === "custom" &&
+      "params" in issue &&
+      typeof issue.params === "object" &&
+      issue.params !== null &&
+      typeof (issue.params as { readonly reason?: unknown }).reason === "string"
+    ) {
+      return (issue.params as { readonly reason: string }).reason;
+    }
+    if (issue.message === AUTOMATION_SECRET_NAME_ERROR) {
+      return "automation-secret-invalid-name";
+    }
+  }
+  return undefined;
+}
 
 /**
  * One status ladder for the whole Host.
@@ -23,6 +43,8 @@ export function normalizeHostError(error: unknown): NormalizedHostError {
   // A malformed body reaches the handler as a parse failure, not as a fault of
   // this Deployment; both spellings of that failure are the caller's mistake.
   if (error instanceof z.ZodError || error instanceof SyntaxError) {
+    const customReason =
+      error instanceof z.ZodError ? zodValidationReason(error.issues) : undefined;
     return {
       error: {
         code: "bad_request",
@@ -30,9 +52,23 @@ export function normalizeHostError(error: unknown): NormalizedHostError {
           error instanceof z.ZodError
             ? `Request is invalid: ${formatIssues(error.issues)}`
             : "Request contains invalid JSON",
+        // The report is for the caller that sent it; an app says something of its own, unless
+        // a schema explicitly attached a stable domain reason (e.g. automation-secret-invalid-value).
+        reason: customReason ?? "invalid-request",
         retryable: false,
       },
       status: 400,
+    };
+  }
+  if (error instanceof OperationOutcomeUnknown) {
+    return {
+      error: {
+        code: "conflict",
+        message: error.message || "This change may have happened. Check before trying again.",
+        reason: "outcome-unknown",
+        retryable: false,
+      },
+      status: 409,
     };
   }
   if (error instanceof OpensteerError) {

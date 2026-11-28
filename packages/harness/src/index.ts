@@ -1,5 +1,4 @@
 export * from "./cli-logout.js";
-export * from "./attachment-sandbox.js";
 export * from "./compatible-endpoint.js";
 export * from "./deferred.js";
 export * from "./directory-links.js";
@@ -11,6 +10,9 @@ export * from "./input-projection.js";
 export * from "./initial-context.js";
 export * from "./installed-engine.js";
 export * from "./engine-installation.js";
+export * from "./codex-config.js";
+export * from "./pi-config.js";
+export * from "./engine-configuration.js";
 export * from "./native-images.js";
 export * from "./labels.js";
 export * from "./model-servers.js";

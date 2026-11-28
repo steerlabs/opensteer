@@ -12,7 +12,7 @@ import type { ThreadMessagePage } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
-import { messageViewFromRow } from "./thread-row-mappers.js";
+import { keptMessageSql, messageViewFromRow } from "./thread-row-mappers.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { boundedSerializedPrefix, serializedArrayBytes } from "./message-window.js";
 const historyCursorSchema = z.strictObject({
@@ -102,7 +102,8 @@ export async function readThreadHistory(
         .selectFrom("messages")
         .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
         .where("messages.threadId", "=", input.threadId)
-        .where(sql<boolean>`messages.published`);
+        .where(sql<boolean>`messages.published`)
+        .where(keptMessageSql());
       if (search)
         visible = visible.where(
           sql<boolean>`jsonb_to_tsvector('simple', jsonb_path_query_array(messages.content, '$[*] ? (@.type == "text").text'), '["string"]') @@ plainto_tsquery('simple', ${search})`,

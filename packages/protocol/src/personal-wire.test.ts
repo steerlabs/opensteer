@@ -7,9 +7,18 @@ import {
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { HostToClientMessageSchema } from "./client.js";
+import { PersonalResourceDataSchema } from "./resources.js";
+import { TabCommandSchema, TabViewerSchema } from "./tabs.js";
 import { ScopedClientMessageSchema, ScopedHostMessageSchema } from "./personal-sync.js";
 import { hostApi } from "./host-api.js";
-import { TeamCommandSchema } from "./team-api.js";
+import {
+  AgentBrowserSessionSummarySchema,
+  BrowserAttachTicketClaimsSchema,
+  BrowserBridgeAttachedSchema,
+  BrowserPoolReportSchema,
+  HostedBrowserSessionSchema,
+  PooledBrowserAttachTicketClaimsSchema,
+} from "./browser.js";
 import {
   json,
   wireUnionMembers,
@@ -49,16 +58,11 @@ const retiredHostFrames = new Set([
 ]);
 
 function personalWire(): PersonalWire {
-  const teamCommands = new Set<string>(
-    TeamCommandSchema.options
-      .map((option) => option.shape.type.value)
-      .filter((type) => type.startsWith("team.")),
-  );
   const commandOptions = (union: z.ZodType, surface: "input" | "output") => {
     const byType = new Map<string, z.ZodType[]>();
     const collect = (schema: z.ZodType): void => {
       const [type] = schema._zod.propValues?.type ?? [];
-      if (typeof type !== "string" || teamCommands.has(type)) return;
+      if (typeof type !== "string") return;
       const options = byType.get(type) ?? [];
       options.push(schema);
       byType.set(type, options);
@@ -75,10 +79,7 @@ function personalWire(): PersonalWire {
       ]),
     );
   };
-  // `team.*` reads are a team Host's; everything else is a personal Host's.
-  const rpcs = Object.entries(hostApi).filter(
-    ([name]) => !name.startsWith("team.") && name !== "commands.dispatch",
-  );
+  const rpcs = Object.entries(hostApi).filter(([name]) => name !== "commands.dispatch");
   const frames = (union: z.ZodDiscriminatedUnion, prefix: string) =>
     Object.fromEntries(
       union.options.map((option) => [
@@ -130,6 +131,76 @@ function windowBreaks(baseline: PersonalWire, current: PersonalWire): string[] {
 }
 
 describe("personal wire compatibility", () => {
+  it("keeps ordinary browser ticket and relay readiness bytes while fencing pooled tickets", () => {
+    const fixture =
+      '{"access":"read-write","audience":"opensteer-browser-runtime","creationOrigin":"person","wireVersion":2,"operationExpiresAt":"2026-08-09T18:00:18.000Z","remainingBudgetMs":18000,"expiresAt":"2026-08-09T18:01:00.000Z","identity":{"kind":"fresh"},"issuedAt":"2026-08-09T18:00:00.000Z","nonce":"nonce_0123456789abcdef","runtimeId":"runtime_local","sessionId":"bsn_00000000-0000-4000-8000-000000000002","subject":"usr_owner"}';
+    const ordinary: unknown = JSON.parse(fixture);
+    expect(JSON.stringify(BrowserAttachTicketClaimsSchema.parse(ordinary))).toBe(fixture);
+    const attached = '{"type":"browser.attached"}';
+    expect(JSON.stringify(BrowserBridgeAttachedSchema.parse(JSON.parse(attached)))).toBe(attached);
+    const pooled = {
+      ...BrowserAttachTicketClaimsSchema.parse(ordinary),
+      pool: {
+        slot: "slot",
+        term: 1,
+        instance: "00000000-0000-4000-8000-000000000003",
+        epoch: 2,
+        attachment: 3,
+      },
+    };
+    expect(BrowserAttachTicketClaimsSchema.safeParse(pooled).success).toBe(false);
+    expect(PooledBrowserAttachTicketClaimsSchema.safeParse(ordinary).success).toBe(false);
+    expect(PooledBrowserAttachTicketClaimsSchema.parse(pooled)).toEqual(pooled);
+    // The Home's end request (P15) is a pooled ticket only: no ordinary ticket carries it.
+    const ending = { ...pooled, pool: { ...pooled.pool, end: true } };
+    expect(PooledBrowserAttachTicketClaimsSchema.parse(ending)).toEqual(ending);
+    expect(BrowserAttachTicketClaimsSchema.safeParse(ending).success).toBe(false);
+    expect(
+      PooledBrowserAttachTicketClaimsSchema.safeParse({
+        ...pooled,
+        pool: { ...pooled.pool, end: false },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("adds the pooled browser's report and loss notice as optional fields both ways", () => {
+    // A Home without a pooled browser sends the placement resource exactly as before.
+    const ordinary = '{"kind":"browser-placement","placements":[]}';
+    expect(JSON.stringify(PersonalResourceDataSchema.parse(JSON.parse(ordinary)))).toBe(ordinary);
+    // A released client reads the placements and ignores the report it does not know.
+    const pooled = {
+      kind: "browser-placement",
+      placements: [],
+      pools: [
+        {
+          runnerId: "rnr_cloud",
+          phase: "waking",
+          since: "2026-11-21T00:00:00.000Z",
+          start: { reason: "expired", at: "start-1" },
+          failures: 0,
+          pages: [{ surfaceId: "surface_a", outcome: "lost", typed: "yes" }],
+          notReady: { reason: "unreachable" },
+        },
+      ],
+    };
+    const releasedPlacement = z.object({
+      kind: z.literal("browser-placement"),
+      placements: z.array(z.unknown()),
+    });
+    expect(releasedPlacement.parse(pooled)).toEqual({ kind: "browser-placement", placements: [] });
+    expect(PersonalResourceDataSchema.parse(pooled)).toEqual(pooled);
+    // A released client's activation, and a released Home's viewer, carry no notice fields.
+    const activate = '{"idempotencyKey":"k","type":"tab.activate","tabId":"tab_1"}';
+    expect(JSON.stringify(TabCommandSchema.parse(JSON.parse(activate)))).toBe(activate);
+    const viewer =
+      '{"kind":"page","sessionId":"bsn_00000000-0000-4000-8000-000000000002","surfaceId":"surface_a"}';
+    expect(JSON.stringify(TabViewerSchema.parse(JSON.parse(viewer)))).toBe(viewer);
+    // A pooled browser's notes travel only in the placement report: an activation names none.
+    expect(
+      TabCommandSchema.safeParse({ ...JSON.parse(activate), recoveryNoticeSeen: "note-1" }).success,
+    ).toBe(false);
+  });
+
   it("keeps serving every app inside the window", () => {
     expect(minimumHostApiVersion).toBeLessThanOrEqual(hostApiVersion);
     const current = personalWire();
@@ -190,6 +261,46 @@ describe("personal wire compatibility", () => {
     ).toEqual([]);
     expect(surfaceBreaks(before, item({}), "output").join("\n")).toContain(
       "oneOf[kind=request]/properties/title",
+    );
+  });
+
+  it("carries unconfirmed-closing pooled sessions and browser.session.dismiss additively (X2)", () => {
+    const session = {
+      access: "read-write" as const,
+      closeUnconfirmed: true as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      id: "bsn_11111111-1111-4111-8111-111111111111",
+      origin: "person" as const,
+      placement: { kind: "runner" as const, runnerId: "rnr_11111111-1111-4111-8111-111111111111" },
+      profileId: null,
+      runtimeId: "rt-1",
+      state: "closing" as const,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(HostedBrowserSessionSchema.parse(session).closeUnconfirmed).toBe(true);
+    expect("closeUnconfirmed" in AgentBrowserSessionSummarySchema.shape).toBe(false);
+    const report = BrowserPoolReportSchema.parse({
+      runnerId: "rnr_11111111-1111-4111-8111-111111111111",
+      phase: "running",
+      since: "2026-01-01T00:00:00.000Z",
+      unconfirmedClosings: [
+        {
+          sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+          surfaceIds: ["tab-1"],
+        },
+      ],
+    });
+    expect(report.unconfirmedClosings).toEqual([
+      { sessionId: "bsn_11111111-1111-4111-8111-111111111111", surfaceIds: ["tab-1"] },
+    ]);
+    const command = hostApi["commands.dispatch"].payload.parse({
+      idempotencyKey: "dismiss-x2-1",
+      sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+      type: "browser.session.dismiss",
+    });
+    expect(command.type).toBe("browser.session.dismiss");
+    expect(hostApi["commands.dispatch"].success.parse({ type: "browser.session.dismiss" })).toEqual(
+      { type: "browser.session.dismiss" },
     );
   });
 });

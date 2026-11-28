@@ -4,6 +4,8 @@ export const computerGuestLibrary = String.raw`
 (() => {
   const bridge = globalThis.__computerCall;
   const write = globalThis.__computerPrint;
+  // A connected agent's script finds what it holds with discover; a task's, with computer_apps.
+  const lookupNext = globalThis.__computerConnection ? "Use target, or call discover to see what is shared with you." : "Call computer_apps to find targets and access instructions.";
   delete globalThis.__computerCall;
   delete globalThis.__computerPrint;
   class ComputerError extends Error {
@@ -23,7 +25,7 @@ export const computerGuestLibrary = String.raw`
     const entries = await call(kind);
     const q = String(query).toLowerCase();
     const matches = entries.filter(entry => [entry.id,entry.name,entry.bundleId,entry.computerId].some(value => value && value.toLowerCase() === q) && (!computer || entry.computer === computer));
-    if(matches.length !== 1) throw new ComputerError("not_found",matches.length ? "Choose one: " + matches.map(entry=>kind === "phones" ? entry.name+" (computerId "+entry.computerId+")" : entry.name+" on "+entry.computer).join(", ") : "No visible " + (kind === "apps" ? "app" : "phone") + " matches " + query + ".", [], "Call computer_apps to find targets and access instructions.");
+    if(matches.length !== 1) throw new ComputerError("not_found",matches.length ? "Choose one: " + matches.map(entry=>kind === "phones" ? entry.name+" (computerId "+entry.computerId+")" : entry.name+" on "+entry.computer).join(", ") : "No visible " + (kind === "apps" ? "app" : "phone") + " matches " + query + ".", [], lookupNext);
     if(matches[0].blocked) { const {code,message,next}=matches[0].blocked; throw new ComputerError(code,message,[],next); }
     return matches[0];
   }
@@ -119,6 +121,56 @@ export const computerGuestLibrary = String.raw`
     let state = windowStates.get(key);
     if (!state) {state={snapshot:null,ref:info.ref};windowStates.set(key,state);}
     return new Window(result.connectionId,info,state,result.tabId);
+  };
+  if (globalThis.__computerConnection) {
+    delete globalThis.__computerConnection;
+    const bindTarget = async () => {
+      const [entry] = await call("apps");
+      if (entry) {
+        if (entry.blocked) throw Object.assign(new ComputerError(entry.blocked.code, entry.blocked.message), { next: entry.blocked.next });
+        return new App(entry);
+      }
+      const [phone] = await call("phones");
+      if (!phone) throw new ComputerError("not_found", "The shared app or phone is unavailable.");
+      if (phone.blocked) throw Object.assign(new ComputerError(phone.blocked.code, phone.blocked.message), { next: phone.blocked.next });
+      return new Phone({...phone,...await call("bind",phone.id)});
+    };
+    Object.defineProperty(globalThis, "target", { get: bindTarget });
+    globalThis.tab = async () => {
+      throw new ComputerError("not_found", "Use target for the shared app or phone (app() or phone()). See help().");
+    };
+    globalThis.help = () => print([
+      "Computer script globals: await target (the app or phone named in the tool call), print(...values), sleep(ms), help(). Legacy app(query, {computer}), apps(), phone(query) and phones() reach the same target.",
+      "App: id, name, computer; await windows() to list windows, await window(windowId) to bind one, or await window() for the default.",
+      "Window: tabId, windowId, title; observe({screenshot,emit}), click(target,{button,count}), type(text,{into}), key(keys), setValue(index,value), scroll(target,direction,amount), act(actions).",
+      "Phone: tabId, id, name, computerId, definitionId, platform, navigation, actions, access, blocked; observe(), act(actions), tap(target), longPress(target,durationMs), swipe(from,to,durationMs), drag(from,to,durationMs), type(text,{into}), clear(target), navigate(to), installedApps({query,limit,offset}), launch(appId), scroll(target,direction,amount), wake(), wait(ms), release().",
+      "Await actions. Observe before using indices or coordinates. Targets can be an index or [x,y]. Use only actions offered by that phone.",
+      "A scroll's amount is how many steps it scrolls (three lines each in a Mac app, one swipe each on a phone), a whole number from 1 to 20.",
+    ].join("\n"));
+  }
+})();
+`;
+
+// Captured before any script runs and called by the worker inside the failing
+// call's slice. It cuts a thrown value down to bounded string fields in the
+// guest, so the Host reads only string primitives it has measured.
+export const computerFailureLibrary = String.raw`
+(() => {
+  const asString = String;
+  const slice = Function.prototype.call.bind(String.prototype.slice);
+  const isArray = Array.isArray;
+  const text = (value, units) => typeof value === "string" ? slice(value, 0, units) : undefined;
+  globalThis.__computerFailure = value => {
+    const object = typeof value === "object" && value !== null;
+    const message = slice(asString(object && "message" in value ? value.message : value), 0, 8192);
+    if (!object) return [message];
+    const performed = [];
+    const receipts = value.performed;
+    if (isArray(receipts))
+      for (let i = 0; i < receipts.length && performed.length < 160; i++)
+        if (typeof receipts[i] === "string") performed[performed.length] = slice(receipts[i], 0, 2048);
+    return [message, text(value.code, 128), text(value.next, 2000), performed,
+      text(value.machineId, 257), text(value.capability, 257), text(value.machineName, 257)];
   };
 })();
 `;

@@ -4,15 +4,24 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
 import { AuthSessionIdSchema, DeploymentIdSchema } from "@opensteer/core";
-import { MockHostClient } from "@opensteer/client/mock";
+import { HttpHostClient, unwrapRpcResult } from "@opensteer/client/host";
+import { MockHostClient, MockPersonalHost, mockIphoneScreenDeviceId } from "@opensteer/client/mock";
+import { withDeviceSwitch } from "@opensteer/client/computers";
 import { useHostSnapshot } from "@opensteer/client/react";
 import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
 import { desktopPreviewBridge } from "../../desktop/desktop-preview-bridge.js";
 import { desktopSummaryFromAccess } from "../../desktop/desktop-deployment-selection.js";
 import { observeLocalExecutionStatus } from "../../desktop/local-execution-status.js";
+import { PhoneSection } from "../computers/phone-section.js";
 import { turnOnDeviceAccess } from "../thread-device-access-action.js";
-import { useAccessSwitch } from "./device-access-switches.js";
+import { deviceSwitches } from "./device-access.js";
+import {
+  DeviceAccessNotice,
+  DeviceAccessSwitchRow,
+  useAccessSwitch,
+} from "./device-access-switches.js";
 import { DeviceRemovedScreen } from "./device-removed.js";
+import { setIphoneAgentAccess } from "./iphone-agent-access.js";
 import { FinishSetupBar, SetUpThisMac } from "./set-up-this-mac.js";
 import { useThisDeviceLifecycle } from "./this-device.js";
 
@@ -192,7 +201,7 @@ it("sets up a new Mac with its switches, binds this session, then walks macOS an
   expect(container().textContent).toContain("On · needs macOS permission");
 });
 
-it("opens the workspace with the fix when Home's Use from anywhere is off, minting nothing", async () => {
+it("opens the workspace with the fix when Home's Remote access is off, minting nothing", async () => {
   const setup = await attach({ remote: "off", runnerId: null });
   const before = setup.host.getSnapshot().machines.length;
   await render(setup);
@@ -256,6 +265,152 @@ it("leaves through desktop main and shows the removed screen, which never signs 
   await waitForText("Connect this Mac to", "setup after Connect again");
 });
 
+it.each(["Mac", "iPhone Screen card", "iPhone access chooser"] as const)(
+  "%s follows the saved Apps switch while the device list is delayed",
+  async (surface) => {
+    const card = surface === "iPhone Screen card";
+    const id = surface === "Mac" ? laptopId : mockIphoneScreenDeviceId;
+    const seed = new MockHostClient({ latencyMs: 0 });
+    client = seed;
+    await seed.load();
+    const initial = seed.getSnapshot().machines.find((row) => row.id === id)!.access!;
+    const { catalog } = unwrapRpcResult(await seed.rpc["integration.platform.get"]({}));
+    const definitions = catalog.map(({ definition }) => definition);
+    await seed.updateMachineAccess({
+      deviceId: id,
+      expectedRevision: initial.revision,
+      policy: withDeviceSwitch(initial.policy, "apps", true),
+    });
+    const home = new MockPersonalHost(seed);
+    const reply = Promise.withResolvers<void>();
+    const listed = Promise.withResolvers<void>();
+    const listCaptured = Promise.withResolvers<void>();
+    let holdList = false;
+    let save: unknown;
+    const host = new HttpHostClient({
+      baseUrl: "http://scoped-host",
+      capabilities: ["devices-v1"],
+      webSocketFactory: () => {
+        const socket = home.connect();
+        const deliver = socket.deliver.bind(socket);
+        socket.deliver = (frame) => {
+          if (!save || frame.type !== "host.resource") deliver(frame);
+        };
+        return socket;
+      },
+      fetch: async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname.endsWith("/commands.dispatch")) {
+          save = JSON.parse(String(init?.body));
+          await reply.promise;
+        }
+        const response = await home.fetch(input, init);
+        if (holdList && url.pathname.endsWith("/resources.detail.get")) {
+          const query = JSON.parse(url.searchParams.get("input")!);
+          if (query.kind === "machine") {
+            listCaptured.resolve();
+            await listed.promise;
+          }
+        }
+        return response;
+      },
+    });
+    try {
+      await host.load();
+      const stop = host.watchPersonalResource("machine", () => undefined);
+      const machine = () => host.getSnapshot().machines.find((entry) => entry.id === id)!;
+      await vi.waitFor(() => expect(machine()?.access).toBeTruthy());
+      await vi.waitFor(() => expect(host.connection.getSnapshot().phase).toBe("ready"));
+      const revision = machine().access!.revision;
+      function Probe() {
+        const { snapshot } = useHostSnapshot(host, () => false);
+        const device = snapshot.machines.find((row) => row.id === id)!;
+        const access = useAccessSwitch(host, device);
+        const row = (
+          <DeviceAccessSwitchRow
+            item={deviceSwitches(device, true).find(({ capability }) => capability === "apps")!}
+            machine={device}
+            onSet={(capability, on) => void access.set(capability, on)}
+            pending={access.pending}
+            thisDevice={false}
+          />
+        );
+        return card ? (
+          <PhoneSection
+            appsSwitch={row}
+            connections={[]}
+            definitions={definitions}
+            hostClient={host}
+            hostConnected={true}
+            machine={device}
+            onChanged={async () => undefined}
+            onPlugIn={() => undefined}
+          />
+        ) : (
+          row
+        );
+      }
+      document.body.innerHTML = '<div id="root"></div>';
+      root = createRoot(container());
+      await act(async () => root!.render(<Probe />));
+      const control = container().querySelector<HTMLInputElement>('[role="switch"]')!;
+      const chips = () => container().querySelector(".phone-section__access");
+      expect(control.checked).toBe(true);
+      if (card) expect(chips()).not.toBeNull();
+      holdList = true;
+      await seed.dispatch({
+        type: "machine.rename",
+        machineId: id,
+        name: "Renamed device",
+        idempotencyKey: "rename-before-switch",
+      });
+      const stopWhileSaving = host.watchPersonalResource("machine", () => undefined);
+      await listCaptured.promise;
+      await act(async () => control.click());
+      expect(save).toMatchObject({
+        type: "machine.access.update",
+        deviceId: id,
+        expectedRevision: revision,
+        policy: { apps: false },
+      });
+      expect(control.disabled).toBe(true);
+      expect(control.checked).toBe(false);
+
+      await act(async () => reply.resolve());
+      await vi.waitFor(() => expect(control.disabled).toBe(false));
+      expect(control.checked).toBe(false);
+      expect(machine().access).toMatchObject({ revision: revision + 1, policy: { apps: false } });
+      if (card) expect.soft(chips(), "when the Off receipt arrives").toBeNull();
+      if (surface === "iPhone access chooser") {
+        const update = vi.spyOn(host, "updateMachineAccess");
+        await act(async () => setIphoneAgentAccess(host, machine(), null, "read"));
+        expect(update).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            deviceId: id,
+            expectedRevision: revision + 1,
+            policy: expect.objectContaining({ apps: true }),
+          }),
+        );
+        expect(machine().access).toMatchObject({ revision: revision + 2, policy: { apps: true } });
+      }
+      await act(async () => listed.resolve());
+      await vi.waitFor(() => expect(machine().name).toBe("Renamed device"));
+      if (surface !== "iPhone access chooser") {
+        expect(control.checked).toBe(false);
+        expect(machine().access).toMatchObject({ revision: revision + 1, policy: { apps: false } });
+      }
+      if (card) expect(chips(), "after the older device list arrives").toBeNull();
+      stopWhileSaving();
+      stop();
+    } finally {
+      reply.resolve();
+      listed.resolve();
+      host.dispose();
+      home.dispose();
+    }
+  },
+);
+
 it("writes a switch against the revision on screen, and shows a newer one instead of overwriting it", async () => {
   const host = new MockHostClient({ latencyMs: 0 });
   client = host;
@@ -288,4 +443,31 @@ it("writes a switch against the revision on screen, and shows a newer one instea
     forwarding: stale.access!.policy.forwarding,
     shares: stale.access!.policy.shares,
   });
+});
+
+it("shows a generic alert when a switch conflict cannot be refreshed", async () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  client = host;
+  await host.load();
+  const device = host.getSnapshot().machines.find(({ id }) => id === laptopId)!;
+  vi.spyOn(host, "updateMachineAccess").mockResolvedValueOnce({ outcome: "conflict" });
+  vi.spyOn(host, "refresh").mockRejectedValueOnce(new Error("Refresh failed"));
+  function Probe() {
+    const access = useAccessSwitch(host, device);
+    return (
+      <>
+        <button type="button" onClick={() => void access.set("apps", false)}>
+          Turn off Apps
+        </button>
+        {access.notice ? <DeviceAccessNotice notice={access.notice} /> : null}
+      </>
+    );
+  }
+  document.body.innerHTML = '<div id="root"></div>';
+  root = createRoot(container());
+  await act(async () => root!.render(<Probe />));
+  await act(async () => container().querySelector("button")!.click());
+  expect(container().querySelector('[role="alert"]')?.textContent).toBe(
+    "That didn’t work. Try again.",
+  );
 });

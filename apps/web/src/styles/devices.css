@@ -72,6 +72,12 @@ a.devices-row:focus-visible {
   color: var(--muted);
 }
 
+.devices-row__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
 .devices-row__chevron {
   flex: none;
   color: var(--muted);
@@ -130,6 +136,25 @@ a.devices-row:focus-visible {
   gap: var(--space-8);
   color: var(--muted);
   font-size: var(--text-sm);
+}
+
+.add-device__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  margin: 0;
+  padding-left: 1.25em;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+/* The way to the Mac app, under the step it belongs to. */
+.add-device__get {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
 }
 
 .add-device__pairing {
@@ -369,49 +394,6 @@ a.devices-row:focus-visible {
   gap: var(--space-8);
 }
 
-/* ---- A web browser window ---- */
-
-.web-tab-notice {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-6) var(--space-10);
-  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12);
-  border: 1px solid var(--blue-line);
-  border-radius: var(--radius-md);
-  background: var(--blue-wash);
-  color: var(--text-soft);
-  font-size: var(--text-md);
-  line-height: 1.45;
-}
-
-.browser-view > .web-tab-notice {
-  margin: var(--space-8) var(--space-12) 0;
-}
-
-.web-tab-notice__icon {
-  flex: none;
-  width: 16px;
-  height: 16px;
-  color: var(--blue);
-}
-
-.web-tab-notice__text {
-  flex: 1 1 16rem;
-  min-width: 0;
-  margin: 0;
-}
-
-.web-tab-notice__link {
-  flex: none;
-  color: var(--ember);
-  font-weight: var(--weight-medium);
-}
-
-.web-tab-notice__close {
-  flex: none;
-}
-
 /* ---- Entry: welcome, choosing an Opensteer ---- */
 
 .desktop-entry__rows {
@@ -499,6 +481,13 @@ a.devices-row:focus-visible {
   margin: 0;
   color: var(--muted);
   font-size: var(--text-md);
+}
+
+/* The one line that says what starting here does: under its row, in the row's measure. */
+.desktop-entry__note {
+  margin: calc(var(--space-4) * -1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
 }
 
 .desktop-entry__form {
@@ -736,4 +725,67 @@ a.devices-row:focus-visible {
 
 .iphone-wifi__fix + .card__row {
   border-top: 1px solid var(--line);
+}
+
+/* ---- The asleep moment: one quiet line where work was blocked ---- */
+
+.asleep-moment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-4) var(--space-12);
+  margin: var(--space-6) 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.asleep-moment__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-12);
+}
+
+.asleep-moment__not-now {
+  color: var(--muted);
+}
+
+.asleep-moment--gate {
+  justify-content: center;
+  max-width: 34rem;
+  margin-inline: auto;
+  text-align: center;
+}
+
+/* ---- The one invitation to sign in, on an Opensteer with no account ---- */
+.sign-in-invite {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  margin-top: var(--space-16);
+  padding: var(--space-14) var(--space-16);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.sign-in-invite__title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.sign-in-invite__body {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.sign-in-invite__body--error {
+  color: var(--red-text);
+}
+
+.sign-in-invite__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-8);
 }

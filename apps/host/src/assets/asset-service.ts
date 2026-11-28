@@ -4,7 +4,7 @@ import { mkdir, open, readdir, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
-import { UserIdSchema, ThreadIdSchema, type DeploymentId } from "@opensteer/core";
+import { OpensteerError, UserIdSchema, ThreadIdSchema, type DeploymentId } from "@opensteer/core";
 import {
   FileResourceSchema,
   type AssetUrl,
@@ -38,6 +38,11 @@ type Claims = z.infer<typeof Claims>;
 const bucket = 5 * 60 * 1000;
 const previewMaxBytes = 512 * 1024;
 const unavailable = (): AssetUrl => ({ status: "unavailable", reason: "missing" });
+const updateRequiredAsset = (): AssetUrl => ({
+  status: "unavailable",
+  reason: "unsupported",
+  updateRequired: true,
+});
 const rasterTypes: Readonly<Record<string, string>> = {
   png: "image/png",
   jpeg: "image/jpeg",
@@ -100,16 +105,22 @@ export class AssetService {
       }),
     );
     const valid = sources.flatMap((s) => (s ? [s] : []));
-    const resolved = await this.options.access.resolveMany(valid, context, signal);
+    const updateRequired = new Set<number>();
+    const resolved = await this.options.access.resolveMany(valid, context, signal, (index) =>
+      updateRequired.add(index),
+    );
     let index = 0;
-    const ordered = sources.map((s) => (s ? (resolved[index++] ?? null) : null));
     return {
       assets: await Promise.all(
-        ordered.map((f, i) =>
-          f
-            ? this.urlForResource(f, input.assets[i]!.variant, actor, context.threadId, signal)
-            : unavailable(),
-        ),
+        sources.map((source, i) => {
+          if (!source) return unavailable();
+          const current = index++;
+          if (updateRequired.has(current)) return updateRequiredAsset();
+          const file = resolved[current];
+          return file
+            ? this.urlForResource(file, input.assets[i]!.variant, actor, context.threadId, signal)
+            : unavailable();
+        }),
       ),
     };
   }
@@ -157,8 +168,10 @@ export class AssetService {
         width: metadata.width,
         height: metadata.height,
       };
-    } catch {
+    } catch (error) {
       signal?.throwIfAborted();
+      if (error instanceof OpensteerError && error.reason === "unsupported-runner")
+        return updateRequiredAsset();
       return unavailable();
     }
   }

@@ -148,6 +148,7 @@ export const handleSetBadgeCount =
   (context: DesktopBridgeContext): DesktopBridgeHandler =>
   (event, envelope) => {
     assertAuthorizedRenderer(context, event, envelope);
-    const { count } = DesktopBadgeCountInputSchema.parse(envelope.input);
+    const { count, deploymentId } = DesktopBadgeCountInputSchema.parse(envelope.input);
     app.setBadgeCount(count);
+    context.options.notifications.badgeCount?.(count, deploymentId);
   };

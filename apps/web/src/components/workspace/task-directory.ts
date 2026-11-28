@@ -123,3 +123,5 @@ export function useTaskMark(hostClient: HostClient, threadId: string | null): Ta
   );
   return useHostSelector(hostClient, select, sameTaskMark);
 }
+
+export { personDoneTaskList } from "@opensteer/client/host";

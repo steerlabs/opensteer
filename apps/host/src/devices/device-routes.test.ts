@@ -87,6 +87,8 @@ describe("device routes", () => {
         store: {
           connections: { assertOwner: async () => {} },
           getDeviceSelfRunnerId: async () => null,
+          requesterGrant: async () => null,
+          requesterShown: async () => null,
           listDeviceComputerAppSetupRequests: async () => [request],
         },
       },

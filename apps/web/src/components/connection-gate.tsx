@@ -24,6 +24,8 @@ export const ConnectionGate = memo(function ConnectionGate(props: {
   readonly detail: string;
   readonly primary?: ConnectionGateButton | null;
   readonly secondary?: ConnectionGateButton | null;
+  /** One quiet line under the explanation, when the caller has one. */
+  readonly aside?: ReactNode;
 }) {
   const Root = props.scope === "app" ? "main" : "div";
   return (
@@ -36,6 +38,7 @@ export const ConnectionGate = memo(function ConnectionGate(props: {
         {props.scope === "app" ? <BrandMark large /> : null}
         {props.title === null ? null : <h1 className="connection-gate__title">{props.title}</h1>}
         {props.detail ? <p className="splash__detail">{props.detail}</p> : null}
+        {props.aside ?? null}
         {props.primary || props.secondary ? (
           <div className="connection-gate__actions">
             {props.primary ? <GateButton button={props.primary} primary /> : null}

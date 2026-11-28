@@ -316,4 +316,96 @@ describeStore("Broken provider session recovery", (it) => {
       status: "broken",
     });
   });
+
+  it("preserves personLineage=false on the replacement provider session after broken-session rotation (T3)", async ({
+    storeFixture,
+  }) => {
+    const { store, database, createRunFixture, enqueueHumanTrigger } = storeFixture;
+    const { userId, thread, runnerId, environmentId } =
+      await createRunFixture("session-broken-lineage");
+    const firstTurn = await enqueueHumanTrigger({
+      threadId: thread.id,
+      requestedBy: userId,
+      content: [{ type: "text", text: "Connection-lineaged task" }],
+      idempotencyKey: "session-broken-lineage-turn-1",
+    });
+    await store.claimCommand(firstTurn.command.id, "lineage-recovery-dispatcher");
+    const binding = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity: testContinuationIdentity,
+      harnessInstanceId: thread.harnessInstanceId,
+      leaseTokenHash: "broken-lineage-lease-1",
+      runnerBootId: "broken-lineage-boot-1",
+      runnerId,
+      runId: firstTurn.run.id,
+      threadId: thread.id,
+    });
+    await database
+      .updateTable("providerSessions")
+      .set({ personLineage: false })
+      .where("id", "=", binding.providerSessionId)
+      .execute();
+    await store.bindProviderSession({
+      bindingGeneration: binding.bindingGeneration,
+      harnessInstanceId: thread.harnessInstanceId,
+      providerSessionId: binding.providerSessionId,
+      providerSessionReference: "native-session-non-person",
+      runId: firstTurn.run.id,
+      runnerBootId: "broken-lineage-boot-1",
+      runnerId,
+      threadId: thread.id,
+    });
+    const base = {
+      bindingGeneration: binding.bindingGeneration,
+      environmentId,
+      runId: firstTurn.run.id,
+      threadId: thread.id,
+    };
+    await store.commitRunnerEvent({
+      environmentId,
+      runnerId,
+      runnerBootId: "broken-lineage-boot-1",
+      event: pendingEvent({
+        ...base,
+        ordinal: 0,
+        type: "run.started",
+        data: { status: "running" },
+      }),
+    });
+    await store.commitRunnerEvent({
+      environmentId,
+      runnerId,
+      runnerBootId: "broken-lineage-boot-1",
+      event: pendingEvent({
+        ...base,
+        ordinal: 1,
+        type: "run.failed",
+        data: {
+          code: harnessSessionBrokenFailureCode,
+          message: "Saved conversation is corrupted",
+          retryable: true,
+          status: "failed",
+        },
+      }),
+    });
+
+    const sessions = await database
+      .selectFrom("providerSessions")
+      .select(["id", "active", "status", "personLineage", "personalContext"])
+      .where("threadId", "=", thread.id)
+      .orderBy("createdAt", "asc")
+      .execute();
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0]).toMatchObject({
+      active: false,
+      id: binding.providerSessionId,
+      personLineage: false,
+      status: "broken",
+    });
+    expect(sessions[1]).toMatchObject({
+      active: true,
+      personLineage: false,
+      status: "starting",
+    });
+  });
 });

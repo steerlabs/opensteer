@@ -27,6 +27,24 @@ describe("a Mac-driven phone's status", () => {
     ]);
   });
 
+  it("tells the person that screen control returns when the driving Mac wakes", () => {
+    const phone = mockIphoneScreenDevice("driver-offline");
+    expect(
+      phoneScreenStatus({
+        ...phone,
+        phoneDisplay: {
+          ...phone.phoneDisplay!,
+          control: { state: "unavailable", reason: { kind: "driver-asleep" } },
+        },
+      }),
+    ).toEqual({
+      label: "Asleep on Alex’s MacBook Pro",
+      fix: "Screen control comes back when Alex’s MacBook Pro wakes.",
+      tone: "waiting",
+      needsSetup: false,
+    });
+  });
+
   it("says nothing for a phone no Mac drives", () => {
     const ready = mockIphoneScreenDevice("ready");
     expect(
@@ -69,6 +87,18 @@ it("does not prescribe an on-phone update for an unsupported iPhone view", () =>
       phone: true,
     }),
   ).toBe("Live view isn’t available for Work iPhone yet.");
+});
+
+it("tells a Mac that cannot show a window why, never that it will come", () => {
+  const names = { machine: "Studio Mac", target: "Safari", phone: false };
+  // Its Opensteer said it cannot show windows: updating it is the move.
+  expect(computerReasonWords("computer-view-unsupported", names)).toBe(
+    "Update Opensteer on Studio Mac to see Safari.",
+  );
+  // This Mac cannot capture the window itself: nothing to wait for.
+  expect(computerReasonWords("unsupported", names)).toBe(
+    "Live view isn’t available for Safari on Studio Mac.",
+  );
 });
 
 it("keeps owner viewing independent of the agent Apps switch", () => {

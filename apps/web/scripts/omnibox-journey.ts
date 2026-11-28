@@ -18,7 +18,11 @@ const check: typeof recordCheck = async (name, run) => {
   process.stdout.write(`${result.status}: ${result.error ?? name}\n`);
   if (result.status === "failed") throw new Error(result.error ?? name);
 };
-const web = await openMockWeb("opensteer-omnibox-web");
+// A check compares the address's pixels with and without the field's selection. Text is drawn
+// grayscale, as headless Chromium on macOS always draws it: on Linux and Windows it switches
+// between subpixel and grayscale with the field's selection, which the comparison would read as
+// the selection's paint.
+const web = await openMockWeb("opensteer-omnibox-web", { chromiumArgs: ["--disable-lcd-text"] });
 const context = await web.browser.newContext({ viewport: { width: 1440, height: 1000 } });
 await context.addInitScript("globalThis.__name = (value) => value;");
 const page = await context.newPage();
@@ -101,11 +105,14 @@ try {
       const requests = await page.evaluate(
         () => (Reflect.get(window, "opensteerMock") as MockHostClient).searchSuggestionRequests,
       );
+      // The omnibox spaces its sends 100 ms apart by performance.now(). The mock stamps each
+      // arrival a hop later with Date.now(), a whole-millisecond clock, so two arrivals can read
+      // 99 apart (a hosted run read 239 then 338). Requests sent unspaced would be 40 ms apart.
       expectThat(
         { requests },
         requests.length >= 2 &&
           requests.every(
-            (r, i) => r.query !== "gmail.com" && (i === 0 || r.at - requests[i - 1]!.at >= 100),
+            (r, i) => r.query !== "gmail.com" && (i === 0 || r.at - requests[i - 1]!.at >= 95),
           ),
         "URL request or throttle violation",
       );

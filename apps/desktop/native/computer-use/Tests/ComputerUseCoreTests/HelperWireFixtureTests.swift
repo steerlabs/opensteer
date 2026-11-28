@@ -284,7 +284,9 @@ final class HelperWireFixtureTests: XCTestCase {
       ),
       "window.resolve": Wire.WindowResolveResult(windowId: "win_00000000-0000-4000-8000-000000000042", app: notes, title: "Shopping list", unavailableReason: nil),
       "session.windows": Wire.WindowsResult(windows: [windowInfo]),
+      "session.windowsExisting": Wire.WindowsResult(windows: [windowInfo]),
       "session.bind": Wire.BindResult(window: windowInfo),
+      "session.bindExisting": Wire.BindResult(window: windowInfo),
       "view.windows": Wire.OwnerWindowsResult(windows: [
         OwnerWindowInfo(
           windowId: "win_00000000-0000-4000-8000-000000000042", title: "Shopping list",
@@ -292,6 +294,7 @@ final class HelperWireFixtureTests: XCTestCase {
       ]),
       "session.open": Wire.SessionOpenResult(sessionId: Self.sessionId),
       "session.close": Wire.EmptyResult(),
+      "helper.exit": Wire.HelperExitResult(exiting: true),
       "session.observe": Wire.ObservationResult(observation: observation),
       "session.act": Wire.ActResult(
         performed: [
@@ -402,12 +405,26 @@ final class HelperWireFixtureTests: XCTestCase {
           "sessionId": .string(sessionId),
         ]),
       ]),
+      "session.windowsExisting": .object([
+        "id": .number(30), "method": .string("session.windowsExisting"), "timeoutMs": .number(30_000),
+        "params": .object([
+          "app": .object(["access": .string("read"), "identity": identity]),
+          "sessionId": .string(sessionId),
+        ]),
+      ]),
       "window.resolve": .object([
         "id": .number(25), "method": .string("window.resolve"), "timeoutMs": .number(30_000),
         "params": .object(["windowId": .string("win_00000000-0000-4000-8000-000000000042")]),
       ]),
       "session.bind": .object([
         "id": .number(21), "method": .string("session.bind"), "timeoutMs": .number(30_000),
+        "params": .object([
+          "app": .object(["access": .string("read"), "identity": identity]),
+          "sessionId": .string(sessionId), "windowId": .string("win_00000000-0000-4000-8000-000000000042"),
+        ]),
+      ]),
+      "session.bindExisting": .object([
+        "id": .number(31), "method": .string("session.bindExisting"), "timeoutMs": .number(30_000),
         "params": .object([
           "app": .object(["access": .string("read"), "identity": identity]),
           "sessionId": .string(sessionId), "windowId": .string("win_00000000-0000-4000-8000-000000000042"),
@@ -535,7 +552,8 @@ final class HelperWireFixtureTests: XCTestCase {
       "display.input-reset": .object(["streamId": .string(streamId), "source": owner]),
       "display.input": .object(["streamId": .string(streamId), "source": owner,
         "geometry": .number(1), "sequence": .number(0),
-        "events": .array([.object(["kind": .string("copy")])])]),
+        "events": .array([.object(["kind": .string("copy"),
+          "contextId": .string("00000000-0000-4000-8000-000000000001")])])]),
       "display.resolve": .object(["source": source]),
       "display.start": .object([
         "streamId": .string(streamId), "target": target, "sources": .array([source]),
@@ -563,8 +581,8 @@ final class HelperWireFixtureTests: XCTestCase {
       XCTAssertEqual(envelope.method, method)
       switch method {
       case "window.resolve": _ = try envelope.decodeParams(Wire.WindowResolveParams.self, method: method)
-      case "session.windows": _ = try envelope.decodeParams(Wire.WindowsParams.self, method: method)
-      case "session.bind":
+      case "session.windows", "session.windowsExisting": _ = try envelope.decodeParams(Wire.WindowsParams.self, method: method)
+      case "session.bind", "session.bindExisting":
         XCTAssertEqual(try envelope.decodeParams(Wire.BindParams.self, method: method).windowId, "win_00000000-0000-4000-8000-000000000042")
       case "view.windows":
         _ = try envelope.decodeParams(Wire.OwnerWindowsParams.self, method: method)
@@ -682,8 +700,8 @@ final class HelperWireFixtureTests: XCTestCase {
       [
         "hello", "permissions.get", "permissions.request", "apps.installed", "app.resolve",
         "window.resolve", "view.windows", "view.open", "view.renew", "view.close", "view.activate",
-        "session.open", "session.close", "session.windows", "session.bind", "session.observe",
-        "session.act",
+        "session.open", "session.close", "session.windows", "session.windowsExisting", "session.bind", "session.bindExisting", "session.observe",
+        "session.act", "helper.exit",
         "display.resolve", "display.start", "display.demand", "display.refresh", "display.stop",
         "display.attach", "display.input-reset", "display.input",
         "data.status",
@@ -698,7 +716,7 @@ final class HelperWireFixtureTests: XCTestCase {
     XCTAssertEqual(
       Set(requests.keys),
       [
-        "permissions.request", "window.resolve", "view.windows", "view.open", "session.windows", "session.bind",
+        "permissions.request", "window.resolve", "view.windows", "view.open", "session.windows", "session.windowsExisting", "session.bind", "session.bindExisting",
         "session.open", "session.observe", "session.act",
         "display.resolve", "display.start", "display.demand", "display.refresh", "display.stop",
         "display.attach", "display.input-reset", "display.input",
@@ -711,8 +729,8 @@ final class HelperWireFixtureTests: XCTestCase {
     let close = try XCTUnwrap(results["session.close"] as? [String: Any])
     XCTAssertTrue(close.isEmpty, "session.close answers with an empty object.")
     let hello = try XCTUnwrap(results["hello"] as? [String: Any])
-    XCTAssertEqual(hello["protocolVersion"] as? Int, 10)
-    XCTAssertEqual(hello["minProtocolVersion"] as? Int, 10)
+    XCTAssertEqual(hello["protocolVersion"] as? Int, 11)
+    XCTAssertEqual(hello["minProtocolVersion"] as? Int, 11)
   }
 
   @MainActor

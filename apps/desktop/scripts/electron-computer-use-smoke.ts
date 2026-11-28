@@ -24,6 +24,9 @@ import {
   runPasswordsMacJourney,
   stopPasswordsMacProcesses,
 } from "./test-support/passwords-mac-journey.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("computer-use", 360000);
 
 const smokeDownloads = smokeDesktopDownloads();
 

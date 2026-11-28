@@ -7,7 +7,25 @@ const origin = "https://opensteer.com";
 const pages = ["index", "download", "support", "privacy", "terms", "404"];
 // GitHub Latest is the newest Stable desktop release; Beta builds are prereleases and never take it.
 const latest = "https://github.com/steerlabs/opensteer/releases/latest/download";
+// The one Opensteer account origin the site uses: its Cloud Computer page (what it is, the
+// price, what changes, then sign-in and checkout) and the public offer the card's price reads.
+const account = new URL(process.env["OPENSTEER_ACCOUNT_ORIGIN"] ?? "https://app.opensteer.com");
+if (account.origin !== account.href.replace(/\/$/u, "") || account.protocol !== "https:")
+  throw new Error("OPENSTEER_ACCOUNT_ORIGIN must be a bare https origin");
+// The page may read only what its policy lets it connect to: the two must name the same origin.
+const csp = (
+  JSON.parse(readFileSync(resolve(import.meta.dirname, "vercel.json"), "utf8")) as {
+    headers: { headers: { key: string; value: string }[] }[];
+  }
+).headers
+  .flatMap(({ headers }) => headers)
+  .find(({ key }) => key === "Content-Security-Policy")?.value;
+const connect = csp?.split(";").find((part) => part.trim().startsWith("connect-src"));
+if (!connect?.split(/\s+/u).includes(account.origin))
+  throw new Error(`vercel.json's connect-src must allow ${account.origin}`);
 const tokens: Record<string, string> = {
+  "{{cloudComputer}}": `${account.origin}/cloud-computer`,
+  "{{cloudComputerOffer}}": `${account.origin}/v1/cloud-computers/offer`,
   "{{macDownload}}": `${latest}/Opensteer-mac-arm64.zip`,
   "{{macInstall}}": `curl -fsSL ${latest}/install.sh | sh`,
 };
@@ -68,7 +86,7 @@ function siteShell(): Plugin {
           meta("property", "og:image", `${origin}/og.png`),
           meta("property", "og:image:width", "1200"),
           meta("property", "og:image:height", "630"),
-          meta("property", "og:image:alt", "Opensteer: turn your computer into AI coworkers"),
+          meta("property", "og:image:alt", "Opensteer: your Personal Cloud Computer for AI"),
           meta("name", "twitter:card", "summary_large_image"),
         );
         return { html, tags };

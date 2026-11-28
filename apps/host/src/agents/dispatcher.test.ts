@@ -53,9 +53,6 @@ describe("HostCommandDispatcher Request responses", () => {
       },
     );
     const dispatcher = new HostCommandDispatcher({
-      teamRequestContext: async () => {
-        throw new Error("Unexpected team request");
-      },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -106,6 +103,109 @@ describe("HostCommandDispatcher Request responses", () => {
     );
     expect(dispatchRequestResponse).toHaveBeenCalledWith(command.id, expect.any(Function));
   });
+
+  it("V1: keeps a Runner previous-stop-unconfirmed rejection on trigger.execute as retry with provenNotStarted: true", async () => {
+    const environmentId = createId("environment");
+    const runnerId = createId("runner");
+    const triggerId = createId("trigger");
+    const occurrenceId = createId("triggerOccurrence");
+    const revisionId = createId("triggerRevision");
+    const threadId = createId("thread");
+    const userId = createId("user");
+    const now = new Date();
+    const command: CommandRow = {
+      requestResponseKeyVersion: null,
+      actorPrincipalId:
+        "pri_00000000-0000-4000-8000-000000000099" as CommandRow["actorPrincipalId"],
+      attempts: 1,
+      authoritySource: { kind: "user-session" },
+      createdAt: now,
+      dispatcherId: "test",
+      encryptedRequestResponse: null,
+      environmentId,
+      id: createId("command"),
+      idempotencyKey: "v1-trigger-execute",
+      lastError: null,
+      payload: { occurrenceId, triggerId, type: "trigger.execute" },
+      requestedBy: userId,
+      runId: null,
+      status: "dispatched",
+      threadId,
+      type: "trigger.execute",
+      updatedAt: now,
+    };
+    const context = {
+      agentHome: { computerId: runnerId, path: "/workspace" },
+      anchorThread: { environmentId, id: threadId },
+      encryptedSecrets: null,
+      occurrence: {
+        commandId: command.id,
+        id: occurrenceId,
+        payload: null,
+        scheduledFor: null,
+        sourceKind: "manual" as const,
+        triggerId,
+      },
+      revision: { id: revisionId },
+      script: { interpreter: null, text: "console.log('ok')" },
+      trigger: { createdBy: userId, id: triggerId, name: "V1 trigger" },
+    };
+    const runnerRefusal = new CommandDispatchError("Stopping could not be confirmed.", "retry", {
+      cause: {
+        code: "conflict",
+        message: "Stopping could not be confirmed.",
+        reason: "previous-stop-unconfirmed",
+        retryable: true,
+      },
+      provenNotStarted: true,
+    });
+    const dispatcher = new HostCommandDispatcher({
+      executionLeaseMs: 90_000,
+      attachmentRunTokens: { issue: () => "attachment-token" } as never,
+      attachments: { listForRun: async () => [] },
+      requestResponseVault: {} as never,
+      runToolTokens: {} as never,
+      browser: { hasBrowserProfiles: async () => false } as never,
+      egress: {} as never,
+      pluginVersions: async () => [],
+      pluginsTokens: {} as never,
+      publicUrl: new URL("https://host.example"),
+      runners: {
+        dispatch: vi.fn(async () => {
+          throw runnerRefusal;
+        }),
+        identityForEnvironment: () => ({
+          bootId: "rbt_v1",
+          capabilities: ["agent-tools-plan-v1", "automation-script-v1", "execution-plane-v2"],
+          connectionGeneration: 1,
+          runnerId,
+        }),
+      } as never,
+      store: {
+        getEnvironment: async () => ({ id: environmentId, runnerId }),
+        markCommandFrameSent: vi.fn(async () => undefined),
+        runnerCapabilities: async () => [
+          "agent-tools-plan-v1",
+          "automation-script-v1",
+          "execution-plane-v2",
+        ],
+      } as never,
+      triggerControlTokens: { issue: () => "trigger-token" } as never,
+      triggers: {
+        loadDispatchContext: async () => context,
+        startExecution: async () => ({
+          connectionId: null,
+          context,
+          executionGeneration: 1,
+        }),
+      } as never,
+    });
+
+    await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toMatchObject({
+      disposition: "retry",
+      provenNotStarted: true,
+    });
+  });
   it("never opens a response envelope after its Request reservation is cancelled", async () => {
     const open = vi.fn(async () => Buffer.from("unreachable"));
     const runnersDispatch = vi.fn(async () => undefined);
@@ -113,9 +213,6 @@ describe("HostCommandDispatcher Request responses", () => {
     const runId = createId("run");
     const threadId = createId("thread");
     const dispatcher = new HostCommandDispatcher({
-      teamRequestContext: async () => {
-        throw new Error("Unexpected team request");
-      },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -167,32 +264,6 @@ describe("HostCommandDispatcher Request responses", () => {
   });
 });
 describe("HostCommandDispatcher steering", () => {
-  it("does not send an external steer when access was revoked after claim", async () => {
-    const runnersDispatch = vi.fn(async () => undefined);
-    const dispatchChannelCommand = vi.fn(async () => {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Messaging access changed before dispatch",
-      });
-    });
-    const dispatcher = steerDispatcher({
-      dispatchChannelCommand,
-      runnersDispatch,
-      refuseSteer: vi.fn(async () => undefined),
-      succeedCommand: vi.fn(async () => undefined),
-    });
-    const command = {
-      ...steerCommand(),
-      authoritySource: {
-        kind: "channel-ingress",
-      },
-    };
-    await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    expect(dispatchChannelCommand).toHaveBeenCalledWith(command.id, expect.any(Function));
-    expect(runnersDispatch).not.toHaveBeenCalled();
-  });
   it.each([undefined, "request-pending"])(
     "compensates through the Thread Inbox when the Runner refuses steering (%s)",
     async (reason) => {
@@ -738,6 +809,30 @@ describe("HostCommandDispatcher model selection", () => {
     if (command.type !== "run.execute") throw new Error("Expected run.execute");
     expect(RunExecutionContextSchema.parse(command.context)).toEqual(command.context);
   });
+  it.each([
+    ["the person's own task", { fromChat: false, runConnectionId: null }, true],
+    ["a connected agent's task", { fromChat: false, runConnectionId: "agentConnection_1" }, false],
+    ["a chat's task the person alone speaks in", { fromChat: true, runConnectionId: null }, false],
+  ] as const)(
+    "passes on what the lineage walk decided for %s",
+    async (_label, lineage, personLineage) => {
+      const { dispatch, run } = dispatchRun({
+        lineage: {
+          ...lineage,
+          personLineage,
+          taskOriginConnectionId: lineage.runConnectionId,
+        },
+        models: [gpt5],
+        modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      });
+      await run();
+      const command = dispatch.mock.calls[0]![0];
+      if (command.type !== "run.execute") throw new Error("Expected run.execute");
+      // Every one of them carries personal context; only the first is the person's own.
+      expect(command.context.personalContext).toBe(true);
+      expect(command.context.personLineage).toBe(personLineage);
+    },
+  );
   const readerCapabilities = [
     "native-session-continuation-v1",
     "assignments-v1",
@@ -755,6 +850,12 @@ describe("HostCommandDispatcher model selection", () => {
     readonly modelSelection: unknown;
     readonly inputs?: readonly unknown[];
     readonly inputOrigins?: ReadonlyMap<string, unknown>;
+    readonly lineage?: {
+      readonly fromChat: boolean;
+      readonly personLineage: boolean;
+      readonly runConnectionId: string | null;
+      readonly taskOriginConnectionId: string | null;
+    };
   }) {
     const models = input.models.map((model) => HarnessModelDescriptorSchema.parse(model));
     const modelSelection = ModelSelectionSchema.parse(input.modelSelection);
@@ -764,11 +865,16 @@ describe("HostCommandDispatcher model selection", () => {
     const requestedBy = createId("user");
     const runId = createId("run");
     const threadId = createId("thread");
-    const dispatch = vi.fn(async (_command: RunnerCommand, _signal: AbortSignal) => undefined);
-    const dispatcher = new HostCommandDispatcher({
-      teamRequestContext: async () => {
-        throw new Error("Unexpected team request");
+    const dispatch = vi.fn(
+      async (
+        _command: RunnerCommand,
+        _signal: AbortSignal,
+        options?: { readonly beforeSend?: () => Promise<void> },
+      ) => {
+        await options?.beforeSend?.();
       },
+    );
+    const dispatcher = new HostCommandDispatcher({
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -818,6 +924,22 @@ describe("HostCommandDispatcher model selection", () => {
         ],
       } as never,
       store: {
+        admitExecution: async () => {
+          if (input.lineage?.runConnectionId)
+            return {
+              agentConnection: {
+                agentConnectionId: input.lineage.runConnectionId,
+                grant: { scope: "everything" },
+                grantRevision: 1,
+              },
+              mode: "full-access",
+            };
+          throw new Error("Native Runs skip the connection resolver");
+        },
+        recordConnectionRunHandoff: async () => {
+          if (input.lineage?.runConnectionId) return;
+          throw new Error("Native Runs skip the connection witness");
+        },
         acquireExecutionBinding: async () => ({
           bindingGeneration: 1,
           continuationEvent: null,
@@ -844,6 +966,12 @@ describe("HostCommandDispatcher model selection", () => {
         }),
         getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" } }),
         loadRunDispatchContext: async () => ({
+          lineage: input.lineage ?? {
+            fromChat: false,
+            personLineage: true,
+            runConnectionId: null,
+            taskOriginConnectionId: null,
+          },
           providerSessionStateLayout: "session",
           personalContext: true,
           agentHome: { computerId, path: "/tmp/dispatcher" },
@@ -871,7 +999,6 @@ describe("HostCommandDispatcher model selection", () => {
           thread: {
             id: threadId,
             purpose: input.purpose ?? "task",
-            teamOrigin: null,
             accessMode: "full-access",
           },
         }),
@@ -937,9 +1064,6 @@ describe("HostCommandDispatcher run planning", () => {
         type: "run.execute" as const,
       };
       const dispatcher = new HostCommandDispatcher({
-        teamRequestContext: async () => {
-          throw new Error("Unexpected team request");
-        },
         executionLeaseMs: 90_000,
         attachmentRunTokens: {
           issue: () => "attachment-token",
@@ -989,6 +1113,7 @@ describe("HostCommandDispatcher run planning", () => {
           ],
         } as never,
         store: {
+          admitExecution: async () => ({ agentConnection: null, mode: "full-access" }),
           acquireExecutionBinding: async () => ({
             bindingGeneration: 2,
             continuationEvent: null,
@@ -1015,6 +1140,12 @@ describe("HostCommandDispatcher run planning", () => {
           }),
           getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" } }),
           loadRunDispatchContext: async () => ({
+            lineage: {
+              fromChat: false,
+              personLineage: true,
+              runConnectionId: null,
+              taskOriginConnectionId: null,
+            },
             providerSessionStateLayout: "session",
             personalContext: true,
             agentHome,
@@ -1056,7 +1187,6 @@ describe("HostCommandDispatcher run planning", () => {
             thread: {
               id: threadId,
               purpose: "task",
-              teamOrigin: null,
             },
           }),
           recordHarnessCatalogs: async ({
@@ -1119,15 +1249,11 @@ describe("HostCommandDispatcher run planning", () => {
   );
 });
 function steerDispatcher(input: {
-  readonly dispatchChannelCommand?: OpensteerStore["dispatchChannelCommand"];
   readonly refuseSteer: OpensteerStore["refuseSteer"];
   readonly runnersDispatch: () => Promise<undefined>;
   readonly succeedCommand: OpensteerStore["succeedCommand"];
 }): HostCommandDispatcher {
   return new HostCommandDispatcher({
-    teamRequestContext: async () => {
-      throw new Error("Unexpected team request");
-    },
     executionLeaseMs: 90_000,
     attachmentRunTokens: {
       issue: () => "attachment-token",
@@ -1146,7 +1272,6 @@ function steerDispatcher(input: {
       dispatch: input.runnersDispatch,
     } as never,
     store: {
-      dispatchChannelCommand: input.dispatchChannelCommand,
       loadSteerDispatchInput: async () => ({
         message: steerMessage(),
         runId: createId("run"),

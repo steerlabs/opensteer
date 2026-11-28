@@ -8,28 +8,53 @@ public final class PhoneDisplayModule: Module {
     // JavaScript reads this before using decodeBytes or the picture view: an
     // older binary has neither, and keeps the base64 and Image paths.
     Constant("binaryPresentationVersion") { 1 }
+    // JavaScript reads this to call the views' functions below by their tag. A function whose
+    // argument is a view makes Expo resolve that view on the JavaScript thread by waiting for
+    // the main thread (DynamicViewType.cast -> AppContext.findView -> DispatchQueue.main.sync),
+    // which deadlocks while React holds the main thread in a synchronous event beat waiting for
+    // JavaScript. These take the tag, a number, and find the view on the main queue they run on.
+    Constant("viewTagFunctions") { 1 }
+    AsyncFunction("resetForView") { (tag: Int, epoch: String) -> Void in
+      self.view(tag, PhoneDisplayView.self)?.reset(epoch)
+    }.runOnQueue(.main)
+    AsyncFunction("resetKeepingPictureForView") { (tag: Int, epoch: String) -> Void in
+      self.view(tag, PhoneDisplayView.self)?.reset(epoch, keepPicture: true)
+    }.runOnQueue(.main)
+    AsyncFunction("decodeForView") { (tag: Int, frame: FramePacket) -> Bool in
+      guard let view = self.view(tag, PhoneDisplayView.self) else { return false }
+      guard frame.data.utf8.count <= 5_592_408, let bytes = Data(base64Encoded: frame.data) else { view.lost(frame.epoch); return false }
+      return view.decode(bytes, FrameMetadata(frame))
+    }.runOnQueue(.main)
+    // Expo copies the Uint8Array into Data once, on the JavaScript thread.
+    AsyncFunction("decodeBytesForView") { (tag: Int, bytes: Data, metadata: FrameMetadata) -> Bool in
+      self.view(tag, PhoneDisplayView.self)?.decode(bytes, metadata) ?? false
+    }.runOnQueue(.main)
+    AsyncFunction("clearForView") { (tag: Int, generation: Int) -> Void in
+      self.view(tag, PhoneDisplayPictureView.self)?.clear(generation)
+    }.runOnQueue(.main)
+    AsyncFunction("presentForView") { (tag: Int, bytes: Data, metadata: PictureMetadata, promise: Promise) in
+      // Not mounted yet: dropped, and offered again when the view joins its window (onShown).
+      guard let view = self.view(tag, PhoneDisplayPictureView.self) else {
+        promise.resolve(PictureOutcome.dropped.rawValue)
+        return
+      }
+      view.present(bytes, metadata.request) { promise.resolve($0.rawValue) }
+    }.runOnQueue(.main)
     // The first view stays the module's default view, which older JavaScript requires by module name.
+    // Its functions are the ones above, by tag: none of ours takes a view as an argument.
     View(PhoneDisplayView.self) {
       Events("onReady", "onNeedsKeyframe")
-      AsyncFunction("reset") { (view: PhoneDisplayView, epoch: String) in view.reset(epoch) }
-      AsyncFunction("resetKeepingPicture") { (view: PhoneDisplayView, epoch: String) in view.reset(epoch, keepPicture: true) }
-      AsyncFunction("decode") { (view: PhoneDisplayView, frame: FramePacket) -> Bool in
-        guard frame.data.utf8.count <= 5_592_408, let bytes = Data(base64Encoded: frame.data) else { view.lost(frame.epoch); return false }
-        return view.decode(bytes, FrameMetadata(frame))
-      }
-      // Expo copies the Uint8Array into Data once, on the JavaScript thread.
-      AsyncFunction("decodeBytes") { (view: PhoneDisplayView, bytes: Data, metadata: FrameMetadata) -> Bool in
-        view.decode(bytes, metadata)
-      }
     }
     View(PhoneDisplayPictureView.self) {
       ViewName("PhoneDisplayPicture")
       Events("onCleared", "onShown")
-      AsyncFunction("clear") { (view: PhoneDisplayPictureView, generation: Int) in view.clear(generation) }
-      AsyncFunction("present") { (view: PhoneDisplayPictureView, bytes: Data, metadata: PictureMetadata, promise: Promise) in
-        view.present(bytes, metadata.request) { promise.resolve($0.rawValue) }
-      }
     }
+  }
+
+  /// The view with this tag, found on the main queue these functions run on: never by waiting for it.
+  private func view<ViewType: UIView>(_ tag: Int, _ type: ViewType.Type) -> ViewType? {
+    dispatchPrecondition(condition: .onQueue(.main))
+    return appContext?.findView(withTag: tag, ofType: type)
   }
 }
 
@@ -215,9 +240,8 @@ final class PhoneDisplayPictureView: ExpoView {
   private var shown: PictureRequest?
   /// Counts every change of what is shown, so a commit learns whether its picture is still the one on screen.
   private var shownVersion = 0
-  /// The shown picture's receipt until its commit completes. Anything that
-  /// replaces or removes the picture settles it at once: a commit's completion
-  /// may wait indefinitely while the view is off screen or the app is inactive.
+  /// The shown picture's receipt until it settles after its commit. Anything that
+  /// replaces or removes the picture first settles it at once, as dropped.
   private var undrawn: PictureReceipt?
   private var observers: [NSObjectProtocol] = []
   required init(appContext: AppContext? = nil) {
@@ -249,13 +273,30 @@ final class PhoneDisplayPictureView: ExpoView {
     if window == nil { blank() } else { shownAgain() }
   }
   private var showing: Bool { window != nil && UIApplication.shared.applicationState == .active }
+  /// Why the view cannot show a picture now, as the development trace says it.
+  private var hiddenReason: String { window == nil ? "no-window" : "app-not-active" }
+  /// Development builds only: one line per picture answered, so a walk can tell a picture the
+  /// view refused from one that never arrived. Nothing in a release build.
+  private func trace(_ line: @autoclosure () -> String) {
+    #if DEBUG
+    NSLog("[opensteer-picture] native %@", line())
+    #endif
+  }
   func clear(_ generation: Int) {
+    // Stale: this view already took a newer generation from a picture. Its picture stays.
+    guard generation >= queue.generation else {
+      trace("stale-clear generation=\(generation) queue=\(queue.generation)")
+      return
+    }
     queue.clear(generation)
     remove()
   }
   /// JavaScript may draw again what this view dropped while it could not show.
   private func shownAgain() {
-    if showing { onShown(["generation": queue.generation]) }
+    if showing {
+      trace("shown-again generation=\(queue.generation)")
+      onShown(["generation": queue.generation])
+    }
   }
   /// Leaves the generation alone: the same deliveries may draw once the view is shown again.
   private func blank() {
@@ -276,7 +317,20 @@ final class PhoneDisplayPictureView: ExpoView {
   }
   func present(_ bytes: Data, _ request: PictureRequest, settle: @escaping (PictureOutcome) -> Void) {
     let receipt = PictureReceipt(settle)
-    guard showing else { receipt(.dropped); return }
+    guard showing else {
+      trace("dropped generation=\(request.generation) size=\(request.width)x\(request.height) reason=\(hiddenReason)")
+      receipt(.dropped)
+      return
+    }
+    trace("offered generation=\(request.generation) size=\(request.width)x\(request.height) bytes=\(bytes.count) queue-generation=\(queue.generation)")
+    if request.generation < queue.generation {
+      trace("dropped generation=\(request.generation) reason=generation queue=\(queue.generation) offered=\(request.generation)")
+    } else if request.generation > queue.generation {
+      // The clear that would have said so never arrived: take it as that clear would have,
+      // pixels and all, and draw this picture.
+      trace("adopted generation=\(request.generation) queue=\(queue.generation)")
+      clear(request.generation)
+    }
     if let job = queue.submit(request, bytes, receipt) { decode(job) }
   }
   private func decode(_ job: PictureQueue<Data>.Job) {
@@ -284,17 +338,30 @@ final class PhoneDisplayPictureView: ExpoView {
       let image = PictureDecoder.decode(job.payload, width: job.request.width, height: job.request.height)
       DispatchQueue.main.async {
         guard let self else { job.receipt(.dropped); return }
+        if image == nil {
+          self.trace("failed generation=\(job.request.generation) size=\(job.request.width)x\(job.request.height) bytes=\(job.payload.count) reason=undecodable-or-size-mismatch")
+        }
         let result = self.queue.complete(decoded: image != nil)
+        if image != nil, result.shown == nil {
+          self.trace("dropped generation=\(job.request.generation) reason=superseded-or-cleared")
+        }
         if let shown = result.shown, let image {
-          if self.showing { self.draw(image, shown.request, shown.receipt) } else { shown.receipt(.dropped) }
+          if self.showing {
+            self.draw(image, shown.request, shown.receipt)
+          } else {
+            self.trace("dropped generation=\(shown.request.generation) reason=\(self.hiddenReason)-before-draw")
+            shown.receipt(.dropped)
+          }
         }
         if let next = result.next { self.decode(next) }
       }
     }
   }
-  /// Settles as presented only once the picture's transaction has committed
-  /// and it is still the one shown, so input never aims at a picture that was
-  /// replaced or cleared before it reached the screen.
+  /// Settles as presented once the picture is drawn and committed, on the main queue's next turn,
+  /// if it is still the one shown: a clear or a newer draw queued before then drops it, so input
+  /// never aims at a picture that was replaced or cleared. Not Core Animation's completion block:
+  /// that waits for every animation committed with it, and a sheet dismissing as the page opened
+  /// held the first picture hidden for seconds.
   private func draw(_ image: CGImage, _ request: PictureRequest, _ receipt: PictureReceipt) {
     undrawn?(.dropped)
     undrawn = receipt
@@ -303,13 +370,20 @@ final class PhoneDisplayPictureView: ExpoView {
     let version = shownVersion
     CATransaction.begin()
     CATransaction.setDisableActions(true)
-    CATransaction.setCompletionBlock { [weak self] in
-      receipt(self?.shownVersion == version && self?.showing == true ? .presented : .dropped)
-      if self?.undrawn === receipt { self?.undrawn = nil }
-    }
     picture.contents = image
     place()
     CATransaction.commit()
+    DispatchQueue.main.async { [weak self] in
+      let current = self?.shownVersion == version
+      let showing = self?.showing == true
+      self?.trace(
+        current && showing
+          ? "presented generation=\(request.generation)"
+          : "dropped generation=\(request.generation) reason=\(current ? (self?.hiddenReason ?? "view-gone") : "replaced-before-commit")"
+      )
+      receipt(current && showing ? .presented : .dropped)
+      if self?.undrawn === receipt { self?.undrawn = nil }
+    }
   }
   private func place() {
     guard let shown, let rect = shown.rect(in: bounds.size) else {

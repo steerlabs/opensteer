@@ -12,7 +12,11 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { executionNodeFromRow, messageViewFromRow } from "./thread-row-mappers.js";
+import {
+  executionNodeFromRow,
+  isRetiredMessageRow,
+  messageViewFromRow,
+} from "./thread-row-mappers.js";
 import {
   clientSendKeyWireReserve,
   fitsInlineTranscriptText,
@@ -354,6 +358,7 @@ const questionFacts = sql<QuestionFacts | null>`case when kind = 'request' then 
   select jsonb_build_object('kind',r.kind,'status',r.status,
     'presentation',jsonb_strip_nulls(jsonb_build_object(
       'kind',r.presentation->'kind','title',r.presentation->'title',
+      'detailFormat',r.presentation->'detailFormat',
       'detail',left(r.presentation->>'detail',${sql.lit(answeredQuestionPreviewBytes)}),
       'fields',(select jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
           'id',f.field->'id','secret',f.field->'secret',
@@ -410,17 +415,23 @@ export function itemView(row: Item): TranscriptItem {
     endedAt,
     replyMessageId,
     failure,
+    interruptedCause,
+    stopConfirmedAt,
     retry,
     usage,
-    runDelivery,
     messageKind,
     messageAuthor,
     edit,
     delivery,
     assignment,
-    teamSource,
-    ...view
+    ...stored
   } = row.view;
+  // An item stored before team removal may still carry a team source or delivery; neither is read.
+  const {
+    teamSource: _teamSource,
+    runDelivery: _runDelivery,
+    ...view
+  } = stored as typeof stored & { readonly teamSource?: unknown; readonly runDelivery?: unknown };
   const base = {
     id: row.id,
     kind: row.kind,
@@ -457,10 +468,13 @@ export function itemView(row: Item): TranscriptItem {
         ...row.refs,
         messageId: row.messageId,
         messageKind,
-        author: messageAuthor,
+        // A teammate's message kept from before team removal shows without an author.
+        author:
+          (messageAuthor as { readonly kind?: string } | undefined)?.kind === "team-member"
+            ? undefined
+            : messageAuthor,
         edit,
         delivery,
-        teamSource,
         ...(inlineText !== undefined ? { text: inlineText } : {}),
       });
     }
@@ -480,9 +494,10 @@ export function itemView(row: Item): TranscriptItem {
         endedAt,
         replyMessageId,
         failure,
+        ...(interruptedCause ? { interruptedCause } : {}),
+        ...(stopConfirmedAt ? { stopConfirmedAt } : {}),
         retry,
         usage,
-        delivery: runDelivery,
       });
     case "tool":
       return TranscriptItemSchema.parse({ ...base, toolCallId: row.toolCallId, tool, completedAt });
@@ -1319,11 +1334,21 @@ export function readTranscriptItem(
         .where("id", "=", item.messageId)
         .where("threadId", "=", item.threadId)
         .executeTakeFirstOrThrow();
-      try {
-        body = { kind: "message", message: messageViewFromRow(message) };
-      } catch {
-        return tooLarge();
-      }
+      if (isRetiredMessageRow(message)) {
+        // A teammate's message has no Message without its author: its text, without the author.
+        const text = (
+          message.content as readonly { readonly type: string; readonly text?: string }[]
+        )
+          .flatMap((part) => (part.type === "text" && part.text !== undefined ? [part.text] : []))
+          .join("\n\n");
+        if (!fitsInlineTranscriptText(text)) return tooLarge();
+        body = { kind: "text", text };
+      } else
+        try {
+          body = { kind: "message", message: messageViewFromRow(message) };
+        } catch {
+          return tooLarge();
+        }
     } else if (item.toolCallId) {
       const toolScope = tx
         .selectFrom("toolCalls")

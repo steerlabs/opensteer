@@ -1,3 +1,4 @@
+import { asRemoteAccessStep } from "../access/remote-access-operation.test-support.js";
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import { testResourceData } from "../server/test-host-api-request.js";
 import {
@@ -26,7 +27,18 @@ import {
   type EnvironmentId,
   type ThreadId,
 } from "@opensteer/core";
-import { AccountDirectoryStore, OpensteerStore, createDatabase } from "@opensteer/database";
+import {
+  AccountDirectoryStore,
+  AgentConnectionStore,
+  OpensteerStore,
+  TriggerStore,
+  createDatabase,
+} from "@opensteer/database";
+import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
+import {
+  testModelSelection as fixtureModel,
+  testReadyHarnessCatalog,
+} from "@opensteer/database/test-support/store";
 import { HostDescriptorSchema, hostApiVersion } from "@opensteer/deployment-authority";
 import {
   HarnessInstanceCatalogSchema,
@@ -205,7 +217,6 @@ integration("Host vertical slice", () => {
         device: { form: "laptop", platform: "macos" },
         maxConcurrentRuns: 2,
         name: "Local runner",
-        providerStateModes: ["ambient", "isolated"],
         runnerId,
         runnerKind: "main",
         runtimeVersion: "integration",
@@ -480,6 +491,208 @@ integration("Host vertical slice", () => {
     expect(bootstrap.session.can).toMatchObject({ createTasks: false, useVoice: false });
   });
 
+  it("settles already-revoked Run and retired Trigger attempts with contact loss on a different Runner boot", async () => {
+    dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-disconnect-boot-"));
+    const port = await freePort();
+    const config = testHostConfig(port, dataDirectory, new URL("http://127.0.0.1:9"));
+    runtime = await createHostRuntime(config);
+    await runtime.listen();
+    const origin = config.runtimeOrigin.origin;
+    await initializeOwnerSession(origin);
+    const descriptor = agentsRunnerDescriptor({
+      bootId: `rbt_${randomUUID()}`,
+      environmentIds: [hostingEnvironmentId],
+      harnessDrivers: [],
+      name: "Disconnect fixture Runner",
+      runnerId: createId("runner"),
+      runnerKind: "main",
+      runtimeVersion: "integration",
+    });
+    const initial = await connectPrimary(port, descriptor, { token: runnerToken });
+    runnerSocket = initial.socket;
+    const closed = waitForClose(initial.socket);
+    initial.socket.close();
+    await closed;
+    runnerSocket = undefined;
+    await runtime.close();
+    runtime = undefined;
+
+    const seedDatabase = createDatabase({ connectionString: config.databaseUrl });
+    const seedStore = new OpensteerStore(seedDatabase);
+    const connections = new AgentConnectionStore(seedDatabase);
+    const triggers = new TriggerStore(seedDatabase);
+    let ownerId: import("@opensteer/core").UserId;
+    let witness: {
+      connectionId: string;
+      runId: import("@opensteer/core").RunId;
+      bindingGeneration: number;
+      occurrenceId: import("@opensteer/core").TriggerOccurrenceId;
+      executionGeneration: number;
+      bootId: string;
+    };
+    try {
+      const personal = await initializePersonalState(seedDatabase, {
+        environmentId: hostingEnvironmentId,
+        agentHome: config.personal!.agentHome,
+      });
+      if (!personal) throw new Error("Expected a configured Main Runner and owner");
+      ({ ownerId } = await personalSettings(seedDatabase));
+      const agent = await connections.create({
+        userId: ownerId,
+        label: "Agent",
+        clientName: "Agent",
+        accessMode: "full-access",
+        resource: `${origin}/mcp`,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(await connections.activate(agent.id, randomUUID())).toBe(true);
+      const harness = await seedStore.createHarnessInstance({
+        config: {},
+        driverKind: HarnessIdSchema.parse("native"),
+        environmentId: hostingEnvironmentId,
+        name: "Offline fixture",
+        stateKind: "isolated",
+      });
+      await seedStore.recordHarnessCatalogs({
+        environmentId: hostingEnvironmentId,
+        catalogs: [testReadyHarnessCatalog(harness.id)],
+        expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
+      });
+      const { thread } = await seedStore.createThread({
+        createdBy: ownerId,
+        environmentId: hostingEnvironmentId,
+        harnessInstanceId: harness.id,
+        modelSelection: fixtureModel,
+        idempotencyKey: "disconnect-boot-task",
+        title: "Old work",
+      });
+      const turn = await seedStore.enqueueThreadInput({
+        threadId: thread.id,
+        requestedBy: ownerId,
+        idempotencyKey: "disconnect-boot-run",
+        content: [{ type: "text", text: "Old work" }],
+        policy: "queue",
+        source: { kind: "connection", connectionId: agent.id },
+        authority: {
+          kind: "connection",
+          userId: ownerId,
+          accessMode: "full-access",
+          connectionId: agent.id,
+        },
+      });
+      if (!turn.run) throw new Error("Expected a queued Run");
+      const old = await startPersonalQueuedRunFixture(seedStore, turn.run.id, initial.bootId);
+      const { trigger } = await triggers.create({
+        actorThreadId: null,
+        actorConnectionId: agent.id,
+        anchorThreadId: thread.id,
+        createdBy: ownerId,
+        idempotencyKey: "disconnect-boot-trigger",
+        name: "Old automation",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
+        },
+        source: {
+          kind: "schedule",
+          schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+        },
+      });
+      const occurrence = await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId,
+        triggerId: trigger.id,
+      });
+      expect(
+        await seedStore.claimCommand(occurrence.commandId, "disconnect-boot-trigger"),
+      ).not.toBeNull();
+      const attempt = await triggers.startExecution({
+        commandId: occurrence.commandId,
+        runnerBootId: old.runnerBootId,
+        runnerId: descriptor.runnerId,
+      });
+      await seedStore.retryCommand(
+        occurrence.commandId,
+        new Error("Retried without an end report"),
+      );
+      await connections.revoke(ownerId, agent.id);
+      expect(await seedStore.driveConnectionCleanups()).toEqual({ failures: [], settled: [] });
+      expect(await connections.list(ownerId, { includeRevoked: true })).toMatchObject([
+        { id: agent.id, state: "stopping", lastActionUncertain: false },
+      ]);
+      witness = {
+        connectionId: agent.id,
+        runId: old.runId,
+        bindingGeneration: old.bindingGeneration,
+        occurrenceId: occurrence.id,
+        executionGeneration: attempt.executionGeneration,
+        bootId: old.runnerBootId,
+      };
+    } finally {
+      await seedDatabase.destroy();
+    }
+
+    runtime = await createHostRuntime(withoutInitialOwner(config));
+    await runtime.listen();
+    const current = await connectPrimary(
+      port,
+      { ...descriptor, bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`) },
+      { privateKey: initial.privateKey },
+    );
+    runnerSocket = current.socket;
+    expect(current.bootId).not.toBe(witness.bootId);
+    const receipt = await testRpcData(
+      origin,
+      "commands.dispatch",
+      {
+        type: "connection.revoke",
+        connectionId: witness.connectionId,
+        idempotencyKey: "resume-disconnect-boot",
+      },
+      { headers: authorization(accessToken) },
+    );
+    expect(receipt).toMatchObject({ type: "connection.revoke" });
+    const liveDatabase = runtime.store.database;
+    // The receipt does not wait for the settle: when another pass of this Home (the maintenance
+    // pass the new boot's attach woke) holds the connection's cleanup claim, the command's own pass
+    // skips and the holder records the contact loss. Completing the cleanup is the settle's last
+    // write, and it is written only once no attempt is outstanding.
+    await waitForCondition(
+      async () =>
+        (
+          await liveDatabase
+            .selectFrom("agentConnections")
+            .select("cleanupCompletedAt")
+            .where("id", "=", witness.connectionId)
+            .executeTakeFirstOrThrow()
+        ).cleanupCompletedAt !== null,
+    );
+    const evidence = {
+      runnerBootId: witness.bootId,
+      terminalEvidenceAt: expect.any(Date),
+      contactLostAt: expect.any(Date),
+    };
+    expect(
+      await liveDatabase
+        .selectFrom("runAttempts")
+        .select(["runnerBootId", "terminalEvidenceAt", "contactLostAt"])
+        .where("runId", "=", witness.runId)
+        .where("bindingGeneration", "=", witness.bindingGeneration)
+        .executeTakeFirstOrThrow(),
+    ).toEqual(evidence);
+    expect(
+      await liveDatabase
+        .selectFrom("triggerOccurrenceAttempts")
+        .select(["runnerBootId", "terminalEvidenceAt", "contactLostAt"])
+        .where("occurrenceId", "=", witness.occurrenceId)
+        .where("executionGeneration", "=", witness.executionGeneration)
+        .executeTakeFirstOrThrow(),
+    ).toEqual(evidence);
+    expect(
+      await new AgentConnectionStore(liveDatabase).list(ownerId, { includeRevoked: true }),
+    ).toMatchObject([{ id: witness.connectionId, state: "stopped", lastActionUncertain: true }]);
+  });
+
   it("restarts Host and local Runner identity without the enrollment token", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-token-removal-"));
     const firstPort = await freePort();
@@ -506,7 +719,6 @@ integration("Host vertical slice", () => {
       ],
       maxConcurrentRuns: 1,
       name: "Local Runner",
-      providerStateModes: ["ambient", "isolated"],
       runnerId,
       runnerKind: "main",
       runtimeVersion: "integration",
@@ -624,7 +836,6 @@ integration("Host vertical slice", () => {
           },
         ],
         name: "Invalidation recovery Runner",
-        providerStateModes: ["ambient", "isolated"],
         runnerId: createId("runner"),
         runnerKind: "main",
         runtimeVersion: "integration",
@@ -725,7 +936,6 @@ integration("Host vertical slice", () => {
       ],
       maxConcurrentRuns: 1,
       name: "Unknown persisted Runner",
-      providerStateModes: ["ambient", "isolated"],
       runnerId: createId("runner"),
       runnerKind: "main",
       runtimeVersion: "integration",
@@ -1181,7 +1391,6 @@ integration("Host vertical slice", () => {
           sources: [{ sourceId: "openai", stateKinds: ["ambient", "isolated"] }],
         },
       ],
-      providerStateModes: ["ambient", "isolated"],
     });
     expect(await runtime.store.listHarnessInstances({ environmentIds: [environmentId] })).toEqual(
       [],
@@ -1635,7 +1844,6 @@ integration("Host vertical slice", () => {
         ],
         maxConcurrentRuns: 1,
         name: "Restarted runner",
-        providerStateModes: ["ambient", "isolated"],
         runnerId,
         runnerKind: "main",
         runtimeVersion: "integration",
@@ -2058,7 +2266,6 @@ integration("Host vertical slice", () => {
             environmentIds: [ownerEnvironmentId],
             harnessDrivers: [],
             maxConcurrentRuns: 1,
-            providerStateModes: ["isolated"],
           },
         },
       }),
@@ -2103,7 +2310,7 @@ integration("Host vertical slice", () => {
     const settings = await testResourceData(origin, "settings", { headers: sessionHeaders });
     expect(settings.settings?.agentHome).toEqual({
       computerId: mainRunner.fence.runnerId,
-      path: await realpath(join(dataDirectory, "home")),
+      path: join(dataDirectory, "home"),
     });
     // Setup is spent. The Main Runner enrollment stays replayable so a
     // supervisor that restarts mid-handshake can finish against the same
@@ -2154,20 +2361,26 @@ integration("Host vertical slice", () => {
     // Private network access is a separately signed HTTPS route. A wrong
     // reverse-proxy Origin cannot consume the code, while the exact route can.
     const privateOrigin = "https://personal.tailnet.example";
-    const configuredPrivate = await fetch(`${origin}/v1/personal-remote-access`, {
-      body: JSON.stringify({ mode: "private", routeOrigin: privateOrigin, schemaVersion: 1 }),
-      headers: {
-        [hostApiVersionHeader]: String(hostApiVersion),
-        ...Object.fromEntries(
-          new Headers({
-            ...sessionHeaders,
+    const configuredPrivate = await asRemoteAccessStep(
+      runtime.store.database,
+      "private",
+      () =>
+        fetch(`${origin}/v1/personal-remote-access`, {
+          body: JSON.stringify({ mode: "private", routeOrigin: privateOrigin, schemaVersion: 1 }),
+          headers: {
             [hostApiVersionHeader]: String(hostApiVersion),
-            "content-type": "application/json",
-          }),
-        ),
-      },
-      method: "PUT",
-    });
+            ...Object.fromEntries(
+              new Headers({
+                ...sessionHeaders,
+                [hostApiVersionHeader]: String(hostApiVersion),
+                "content-type": "application/json",
+              }),
+            ),
+          },
+          method: "PUT",
+        }),
+      privateOrigin,
+    );
     expect(configuredPrivate.status).toBe(200);
     const privateStatus = PersonalRemoteAccessStatusSchema.parse(await configuredPrivate.json());
     expect(privateStatus).toMatchObject({ generation: 1, mode: "private" });
@@ -2423,16 +2636,22 @@ integration("Host vertical slice", () => {
 
     // A remote owner can turn access Off. The generation advances and both
     // remote delivery families are revoked in the same database transaction.
-    const disabled = await fetch(`${origin}/v1/personal-remote-access`, {
-      body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),
-      headers: {
-        [hostApiVersionHeader]: String(hostApiVersion),
-        ...Object.fromEntries(
-          new Headers({ ...remoteHeaders, "content-type": "application/json" }),
-        ),
-      },
-      method: "PUT",
-    });
+    const disabled = await asRemoteAccessStep(
+      runtime.store.database,
+      "off",
+      () =>
+        fetch(`${origin}/v1/personal-remote-access`, {
+          body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),
+          headers: {
+            [hostApiVersionHeader]: String(hostApiVersion),
+            ...Object.fromEntries(
+              new Headers({ ...remoteHeaders, "content-type": "application/json" }),
+            ),
+          },
+          method: "PUT",
+        }),
+      null,
+    );
     expect(disabled.status).toBe(200);
     await expect(disabled.json()).resolves.toMatchObject({
       generation: 2,
@@ -2447,7 +2666,23 @@ integration("Host vertical slice", () => {
         headers: remoteHeaders,
       },
     );
-    expect(revokedBootstrap.status).toBe(401);
+    // The route is gone, so its origin is no longer one of the Home's own: a request stating it
+    // is refused as another origin's (G2), whatever it carries. The remote session ended with the
+    // route, which the same cookie shows from no origin at all: not signed in.
+    expect(revokedBootstrap.status).toBe(403);
+    const revokedCookie = await testRpcRequest(
+      origin,
+      "personal.shell.get",
+      {},
+      {
+        headers: {
+          [hostApiVersionHeader]: String(hostApiVersion),
+          cookie: remoteHeaders.cookie,
+          "sec-fetch-site": "same-origin",
+        },
+      },
+    );
+    expect(revokedCookie.status).toBe(401);
     // Rotation is delivery-blind: the phone's credential dies with the cookie.
     const revokedNative = await testRpcRequest(
       origin,
@@ -2534,20 +2769,26 @@ integration("Host vertical slice", () => {
       schemaVersion: 2,
     });
     const connectOrigin = "https://personal.connect.opensteer.test";
-    const configuredConnect = await fetch(`${origin}/v1/personal-remote-access`, {
-      body: JSON.stringify({ mode: "connect", routeOrigin: connectOrigin, schemaVersion: 1 }),
-      headers: {
-        [hostApiVersionHeader]: String(hostApiVersion),
-        ...Object.fromEntries(
-          new Headers({
-            ...sessionHeaders,
+    const configuredConnect = await asRemoteAccessStep(
+      runtime.store.database,
+      "connect",
+      () =>
+        fetch(`${origin}/v1/personal-remote-access`, {
+          body: JSON.stringify({ mode: "connect", routeOrigin: connectOrigin, schemaVersion: 1 }),
+          headers: {
             [hostApiVersionHeader]: String(hostApiVersion),
-            "content-type": "application/json",
-          }),
-        ),
-      },
-      method: "PUT",
-    });
+            ...Object.fromEntries(
+              new Headers({
+                ...sessionHeaders,
+                [hostApiVersionHeader]: String(hostApiVersion),
+                "content-type": "application/json",
+              }),
+            ),
+          },
+          method: "PUT",
+        }),
+      connectOrigin,
+    );
     expect(configuredConnect.status).toBe(200);
     const connectStatus = PersonalRemoteAccessStatusSchema.parse(await configuredConnect.json());
     expect(connectStatus).toMatchObject({
@@ -2830,20 +3071,26 @@ integration("Host vertical slice", () => {
     // JWKS, activation, the identity publication that activation ends with, and the owner's name.
     expect(personalAccountGrantFetch).toHaveBeenCalledTimes(4);
     expect(hostAuthorityPublications).toHaveLength(1);
-    const connectDisabled = await fetch(`${origin}/v1/personal-remote-access`, {
-      body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),
-      headers: {
-        [hostApiVersionHeader]: String(hostApiVersion),
-        ...Object.fromEntries(
-          new Headers({
-            ...sessionHeaders,
+    const connectDisabled = await asRemoteAccessStep(
+      runtime.store.database,
+      "off",
+      () =>
+        fetch(`${origin}/v1/personal-remote-access`, {
+          body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),
+          headers: {
             [hostApiVersionHeader]: String(hostApiVersion),
-            "content-type": "application/json",
-          }),
-        ),
-      },
-      method: "PUT",
-    });
+            ...Object.fromEntries(
+              new Headers({
+                ...sessionHeaders,
+                [hostApiVersionHeader]: String(hostApiVersion),
+                "content-type": "application/json",
+              }),
+            ),
+          },
+          method: "PUT",
+        }),
+      null,
+    );
     expect(connectDisabled.status).toBe(200);
     await expect(connectDisabled.json()).resolves.toMatchObject({
       generation: 4,
@@ -2870,7 +3117,17 @@ integration("Host vertical slice", () => {
         headers: { cookie: connectCookieHeader!, origin: connectOrigin },
       },
     );
-    expect(revokedConnect.status).toBe(401);
+    // Remote access is off, so the Connect route's origin is no longer the Home's: a request
+    // stating it is refused as another origin's (G2). Its session ended with the route, which
+    // the same cookie shows from no origin at all: not signed in.
+    expect(revokedConnect.status).toBe(403);
+    const revokedConnectCookie = await testRpcRequest(
+      origin,
+      "personal.shell.get",
+      {},
+      { headers: { cookie: connectCookieHeader!, "sec-fetch-site": "same-origin" } },
+    );
+    expect(revokedConnectCookie.status).toBe(401);
     const directory = new AccountDirectoryStore(runtime.store.database);
     const directoryProviderId = "oidc:opensteer-account";
     await directory.configureProvider({
@@ -3166,11 +3423,17 @@ integration("Host vertical slice", () => {
     // Every owner device sees the same complete link and its activation state;
     // Account execution credentials remain on the Host.
     const privateOrigin = "https://personal.tailnet.example";
-    const configuredPrivate = await jsonFetch(`${origin}/v1/personal-remote-access`, {
-      body: JSON.stringify({ mode: "private", routeOrigin: privateOrigin, schemaVersion: 1 }),
-      headers: jsonHeaders,
-      method: "PUT",
-    });
+    const configuredPrivate = await asRemoteAccessStep(
+      runtime.store.database,
+      "private",
+      () =>
+        jsonFetch(`${origin}/v1/personal-remote-access`, {
+          body: JSON.stringify({ mode: "private", routeOrigin: privateOrigin, schemaVersion: 1 }),
+          headers: jsonHeaders,
+          method: "PUT",
+        }),
+      privateOrigin,
+    );
     expect(configuredPrivate).toMatchObject({
       accountLink: { ...accountIdentity, generation: linkGeneration, state: "activating" },
     });
@@ -3235,14 +3498,20 @@ integration("Host vertical slice", () => {
     // "no such link" is a durable answer that completes it rather than a
     // failure that strands the owner half-linked.
     activationOutcome = "not-found";
-    await fetch(`${origin}/v1/personal-remote-access`, {
-      body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),
-      headers: {
-        [hostApiVersionHeader]: String(hostApiVersion),
-        ...Object.fromEntries(new Headers(jsonHeaders)),
-      },
-      method: "PUT",
-    });
+    await asRemoteAccessStep(
+      runtime.store.database,
+      "off",
+      () =>
+        fetch(`${origin}/v1/personal-remote-access`, {
+          body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),
+          headers: {
+            [hostApiVersionHeader]: String(hostApiVersion),
+            ...Object.fromEntries(new Headers(jsonHeaders)),
+          },
+          method: "PUT",
+        }),
+      null,
+    );
     const removed = await fetch(`${origin}/v1/personal-remote-access/account-unlink/remove-link`, {
       body: JSON.stringify({ schemaVersion: 1 }),
       headers: {
@@ -3598,7 +3867,6 @@ function agentsRunnerDescriptor(input: {
   readonly localStorage?: unknown;
   readonly maxConcurrentRuns?: number;
   readonly name: string;
-  readonly providerStateModes?: readonly string[];
   readonly runnerId: string;
   readonly runnerKind: string;
   readonly runtimeVersion: string;
@@ -3627,7 +3895,6 @@ function agentsRunnerDescriptor(input: {
         environmentIds: input.environmentIds,
         harnessDrivers: input.harnessDrivers,
         maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
-        providerStateModes: input.providerStateModes ?? ["ambient", "isolated"],
         workspaceBackings: input.workspaceBackings ?? ["local-directory"],
         workspaceMounts: input.workspaceMounts ?? [],
       },

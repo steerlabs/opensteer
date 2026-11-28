@@ -7,6 +7,7 @@ import type { IpcMain, IpcMainInvokeEvent, NativeImage, WebContents, WebFrameMai
 import type { DesktopUpdates } from "@opensteer/client/connections";
 import type { DeploymentId } from "@opensteer/core";
 import type {
+  DesktopOpenInChromeResult,
   DesktopComputerAppSetupStatus,
   DesktopComputerAppSetupTarget,
   DesktopOpenComputerAppSetupInput,
@@ -161,11 +162,8 @@ export interface DesktopBridgeOptions {
     readonly closePanel: () => Promise<void>;
     readonly request: () => Promise<void>;
   };
-  readonly teamLinks?: import("../app/team-links.js").DesktopTeamLinks;
-  /** Account's hosted-team calls; absent without an Account service. */
-  readonly accountTeams?: import("@opensteer/client/team").AccountTeamsClient | null;
-  /** Entering teams with the Account's identity; absent without an Account service. */
-  readonly teamSessions?: import("../app/team-sessions.js").DesktopTeamSessions | null;
+  /** The person's Cloud Computers through main's Account client; absent without an Account service. */
+  readonly cloudComputers?: import("@opensteer/client/connections").CloudComputerAccount | null;
   readonly personalDataReset?: {
     oldData(): import("@opensteer/protocol/desktop").DesktopPersonalOldDataState | null;
     startFresh(): Promise<void>;
@@ -192,6 +190,9 @@ export interface DesktopBridgeOptions {
   readonly notifications: {
     /** This app's page in the system's notification settings, where the system has one. */
     readonly openSettings: () => Promise<void>;
+    /** The window's live Needs you count for the Home it shows, as it badges the app. */
+    /** The Home the count came from, when the window says. */
+    readonly badgeCount?: (count: number, deploymentId?: string) => void;
   };
   readonly tailscale: {
     readonly share: () => Promise<DesktopTailscaleShareResult>;
@@ -199,6 +200,8 @@ export interface DesktopBridgeOptions {
   };
   readonly portal: {
     readonly openExternal: (url: string) => Promise<void>;
+    /** Opens a page in Google Chrome itself; absent where there is no Chrome to ask for. */
+    readonly openInChrome?: (url: string) => Promise<DesktopOpenInChromeResult>;
     /** The chosen folder, or null when the dialog was closed without one. */
     readonly pickFolder: () => Promise<string | null>;
   };

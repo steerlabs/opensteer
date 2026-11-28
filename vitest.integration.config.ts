@@ -16,6 +16,12 @@ const benchmarkSwitches: Record<string, string> = {
   "packages/database/src/personal-write-performance.integration.test.ts":
     "OPENSTEER_PERSONAL_WRITE_PERF",
 };
+// The pool's real-host proof is switched by a path to the run's endpoints, not by "1".
+const realHostProof = "tests/browser-pool-guest.real-host.integration.test.ts";
+const optedIn = (file: string) =>
+  file === realHostProof
+    ? Boolean(process.env.OPENSTEER_POOL_REAL_HOST)
+    : process.env[benchmarkSwitches[file] ?? "OPENSTEER_TEAM_PERF"] === "1";
 
 export default defineConfig({
   // Shared across worktrees, like the unit suite's: last-failed and slowest files run first.
@@ -35,9 +41,7 @@ export default defineConfig({
     include: integrationTestInclude,
     exclude: [
       ...configDefaults.exclude,
-      ...optInIntegrationBenchmarks.filter(
-        (file) => process.env[benchmarkSwitches[file] ?? "OPENSTEER_TEAM_PERF"] !== "1",
-      ),
+      ...optInIntegrationBenchmarks.filter((file) => !optedIn(file)),
     ],
     pool: "forks",
     isolate: true,

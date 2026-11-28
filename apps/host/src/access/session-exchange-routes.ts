@@ -1,4 +1,7 @@
-import { anonymousClientAddress as sessionExchangeClientAddress } from "../identity/anonymous-client-address.js";
+import {
+  anonymousClientAddress as sessionExchangeClientAddress,
+  forwardingProxy,
+} from "../identity/anonymous-client-address.js";
 import {
   AccountHostSessionGrantSchema,
   type AccountHostSessionClientSurface,
@@ -267,6 +270,9 @@ function invalidSessionExchangeForm(): OpensteerError {
  * loopback listener at all can write them, so a caller already holding a valid
  * grant or pairing code can redeem it without having traversed the HTTPS route.
  * Enforcing otherwise needs an authenticated ingress the Host does not have.
+ * The forwarded protocol is believed only from the configured proxy on this
+ * computer's loopback interface; from anywhere else the socket's own protocol
+ * stands.
  *
  * What the comparison does buy, and why every arm keeps it: the exchange is
  * pinned to one signed route origin and generation, so the session it mints
@@ -278,7 +284,8 @@ function invalidSessionExchangeForm(): OpensteerError {
  */
 export function exchangeRouteOrigin(request: FastifyRequest): string {
   const host = request.headers.host;
-  const forwardedProtocol = request.headers["x-forwarded-proto"];
+  const forwardedProtocol =
+    forwardingProxy(request) === "none" ? undefined : request.headers["x-forwarded-proto"];
   if (
     typeof host !== "string" ||
     host.length > 253 ||

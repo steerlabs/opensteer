@@ -2,11 +2,12 @@ import { requireSelfDeviceId } from "./device-inventory-store.js";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import type { DeviceId } from "@opensteer/core";
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { deploymentPolicy } from "@opensteer/core";
 import { assertRequestRevision } from "./request-persistence.js";
 import { fulfillDeviceAccessRequestsInTransaction } from "./request-store.js";
 import { withDatabaseTransaction } from "./connection.js";
-import { type CommandRow, type DatabaseSchema } from "./schema.js";
+import { type CommandRow, type DatabaseSchema, type DeploymentRow } from "./schema.js";
+import { liveConnection } from "./connection-liveness.js";
+import { lineageEndedMessage } from "./resource-access.js";
 import {
   idempotencyConflict,
   principalIdForUser,
@@ -24,6 +25,7 @@ import {
   type RequestId,
   OpensteerError,
   runnerRunsItsDeployment,
+  type ThreadAccessMode,
 } from "@opensteer/core";
 import {
   deviceAccess,
@@ -34,6 +36,7 @@ import {
   type ShellCloseReason,
   type ShellAuditEvent,
   type ShellSessionId,
+  type RunnerAuxiliaryFrameFence,
   ShellSessionIdSchema,
   shellAuditEventCap,
   machineAccessMaxActiveSessions,
@@ -82,10 +85,21 @@ function machineAccessCommandPayload(
   return { ...(payload as { readonly request: unknown; readonly result: unknown }), type };
 }
 
+/**
+ * A Stop's key, and for an agent's Stop who sent it: its record names the agent, and where the
+ * row is the whole effect its live authority is admitted in the same transaction.
+ */
+export interface ShellStopIdempotency {
+  readonly key: string;
+  readonly requestedBy: UserId;
+  readonly authoritySource?: Readonly<Record<string, unknown>>;
+  readonly admit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
+}
+
 async function recordMachineAccessCommand(
   transaction: Transaction<DatabaseSchema>,
   input: {
-    readonly idempotency: { readonly key: string; readonly requestedBy: UserId };
+    readonly idempotency: ShellStopIdempotency;
     readonly request: unknown;
     readonly result: unknown;
     readonly type: MachineAccessCommandType;
@@ -96,7 +110,9 @@ async function recordMachineAccessCommand(
     .insertInto("commands")
     .values({
       actorPrincipalId: await principalIdForUser(transaction, requestedBy),
-      authoritySource: jsonValue({ kind: "user-session", userId: requestedBy }),
+      authoritySource: jsonValue(
+        input.idempotency.authoritySource ?? { kind: "user-session", userId: requestedBy },
+      ),
       dispatcherId: null,
       environmentId: null,
       id: createId("command"),
@@ -677,25 +693,95 @@ export async function listReachableMachines(
 }
 
 /**
+ * A shell's target stream as it is stored and compared: exactly the fence's fields, so the
+ * stored value and a receipt's stream are equal as JSON whatever else either object carries.
+ */
+export function shellTargetFence(fence: RunnerAuxiliaryFrameFence): RunnerAuxiliaryFrameFence {
+  return {
+    auxiliaryStreamId: fence.auxiliaryStreamId,
+    bootId: fence.bootId,
+    connectionGeneration: fence.connectionGeneration,
+    connectionId: fence.connectionId,
+    connectionLeaseId: fence.connectionLeaseId,
+    module: fence.module,
+    runnerId: fence.runnerId,
+  };
+}
+
+/** The connection a shell's Run works for, as its admission read it. */
+export interface ShellConnectionWitness {
+  readonly connectionId: string;
+  readonly grantRevision: number;
+  readonly mode: ThreadAccessMode;
+}
+
+/**
  * Writes the session down before the target is asked to serve it, so a Host
  * that dies during the open still has a row it can end on its next start.
+ *
+ * A session a connected agent's Run opens is, in the same statement, an attempt in that
+ * connection's Disconnect set (rule 3): the connection row is held (the lock Disconnect's revoke
+ * takes), it must be live and still at the grant the admission read, and the row names the
+ * target's exact stream. A revoke that committed first refuses it here, so no open frame is
+ * ever sent for it; one that commits after finds the row and waits for its evidence.
+ * `connection` is what the caller's admission read: `null` for your own agents (nothing more is
+ * read or locked), absent when the caller did not read it (the Run's own row says then).
  */
 export async function reserveShellSession(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly callerMachineName: string;
     readonly callerRunnerId: RunnerId;
+    readonly connection?: ShellConnectionWitness | null;
     readonly policyRevision: number;
     readonly requestedBy: UserId;
     readonly runId: RunId;
     readonly runnerId: RunnerId;
     readonly sessionId: ShellSessionId;
     readonly startedAt: Date;
+    /** The target's `shell` stream the open frame will be sent on. */
+    readonly targetFence?: RunnerAuxiliaryFrameFence;
     readonly threadId: ThreadId;
     readonly threadTitle: string;
   },
 ): Promise<void> {
   await commitPersonalMutation(database, async (tx, mutation) => {
+    let witness: {
+      readonly connectionId: string | null;
+      readonly admittedGrantRevision: number | null;
+      readonly admittedAccessMode: ThreadAccessMode | null;
+    } = { connectionId: null, admittedGrantRevision: null, admittedAccessMode: null };
+    const lineage =
+      input.connection === undefined
+        ? await tx
+            .selectFrom("runs")
+            .select(["connectionId", "admittedAccessMode"])
+            .where("id", "=", input.runId)
+            .executeTakeFirst()
+            .then((run) =>
+              run?.connectionId
+                ? { connectionId: run.connectionId, mode: run.admittedAccessMode }
+                : null,
+            )
+        : input.connection;
+    if (lineage) {
+      const connection = await tx
+        .selectFrom("agentConnections")
+        .select(["grantRevision", liveConnection().as("live")])
+        .where("id", "=", lineage.connectionId)
+        .forShare()
+        .executeTakeFirst();
+      if (
+        !connection?.live ||
+        ("grantRevision" in lineage && connection.grantRevision !== lineage.grantRevision)
+      )
+        throw new OpensteerError({ code: "forbidden", message: lineageEndedMessage });
+      witness = {
+        connectionId: lineage.connectionId,
+        admittedGrantRevision: connection.grantRevision,
+        admittedAccessMode: lineage.mode ?? null,
+      };
+    }
     await tx
       .insertInto("machineAccessSessions")
       .values({
@@ -714,10 +800,43 @@ export async function reserveShellSession(
         state: "pending",
         threadId: input.threadId,
         threadTitle: input.threadTitle,
+        ...witness,
+        ...(input.targetFence
+          ? { targetFence: jsonValue(shellTargetFence(input.targetFence)) }
+          : {}),
       })
       .executeTakeFirstOrThrow();
     mutation.bumpResource("machine");
   });
+}
+
+/**
+ * What ends a connection's shell attempt, from the one stream that can say so: the target's
+ * close receipt (or its refusal before it started anything) on the exact stream the open was
+ * sent on, or the loss of that stream, after which nothing it says can arrive. A receipt on any
+ * other stream proves nothing and changes nothing. The first evidence stays.
+ */
+export async function recordShellTargetEvidence(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly fence: RunnerAuxiliaryFrameFence;
+    /** The sessions the stream spoke for: one receipt, or every one it carried when lost. */
+    readonly sessionIds: readonly ShellSessionId[];
+    readonly contactLost: boolean;
+  },
+): Promise<number> {
+  if (input.sessionIds.length === 0) return 0;
+  const now = new Date();
+  const result = await database
+    .updateTable("machineAccessSessions")
+    .set({ terminalEvidenceAt: now, contactLostAt: input.contactLost ? now : null })
+    .where("runnerId", "=", input.fence.runnerId)
+    .where("id", "in", [...input.sessionIds])
+    .where("connectionId", "is not", null)
+    .where("terminalEvidenceAt", "is", null)
+    .where(sql<boolean>`target_fence = ${JSON.stringify(shellTargetFence(input.fence))}::jsonb`)
+    .executeTakeFirst();
+  return Number(result.numUpdatedRows);
 }
 
 /** Promotes a paired session; a session that already ended stays ended. */
@@ -754,7 +873,12 @@ export async function endShellSession(
     readonly bytesOut?: number;
     readonly endedAt?: Date;
     /** A Stop the person may click twice; the second click reports the first. */
-    readonly idempotency?: { readonly key: string; readonly requestedBy: UserId };
+    readonly idempotency?: ShellStopIdempotency;
+    /**
+     * The open frame was never sent, so the target never had it: that is the attempt's evidence
+     * (it never left the Home), written with the end.
+     */
+    readonly neverSent?: boolean;
     readonly reason: ShellCloseReason;
     readonly sessionId: ShellSessionId;
   },
@@ -764,6 +888,8 @@ export async function endShellSession(
     if (input.idempotency) {
       const { key, requestedBy } = input.idempotency;
       await lockCommandIdempotency(transaction, requestedBy, key);
+      // An agent's Stop is admitted where it commits, under its own key (AD3).
+      await input.idempotency.admit?.(transaction);
       const existing = await findCommandByIdempotency(transaction, requestedBy, key);
       if (existing) {
         const stored = machineAccessCommandPayload(existing, "machine.access.session.stop", key);
@@ -790,6 +916,9 @@ export async function endShellSession(
           endReason: input.reason,
           endedAt: input.endedAt ?? new Date(),
           state: "ended",
+          ...(input.neverSent
+            ? { terminalEvidenceAt: sql<Date>`coalesce(terminal_evidence_at, now())` }
+            : {}),
         })
         .where("id", "=", input.sessionId)
         .where("endedAt", "is", null)
@@ -808,7 +937,11 @@ export async function endShellSession(
   });
 }
 
-/** No session survives a Host epoch, so every open row ends at startup. */
+/**
+ * No session survives a Host epoch, so every open row ends at startup. A connection's shell the
+ * last Host did not see end on its target is settled by its Disconnect: the stream it was opened
+ * on went with that process, so this Home's stop finds no such stream and records contact lost.
+ */
 export async function endAllOpenShellSessions(
   database: Kysely<DatabaseSchema>,
   reason: ShellCloseReason,
@@ -974,15 +1107,12 @@ async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<b
     .select("deploymentShape")
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
-  return deployment ? deploymentPolicy(deployment.deploymentShape).services.personal : false;
+  return deployment !== undefined;
 }
 
 /** A Personal Deployment has exactly one established owner. */
-export async function personalDeploymentOwner(
-  database: Kysely<DatabaseSchema>,
-): Promise<UserId | null> {
-  // One read: the Deployment's shape and its first user.
-  const row = await database
+function personalDeploymentOwnerQuery(database: Kysely<DatabaseSchema>) {
+  return database
     .selectFrom("deployments")
     .leftJoinLateral(
       (eb) =>
@@ -1001,8 +1131,48 @@ export async function personalDeploymentOwner(
       "owner.id as ownerId",
       "owner.disabledAt as ownerDisabledAt",
     ])
-    .where("deployments.singletonKey", "=", "primary")
-    .executeTakeFirst();
-  if (!row || !deploymentPolicy(row.deploymentShape).services.personal) return null;
+    .where("deployments.singletonKey", "=", "primary");
+}
+
+function activePersonalDeploymentOwner(
+  row:
+    | (Pick<DeploymentRow, "deploymentShape"> & {
+        ownerId: UserId | null;
+        ownerDisabledAt: Date | null;
+      })
+    | undefined,
+): UserId | null {
+  if (!row) return null;
   return row.ownerId && row.ownerDisabledAt === null ? row.ownerId : null;
+}
+
+export async function personalDeploymentOwner(
+  database: Kysely<DatabaseSchema>,
+): Promise<UserId | null> {
+  return activePersonalDeploymentOwner(
+    await personalDeploymentOwnerQuery(database).executeTakeFirst(),
+  );
+}
+
+export async function personalShellSessionState(
+  database: Kysely<DatabaseSchema>,
+  viewerId: UserId,
+) {
+  const row = await personalDeploymentOwnerQuery(database)
+    .select((eb) =>
+      eb
+        .exists(
+          eb
+            .selectFrom("personalSettings")
+            .select("singletonKey")
+            .where("singletonKey", "=", "personal"),
+        )
+        .as("opened"),
+    )
+    .executeTakeFirst();
+  return {
+    opened: Boolean(row?.opened),
+    role:
+      activePersonalDeploymentOwner(row) === viewerId ? ("owner" as const) : ("member" as const),
+  };
 }

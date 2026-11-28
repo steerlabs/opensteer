@@ -1,6 +1,7 @@
 import { presentClientIssue } from "../feedback/client-issue.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BrowserWatchStore } from "./browser-watch.js";
+import { BrowserEditingStore } from "./browser-editing.js";
+import { BrowserWatchStore, browserInputRefusalShownMs } from "./browser-watch.js";
 import type { WebSocketClient } from "./host-session-client.js";
 import { healthySocketMs } from "./realtime-frames.js";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
@@ -74,6 +75,75 @@ it("keeps basic input refusals local to input, preserving the viewer and its pic
   } finally {
     release();
     store.dispose();
+  }
+});
+
+it("keeps the page's refusal of the person's input readable through their next keys, then ends it", () => {
+  vi.useFakeTimers();
+  const socket = new TargetSocket();
+  const store = new BrowserWatchStore(
+    () => socket,
+    "control",
+    undefined,
+    () => 0,
+  );
+  const release = store.retain(sessionId, surfaceId);
+  try {
+    socket.open();
+    socket.receive({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      targetedStreamingVersion: 1,
+      dialog: null,
+      surfaces: [{ id: surfaceId, title: "Page", url: "about:blank", active: true }],
+    });
+    socket.subscribed();
+    socket.picture();
+    const key = (text: string) =>
+      store.send(sessionId, surfaceId, {
+        type: "input.key",
+        surfaceId: BrowserSurfaceIdSchema.parse(surfaceId),
+        action: "down",
+        key: text,
+        code: `Key${text.toUpperCase()}`,
+        modifiers: [],
+        text,
+      });
+    const refuse = () =>
+      socket.receive({
+        type: "browser.error",
+        error: {
+          code: "conflict",
+          reason: "browser-input-owner-conflict",
+          message: "Another producer holds input on this page.",
+          retryable: false,
+        },
+      });
+    const words = () => {
+      const issue = store.get(sessionId, surfaceId).inputError;
+      return issue ? presentClientIssue(issue).title : null;
+    };
+    key("s");
+    refuse();
+    expect(words()).toContain("Someone else is using this page.");
+    // The person keeps typing at their pace: the words are not wiped by their next keys.
+    for (const text of "olnine") {
+      key(text);
+      vi.advanceTimersByTime(200);
+    }
+    expect(words()).toContain("Someone else is using this page.");
+    // Another refusal holds them again; they end a few seconds after the last one.
+    refuse();
+    vi.advanceTimersByTime(browserInputRefusalShownMs - 1);
+    expect(words()).toContain("Someone else is using this page.");
+    vi.advanceTimersByTime(1);
+    expect(words()).toBeNull();
+  } finally {
+    release();
+    store.dispose();
+    vi.useRealTimers();
   }
 });
 
@@ -169,6 +239,68 @@ class TargetSocket implements WebSocketClient {
 }
 
 describe("BrowserWatchStore", () => {
+  it("keeps a target and its last picture under a socketless hold, and opens a socket only for the others", () => {
+    const sockets: TargetSocket[] = [];
+    const store = new BrowserWatchStore(
+      () => {
+        const socket = new TargetSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      "control",
+      undefined,
+      () => 0,
+    );
+    // Alone, a socketless hold asks for no socket: it is no viewer to the Home.
+    const quiet = store.retain(sessionId, surfaceId, { connect: false });
+    expect(sockets).toHaveLength(0);
+    const live = store.retain(sessionId, surfaceId, { picture: false });
+    expect(sockets).toHaveLength(1);
+    sockets[0]!.open();
+    sockets[0]!.admit();
+    sockets[0]!.picture();
+    const picture = store.get(sessionId, surfaceId).frame;
+    expect(picture).not.toBeNull();
+    // The view no one sees swaps its live hold for the socketless one: the socket goes, the picture stays.
+    live();
+    expect(sockets[0]!.readyState).toBe(3);
+    expect(store.get(sessionId, surfaceId).frame).toBe(picture);
+    // Seen again: a socket opens, and the last picture stands until a new one.
+    const again = store.retain(sessionId, surfaceId);
+    expect(sockets).toHaveLength(2);
+    expect(store.get(sessionId, surfaceId).frame).toBe(picture);
+    again();
+    quiet();
+    store.dispose();
+  });
+
+  it("opens nothing while keeping, not a new hold nor a reconnect, and keeps what is open", () => {
+    const sockets: TargetSocket[] = [];
+    const store = new BrowserWatchStore(
+      () => {
+        const socket = new TargetSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      "control",
+      undefined,
+      () => 0,
+    );
+    const first = store.retain(sessionId, surfaceId);
+    store.presence("keep");
+    expect(sockets[0]!.readyState).not.toBe(3);
+    const second = store.retain(sessionId, "srf_00000000-0000-4000-8000-000000000002");
+    expect(sockets).toHaveLength(1);
+    store.reconnect();
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.readyState).toBe(3);
+    store.presence("open");
+    expect(sockets).toHaveLength(3);
+    first();
+    second();
+    store.dispose();
+  });
+
   it("resolves viewer icon references from its own connection and clears them on reconnect", () => {
     const sockets: TargetSocket[] = [];
     const store = new BrowserWatchStore(
@@ -972,3 +1104,192 @@ it.each([false, true])(
     }
   },
 );
+
+it("stops a cloud-tab typing burst on browser-input-overload, keeps an ordered prefix and held releases, and shows one typing sentence", async () => {
+  vi.useFakeTimers();
+  const socket = new TargetSocket();
+  const watch = new BrowserWatchStore(
+    () => socket,
+    "control",
+    (sid, message, srf) => editing.receive(sid, message, srf),
+    () => 0,
+  );
+  const editing = new BrowserEditingStore((sid, srf, command) => watch.send(sid, srf, command));
+  const release = watch.retain(sessionId, surfaceId);
+  const statusIssues: (string | null)[] = [];
+  const unsubscribeStatus = watch.subscribeStatus(sessionId, surfaceId, () => {
+    const issue = watch.status(sessionId, surfaceId).inputError;
+    statusIssues.push(issue ? presentClientIssue(issue).title : null);
+  });
+
+  // Model the runtime's 128-entry BrowserInputLane + reserved cleanup releases:
+  // ordinary presses saturate past 128 pending entries and emit browser-input-overload;
+  // releases for already-admitted presses always bypass ordinary capacity.
+  const queueLimit = 128;
+  const admittedKeys: {
+    readonly action: string;
+    readonly code: string | undefined;
+    readonly text: string | undefined;
+  }[] = [];
+  const reservedReleases = new Set<string>();
+  const pending: {
+    readonly action: string;
+    readonly code: string | undefined;
+    readonly text: string | undefined;
+  }[] = [];
+  let freedAfterOverload = false;
+  const originalSend = socket.send.bind(socket);
+  socket.send = (raw: string) => {
+    originalSend(raw);
+    const frame = JSON.parse(raw) as {
+      type: string;
+      action?: string;
+      code?: string;
+      text?: string;
+      inputSequence?: number;
+      inputGeneration?: number;
+    };
+    if (frame.type !== "input.key") return;
+    const isRelease = frame.action === "up";
+    const isReserved = isRelease && frame.code !== undefined && reservedReleases.has(frame.code);
+    if (isRelease && !isReserved) return;
+    if (!isReserved && pending.length >= queueLimit) {
+      socket.receive({
+        type: "browser.error",
+        inputSequence: frame.inputSequence,
+        inputGeneration: frame.inputGeneration,
+        error: {
+          code: "conflict",
+          reason: "browser-input-overload",
+          message: "Browser input was not applied. Try the action again.",
+          retryable: false,
+        },
+      });
+      // Free a queue slot right after the first overload refusal: if the viewer kept sending
+      // trailing keys, they would land past the gap and break the ordered prefix invariant.
+      if (!freedAfterOverload && pending.length > 0) {
+        freedAfterOverload = true;
+        admittedKeys.push(pending.shift()!);
+      }
+      return;
+    }
+    if (!isRelease && frame.code) reservedReleases.add(frame.code);
+    if (isReserved && frame.code) reservedReleases.delete(frame.code);
+    pending.push({ action: frame.action ?? "", code: frame.code, text: frame.text });
+  };
+
+  try {
+    socket.open();
+    socket.admit();
+    editing.negotiate(sessionId, 2, surfaceId, true);
+    socket.subscribed();
+    socket.picture();
+    statusIssues.length = 0;
+
+    const target = editing.target(sessionId, surfaceId);
+    const first200 = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(6).slice(0, 200);
+
+    // Hold Shift down first so we also prove its reserved release still goes out after overload.
+    await target.send({
+      kind: "key",
+      keystroke: { action: "down", key: "Shift", code: "ShiftLeft", modifiers: ["shift"] },
+    });
+    for (const ch of first200) {
+      const code = ch >= "0" && ch <= "9" ? `Digit${ch}` : `Key${ch.toUpperCase()}`;
+      await target.send({
+        kind: "key",
+        keystroke: { action: "down", key: ch, code, modifiers: ["shift"], text: ch },
+      });
+      await target.send({
+        kind: "key",
+        keystroke: { action: "up", key: ch, code, modifiers: ["shift"] },
+      });
+    }
+    await target.send({
+      kind: "key",
+      keystroke: { action: "up", key: "Shift", code: "ShiftLeft", modifiers: [] },
+    });
+
+    // Simulate duplicate in-flight overload replies arriving from keys already on the wire.
+    const sentKeyFrames = socket.sent
+      .map((raw) => JSON.parse(raw) as { type: string; action?: string; inputSequence?: number })
+      .filter((frame) => frame.type === "input.key");
+    const lastSentKeySeq = sentKeyFrames.at(-1)?.inputSequence;
+    socket.receive({
+      type: "browser.error",
+      inputSequence: lastSentKeySeq,
+      error: {
+        code: "conflict",
+        reason: "browser-input-overload",
+        message: "Browser input was not applied. Try the action again.",
+        retryable: false,
+      },
+    });
+
+    // Drain the admitted queue to see exactly what arrived at the page.
+    while (pending.length > 0) admittedKeys.push(pending.shift()!);
+    const arrivedText = admittedKeys
+      .filter((entry) => entry.action === "down" && entry.text)
+      .map((entry) => entry.text!)
+      .join("");
+
+    // Exact prefix in order, stopped right after the lane saturated (no tail keys sent after refusal).
+    expect(arrivedText.length).toBeGreaterThan(0);
+    expect(arrivedText.length).toBeLessThan(first200.length);
+    expect(first200.startsWith(arrivedText)).toBe(true);
+    // Held Shift release was still delivered via the reserved cleanup slot.
+    expect(admittedKeys.at(-1)).toMatchObject({ action: "up", code: "ShiftLeft" });
+    // Client stopped sending key-down commands right after the first refusal instead of sending all 200.
+    const sentDowns = sentKeyFrames.filter((frame) => frame.action === "down");
+    expect(sentDowns.length).toBeLessThan(100);
+
+    // One typing sentence in the product's voice, shown once per burst (not once per refused key).
+    const sentence = "Typing stopped. Some of it may not have arrived: check the text.";
+    const shown = watch.get(sessionId, surfaceId).inputError;
+    expect(shown ? presentClientIssue(shown).title : null).toBe(sentence);
+    expect(statusIssues.filter((title) => title === sentence)).toHaveLength(1);
+
+    // After the burst goes quiet, fresh typing resumes cleanly.
+    vi.advanceTimersByTime(350);
+    const countBeforeResume = socket.sent.length;
+    await target.send({
+      kind: "key",
+      keystroke: { action: "down", key: "z", code: "KeyZ", modifiers: [], text: "z" },
+    });
+    expect(socket.sent.length).toBe(countBeforeResume + 1);
+
+    // A non-key overload refusal still says "Couldn't send that to the page." rather than "Typing stopped".
+    watch.send(sessionId, surfaceId, {
+      type: "input.pointer",
+      surfaceId: BrowserSurfaceIdSchema.parse(surfaceId),
+      action: "down",
+      button: "left",
+      geometryRevision: 1,
+      x: 0.5,
+      y: 0.5,
+      viewportWidth: 800,
+      viewportHeight: 600,
+      modifiers: [],
+    });
+    const clickSeq = (JSON.parse(socket.sent.at(-1)!) as { inputSequence: number }).inputSequence;
+    socket.receive({
+      type: "browser.error",
+      inputSequence: clickSeq,
+      error: {
+        code: "conflict",
+        reason: "browser-input-overload",
+        message: "Browser input was not applied.",
+        retryable: false,
+      },
+    });
+    expect(presentClientIssue(watch.get(sessionId, surfaceId).inputError!).title).toBe(
+      "Couldn't send that to the page.",
+    );
+  } finally {
+    unsubscribeStatus();
+    release();
+    editing.dispose();
+    watch.dispose();
+    vi.useRealTimers();
+  }
+});

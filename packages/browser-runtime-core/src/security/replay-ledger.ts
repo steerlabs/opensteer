@@ -8,7 +8,7 @@ import { noFollowFlag, readBounded } from "@opensteer/shared/privateFiles";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, rename, type FileHandle, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename, type FileHandle, unlink } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { AsyncMutex } from "../async.js";
@@ -52,6 +52,7 @@ export class DurableAttachTicketReplayLedger {
   readonly #maxEntries: number;
   readonly #maxFileBytes: number;
   readonly #mutex: AsyncMutex;
+  #closed = false;
 
   private constructor(options: DurableAttachTicketReplayLedgerOptions) {
     if (!path.isAbsolute(options.filePath)) {
@@ -86,6 +87,11 @@ export class DurableAttachTicketReplayLedger {
   }
 
   claim(nonce: string, expiresAt: number, now: number): Promise<void> {
+    if (this.#closed) {
+      return Promise.reject(
+        new AttachTicketReplayLedgerError("unavailable", "Attach ticket replay ledger is closed"),
+      );
+    }
     if (!ReplayEntrySchema.shape.nonce.safeParse(nonce).success) {
       return Promise.reject(
         new AttachTicketReplayLedgerError("unavailable", "Replay nonce is invalid"),
@@ -99,6 +105,15 @@ export class DurableAttachTicketReplayLedger {
     return this.#mutex.run(() => this.#claim(nonce, expiresAt, now));
   }
 
+  /**
+   * Stops admitting new claims and waits for any in-flight write to finish so
+   * shutdown can exit or remove the ledger directory without racing `writeAtomic`.
+   */
+  close(): Promise<void> {
+    this.#closed = true;
+    return this.#mutex.run(async () => undefined);
+  }
+
   async #initialize(now: number): Promise<void> {
     try {
       const directoryExisted = await ensureReplayDirectory(path.dirname(this.#filePath));
@@ -107,7 +122,11 @@ export class DurableAttachTicketReplayLedger {
         state = await this.#read();
       } catch (error) {
         if (!hasCode(error, "ENOENT")) throw error;
-        if (directoryExisted) {
+        // A ledger is lost only where the runtime has used its state since: an empty directory,
+        // or one holding only this ledger's own unfinished write or a profile's staging, is a
+        // ledger never written (a stop or a full disk between the directory and the first
+        // write), and starts empty. Refusing it would keep the browser from starting for good.
+        if (directoryExisted && (await usedSinceLedger(path.dirname(this.#filePath)))) {
           throw new Error("Replay ledger is missing from existing Runtime state", { cause: error });
         }
         await this.#write([], now);
@@ -124,6 +143,12 @@ export class DurableAttachTicketReplayLedger {
   }
 
   async #claim(nonce: string, expiresAt: number, now: number): Promise<void> {
+    if (this.#closed) {
+      throw new AttachTicketReplayLedgerError(
+        "unavailable",
+        "Attach ticket replay ledger is closed",
+      );
+    }
     try {
       await ensureReplayDirectory(path.dirname(this.#filePath));
       const state = await this.#read();
@@ -227,6 +252,16 @@ async function ensureReplayDirectory(directory: string): Promise<boolean> {
     throw new Error("Replay ledger directory permissions are unsafe");
   }
   return existed;
+}
+
+/** Whether the runtime state directory holds what the runtime writes only once its ledger exists. */
+async function usedSinceLedger(directory: string): Promise<boolean> {
+  const entries = await readdir(directory);
+  return entries.some(
+    (entry) =>
+      !(entry.startsWith(".attach-ticket-replay-") && entry.endsWith(".tmp")) &&
+      !entry.startsWith("profile-"),
+  );
 }
 
 async function writeAtomic(filePath: string, content: Buffer): Promise<void> {

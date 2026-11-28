@@ -1,3 +1,8 @@
+import { homePickerReason } from "./settings-home-model.js";
+import { cloudComputerWebsite } from "@opensteer/client/computers";
+import { useCloudComputer } from "@opensteer/client/react";
+import { useCopy } from "../ui/copy-mark.js";
+import { phoneShowsCloudComputerPrice } from "./cloud-computer-entry.js";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { hostsDeployment } from "@opensteer/client/computers";
@@ -9,7 +14,6 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import {
@@ -23,10 +27,12 @@ import {
   View,
 } from "react-native";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import {
   deploymentStatusDetail,
   deploymentStatusLabel,
+  listedKind,
   type DeploymentRow,
   type DeploymentStatus,
 } from "../client/deployment-rows.js";
@@ -34,6 +40,7 @@ import { resetToDeployment, resetToDeployments } from "../navigation-ref.js";
 import {
   color,
   controlFontScaleLimit,
+  statusFontScaleLimit,
   radius,
   space,
   touchTarget,
@@ -55,9 +62,6 @@ import {
   type AttentionBadge,
   type ComputerAttention,
 } from "./computer-signals.js";
-import type { TeamSessionClient } from "@opensteer/client/team";
-import { MentionCount, TeamTile } from "../team/team-marks.js";
-import { useMobileTeams, useTeamsSnapshot } from "../team/team-context.js";
 import {
   useMobileClient,
   useMobileState,
@@ -70,6 +74,7 @@ import { Symbol } from "../ui/symbol.js";
 import { AccountIdentityRow } from "./add-deployment.js";
 import {
   accountDirectoryUnavailablePresentation,
+  accountSignInFailureText,
   accountIdentityLabel,
   accountFlowCanContinue,
   deploymentCanOpen,
@@ -84,6 +89,8 @@ import { DeploymentMenu } from "./deployment-menu.js";
 import { phoneLeaves } from "./device-page-model.js";
 import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
+import { useCloudComputerIds } from "./cloud-computer-ids.js";
+import { deploymentsTitle } from "./deployments-title.js";
 
 const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus>([
   "connected",
@@ -93,7 +100,7 @@ const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus
   "signed-in",
 ]);
 
-const DeploymentListRow = memo(function DeploymentListRow(props: {
+export const DeploymentListRow = memo(function DeploymentListRow(props: {
   /** This computer's one read when the list opened; undefined until it answers. */
   readonly attention: ComputerAttention | null | undefined;
   readonly current: boolean;
@@ -103,8 +110,11 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
   readonly onRemove: (row: DeploymentRow) => void;
   readonly onSignOut: (row: DeploymentRow) => void;
   readonly row: DeploymentRow;
+  /** The Account says this Home is an Opensteer Cloud Computer. */
+  readonly cloud?: boolean;
 }): ReactNode {
   const row = props.row;
+  const kind = listedKind(row, props.cloud === true);
   const detail = deploymentStatusDetail(row);
   const tone = deploymentPaint[deploymentTone(row.deploymentId)];
   const open = useCallback(() => props.onOpen(row), [props.onOpen, row]);
@@ -113,106 +123,148 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
   const remove = useCallback(() => props.onRemove(row), [props.onRemove, row]);
   const signOut = useCallback(() => props.onSignOut(row), [props.onSignOut, row]);
   const openable = deploymentCanOpen(row);
+  const stacked = useStackedLayout();
+
+  const mark = (
+    <View style={[styles.mark, { backgroundColor: tone.fill }]}>
+      <AppText
+        accessibilityLabel={`${row.name} mark`}
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        role="title"
+        style={{ color: tone.ink }}
+      >
+        {deploymentInitial(row.name)}
+      </AppText>
+    </View>
+  );
+  const copy = (
+    <View style={styles.copy}>
+      {/* A Home's name wraps: cut to "Mock…" at a large text size, two Homes read alike. */}
+      <AppText role="title">{row.name}</AppText>
+      <View style={styles.statusLine}>
+        <StatusDot
+          live={row.status === "connecting" || row.status === "reconnecting"}
+          tone={statusTone(row.status)}
+        />
+        <AppText maxFontSizeMultiplier={statusFontScaleLimit} role="caption" tone="muted">
+          {deploymentStatusLabel(row.status)}
+        </AppText>
+        <AppText role="caption" tone="muted">
+          ·
+        </AppText>
+        {kind.cloud ? (
+          <View style={styles.cloudKind}>
+            <Symbol name="cloud" size={11} tint={color.muted} />
+            <KindText text={kind.label} />
+          </View>
+        ) : (
+          <RowKind
+            current={props.current}
+            kindLabel={row.kindLabel}
+            name={row.name}
+            read={props.attention}
+          />
+        )}
+      </View>
+      {detail === null ? null : (
+        <AppText role="caption" tone="muted">
+          {detail}
+        </AppText>
+      )}
+      <ComputerSignals
+        computerId={row.deploymentId}
+        current={props.current}
+        read={props.attention}
+      />
+    </View>
+  );
+  const opens = {
+    accessibilityHint: openable
+      ? "Opens this Opensteer and signs in when needed"
+      : "Explains what must be fixed before this Opensteer can open",
+    accessibilityLabel: deploymentOpenLabel(row),
+    accessibilityRole: "button" as const,
+    accessibilityState: { selected: props.current },
+    onPress: open,
+  };
+  const trailing =
+    row.signIn === "pairing-code" ? (
+      <Pressable
+        accessibilityLabel={`${deploymentRecoveryLabel(row)} for ${row.name}`}
+        accessibilityRole="button"
+        onPress={pair}
+        style={({ pressed }) => [styles.pair, pressed && styles.pressed]}
+      >
+        <AppText
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={2}
+          role="caption"
+          tone="ember"
+        >
+          {deploymentRecoveryLabel(row)}
+        </AppText>
+      </Pressable>
+    ) : (
+      <View style={styles.indicator}>
+        <Symbol
+          name={props.current ? "checkmark" : "chevron.right"}
+          size={props.current ? 15 : 13}
+          tint={props.current ? color.ember : color.mutedDim}
+          weight="semibold"
+        />
+      </View>
+    );
+  const menu = (
+    <DeploymentMenu
+      canRemove={!row.accountManaged}
+      canSignOut={signedInStatuses.has(row.status)}
+      name={row.name}
+      onDetails={details}
+      onRemove={remove}
+      onSignOut={signOut}
+    />
+  );
+
+  // At an accessibility text size the mark and the controls take the top line and the words
+  // the full width under them: beside them, a column narrower than "Opensteer" broke it.
+  if (stacked)
+    return (
+      <View style={styles.stackedRow}>
+        <View style={styles.stackedTop}>
+          <Pressable
+            accessible={false}
+            importantForAccessibility="no-hide-descendants"
+            onPress={open}
+            style={styles.stackedMark}
+          >
+            {mark}
+          </Pressable>
+          {trailing}
+          {menu}
+        </View>
+        <Pressable
+          {...opens}
+          style={({ pressed }) => [styles.stackedCopy, pressed && styles.pressed]}
+        >
+          {copy}
+        </Pressable>
+      </View>
+    );
 
   return (
     <View style={styles.row}>
-      <Pressable
-        accessibilityHint={
-          openable
-            ? "Opens this deployment and signs in when needed"
-            : "Explains what must be fixed before this deployment can open"
-        }
-        accessibilityLabel={deploymentOpenLabel(row)}
-        accessibilityRole="button"
-        accessibilityState={{ selected: props.current }}
-        onPress={open}
-        style={({ pressed }) => [styles.primary, pressed && styles.pressed]}
-      >
-        <View style={[styles.mark, { backgroundColor: tone.fill }]}>
-          <AppText
-            accessibilityLabel={`${row.name} mark`}
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            role="title"
-            style={{ color: tone.ink }}
-          >
-            {deploymentInitial(row.name)}
-          </AppText>
-        </View>
-        <View style={styles.copy}>
-          <AppText numberOfLines={1} role="title">
-            {row.name}
-          </AppText>
-          <View style={styles.statusLine}>
-            <StatusDot
-              live={row.status === "connecting" || row.status === "reconnecting"}
-              tone={statusTone(row.status)}
-            />
-            <AppText role="caption" tone="muted">
-              {deploymentStatusLabel(row.status)}
-            </AppText>
-            <AppText role="caption" tone="muted">
-              ·
-            </AppText>
-            <RowKind
-              current={props.current}
-              kindLabel={row.kindLabel}
-              name={row.name}
-              read={props.attention}
-            />
-          </View>
-          {detail === null ? null : (
-            <AppText numberOfLines={2} role="caption" tone="muted">
-              {detail}
-            </AppText>
-          )}
-          <ComputerSignals
-            computerId={row.deploymentId}
-            current={props.current}
-            read={props.attention}
-          />
-        </View>
+      <Pressable {...opens} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
+        {mark}
+        {copy}
       </Pressable>
-      {row.signIn === "pairing-code" ? (
-        <Pressable
-          accessibilityLabel={`${deploymentRecoveryLabel(row)} for ${row.name}`}
-          accessibilityRole="button"
-          onPress={pair}
-          style={({ pressed }) => [styles.pair, pressed && styles.pressed]}
-        >
-          <AppText
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            numberOfLines={2}
-            role="caption"
-            tone="ember"
-          >
-            {deploymentRecoveryLabel(row)}
-          </AppText>
-        </Pressable>
-      ) : (
-        <View style={styles.indicator}>
-          <Symbol
-            name={props.current ? "checkmark" : "chevron.right"}
-            size={props.current ? 15 : 13}
-            tint={props.current ? color.ember : color.mutedDim}
-            weight="semibold"
-          />
-        </View>
-      )}
-      <DeploymentMenu
-        canRemove={!row.accountManaged}
-        canSignOut={signedInStatuses.has(row.status)}
-        name={row.name}
-        onDetails={details}
-        onRemove={remove}
-        onSignOut={signOut}
-      />
+      {trailing}
+      {menu}
     </View>
   );
 });
 
 /**
- * What a computer has waiting: its own Needs you count or unread dot, and each
- * team it is in with that team's mentions of the reader. The shown computer
+ * What a computer has waiting: its own Needs you count or unread dot. The shown computer
  * speaks from its live snapshot; another from the one read made when the list
  * opened. Personal and work computers read alike, so the other is a glance away.
  */
@@ -221,19 +273,13 @@ function ComputerSignals(props: {
   readonly current: boolean;
   readonly read: ComputerAttention | null | undefined;
 }): ReactNode {
-  const teams = useMobileTeams();
-  useTeamsSnapshot();
-  const joined = teams.teamsOn(props.computerId);
   const host = useSelectedHostClient();
   const shown = props.current && host !== null;
   const read = computerBadge({ current: false, shown: null, read: props.read });
-  if (joined.length === 0 && !shown && read === null) return null;
+  if (!shown && read === null) return null;
   return (
     <View style={styles.signals}>
       {shown ? <ShownBadge host={host} /> : <Badge badge={read} />}
-      {joined.map(({ team, session }) => (
-        <TeamSignal key={team.teamId} name={team.teamName} session={session} teamId={team.teamId} />
-      ))}
     </View>
   );
 }
@@ -264,9 +310,10 @@ function ShownKind(props: {
   return <KindText text={homeLine(shown, props.name) ?? props.kindLabel} />;
 }
 
+/** The Home's kind, or the Mac it lives on: wraps, and moves to its own line when it must. */
 function KindText(props: { readonly text: string }): ReactNode {
   return (
-    <AppText numberOfLines={1} role="caption" style={styles.kind} tone="muted">
+    <AppText role="caption" style={styles.kind} tone="muted">
       {props.text}
     </AppText>
   );
@@ -286,7 +333,7 @@ function shownAttention(snapshot: HostSnapshot): ComputerAttention {
   const value = {
     homeName,
     needsYou,
-    unread: taskList(snapshot).ready.some((row) => row.unread),
+    unread: taskList(snapshot, { personTasksOnly: true }).ready.some((row) => row.unread),
   };
   shownHeld = { source: snapshot, value };
   return value;
@@ -345,42 +392,6 @@ function useOtherComputersAttention(
   return reads;
 }
 
-const TeamSignal = memo(function TeamSignal(props: {
-  readonly name: string;
-  readonly session: TeamSessionClient | null;
-  readonly teamId: string;
-}): ReactNode {
-  const { session } = props;
-  const mentions = useSyncExternalStore(
-    useCallback(
-      (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
-      [session],
-    ),
-    useCallback(() => session?.getSnapshot().sidebar?.totalMentionCount ?? 0, [session]),
-  );
-  return (
-    <View
-      accessibilityLabel={
-        mentions > 0
-          ? `${props.name}, ${mentions} ${mentions === 1 ? "mention" : "mentions"}`
-          : props.name
-      }
-      style={styles.teamSignal}
-    >
-      <TeamTile size={16} team={{ id: props.teamId, name: props.name, imageUri: null }} />
-      <AppText
-        maxFontSizeMultiplier={controlFontScaleLimit}
-        numberOfLines={1}
-        role="caption"
-        tone="soft"
-      >
-        {props.name}
-      </AppText>
-      <MentionCount count={mentions} />
-    </View>
-  );
-});
-
 /**
  * The catalog: every place this phone knows about, and what state it is in.
  *
@@ -401,7 +412,10 @@ export function DeploymentsScreen(): ReactNode {
   const { account, directory, rows, selection } = useMobileState();
   const enrolledIn = useIphoneAppsState(useIphoneApps()).snapshot.enrollment?.deploymentId ?? null;
   const attention = useOtherComputersAttention(rows, selection.deploymentId);
+  const cloudIds = useCloudComputerIds();
   const switching = route.name === "DeploymentSwitcher";
+  // The Settings page that sent a person here, said in one sentence above the list.
+  const opening = (route.params as { readonly opening?: string } | undefined)?.opening;
   const listInsets = useListContentInsets(space[32]);
   const column = useReadingColumn();
   const [refreshing, setRefreshing] = useState(false);
@@ -430,7 +444,7 @@ export function DeploymentsScreen(): ReactNode {
   const open = useCallback(
     (row: DeploymentRow) => {
       if (!deploymentCanOpen(row)) {
-        Alert.alert(row.name, deploymentStatusDetail(row) ?? "This deployment cannot open yet.", [
+        Alert.alert(row.name, deploymentStatusDetail(row) ?? "This Opensteer cannot open yet.", [
           ...(row.verification === "host-too-old"
             ? [{ text: "Update", onPress: () => resetToDeployment(row.deploymentId) }]
             : []),
@@ -478,7 +492,7 @@ export function DeploymentsScreen(): ReactNode {
           // An alert survives that reset, so a rejected callback does not
           // disappear with this screen's local state.
           if (line !== null && opened)
-            Alert.alert(line.text, "Try again from Computers.", [{ text: "Done" }]);
+            Alert.alert(line.text, `Try again from ${deploymentsTitle}.`, [{ text: "Done" }]);
           else if (attempt.active) setFailure(line);
           attempt.cancel();
         });
@@ -548,7 +562,7 @@ export function DeploymentsScreen(): ReactNode {
     })()
       .catch((error: unknown) => {
         if (!accountFlowIsCurrent(generation, expectedSelection)) return;
-        setFailure(failedLine(error, "Couldn't sign in to your Opensteer Account."));
+        setFailure(failedLine(error, accountSignInFailureText(error)));
       })
       .finally(() => {
         if (mounted.current && accountFlowGeneration.current === generation) {
@@ -616,7 +630,7 @@ export function DeploymentsScreen(): ReactNode {
       row.name,
       `${row.kindLabel}\n${row.origin}${
         row.accountManaged
-          ? "\n\nThis deployment is managed by your Opensteer Account. Remove it from the Account to stop it appearing here."
+          ? "\n\nThis Opensteer is in your Opensteer account. Remove it there to stop it appearing here."
           : ""
       }`,
       [{ text: "Done" }],
@@ -638,9 +652,12 @@ export function DeploymentsScreen(): ReactNode {
   // The first run titles itself; a bar title above it would say it twice.
   useLayoutEffect(() => {
     if (switching) return;
-    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : "Computers" });
+    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : deploymentsTitle });
   }, [navigation, switching, welcome]);
 
+  // A price is read only where the phone may show one (phoneShowsCloudComputerPrice).
+  const cloud = useCloudComputer(phoneShowsCloudComputerPrice ? client.cloudComputers : null);
+  const { copied, copy } = useCopy();
   const enterAddress = useCallback(() => {
     accountFlowGeneration.current += 1;
     setStartingAccountSignIn(false);
@@ -667,6 +684,7 @@ export function DeploymentsScreen(): ReactNode {
   }
 
   if (presentation === "signed-in-empty") {
+    const cloudScreen = cloud.screen;
     const listed = signedInDirectoryPresentation({
       detail: directory.detail,
       status: directory.status,
@@ -683,6 +701,12 @@ export function DeploymentsScreen(): ReactNode {
           portalOrigin={client.portalOrigin}
           signedInAs={accountIdentityLabel(identity!)}
           signingIn={false}
+          cloudAddress={
+            client.portalOrigin ? cloudComputerWebsite(client.portalOrigin, "checkout") : null
+          }
+          cloudCopied={copied}
+          cloudPrice={cloudScreen.kind === "offer" ? (cloudScreen.plan?.line ?? null) : null}
+          onCopyCloudAddress={(address) => void copy(address)}
         />
       </SignedInWaiting>
     );
@@ -699,9 +723,12 @@ export function DeploymentsScreen(): ReactNode {
           ) : undefined
         }
       >
-        {failure === null ? null : (
-          <ActionLine line={failure} numberOfLines={2} onDismiss={() => setFailure(null)} />
-        )}
+        {switching && opening ? (
+          <AppText role="secondary" tone="muted">
+            {homePickerReason(opening)}
+          </AppText>
+        ) : null}
+        {failure === null ? null : <ActionLine line={failure} onDismiss={() => setFailure(null)} />}
         {identity === null ? null : (
           <RowGroup>
             {[
@@ -725,6 +752,7 @@ export function DeploymentsScreen(): ReactNode {
               onRemove={confirmRemove}
               onSignOut={confirmSignOut}
               row={row}
+              cloud={cloudIds.has(row.deploymentId)}
             />
           ))}
         </RowGroup>
@@ -760,10 +788,10 @@ function UnavailableAccountDeployments(props: {
   if (props.entries.length === 0) return null;
   return (
     <View style={styles.unavailable}>
-      <AppText role="secondaryMedium">Some Account deployments need attention</AppText>
+      <AppText role="secondaryMedium">Some Opensteers in your account need attention</AppText>
       {props.hasAvailableRows ? (
         <AppText role="secondary" tone="muted">
-          Deployments this phone could verify are still shown above.
+          Opensteers this phone could verify are still shown above.
         </AppText>
       ) : null}
       {props.entries.map((entry) => {
@@ -798,6 +826,7 @@ function failedLine(error: unknown, text: string, retry?: () => void): ActionLin
 }
 
 const styles = StyleSheet.create({
+  cloudKind: { alignItems: "center", flexDirection: "row", flexShrink: 1, gap: space[2] },
   copy: { flex: 1, gap: space[2], minWidth: 0 },
   indicator: { alignItems: "center", justifyContent: "center", width: space[20] },
   kind: { flexShrink: 1 },
@@ -833,7 +862,25 @@ const styles = StyleSheet.create({
     minHeight: 60,
     paddingRight: space[4],
   },
-  statusLine: { alignItems: "center", flexDirection: "row", gap: space[6], minWidth: 0 },
+  stackedCopy: { paddingBottom: space[10], paddingHorizontal: space[12] },
+  stackedMark: { flex: 1, paddingVertical: space[6] },
+  stackedRow: { minHeight: 60 },
+  stackedTop: {
+    alignItems: "center",
+    flexDirection: "row",
+    paddingLeft: space[12],
+    paddingRight: space[4],
+    paddingTop: space[4],
+  },
+  // At a large text size the status and kind move to the next line whole, never broken
+  // inside a word.
+  statusLine: {
+    alignItems: "center",
+    columnGap: space[6],
+    flexDirection: "row",
+    flexWrap: "wrap",
+    minWidth: 0,
+  },
   needsYou: {
     alignItems: "center",
     backgroundColor: color.amber,
@@ -852,7 +899,6 @@ const styles = StyleSheet.create({
     gap: space[8],
     marginTop: space[2],
   },
-  teamSignal: { alignItems: "center", flexDirection: "row", gap: space[4], maxWidth: "100%" },
   unavailable: {
     backgroundColor: color.surface,
     borderColor: color.line,

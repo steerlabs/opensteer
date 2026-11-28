@@ -1,0 +1,26 @@
+# The provisioner logged a failure; the event names which (refused by Account, a second provisioner, rate limits, a provider write of unknown outcome).
+# Runbook: docs/cloud-computer-operations.md, "Setup that never becomes ready".
+displayName: "Opensteer: The provisioner is failing a pass"
+severity: WARNING
+userLabels:
+  opensteer_alert: digest
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: The provisioner is failing a pass"
+  content: |-
+    The provisioner logged a failure; the event names which (refused by Account, a second provisioner, rate limits, a provider write of unknown outcome).
+
+    Open the runbook, docs/cloud-computer-operations.md, section "Setup that never becomes ready".
+combiner: OR
+conditions:
+  - displayName: "The provisioner is failing a pass"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND (jsonPayload.event="home-provisioner.pass.failed" OR jsonPayload.event="home-provisioner.account.refused" OR jsonPayload.event="home-provisioner.lease.conflict" OR jsonPayload.event="home-provisioner.provider.rate-limited" OR jsonPayload.event="home-provisioner.provider.outcome-unknown" OR jsonPayload.event="home-provisioner.provider.wrong-zone" OR jsonPayload.event="home-provisioner.provider.bootstrap-scrub-failed")
+      labelExtractors:
+        service: EXTRACT(jsonPayload.service)
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 86400s
+  autoClose: 604800s

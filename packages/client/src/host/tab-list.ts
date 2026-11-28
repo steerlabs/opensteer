@@ -1,3 +1,4 @@
+import { workWords } from "./agent-work-copy.js";
 import type { MachineSummary } from "@opensteer/protocol";
 import type { HostSnapshot } from "./client.js";
 import {
@@ -199,4 +200,16 @@ export function placeDeviceLabels(
     if (device) labels.set(place.key, device);
   }
   return labels;
+}
+
+export function chromeTabTitle(title: string): string {
+  return workWords("tab.chromeTitle", { title });
+}
+
+export function chromeTabDetail(computerName: string): string {
+  return workWords("tab.chromeDetail", { device: computerName });
+}
+
+export function chromeTabUsedBy(names: readonly string[]): string | null {
+  return names.length ? workWords("tab.chromeUsedBy", { names: names.join(", ") }) : null;
 }

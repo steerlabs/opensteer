@@ -1,5 +1,6 @@
 import {
   BrowserRuntime,
+  type BrowserAttachment,
   browserMemoryBudgetBytes,
   BrowserRuntimeServer,
   defaultAttachTicketReplayLedgerPath,
@@ -12,6 +13,7 @@ import { securePrivateDirectory } from "@opensteer/shared/atomicPrivateFile";
 import { randomBytes } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
+import type { AgentBrowserGate } from "../browser/agent-browser-gate.js";
 import { BrowserAttachKeyRegistry } from "../browser/browser-attach-key-registry.js";
 import { ElectronBrowserLauncher } from "../browser/electron-browser-launcher.js";
 import { profileFailureDiagnostic } from "../browser/profile-failure-diagnostic.js";
@@ -34,6 +36,29 @@ export interface LocalBrowserRuntimeOptions {
    * the only path to it the Host can attribute to this Mac today.
    */
   readonly loginAuthority?: BrowserLoginAuthority;
+  /** Activity tracking for the menu bar. */
+  readonly agentGate?: AgentBrowserGate;
+}
+
+class GatedBrowserRuntime extends BrowserRuntime {
+  readonly #gate: AgentBrowserGate;
+
+  constructor(options: ConstructorParameters<typeof BrowserRuntime>[0], gate: AgentBrowserGate) {
+    super(options);
+    this.#gate = gate;
+  }
+
+  override attach(
+    ...[ticket, sink, options = {}]: Parameters<BrowserRuntime["attach"]>
+  ): Promise<BrowserAttachment> {
+    return this.#gate.attach(ticket, () => super.attach(ticket, sink, options));
+  }
+
+  override attachStandardCdp(
+    ...[ticket, overload, signal]: Parameters<BrowserRuntime["attachStandardCdp"]>
+  ): ReturnType<BrowserRuntime["attachStandardCdp"]> {
+    return this.#gate.attachStandard(() => super.attachStandardCdp(ticket, overload, signal));
+  }
 }
 
 /**
@@ -65,6 +90,9 @@ export async function startLocalBrowserRuntime(
     localProfileRoot: profileRoot,
     pagePolicyPreloadPath: options.pagePolicyPreloadPath,
     onPageCleanupFailure: () => diagnostics.append('{"event":"browser.page.cdp-cleanup.failed"}\n'),
+    // A reason code only: never the frame, the script or what the agent was told.
+    onProfileRefused: (reason) =>
+      diagnostics.append(`${JSON.stringify({ event: "browser.cdp.profile-refused", reason })}\n`),
     onLocalProfileDiagnostic: (diagnostic) => diagnostics.append(`${JSON.stringify(diagnostic)}\n`),
   });
   const preparation = launcher.prepare();
@@ -78,7 +106,7 @@ export async function startLocalBrowserRuntime(
   const profileStorage = launcher.nativeProfilesAvailable
     ? { localProfiles: { root: profileRoot } }
     : {};
-  const runtime = new BrowserRuntime({
+  const runtimeOptions: ConstructorParameters<typeof BrowserRuntime>[0] = {
     memoryBudgetBytes: browserMemoryBudgetBytes(process.env.OPENSTEER_BROWSER_MEMORY_BUDGET_MB),
     onSleepPass: (counts) =>
       diagnostics.append(`${JSON.stringify({ event: "browser.sleep.pass", ...counts })}\n`),
@@ -101,8 +129,11 @@ export async function startLocalBrowserRuntime(
     runtimeId: options.runtimeId,
     sessionFilesRoot: sessionFilesRoot(profileRoot),
     ...(options.loginAuthority ? { loginAuthority: options.loginAuthority } : {}),
-    ticketVerifier,
-  });
+    ticketVerifier: options.agentGate ? options.agentGate.verifier(ticketVerifier) : ticketVerifier,
+  };
+  const runtime = options.agentGate
+    ? new GatedBrowserRuntime(runtimeOptions, options.agentGate)
+    : new BrowserRuntime(runtimeOptions);
   const server = new BrowserRuntimeServer({
     host: "127.0.0.1",
     port: 0,
@@ -117,6 +148,8 @@ export async function startLocalBrowserRuntime(
     const unregisterPresentation = options.registerPresentationSource?.(runtime);
     return {
       bridgeToken,
+      prepareRunnerRestart: () => server.prepareRunnerRestart(),
+      drainRunnerAttachments: () => server.drainRunnerAttachments(),
       runtimeId: options.runtimeId,
       signIn: options.loginAuthority !== undefined,
       personFill: !!(

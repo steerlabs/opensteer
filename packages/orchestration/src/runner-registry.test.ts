@@ -1,6 +1,7 @@
 import {
   HarnessIdSchema,
   ModelSelectionSchema,
+  OpensteerError,
   ThreadAccessModeSchema,
   createId,
 } from "@opensteer/core";
@@ -9,6 +10,7 @@ import {
   CorrelationIdSchema,
   HarnessInstanceCatalogSchema,
   RunnerCommandSchema,
+  runnerPowerStateCapability,
   type HarnessSourceDescriptor,
   type HostToRunnerMessage,
   type RunnerAuxiliaryTicketClaims,
@@ -29,6 +31,34 @@ import {
 const commitThrough: RunnerRegistryHooks["onEvent"] = async (_identity, event) => event.ordinal;
 
 describe("Runner connection registry", () => {
+  it("announces sleep to connected work before the live socket leaves", async () => {
+    const sleep = vi.fn();
+    const registry = new RunnerRegistry({
+      hooks: { authorize: async () => undefined, onEvent: commitThrough, onSleepAnnounced: sleep },
+    });
+    const runnerId = createId("runner");
+    const peer = new MemoryRunnerPeer("sleeping");
+    try {
+      await registerAttached(
+        registry,
+        {
+          ...hello(runnerId, createId("environment"), "boot-1"),
+          capabilities: [runnerPowerStateCapability],
+        },
+        peer,
+      );
+      expect(registry.isRunnerSleeping(runnerId)).toBe(false);
+      for (let i = 0; i < 2; i++)
+        await registry.handle(peer, { ...fenceOf(peer), type: "runner.power.sleeping" });
+      expect(registry.isRunnerConnected(runnerId)).toBe(true);
+      expect(registry.isRunnerSleeping(runnerId)).toBe(true);
+      expect(registry.isRunnerAsleep(runnerId)).toBe(false);
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ runnerId }));
+    } finally {
+      await registry.close();
+    }
+  });
+
   it("accepts background text only once from its live issuing connection and rejects foreign attempts", async () => {
     const registry = new RunnerRegistry({
       hooks: {
@@ -587,6 +617,41 @@ describe("Runner connection registry", () => {
     await expect(reconciliation).resolves.toBeUndefined();
     expect(onCommandAccepted).not.toHaveBeenCalled();
   });
+  it("ignores a replayed expiry for a superseded Watch", async () => {
+    const onWatchStatus = vi.fn(async () => {
+      throw new OpensteerError({ code: "forbidden", message: "Watch status binding is stale" });
+    });
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: async () => undefined,
+        onEvent: commitThrough,
+        onWatchStatus,
+      },
+    });
+    const environmentId = createId("environment");
+    const peer = new MemoryRunnerPeer("watch-replay");
+    try {
+      await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
+      await expect(
+        registry.handle(peer, {
+          ...fenceOf(peer),
+          type: "runner.watch-status",
+          activationId: createId("triggerWatchActivation"),
+          executionGeneration: 1,
+          observed: "expired",
+          restartCount: 0,
+          healthySince: null,
+          lastError: null,
+          lastExitCode: null,
+          stderrTail: "",
+          stdoutTail: "",
+        }),
+      ).resolves.toBeUndefined();
+      expect(onWatchStatus).toHaveBeenCalledOnce();
+    } finally {
+      await registry.close();
+    }
+  });
   it("survives its Runner disconnecting during an execute's last authority check", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
@@ -1024,6 +1089,56 @@ describe("Runner connection registry", () => {
     expect(hooks.onTriggerResult).toHaveBeenCalledTimes(1);
     expect(finished).toBe(true);
   });
+  it("commits a retired Trigger result without completing the retry", async () => {
+    const onTriggerResult = vi.fn<NonNullable<RunnerRegistryHooks["onTriggerResult"]>>(
+      async (_identity, result) => (result.executionGeneration === 1 ? "retired" : undefined),
+    );
+    const registry = new RunnerRegistry({
+      hooks: { authorize: async () => undefined, onEvent: commitThrough, onTriggerResult },
+    });
+    const environmentId = createId("environment");
+    const peer = new MemoryRunnerPeer("runner");
+    await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
+    const first = triggerCommand(environmentId);
+    const commandId = createId("command");
+    const retry = {
+      ...first,
+      commandId,
+      correlationId: CorrelationIdSchema.parse(commandId),
+      context: { ...first.context, executionGeneration: 2 },
+    };
+    const finished = vi.fn();
+    const dispatched = registry.dispatch(retry, new AbortController().signal).then(finished);
+    await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      commandId,
+      correlationId: retry.correlationId,
+      type: "runner.command-accepted",
+    });
+    const result = {
+      ...fenceOf(peer),
+      environmentId,
+      executionGeneration: 1,
+      type: "runner.trigger-result" as const,
+      output: {
+        occurrenceId: first.context.occurrenceId,
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        result: null,
+        status: "succeeded" as const,
+        stderr: "",
+        stdout: "",
+      },
+    };
+    await registry.handle(peer, result);
+    expect(onTriggerResult).toHaveBeenCalledWith(expect.anything(), result);
+    expect(finished).not.toHaveBeenCalled();
+    await registry.handle(peer, { ...result, executionGeneration: 2 });
+    await dispatched;
+    expect(finished).toHaveBeenCalledOnce();
+  });
   it("fails closed without sending when the Runner cannot run the command harness", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
@@ -1117,7 +1232,7 @@ describe("Runner connection registry", () => {
       message: "Provider acknowledgement was lost",
     });
   });
-  it("rejects an uncertain receipt for a command that is not a steer", async () => {
+  it("preserves uncertain disposition for trigger.execute and ejects the connection so attach settles it (Finding 14)", async () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
@@ -1138,11 +1253,253 @@ describe("Runner connection registry", () => {
         message: "Cannot confirm",
         type: "runner.command-uncertain",
       }),
-    ).rejects.toThrow("uncertain delivery for trigger.execute");
+    ).resolves.toBeUndefined();
     await expect(dispatched).rejects.toMatchObject({
-      disposition: "failed",
-      message: "Runner reported uncertain delivery for trigger.execute",
+      disposition: "uncertain",
+      message: "Cannot confirm",
     });
+    await waitFor(() => peer.closed !== undefined);
+    expect(peer.closed).toBeDefined();
+  });
+
+  it("still rejects runner.command-uncertain for run.execute as a protocol error and retries offline trigger.interrupt (Findings 13 & 14)", async () => {
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
+      },
+    });
+    const environmentId = createId("environment");
+    const peer = new MemoryRunnerPeer("runner");
+    await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
+    const runCmd = executeCommand(environmentId);
+    const runDispatched = registry.dispatch(runCmd, new AbortController().signal);
+    await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
+    await expect(
+      registry.handle(peer, {
+        ...fenceOf(peer),
+        commandId: runCmd.commandId,
+        correlationId: runCmd.correlationId,
+        message: "Uncertain run",
+        type: "runner.command-uncertain",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(runDispatched).rejects.toMatchObject({ disposition: "failed" });
+
+    // Disconnect peer; offline trigger.interrupt must retry (firings survive disconnect).
+    registry.disconnect(peer);
+    const interruptId = createId("command");
+    await expect(
+      registry.dispatch(
+        RunnerCommandSchema.parse({
+          commandId: interruptId,
+          correlationId: CorrelationIdSchema.parse(interruptId),
+          environmentId,
+          occurrenceId: createId("triggerOccurrence"),
+          type: "trigger.interrupt",
+        }),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ disposition: "retry", provenNotStarted: true });
+    await registry.close();
+  });
+
+  it("never calls beforeWireSend and marks provenNotStarted when refused by agents-stopped, replaced connection, or abort (Z4)", async () => {
+    const scenarios = ["agents-stopped", "connection-replaced", "aborted"] as const;
+    for (const scenario of scenarios) {
+      const registry = new RunnerRegistry({
+        hooks: {
+          authorize: vi.fn(async () => undefined),
+          onEvent: vi.fn(commitThrough),
+        },
+      });
+      const runnerId = createId("runner");
+      const environmentId = createId("environment");
+      const peer = new MemoryRunnerPeer(`peer-${scenario}`);
+      const baseIdentity = hello(runnerId, environmentId, "boot-1");
+      await registerAttached(
+        registry,
+        {
+          ...baseIdentity,
+          capabilities: [...baseIdentity.capabilities, "runner-agent-stop-v1"],
+        },
+        peer,
+      );
+
+      const command = triggerCommand(environmentId);
+      const controller = new AbortController();
+      const beforeWireSend = vi.fn(async () => undefined);
+      const beforeSend = vi.fn(async () => {
+        if (scenario === "agents-stopped") {
+          await registry.handle(peer, {
+            ...fenceOf(peer),
+            stoppedAt: new Date().toISOString(),
+            type: "runner.agents.stopped",
+          });
+        } else if (scenario === "connection-replaced") {
+          const replacement = new MemoryRunnerPeer(`replacement-${scenario}`);
+          await registerAttached(registry, hello(runnerId, environmentId, "boot-2"), replacement);
+        } else {
+          controller.abort(new Error("aborted before wire send"));
+        }
+      });
+
+      await expect(
+        registry.dispatch(command, controller.signal, {
+          beforeSend,
+          beforeWireSend,
+        }),
+      ).rejects.toMatchObject({
+        disposition: "retry",
+        provenNotStarted: true,
+      });
+      expect(beforeSend).toHaveBeenCalledTimes(1);
+      expect(beforeWireSend).not.toHaveBeenCalled();
+      expect(peer.messages.filter((m) => m.type === "host.command")).toHaveLength(0);
+      await registry.close();
+    }
+  });
+
+  it("forwards firing inventory on attach and acknowledges committed trigger results", async () => {
+    const occurrenceId = createId("triggerOccurrence");
+    const environmentId = createId("environment");
+    const onAttachFirings = vi.fn(async () => [{ occurrenceId, status: "attached" as const }]);
+    const onTriggerResult = vi.fn(async () => undefined);
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onAttach: vi.fn(async () => []),
+        onAttachFirings,
+        onEvent: vi.fn(commitThrough),
+        onTriggerResult,
+      },
+    });
+    const peer = new MemoryRunnerPeer("runner");
+    const identity = hello(createId("runner"), environmentId, "boot-1");
+    await registry.register(
+      { ...identity, capabilities: [...identity.capabilities, "automation-script-v1"] },
+      peer,
+    );
+    expect(peer.messages.find((m) => m.type === "host.welcome")).toMatchObject({
+      acceptsAutomationScripts: true,
+    });
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      complete: true,
+      executions: [],
+      firings: [
+        {
+          environmentId,
+          executionGeneration: 2,
+          occurrenceId,
+          terminal: false,
+        },
+      ],
+      type: "runner.executions.attach",
+    });
+    expect(onAttachFirings).toHaveBeenCalledWith(expect.anything(), [
+      { environmentId, executionGeneration: 2, occurrenceId, terminal: false },
+    ]);
+    expect(peer.messages.find((m) => m.type === "host.executions.attached")).toMatchObject({
+      firingResults: [{ occurrenceId, status: "attached" }],
+      results: [],
+      type: "host.executions.attached",
+    });
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      environmentId,
+      executionGeneration: 2,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "ok\n",
+      },
+      type: "runner.trigger-result",
+    });
+    expect(onTriggerResult).toHaveBeenCalledTimes(1);
+    expect(peer.messages.find((m) => m.type === "host.executions.acked")).toMatchObject({
+      firingAcks: [{ executionGeneration: 2, occurrenceId }],
+      type: "host.executions.acked",
+    });
+  });
+
+  it("never sends firingResults, firingAcks, or acceptsAutomationScripts to an older Runner lacking automation-script-v1 (Z1)", async () => {
+    const occurrenceId = createId("triggerOccurrence");
+    const environmentId = createId("environment");
+    const onAttachFirings = vi.fn(async () => []);
+    const onTriggerResult = vi.fn(async () => undefined);
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onAttach: vi.fn(async () => []),
+        onAttachFirings,
+        onEvent: vi.fn(commitThrough),
+        onTriggerResult,
+      },
+    });
+    const peer = new MemoryRunnerPeer("legacy-runner");
+    // Older Runner: does NOT advertise "automation-script-v1".
+    await registry.register(hello(createId("runner"), environmentId, "boot-legacy"), peer);
+    const welcome = peer.messages.find((m) => m.type === "host.welcome");
+    expect(welcome).toBeDefined();
+    expect(welcome).not.toHaveProperty("acceptsAutomationScripts");
+
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      complete: true,
+      executions: [],
+      type: "runner.executions.attach",
+    });
+    expect(onAttachFirings).not.toHaveBeenCalled();
+    const attached = peer.messages.find((m) => m.type === "host.executions.attached");
+    expect(attached).toBeDefined();
+    // Strict pre-e74830388 older Runner schema rejects any firingResults field.
+    expect(attached).not.toHaveProperty("firingResults");
+
+    // Older Runner can still run a Run cleanly.
+    const command = executeCommand(environmentId);
+    const dispatchPromise = registry.dispatch(command, new AbortController().signal);
+    await waitFor(() => peer.messages.some((m) => m.type === "host.command"));
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      commandId: command.commandId,
+      correlationId: command.correlationId,
+      type: "runner.command-accepted",
+    });
+    await dispatchPromise;
+
+    // When an older Runner sends runner.trigger-result, Home must NOT emit host.executions.acked
+    // with empty acks + firingAcks (older Runner parses acks.min(1) strictly).
+    const ackCountBefore = peer.messages.filter((m) => m.type === "host.executions.acked").length;
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      environmentId,
+      executionGeneration: 1,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "ok",
+      },
+      type: "runner.trigger-result",
+    });
+    expect(onTriggerResult).toHaveBeenCalledTimes(1);
+    const acksAfter = peer.messages.filter((m) => m.type === "host.executions.acked");
+    expect(acksAfter).toHaveLength(ackCountBefore);
+    for (const ack of acksAfter) {
+      expect(ack).not.toHaveProperty("firingAcks");
+      if (ack.type === "host.executions.acked") expect(ack.acks.length).toBeGreaterThanOrEqual(1);
+    }
+    await registry.close();
   });
   it("preserves a proven steer refusal reason", async () => {
     const registry = new RunnerRegistry({
@@ -2293,6 +2650,66 @@ describe("Runner connection registry", () => {
       expect(connection.catalogs()).toHaveLength(2);
       await registry.close();
     });
+    it("does not invalidate another account's in-flight inspection when a sibling settles", async () => {
+      const first = definition(createId("harnessInstance"));
+      const second = definition(createId("harnessInstance"));
+      let registry!: RunnerRegistry;
+      let environmentId!: ReturnType<typeof createId<"environment">>;
+      let secondRecapture: ReturnType<RunnerRegistry["inspectHarnesses"]> | undefined;
+      const connection = await attached(async (_identity, invalidation) => {
+        if (invalidation.harnessInstanceId !== second.id) return;
+        secondRecapture = registry.inspectHarnesses(
+          environmentId,
+          [second],
+          new AbortController().signal,
+          { fresh: true },
+        );
+        await secondRecapture;
+      });
+      registry = connection.registry;
+      environmentId = connection.environmentId;
+      try {
+        const signal = AbortSignal.timeout(2_000);
+        const firstInspection = registry.inspectHarnesses(environmentId, [first], signal, {
+          fresh: true,
+        });
+        firstInspection.catch(() => undefined);
+        const fullReconcile = registry.reconcileHarnesses(environmentId, [first, second], signal);
+        fullReconcile.catch(() => undefined);
+        await waitFor(() => connection.catalogs().length === 2);
+        await registry.handle(connection.peer, {
+          ...fenceOf(connection.peer),
+          harnessInstanceId: second.id,
+          type: "runner.harness-catalog-invalidated",
+        });
+        await waitFor(() => connection.catalogs().length === 3);
+        // A concurrent reader for `first` still shares its unaffected in-flight request.
+        const joinedFirst = registry.inspectHarnesses(environmentId, [first], signal, {
+          fresh: true,
+        });
+        joinedFirst.catch(() => undefined);
+        expect(connection.catalogs()).toHaveLength(3);
+        await connection.answer(0, "ready");
+        await connection.answer(1, "preparing");
+        await connection.answer(2, "ready");
+        await expect(firstInspection).resolves.toMatchObject([
+          { harnessInstanceId: first.id, status: "ready" },
+        ]);
+        await expect(joinedFirst).resolves.toEqual(await firstInspection);
+        // The multi-account reconcile that included `second` is still fenced as stale.
+        await expect(fullReconcile).rejects.toMatchObject({
+          code: "conflict",
+          reason: "harness-catalog-stale-read",
+          retryable: true,
+        });
+        await expect(secondRecapture).resolves.toMatchObject([
+          { harnessInstanceId: second.id, status: "ready" },
+        ]);
+        expect(connection.catalogs()).toHaveLength(3);
+      } finally {
+        await registry.close();
+      }
+    });
     it("abandons a catalog request whose send is still pending without an unobserved rejection", async () => {
       const { catalogs, environmentId, peer, registry } = await attached();
       const unhandled: unknown[] = [];
@@ -2516,7 +2933,6 @@ function hello(
         harnessDrivers,
 
         maxConcurrentRuns: 2,
-        providerStateModes: ["isolated"],
       },
     },
     name: "Runner",
@@ -2567,10 +2983,10 @@ function executeCommand(
     agentHome: { computerId: createId("runner"), path: "/tmp/agent-home" },
     context: {
       personalContext: true,
+      personLineage: true,
       taskPurpose: "task",
       accessMode: "full-access",
       assignment: null,
-      teamTurnContext: null,
       agentTools: {
         tools: ["opensteer_task_read", "plugin_call", "computer_use"],
         toolsRevision: "test-tools-v1",
@@ -2734,12 +3150,11 @@ function triggerCommand(environmentId: ReturnType<typeof createId<"environment">
         url: "https://host.example.test/internal/v1/mcp",
       },
       occurrenceId,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
-      },
       revisionId,
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
+      },
       triggerId,
     },
     correlationId: CorrelationIdSchema.parse("trigger-dispatch-test"),
@@ -3727,6 +4142,163 @@ describe("long Request holds", () => {
       expect(
         registry.supportsLongRequestHold(createId("environment"), HarnessIdSchema.parse("native")),
       ).toBe(false);
+    } finally {
+      await registry.close();
+    }
+  });
+});
+
+describe("Agent home files and output image hooks", () => {
+  it("gates requestHomeFile on connection and agent-home-files-v1, cancels on abort, and routes reports", async () => {
+    const agentHomeReports: unknown[] = [];
+    const outputImagePublishes: unknown[] = [];
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: async () => undefined,
+        onEvent: commitThrough,
+        onAgentHomeReport: async (_identity, report) => {
+          agentHomeReports.push(report);
+          return true;
+        },
+        onOutputImagePublish: async (_identity, request) => {
+          outputImagePublishes.push(request);
+          return { status: "exists" };
+        },
+      },
+    });
+    const environmentId = createId("environment");
+    const runnerId = createId("runner");
+    const peer = new MemoryRunnerPeer("home-files-runner");
+    try {
+      // Offline Runner -> runner_offline.
+      await expect(
+        registry.requestHomeFile(
+          runnerId,
+          { limit: 10, offset: 0, pathSegmentsBase64: [], type: "host.home-files.list" },
+          AbortSignal.timeout(1_000),
+        ),
+      ).rejects.toMatchObject({ code: "runner_offline" });
+
+      // Connected Runner without agent-home-files-v1 -> conflict / unsupported-runner.
+      const baseIdentity = hello(runnerId, environmentId, `rbt_${crypto.randomUUID()}`);
+      await registerAttached(
+        registry,
+        {
+          ...baseIdentity,
+          capabilities: baseIdentity.capabilities.filter((cap) => cap !== "agent-home-files-v1"),
+        },
+        peer,
+      );
+      await expect(
+        registry.requestHomeFile(
+          runnerId,
+          { limit: 10, offset: 0, pathSegmentsBase64: [], type: "host.home-files.list" },
+          AbortSignal.timeout(1_000),
+        ),
+      ).rejects.toMatchObject({ code: "conflict", reason: "unsupported-runner" });
+
+      // Reconnect with agent-home-files-v1 -> routes request, response, cancel, and reports.
+      const peer2 = new MemoryRunnerPeer("home-files-runner-2");
+      await registerAttached(
+        registry,
+        {
+          ...hello(runnerId, environmentId, `rbt_${crypto.randomUUID()}`),
+          capabilities: [...baseIdentity.capabilities, "agent-home-files-v1"],
+          connectionGeneration: baseIdentity.connectionGeneration + 1,
+        },
+        peer2,
+      );
+      const fence = fenceOf(peer2);
+      const list = {
+        limit: 10,
+        offset: 0,
+        pathSegmentsBase64: [],
+        type: "host.home-files.list",
+      } as const;
+      await expect(
+        registry.requestHomeFile(
+          runnerId,
+          { ...list, pathSegmentsBase64: [] },
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: "folder_unavailable" });
+
+      await registry.handle(peer2, {
+        ...fence,
+        environmentId,
+        path: "/Users/alice/Opensteer",
+        rootIdentity: { fileId: "99", kind: "posix", volumeId: "1" },
+        type: "runner.agent-home.report",
+      });
+      await registry.handle(peer2, {
+        ...fence,
+        environmentId,
+        path: "/Users/alice/Elsewhere",
+        rootIdentity: { fileId: "100", kind: "posix", volumeId: "1" },
+        type: "runner.agent-home.report",
+      });
+      expect(agentHomeReports).toMatchObject([{ path: "/Users/alice/Opensteer" }]);
+
+      const publishRequestId = crypto.randomUUID();
+      await registry.handle(peer2, {
+        ...fence,
+        extension: "png",
+        mediaType: "image/png",
+        requestId: publishRequestId,
+        sha256: "a".repeat(64),
+        sizeBytes: 128,
+        type: "runner.output-image.publish",
+      });
+      expect(outputImagePublishes).toHaveLength(1);
+      expect(peer2.messages.findLast((m) => m.type === "host.output-image.upload")).toMatchObject({
+        requestId: publishRequestId,
+        status: "exists",
+      });
+
+      const pending = registry.requestHomeFile(
+        runnerId,
+        { limit: 10, offset: 0, pathSegmentsBase64: [], type: "host.home-files.list" },
+        AbortSignal.timeout(2_000),
+      );
+      const sent = peer2.messages.findLast((m) => m.type === "host.home-files.list");
+      expect(sent).toBeDefined();
+      if (!sent || sent.type !== "host.home-files.list") throw new Error("expected list");
+      const rev = "b".repeat(43);
+      await registry.handle(peer2, {
+        ...fence,
+        data: {
+          kind: "list",
+          listing: { directoryRevision: rev, entries: [], hasMore: false, nextOffset: 0 },
+          rootScope: rev,
+        },
+        ok: true,
+        requestId: sent.requestId,
+        type: "runner.home-files.result",
+      });
+      await expect(pending).resolves.toMatchObject({ ok: true, data: { kind: "list" } });
+
+      // Abort sends host.home-files.cancel.
+      const abort = new AbortController();
+      const canceled = registry.requestHomeFile(
+        runnerId,
+        { limit: 10, offset: 0, pathSegmentsBase64: [], type: "host.home-files.list" },
+        abort.signal,
+      );
+      const sent2 = peer2.messages.findLast((m) => m.type === "host.home-files.list");
+      abort.abort(new Error("caller canceled"));
+      await expect(canceled).rejects.toThrow("caller canceled");
+      expect(peer2.messages.findLast((m) => m.type === "host.home-files.cancel")).toMatchObject({
+        requestId: sent2?.type === "host.home-files.list" ? sent2.requestId : "",
+      });
+
+      vi.spyOn(peer2, "send").mockImplementationOnce(() => new Promise<void>(() => undefined));
+      const disconnected = registry.requestHomeFile(
+        runnerId,
+        { ...list, pathSegmentsBase64: [] },
+        new AbortController().signal,
+      );
+      registry.disconnect(peer2);
+      await expect(disconnected).rejects.toThrow(/disconnected/i);
     } finally {
       await registry.close();
     }

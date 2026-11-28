@@ -192,10 +192,9 @@ describe("TriggerControlService", () => {
         idempotencyKey: requestId,
         name: "Nightly report",
         operation: "create",
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default () => {}",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "webhook",
@@ -212,7 +211,7 @@ describe("TriggerControlService", () => {
       }),
       threadId,
       {
-        accessMode: "full-access",
+        commandIdentity: expect.anything(),
         operationKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "opensteer_automation_create")}:trigger.write`,
       },
     );
@@ -242,7 +241,7 @@ describe("TriggerControlService", () => {
         systemRole: "memory-light",
       },
       threadId,
-      expect.anything(),
+      undefined,
     );
   });
 });
@@ -255,7 +254,6 @@ function makeService(options: {
   ) => Promise<readonly ReturnType<typeof environment>[]>;
   manage?: (owner: typeof ownerId, input: TriggerControlInput) => Promise<unknown>;
   store?: Readonly<Record<string, unknown>>;
-  toolContractVersion?: 5;
 }) {
   const anchor = thread();
   const claims = {
@@ -271,7 +269,6 @@ function makeService(options: {
     runnerBootId: "boot-1",
     runnerId,
     threadId,
-    toolContractVersion: options.toolContractVersion ?? 5,
   };
   const listEnvironmentsForUser = vi.fn(
     options.listEnvironmentsForUser ?? (async () => [environment(environmentId)]),
@@ -296,6 +293,14 @@ function makeService(options: {
       name: "Opensteer",
     })),
     getThreadForOwner: vi.fn(async () => anchor),
+    readTask: vi.fn(async () => anchor),
+    bindingAgentConnectionId: async () => null,
+    admitExecution: vi.fn(async () => ({
+      mode: "full-access" as const,
+      agentConnection: null,
+      threadId: null,
+      runId: null,
+    })),
     listEnvironmentsForUser,
     listHarnessCatalogs: vi.fn(async () => []),
     listHarnessInstances: vi.fn(async () => [
@@ -419,7 +424,6 @@ function thread(): Thread {
     doneReason: null,
     icon: null,
     purpose: "task",
-    teamOrigin: null,
     createdAt: now,
     createdBy: ownerId,
     environmentId,
@@ -443,7 +447,6 @@ function run(value: Thread): Run {
     accessMode: value.accessMode,
     activationInputId: seedInputId,
     assignmentId: null,
-    delivery: null,
     causalChainId: createId("causalChain"),
     completedAt: null,
     createdAt: now,
@@ -488,12 +491,10 @@ function message(anchorThreadId: Thread["id"], runId: Run["id"]): Message {
 function inboxInput(value: Message, run: Run, policy: "report" | "queue" | "steer"): ThreadInput {
   return {
     assignmentId: null,
-    teamRequestId: null,
     cancelReason: null,
     causalChainId: run.causalChainId,
     createdAt: now,
     deliveredAt: now,
-    teamSource: null,
     messageId: value.id,
     policy,
     replyTarget: null,

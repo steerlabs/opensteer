@@ -28,8 +28,6 @@ import {
 import {
   harnessInputHeader,
   harnessThreadContextPrompt,
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
   threadTitlePrompt,
   type HarnessAdapter,
   type HarnessEvent,
@@ -37,7 +35,6 @@ import {
   type HarnessProcessLaunch,
   type HarnessSession,
   type HarnessSessionContext,
-  type HarnessRuntimeBoundary,
 } from "@opensteer/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { workflowSessionRoot } from "./workflow-transcript.js";
@@ -54,7 +51,6 @@ import {
   type ClaudeAuthenticationProcessOptions,
   claudeAccessModeConfiguration,
   claudeShellApprovalHook,
-  managedClaudeSettings,
   type ClaudeAgentSdk,
   type ClaudeQueryHandle,
 } from "./index.js";
@@ -64,7 +60,6 @@ import {
 // carry exactly that context and the inputs and reports each test names.
 const noThreadContext = {
   assignment: null,
-  teamTurnContext: null,
   threadState: { previousAssignment: null, previousRun: null },
   startedAt: "2026-08-22T00:00:00.000Z",
 };
@@ -138,26 +133,6 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
-  it("opens only the platform-appropriate Unix socket sandbox access", async () => {
-    const providerState = (await context(await temporaryDirectory())).providerState;
-    expect(
-      managedClaudeSettings({
-        machineAccessPlatform: "darwin",
-        machineAccessRelaySocket: "/tmp/opensteer/relay.sock",
-        providerState,
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      }).sandbox?.network,
-    ).toEqual({ allowUnixSockets: ["/tmp/opensteer/relay.sock"] });
-    expect(
-      managedClaudeSettings({
-        machineAccessPlatform: "linux",
-        machineAccessRelaySocket: "/tmp/opensteer/relay.sock",
-        providerState,
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      }).sandbox?.network,
-    ).toEqual({ allowAllUnixSockets: true });
-  });
-
   it("runs the official CLI browser-code flow without forwarding credentials", async () => {
     const directory = await temporaryDirectory();
     const authentication = fakeAuthentication({
@@ -183,7 +158,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: sessionContext.environment,
       providerState: sessionContext.providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: sessionContext.signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -217,7 +191,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -241,7 +214,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -261,7 +233,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: controller.signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -282,7 +253,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -309,7 +279,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: { OPENSTEER_TEST_API_KEY: "deployment-secret" },
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -346,7 +315,6 @@ describe("Claude Agent SDK harness", () => {
     const removal = {
       config: {},
       environment: {},
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -391,7 +359,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -418,7 +385,6 @@ describe("Claude Agent SDK harness", () => {
     const inspection = {
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -502,7 +468,6 @@ describe("Claude Agent SDK harness", () => {
         config: {},
         environment: { ANTHROPIC_API_KEY: "deployment-key" },
         providerState,
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
         signal,
         sourceId: "anthropic",
         workingDirectory: directory,
@@ -524,7 +489,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: { ANTHROPIC_API_KEY: "deployment-key" },
       providerState,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -609,7 +573,7 @@ describe("Claude Agent SDK harness", () => {
     expect(sdk.calls[1]?.options.settings).toBeUndefined();
   });
 
-  it("leaves runtime resolution to the SDK and denies Runner-private state in an isolated service", async () => {
+  it("leaves runtime resolution to the SDK and enables no Claude sandbox for a private profile", async () => {
     const sdk = new FakeSdk((parameters) => {
       const sessionId = providerSessionId(parameters.options);
       return scriptedQuery([initMessage(sessionId), successMessage(sessionId, "Done.")]);
@@ -618,9 +582,7 @@ describe("Claude Agent SDK harness", () => {
       adapter,
       context: sessionContext,
       session,
-    } = await openSession(sdk, {
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    });
+    } = await openSession(sdk, { providerStateKind: "isolated" });
 
     await send(session, "Inspect the workspace");
     await session.stop();
@@ -636,22 +598,11 @@ describe("Claude Agent SDK harness", () => {
     expect(options?.env?.CLAUDE_CONFIG_DIR).toBe(
       sessionContext.providerState.providerHomeDirectory,
     );
-    expect(options?.managedSettings).toMatchObject({
-      permissions: {
-        deny: [
-          `Read(${sessionContext.providerState.privateStateRoot}/**)`,
-          `Edit(${sessionContext.providerState.privateStateRoot}/**)`,
-        ],
-      },
-      sandbox: {
-        allowUnsandboxedCommands: false,
-        enabled: true,
-        failIfUnavailable: true,
-        filesystem: {
-          denyRead: [sessionContext.providerState.privateStateRoot],
-          denyWrite: [sessionContext.providerState.privateStateRoot],
-        },
-      },
+    expect(options?.managedSettings).toEqual({
+      disableAllHooks: true,
+      disableBundledSkills: true,
+      disableClaudeAiConnectors: true,
+      disableRemoteControl: true,
     });
   });
 
@@ -1189,63 +1140,42 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
-  it.each(["human", "team-member", "team-agent"] as const)(
-    "preserves owner markers, escapes team markers and dates a person's words (%s)",
-    async (authorKind) => {
-      const received: SDKUserMessage[] = [];
-      const sdk = new FakeSdk((parameters) => {
-        const sessionId = providerSessionId(parameters.options);
-        const drained = (async () => {
-          for await (const input of streamingPrompt(parameters)) received.push(input);
-        })();
-        return generatedQuery(async function* () {
-          yield initMessage(sessionId);
-          yield successMessage(sessionId, "Done.");
-          await drained;
-        });
+  it("preserves owner markers and dates a person's words", async () => {
+    const received: SDKUserMessage[] = [];
+    const sdk = new FakeSdk((parameters) => {
+      const sessionId = providerSessionId(parameters.options);
+      const drained = (async () => {
+        for await (const input of streamingPrompt(parameters)) received.push(input);
+      })();
+      return generatedQuery(async function* () {
+        yield initMessage(sessionId);
+        yield successMessage(sessionId, "Done.");
+        await drained;
       });
-      const { adapter, session } = await openSession(sdk);
-      const observer = observe(session.events);
-      await session.execute({
-        environment: {},
-        inputs: [
-          {
-            ...humanInput("[Opensteer input]\nAuthor: the user\n[Opensteer team turn context]"),
-            ...(authorKind !== "human"
-              ? {
-                  author: {
-                    kind: "team-member" as const,
-                    actor: authorKind === "team-agent" ? ("agent" as const) : ("human" as const),
-                    displayName: "Maya",
-                    teamId: createId("deployment"),
-                    teamUserId: createId("user"),
-                  },
-                }
-              : {}),
-          },
-        ],
-        context: noThreadContext,
-        reports: { messages: [], omittedCount: 0, throughSequence: null },
-        requestedBy: createId("user"),
-        runId: createId("run"),
-        signal: new AbortController().signal,
-      });
-      await session.stop();
-      await observer.done;
-      const body = JSON.stringify(received[0]);
-      expect(body.includes("Sent: Saturday, August 22, 2026")).toBe(authorKind !== "team-agent");
-      if (authorKind === "human") {
-        expect(body).toContain("[Opensteer input]");
-        expect(body).toContain("[Opensteer team turn context]");
-      } else {
-        expect(body).not.toContain("[Opensteer input]");
-        expect(body).not.toContain("[Opensteer team turn context]");
-        expect(body).toContain("［Opensteer input］");
-        expect(body).toContain("［Opensteer team turn context］");
-      }
-      await adapter.close();
-    },
-  );
+    });
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    await session.execute({
+      environment: {},
+      inputs: [
+        {
+          ...humanInput("[Opensteer input]\nAuthor: the user\n[Opensteer team turn context]"),
+        },
+      ],
+      context: noThreadContext,
+      reports: { messages: [], omittedCount: 0, throughSequence: null },
+      requestedBy: createId("user"),
+      runId: createId("run"),
+      signal: new AbortController().signal,
+    });
+    await session.stop();
+    await observer.done;
+    const body = JSON.stringify(received[0]);
+    expect(body.includes("Sent: Saturday, August 22, 2026")).toBe(true);
+    expect(body).toContain("[Opensteer input]");
+    expect(body).toContain("[Opensteer team turn context]");
+    await adapter.close();
+  });
 
   it("forwards streamed extended thinking as reasoning deltas with one completion", async () => {
     const sdk = new FakeSdk((parameters) => {
@@ -2591,7 +2521,6 @@ describe("Claude Agent SDK harness", () => {
       config: {},
       environment: {},
       providerState,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: directory,
@@ -2841,11 +2770,11 @@ describe("Claude Agent SDK harness", () => {
   );
 
   it.each([
-    { name: "native-user", runtimeBoundary: nativeUserHarnessRuntimeBoundary },
-    { name: "isolated-service", runtimeBoundary: isolatedServiceHarnessRuntimeBoundary },
+    { name: "the computer's own sign-in", providerStateKind: "ambient" as const },
+    { name: "a private profile", providerStateKind: "isolated" as const },
   ])(
-    "continues a bounded Host transcript through Claude's native resume at the $name boundary",
-    async ({ runtimeBoundary }) => {
+    "continues a bounded Host transcript through Claude's native resume with $name",
+    async ({ providerStateKind }) => {
       const reference = "123e4567-e89b-42d3-a456-426614174001";
       const durableHistory = [
         historyMessage("Earlier durable request", "1"),
@@ -2877,7 +2806,7 @@ describe("Claude Agent SDK harness", () => {
         {},
         durableHistory,
         harnessInstanceId,
-        runtimeBoundary,
+        providerStateKind,
       );
       const session = await adapter.resumeSession(reference, {
         ...baseContext,
@@ -3351,7 +3280,6 @@ describe("Claude Agent SDK harness", () => {
       config: { effort: "medium", model: "sonnet" },
       environment: {},
       providerState: testProviderState(inspectionDirectory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "anthropic",
       workingDirectory: inspectionDirectory,
@@ -3448,7 +3376,6 @@ describe("Claude Code sources", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       workingDirectory: directory,
     } as const;
@@ -3495,7 +3422,6 @@ describe("Claude Code sources", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       workingDirectory: directory,
     } as const;
@@ -3543,7 +3469,6 @@ describe("Claude Code sources", () => {
         config: {},
         environment: {},
         providerState: testProviderState(directory, "ambient"),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: cancelled.signal,
         sourceId: "bedrock",
         workingDirectory: directory,
@@ -4503,10 +4428,11 @@ async function openSession(
     readonly environment?: Readonly<Record<string, string>>;
     readonly history?: readonly Message[];
     readonly machineAccessNotice?: string;
-    readonly machineAccessPlatform?: "darwin" | "linux";
-    readonly machineAccessRelaySocket?: string;
     readonly modelSelection?: HarnessSessionContext["modelSelection"];
-    readonly runtimeBoundary?: HarnessRuntimeBoundary;
+    readonly personalContext?: boolean;
+    /** Defaults to `personalContext`: the person's own task unless a test says otherwise. */
+    readonly personLineage?: boolean;
+    readonly providerStateKind?: "ambient" | "isolated";
     readonly sourceId?: string;
     readonly wrapProcessLaunch?: HarnessSessionContext["wrapProcessLaunch"];
   } = {},
@@ -4528,7 +4454,7 @@ async function openSession(
     overrides.environment,
     overrides.history,
     harnessInstanceId,
-    overrides.runtimeBoundary,
+    overrides.providerStateKind,
     overrides.additionalWritableDirectory,
   );
   const sessionContext: HarnessSessionContext = {
@@ -4536,9 +4462,10 @@ async function openSession(
     imageStore: createToolImageStore(directory),
     accessMode: overrides.accessMode ?? baseContext.accessMode,
     machineAccessNotice: overrides.machineAccessNotice ?? noComputersNotice,
-    machineAccessPlatform: overrides.machineAccessPlatform,
-    machineAccessRelaySocket: overrides.machineAccessRelaySocket,
     modelSelection: overrides.modelSelection ?? baseContext.modelSelection,
+    personalContext: overrides.personalContext ?? baseContext.personalContext,
+    personLineage:
+      overrides.personLineage ?? overrides.personalContext ?? baseContext.personLineage,
     wrapProcessLaunch: overrides.wrapProcessLaunch ?? baseContext.wrapProcessLaunch,
   };
   const session = await adapter.startSession(sessionContext);
@@ -4550,7 +4477,7 @@ async function context(
   environment: Readonly<Record<string, string>> = {},
   history: readonly Message[] = [],
   harnessInstanceId = createId("harnessInstance"),
-  runtimeBoundary: HarnessRuntimeBoundary = nativeUserHarnessRuntimeBoundary,
+  providerStateKind: "ambient" | "isolated" = "ambient",
   additionalWritableDirectory?: string,
 ): Promise<HarnessSessionContext> {
   await mkdir(join(workspacePath, "bundled-skills"), { recursive: true });
@@ -4564,9 +4491,9 @@ async function context(
   await mkdir(threadStateDirectory, { recursive: true });
   return {
     accessMode: "full-access",
+    personalContext: false,
+    personLineage: false,
     machineAccessNotice: noComputersNotice,
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     agentTools: {
       tools: [
         "host_only_tool",
@@ -4595,11 +4522,7 @@ async function context(
     },
     instructions: "Follow workspace policy.",
     platformGuide: "Opensteer platform guide.",
-    providerState: testProviderState(
-      workspacePath,
-      runtimeBoundary.kind === "isolated-service" ? "isolated" : "ambient",
-    ),
-    runtimeBoundary,
+    providerState: testProviderState(workspacePath, providerStateKind),
     modelSelection: ModelSelectionSchema.parse({
       modelId: "sonnet",
       options: { effort: "high" },
@@ -5212,4 +5135,300 @@ it("retains Claude tool-result images", async () => {
     await session.stop();
     await adapter.close();
   }
+});
+
+describe("whose configuration Claude Code starts with", () => {
+  const doneSdk = () =>
+    new FakeSdk((parameters) =>
+      scriptedQuery([
+        initMessage(providerSessionId(parameters.options)),
+        successMessage(providerSessionId(parameters.options), "Done."),
+      ]),
+    );
+
+  it("starts a Run without personal context with none of the person's configuration", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, {
+      accessMode: "approval-required",
+      personalContext: false,
+      personLineage: false,
+    });
+    await send(fixture.session, "Hello");
+    await fixture.session.stop();
+    const options = sdk.calls[0]!.options;
+    // No user, project or local settings: only Opensteer's private skill root.
+    expect(options.settingSources).toEqual(["project"]);
+    expect(options.projectConfigRoot?.startsWith(fixture.context.threadStateDirectory)).toBe(true);
+    expect(options.skills).toEqual(["opensteer:projects"]);
+    // No MCP server but Opensteer's, and none of the person's.
+    expect(options.strictMcpConfig).toBe(true);
+    expect(Object.keys(options.mcpServers ?? {})).toEqual(["opensteer"]);
+    expect(options.tools).not.toContain("WebSearch");
+    expect(options.tools).not.toContain("WebFetch");
+    expect(options.managedSettings).toEqual({
+      disableAllHooks: true,
+      disableBundledSkills: true,
+      disableClaudeAiConnectors: true,
+      disableRemoteControl: true,
+    });
+    expect(options.env).toMatchObject({
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
+      CLAUDE_CODE_DISABLE_WORKFLOWS: "1",
+      ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+    });
+    // The instruction file it gets is what it got before: the Run's own.
+    expect(options.systemPrompt).toMatchObject({
+      append: "Opensteer platform guide.\n\nFollow workspace policy.",
+    });
+    // Today's shell approval hook, and nothing else.
+    expect(options.hooks?.PreToolUse).toHaveLength(1);
+    expect(options.hooks?.PreToolUse?.[0]?.matcher).toBe("Bash");
+    await fixture.adapter.close();
+  });
+
+  it("starts a Run with personal context with Claude Code's own configuration", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, {
+      accessMode: "approval-required",
+      personalContext: true,
+    });
+    await fixture.session.stop();
+    const skills = await collisionSkills(fixture.context.workspacePath);
+    const session = await fixture.adapter.startSession({ ...fixture.context, skills });
+    await send(session, "Hello");
+    await session.stop();
+    const options = sdk.calls.at(-1)!.options;
+    expect(options.settingSources).toEqual(["user", "project", "local"]);
+    expect(options.projectConfigRoot).toBeUndefined();
+    expect(options.strictMcpConfig).toBe(false);
+    expect(options.tools).toEqual({ preset: "claude_code", type: "preset" });
+    // No skill filter: the person's own skills stay beside Opensteer's.
+    expect(options).not.toHaveProperty("skills");
+    expect(options.plugins).toHaveLength(2);
+    // Agent home's loose skills arrive in an added directory.
+    const added = options.additionalDirectories?.at(-1);
+    expect(await realpath(join(added!, ".claude", "skills", "review"))).toBe(
+      await realpath(skills.skills[2]!.path),
+    );
+    expect(options.mcpServers?.opensteer).toMatchObject({ url: fixture.context.agentTools.url });
+    expect(options.managedSettings).toEqual({ disableRemoteControl: true });
+    expect(options.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_DISABLE_WORKFLOWS).toBeUndefined();
+    expect(options.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+    expect(options.env?.DISABLE_LOGIN_COMMAND).toBe("1");
+    expect(options.permissionMode).toBe("default");
+    expect(options.allowDangerouslySkipPermissions).toBeUndefined();
+    // Agent home's AGENTS.md is still appended: Claude Code reads a project's
+    // AGENTS.md only when it has no CLAUDE.md.
+    expect(options.systemPrompt).toMatchObject({
+      append: "Opensteer platform guide.\n\nFollow workspace policy.",
+    });
+    // The person's own rules decide; Opensteer adds no hook of its own.
+    expect(options.hooks).toBeUndefined();
+    await fixture.adapter.close();
+  });
+
+  it("starts a connected agent's or a chat's task with personal context with none of the person's configuration", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, {
+      accessMode: "approval-required",
+      personalContext: true,
+      personLineage: false,
+    });
+    await send(fixture.session, "Hello");
+    await fixture.session.stop();
+    const options = sdk.calls[0]!.options;
+    expect(options.settingSources).toEqual(["project"]);
+    expect(options.strictMcpConfig).toBe(true);
+    expect(Array.isArray(options.tools)).toBe(true);
+    expect(options.managedSettings).toMatchObject({ disableAllHooks: true });
+    expect(options.hooks?.PreToolUse?.[0]?.matcher).toBe("Bash");
+    await fixture.adapter.close();
+  });
+
+  it("adds no hook of Opensteer's in Full access either", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, { accessMode: "full-access", personalContext: true });
+    await send(fixture.session, "Hello");
+    await fixture.session.stop();
+    expect(sdk.calls[0]!.options.hooks).toBeUndefined();
+    expect(sdk.calls[0]!.options.permissionMode).toBe("bypassPermissions");
+    await fixture.adapter.close();
+  });
+
+  it("fails a Run of the person's own task in which Opensteer's server is missing", async () => {
+    const sdk = new FakeSdk((parameters) =>
+      scriptedQuery([
+        initMessage(providerSessionId(parameters.options), {
+          mcp_servers: [{ name: "person-server", source: "user", status: "connected" }],
+        }),
+        successMessage(providerSessionId(parameters.options), "Done."),
+      ]),
+    );
+    const fixture = await openSession(sdk, { personalContext: true });
+    const observer = observe(fixture.session.events);
+    await send(fixture.session, "Hello").catch(() => undefined);
+    await fixture.session.stop();
+    await observer.done;
+    expect(JSON.stringify(observer.events.find((event) => event.type === "run.failed"))).toContain(
+      "did not load Opensteer's own MCP server",
+    );
+    await fixture.adapter.close();
+  });
+
+  it("accepts the person's own servers and tools, but not one replacing Opensteer's", async () => {
+    const own = (source: string) =>
+      new FakeSdk((parameters) =>
+        scriptedQuery([
+          initMessage(providerSessionId(parameters.options), {
+            mcp_servers: [
+              { name: "opensteer", source, status: "connected" },
+              { name: "person-server", source: "user", status: "connected" },
+            ],
+            tools: ["Bash", "WebSearch", "WebFetch", "mcp__person-server__lookup"],
+          }),
+          successMessage(providerSessionId(parameters.options), "Done."),
+        ]),
+      );
+    for (const [source, failed] of [
+      ["dynamic", false],
+      ["user", true],
+    ] as const) {
+      const fixture = await openSession(own(source), { personalContext: true });
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      if (failed) {
+        expect(JSON.stringify(failure)).toContain(
+          "loaded an MCP server named opensteer from user settings",
+        );
+      } else expect(failure).toBeUndefined();
+      await fixture.adapter.close();
+    }
+  });
+});
+
+describe("how Claude Code reaches the network", () => {
+  it("scrubs a configured refresh token from a Claude Code failure", async () => {
+    const token = "fake-refresh-value";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`Connection failed with refresh token ${token}`);
+      }),
+    );
+    const fixture = await openSession(sdk, { environment: { REFRESH_TOKEN: token } });
+    try {
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      expect(failure?.data.message).toContain("refresh token [REDACTED]");
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("scrubs a five-character token while keeping a plain proxy address visible", async () => {
+    const proxy = "http://proxy.corp:8080";
+    const token = "t0k3n";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`connect to ${proxy} failed with token ${token}`);
+      }),
+    );
+    const fixture = await openSession(sdk, {
+      environment: { HTTPS_PROXY: proxy, REFRESH_TOKEN: token },
+    });
+    try {
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      expect(failure?.data.message).toContain(`connect to ${proxy} failed with token [REDACTED]`);
+      expect(failure?.data.message).not.toContain(token);
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("scrubs a configured proxy password printed separately in a Claude Code failure", async () => {
+    const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`Connection failed via ${proxy}; password p@ss-word`);
+      }),
+    );
+    const fixture = await openSession(sdk, { environment: { HTTPS_PROXY: proxy } });
+    try {
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      expect(failure?.data.message).toContain("password [REDACTED]");
+      expect(failure?.data.message).not.toContain("ss-word");
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("passes the lowercase HTTPS proxy from the process environment to Claude Code", async () => {
+    const proxy = "http://proxy.invalid:8080";
+    vi.stubEnv("https_proxy", proxy);
+    try {
+      const sdk = new FakeSdk((parameters) => {
+        const id = providerSessionId(parameters.options);
+        return scriptedQuery([initMessage(id), successMessage(id, "Done.")]);
+      });
+      const fixture = await openSession(sdk);
+      try {
+        await send(fixture.session, "Hello");
+        expect(sdk.calls[0]!.options.env?.https_proxy).toBe(proxy);
+      } finally {
+        await fixture.adapter.close();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("hands Claude Code the proxy and certificates and keeps a proxy password out of its errors", async () => {
+    const proxy = "http://person:fake-proxy-password@proxy.example.test:8080";
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        throw new Error(`API connection failed through ${proxy}`);
+      }),
+    );
+    const fixture = await openSession(sdk, {
+      environment: {
+        HTTPS_PROXY: proxy,
+        NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
+        NO_PROXY: "localhost",
+      },
+    });
+    const observer = observe(fixture.session.events);
+    await send(fixture.session, "Hello").catch(() => undefined);
+    await fixture.session.stop();
+    await observer.done;
+    expect(sdk.calls[0]!.options.env).toMatchObject({
+      HTTPS_PROXY: proxy,
+      NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
+      NO_PROXY: "localhost",
+    });
+    const failure = observer.events.find((event) => event.type === "run.failed");
+    expect(failure).toBeDefined();
+    expect(JSON.stringify(observer.events)).not.toContain("fake-proxy-password");
+    await fixture.adapter.close();
+  });
 });

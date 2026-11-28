@@ -4,15 +4,10 @@ import { failureProvenance } from "../connections/operation-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
-import type { AnsweredQuestion, TeamRunDelivery, TeamSource } from "@opensteer/core";
+import type { AnsweredQuestion } from "@opensteer/core";
 import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
-import type {
-  ChannelAccessPolicy,
-  ChannelAccount,
-  ChannelBinding,
-  IntegrationConnection,
-} from "@opensteer/channel-core";
+import type { ChannelAccount, IntegrationConnection } from "@opensteer/channel-core";
 import type {
   ArtifactContentPart,
   AssignmentSummary,
@@ -151,11 +146,12 @@ export interface EnvironmentSummary {
   id: string;
   kind: ExecutionEnvironmentKind;
   name: string;
-  providerStateModes: ("ambient" | "isolated")[];
   runnerId: string | null;
   status: EnvironmentStatus;
 
   can: { readonly executeTasks: boolean };
+  /** When the person stopped agents on this location's computer, while that holds. */
+  agentsStoppedSince?: string | null | undefined;
 }
 
 export type HarnessDriverSummary =
@@ -221,6 +217,11 @@ export function requestDecision(request: Pick<RequestView, "id" | "reviewedRevis
 }
 
 export interface ThreadSummary {
+  /**
+   * The Home's revision of this task's row: it moves whenever the Home publishes the task, as it
+   * does when one of a connected agent's operations on it starts or ends. Absent from older reads.
+   */
+  revision?: string | undefined;
   returnHint?: import("@opensteer/core").CompactionReturnHint | null | undefined;
   lastVisitedAt: string | null;
   latestRunCompletedAt: string | null;
@@ -240,6 +241,20 @@ export interface ThreadSummary {
   harnessLabel: string;
   /** A Run waits to start and none is executing, as the shell's task row says. */
   runQueued?: boolean;
+  /** Why a queued Run is being held back from starting on its device. */
+  runStartHoldReason?: import("@opensteer/core").RunStartHoldReason | null;
+  /** Machine failure code when the task's latest Run failed. */
+  failureCode?: string | null;
+  /** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
+  startedByOther?: boolean | undefined;
+  /** The connection lineage the Home disclosed in the person's task view. */
+  originConnectionId?: string;
+  /** A connected agent works this task itself; Stop it with `agent.session.stop`. */
+  agentSessionId?: string | null;
+  /** A connected agent's own task: its session and connection, kept after the session ends. */
+  externalWork?: import("@opensteer/protocol/personal-sync").PersonalTaskExternalWork | null;
+  /** The chat or connected agent that started this task ended, so it takes no new messages. */
+  endedOrigin?: "chat" | "agent" | null | undefined;
   /** Active provider retry on the task's executing Run, when retrying. */
   retry?: import("@opensteer/core").RunRetry | null;
   id: string;
@@ -251,7 +266,6 @@ export interface ThreadSummary {
   parentThreadId: string | null;
   pendingRequests: number;
   purpose: import("@opensteer/core").TaskPurpose;
-  teamOrigin: import("@opensteer/core").TeamTaskOrigin | null;
   runnerLabel: string;
   status: ThreadStatus;
   title: string;
@@ -283,6 +297,7 @@ export interface ThreadAutomation {
  */
 export interface TaskEntry {
   readonly failure: string | null;
+  readonly failureCode?: string | null;
   readonly lastReply: string | null;
   readonly thread: ThreadSummary;
 }
@@ -298,6 +313,7 @@ export interface RunQueueEntry {
   maintenance?: Run["maintenance"];
   createdAt: string;
   id: string;
+  startHoldReason?: import("@opensteer/core").RunStartHoldReason | null;
   status: "queued" | "starting" | "running" | "waiting";
   threadId: string;
   runOrdinal: number;
@@ -316,7 +332,6 @@ export interface MessageEntry {
     readonly issue?: import("../feedback/client-issue.js").ClientIssue;
   };
   readonly clientSendKey?: string;
-  teamSource?: TeamSource | null;
   addressedToUserId?: string;
   /** False for work drawn for its sender before the Run has received it. */
   published?: boolean;
@@ -514,7 +529,6 @@ export type RunEntryStatus =
 export interface RunEntry {
   compaction?: import("@opensteer/core").NativeCompactionActivity;
   retry?: import("@opensteer/core").RunRetry;
-  delivery?: TeamRunDelivery | null;
   /** Absent on an older Host: its waking input is unknown. */
   startedBy?: MessageAuthor;
   startedAt?: string;
@@ -526,7 +540,16 @@ export interface RunEntry {
   createdAt: string;
   /** When it ended, which settles what a page before its end left open. */
   endedAt?: string;
-  error: { code: string; message: string; retryable: boolean } | null;
+  /** Why an interrupted Run ended without a person asking to stop it. */
+  interruptedCause?: import("@opensteer/core").RunInterruptedCause;
+  /** When late confirmation proved this Run stopped after an earlier unconfirmed stop. */
+  stopConfirmedAt?: string;
+  error: {
+    code: string;
+    message: string;
+    ownerMessage?: string | undefined;
+    retryable: boolean;
+  } | null;
   id: string;
   kind: "run";
   /**
@@ -562,22 +585,7 @@ export interface WithdrawnEntry {
   kind: "withdrawn";
 }
 
-/**
- * What became of a message whose own entry this page does not hold: the
- * outcome its input reached, kept under the message's id so that joining the
- * page that holds the message lands the outcome on it. A null `delivery` is a
- * confirmation that clears a doubt an earlier page recorded.
- */
-export interface RunDeliveryEntry {
-  createdAt: string;
-  id: string;
-  kind: "run-delivery";
-  runId: string | null;
-  delivery: TeamRunDelivery;
-}
-
 export interface DeliveryEntry {
-  teamSource?: TeamSource;
   published?: boolean;
   /** The input's association, retained when its Message is on another history page. */
   inputRunId?: string | null;
@@ -629,7 +637,6 @@ export type TranscriptEntry =
   | AssignmentReturnEntry
   | DelegationEntry
   | DeliveryEntry
-  | RunDeliveryEntry
   | MessageEntry
   | PlaceEntry
   | ReasoningEntry
@@ -658,6 +665,8 @@ export interface BrowserTabSummary {
   /** The page is loading; absent from an older Browser Runtime. */
   loading?: boolean | undefined;
   navigationFailed?: boolean | undefined;
+  /** The last wake opened this tab again at its address (ms since the epoch). */
+  reopenedAt?: number | undefined;
   id: BrowserSurfaceId;
   title: string;
   url: string;
@@ -679,6 +688,8 @@ export interface BrowserProfileSummary {
   homeRunnerId: string | null;
   id: string;
   name: string;
+  /** The profile an AI engine signs in through; never offered to a connected agent. */
+  purpose?: "engine-sign-in" | undefined;
 }
 
 /** Every browser runs on a computer, and a computer is a Runner. */
@@ -776,6 +787,8 @@ export interface PersonalTabLineage {
 export interface BrowserSessionSummary {
   /** Host freshness for bootstrap lifecycle reconciliation. */
   updatedAt?: string;
+  /** W15: Stop never got its replaced browser's confirmation; kept closing honestly. */
+  closeUnconfirmed?: true | undefined;
   navigationVersion?: 1 | undefined;
   opener?: BrowserSessionOpener;
   access: "read" | "read-write";
@@ -824,12 +837,24 @@ export type HostConnectionState = "connected" | "connecting" | "offline";
 type HostSessionState = "authenticated" | "authentication-required" | "checking";
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
+export type ComputerViewRemovedListener = (
+  view: Extract<
+    import("@opensteer/protocol").HostToClientMessage,
+    { type: "host.computer-view.removed" }
+  >,
+) => void;
+
 export interface HostSnapshot {
   /** The person's tab catalog and layout, shared by every surface; patched row by row. */
   readonly tabs: import("./tab-store.js").TabStore;
   /** Bumped by host.apps.changed and every reconnect; an Apps page rereads on change. */
   readonly appsRevision: number;
   readonly appVersions?: Readonly<Record<string, number>>;
+  /**
+   * Where each task's connected agent is working now, by task id: what the Home that owns it said
+   * on this socket (`host.agent-working-in`), dropped as each socket attaches.
+   */
+  readonly agentWorkingIn?: Readonly<Record<string, import("@opensteer/core").AgentWorkingIn>>;
   readonly savedViewReadiness?: SavedViewReadiness;
   /**
    * Per conversation this client shows, whether its browser usage has been
@@ -877,6 +902,11 @@ export interface HostSnapshot {
   browserProfileHomes?: readonly string[] | undefined;
   browserProfileDeletions?: BrowserProfileDeletionSummary[] | undefined;
   browserSessions: BrowserSessionSummary[];
+  /**
+   * What each Cloud Computer's pooled browser reports about its sleep, from the Home's browser
+   * placements. Absent for every other Home. Read only through `browserSleepFromHome`.
+   */
+  browserPools?: readonly import("./browser-sleep.js").BrowserPoolReport[] | undefined;
   /** Recorded browser uses of the conversations this client shows, including ended sessions. */
   readonly browserUses: readonly BrowserSessionUseSummary[];
   connection: HostConnectionState;
@@ -967,6 +997,8 @@ export interface HostSnapshot {
   voiceAvailable?: boolean;
   threads: ThreadSummary[];
   user: AuthenticatedUser | null;
+  /** The signed-in person's relation to this Home, as the Home says it. Absent from older Homes. */
+  role?: "owner" | "member";
   /** Recovery can replace the session with no other visible change, ending what was bound to it. */
   sessionId?: AuthSessionId;
 }
@@ -1036,7 +1068,6 @@ export interface ResolveRequestInput {
 }
 
 export interface CreateChannelConnectionInput {
-  accessPolicy: ChannelAccessPolicy;
   credentials: Readonly<Record<string, string>>;
   provider: string;
   routingMode: "dedicated" | "shared";
@@ -1045,7 +1076,6 @@ export interface CreateChannelConnectionInput {
 
 export interface CreatedChannelConnection {
   account: ChannelAccount;
-  binding: ChannelBinding;
   connection: IntegrationConnection;
 }
 
@@ -1067,14 +1097,17 @@ export interface TriggerDetail {
   downstreamRunsTruncated: boolean;
   occurrences: TriggerOccurrence[];
   revision: TriggerRevision;
+  secretNames?: readonly string[];
+  secretsUnreadable?: boolean;
   trigger: Trigger;
+  webhook?: { scope: "local" | "public"; url?: string | null | undefined } | null | undefined;
 }
 
 export interface CreatedTrigger {
   revision: TriggerRevision;
   trigger: Trigger;
   wasDuplicate: boolean;
-  webhook?: { secret: string; url: string } | undefined;
+  webhook?: { scope?: "local" | "public" | undefined; url: string } | undefined;
 }
 
 /** One page of a computer's session history, newest session first. */
@@ -1108,16 +1141,6 @@ export interface WaitingMessageEditor {
   cancel(): Promise<void>;
 }
 
-/** A person's answer to a teammate's ask; approval names the revision they saw. */
-export type TeamAskDecision =
-  | {
-      readonly decision: "approve";
-      readonly expectedRevision: number;
-      readonly requestId: string;
-      readonly teamId: string;
-    }
-  | { readonly decision: "decline"; readonly requestId: string; readonly teamId: string };
-
 export interface HostClient extends TabsClient {
   readonly connection: import("../connections/connection-controller.js").ClientConnection;
   openConnection(
@@ -1142,6 +1165,17 @@ export interface HostClient extends TabsClient {
   readonly desktopUpdates?: DesktopUpdates;
   readonly iphoneSetup?: import("./iphone-setup.js").IphoneSetupPort | undefined;
   readonly browserPasskeys?: BrowserPasskeys;
+  /**
+   * Closes every page of this Cloud Computer's browser and starts it fresh. Refused with
+   * `BrowserRestartUnavailable` for a browser the Home does not report as pooled; call
+   * through `restartPooledBrowser`.
+   */
+  readonly restartPooledBrowser?: (computerId: string) => Promise<void>;
+  /**
+   * W15: removes an unconfirmed-closing replaced-browser session from the person's list without
+   * changing its underlying closing state.
+   */
+  readonly dismissBrowserSession?: (sessionId: string) => Promise<void>;
   /** Popups this client's own input opens from one tab, as each one opens. */
   readonly subscribeBrowserPopups?: (
     sessionId: string,
@@ -1150,6 +1184,7 @@ export interface HostClient extends TabsClient {
   ) => () => void;
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
+  readonly subscribeComputerViewRemoved?: (listener: ComputerViewRemovedListener) => () => void;
   retainComputerView(
     viewId: string,
     generation: number,
@@ -1343,14 +1378,6 @@ export interface HostClient extends TabsClient {
    * queue read never shows this device's own edit as someone else's.
    */
   ownsEditLease(leaseId: string): boolean;
-  /**
-   * Answers a teammate's ask awaiting this person. Approving names the
-   * version of the task's copy the person saw (`WaitingAsk.revision`, or the
-   * Needs-you entry's `task.revision`); the Host refuses it with `conflict`
-   * if that copy changed since. Until the team confirms, the ask stays in
-   * its task as approving; a decline cancels it there.
-   */
-  decideTeamAsk(decision: TeamAskDecision): Promise<void>;
   /** One page of a message's versions, newest first. */
   listMessageRevisions(
     threadId: string,
@@ -1379,6 +1406,8 @@ export interface HostClient extends TabsClient {
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
       readonly rasterDemand?: boolean;
+      /** False: keep the tab and its last picture without a socket: no viewer to the Home. */
+      readonly connect?: boolean;
     },
   ) => () => void;
   /** Reads the verified Host descriptor's optional target-control capability. */
@@ -1451,6 +1480,7 @@ export interface HostClient extends TabsClient {
   rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences>;
   /** Lets a queue a Stop paused admit work again. Idempotent on the Host. */
   resumeThreadInputQueue(threadId: string): Promise<void>;
+  recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }>;
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void;
   stopMachineAccessSession(sessionId: string): Promise<boolean>;
   /**
@@ -1460,6 +1490,7 @@ export interface HostClient extends TabsClient {
    * A lost answer is retried under the same key, never as a second promotion.
    */
   steerThreadInput(threadId: string, messageId: string): Promise<void>;
+  /** Stops the task's current work: the Run under way when the Host receives it. */
   stopRun(threadId: string, expectedRunId?: string): Promise<void>;
   stopNode(threadId: string, nodeId: string): Promise<void>;
   subscribe(listener: () => void): () => void;
@@ -1556,6 +1587,8 @@ export const resourceBackedFields = {
   browserProfiles: ["browser-profile"],
   browserProfileDeletions: ["browser-profile"],
   browserPlacements: ["browser-placement"],
+  // A pooled browser's report rides the placement resource: reading it watches that kind.
+  browserPools: ["browser-placement"],
   browserProfileHomes: ["browser-home"],
   browserAvailable: ["browser-availability"],
 } as const satisfies Partial<

@@ -41,6 +41,8 @@ export interface DisplayControlsHandle {
   resetInput(): void;
   /** Brings up the keyboard for the field the display reports, from the place's bar. */
   startTyping(): void;
+  /** Routes phone navigation through this view's input queue when editing is negotiated. */
+  navigate(generation: number, to: Extract<DisplayInputEvent, { kind: "nav" }>["to"]): void;
 }
 
 /** Input uses the geometry actually decoded, and the same lease that owns its pixels. */
@@ -98,10 +100,18 @@ export function DisplayControls({
     () => ({
       resetInput() {
         proxy.current?.cancel();
-        lease.resetInput();
+        (currentSession.current ?? lease).resetInput();
       },
       startTyping() {
         setTyping(true);
+      },
+      navigate(generation, to) {
+        flushMove();
+        if (lease.getSnapshot().display?.editingVersion === 1 && currentSession.current)
+          void currentSession.current
+            .input(generation, [{ kind: "nav", to }])
+            .catch(() => undefined);
+        else lease.input(generation, [{ kind: "nav", to }]);
       },
     }),
     [lease],
@@ -121,9 +131,9 @@ export function DisplayControls({
     setSession(next);
     return () => {
       proxy.current?.cancel();
-      lease.resetInput();
       currentSession.current = null;
       next.dispose();
+      lease.resetInput();
     };
   }, [lease]);
   useEffect(
@@ -133,13 +143,17 @@ export function DisplayControls({
   useEffect(() => {
     if (!held) {
       proxy.current?.cancel();
-      lease.resetInput();
+      (currentSession.current ?? lease).resetInput();
       setTyping(false);
     }
     stroke.current = null;
   }, [held, picture?.generation, lease]);
 
-  const submit = (action: () => ReturnType<DisplayEditingSession["send"]>): boolean => {
+  const submit = (
+    action: () => ReturnType<DisplayEditingSession["send"]>,
+    kind?: EditingOperation["kind"],
+    onRefused?: () => void,
+  ): boolean => {
     const before = lease.getSnapshot();
     if (!session || before.input !== "available") return false;
     const generation = before.display?.generation;
@@ -155,14 +169,26 @@ export function DisplayControls({
     setReceipt(null);
     void action()
       .then(async (result) => {
-        if (!active() || !result) return;
-        if (result.outcome === "copied") {
+        if (!result) return;
+        if (result.outcome === "unknown") {
+          if (currentSession.current === session)
+            setReceipt(
+              kind === "cut"
+                ? "May have been cut: check before cutting again."
+                : "May have been pasted: check before pasting again.",
+            );
+          return;
+        }
+        if (!active()) return;
+        if (result.outcome === "copied" || result.outcome === "cut") {
           const outcome = await clipboard.write(result.items);
           if (active()) setReceipt(outcome === "written" ? "Copied" : `Copy ${outcome}`);
         } else if (result.outcome !== "empty") setReceipt(`Copy ${result.outcome}`);
       })
       // A refusal is said by the session's own receipt; a lost picture by its cover.
-      .catch(() => undefined);
+      .catch(() => {
+        if (currentSession.current === session) onRefused?.();
+      });
     return true;
   };
   const send = (events: readonly DisplayInputEvent[], geometry = picture?.generation): boolean =>
@@ -172,7 +198,21 @@ export function DisplayControls({
       ? session !== null && submit(() => session.input(geometry, events))
       : lease.input(geometry, events));
   const sendOperation = (operation: EditingOperation): boolean =>
-    session !== null && submit(() => session.send(operation));
+    session !== null &&
+    submit(
+      () => session.send(operation),
+      operation.kind,
+      () => proxy.current?.refused(operation),
+    );
+  const sendOperations = (operations: readonly EditingOperation[]): boolean =>
+    session !== null &&
+    submit(
+      () => session.sendBatch(operations),
+      operations.some((op) => op.kind === "cut") ? "cut" : "paste",
+      () => {
+        for (const op of operations) proxy.current?.refused(op);
+      },
+    );
   const pendingMove = useRef<{ geometry: number; event: DisplayInputEvent } | null>(null);
   const moveFrame = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);
   const discardMove = () => {
@@ -209,6 +249,7 @@ export function DisplayControls({
       ],
       current.generation,
     );
+    currentSession.current?.resetInput();
   };
   const cancelMovedStroke = useRef(cancelStroke);
   cancelMovedStroke.current = cancelStroke;
@@ -306,8 +347,9 @@ export function DisplayControls({
               context={context}
               abilities={displayEditingAbilities}
               sendOperation={sendOperation}
+              sendOperations={sendOperations}
               onDone={() => {
-                lease.resetInput();
+                (currentSession.current ?? lease).resetInput();
                 setTyping(false);
               }}
             />
@@ -316,7 +358,7 @@ export function DisplayControls({
             label="Done"
             onPress={() => {
               proxy.current?.cancel();
-              lease.resetInput();
+              (currentSession.current ?? lease).resetInput();
               setTyping(false);
             }}
             selected

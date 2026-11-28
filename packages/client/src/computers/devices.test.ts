@@ -8,6 +8,7 @@ import { withDeviceSwitch } from "./device-access-request.js";
 import {
   deviceAccessRows,
   deviceMembership,
+  deviceSwitchOn,
   devicesView,
   type DeviceMembershipInput,
 } from "./devices.js";
@@ -58,9 +59,9 @@ describe("device membership", () => {
   it("derives setup, blockers and applicability without storing state", () => {
     expect(deviceMembership(base)).toEqual({ state: "needs-setup" });
     expect(deviceMembership({ ...base, settingUp: true })).toEqual({ state: "setting-up" });
-    expect(deviceMembership({ ...base, finishSetupReason: "Turn on Use from anywhere" })).toEqual({
+    expect(deviceMembership({ ...base, finishSetupReason: "Turn on Remote access" })).toEqual({
       state: "finish-setup",
-      reason: "Turn on Use from anywhere",
+      reason: "Turn on Remote access",
     });
     expect(
       deviceMembership({
@@ -268,6 +269,15 @@ it("uses Host Device capabilities even when a screen Device has no modules", () 
   ).toEqual([]);
 });
 
+it("takes the Apps switch from the policy and respects whether the device supports it", () => {
+  const ready = mockIphoneScreenDevice();
+  const off = mockIphoneScreenDevice("apps-off");
+  expect(deviceSwitchOn({ ...ready, access: off.access }, "apps")).toBe(false);
+  expect(deviceSwitchOn({ ...off, access: ready.access }, "apps")).toBe(true);
+  expect(deviceSwitchOn({ ...ready, access: null }, "apps")).toBeNull();
+  expect(deviceSwitchOn(ready, "browser")).toBe(false);
+});
+
 it("addresses self and attached screen access by their Device ids", () => {
   const phone = mockIphoneScreenDevice();
   const input = {
@@ -280,4 +290,89 @@ it("addresses self and attached screen access by their Device ids", () => {
     "deviceId",
     phone.id,
   );
+});
+
+it("projects asleep devices with calm status and explanation in devicesView and computerStatus", async () => {
+  const { computerStatus, deviceAsleepDetail, deviceAsleepExplanation, isDeviceAsleep } =
+    await import("./index.js");
+  const { phoneScreenStatus } = await import("../integrations/phone-screen.js");
+  const now = new Date("2026-04-12T10:35:00.000Z");
+  const asleepSince = "2026-04-12T10:15:00.000Z";
+  const sleeping = MachineSummarySchema.parse({
+    ...machine("rnr_mac", "computer"),
+    asleepSince,
+    lastSeenAt: asleepSince,
+    name: "Studio iMac",
+    status: "offline",
+  });
+  expect(isDeviceAsleep(sleeping)).toBe(true);
+  expect(deviceAsleepDetail(sleeping)).toBe(deviceAsleepExplanation);
+  expect(computerStatus(sleeping, now)).toEqual({
+    label: "Asleep · seen 20m",
+    tone: "waiting",
+  });
+
+  const view = devicesView({ machines: [sleeping], sessions: [], hereId: null });
+  expect(view.devices[0]).toMatchObject({
+    asleep: true,
+    asleepDetail: deviceAsleepExplanation,
+    label: "Studio iMac",
+  });
+  expect(view.devices[0]?.status).toMatch(/^Asleep/u);
+
+  // Online device ignores stale asleepSince.
+  const awake = { ...sleeping, status: "online" as const };
+  expect(isDeviceAsleep(awake)).toBe(false);
+  expect(deviceAsleepDetail(awake)).toBeNull();
+
+  // iPhone driven by a sleeping Mac reports the Mac as asleep.
+  const phone = mockIphoneScreenDevice();
+  const sleepingPhone: typeof phone = {
+    ...phone,
+    phoneDisplay: {
+      ...phone.phoneDisplay!,
+      control: { reason: { kind: "driver-asleep" }, state: "unavailable" },
+    },
+  };
+  expect(phoneScreenStatus(sleepingPhone)).toEqual({
+    fix: "Screen control comes back when Alex’s MacBook Pro wakes.",
+    label: "Asleep on Alex’s MacBook Pro",
+    needsSetup: false,
+    tone: "waiting",
+  });
+});
+
+it("says a Device whose person stopped agents on it is stopped, with the time, online or not", async () => {
+  const { computerStatus, deviceStoppedLabel, isDeviceStopped } = await import("./index.js");
+  const now = new Date("2026-11-20T11:00:00");
+  const agentsStoppedSince = new Date("2026-11-20T10:42:00").toISOString();
+  const time = new Date(agentsStoppedSince).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  for (const status of ["online", "offline"] as const) {
+    const stopped = MachineSummarySchema.parse({
+      ...machine("rnr_mac", "computer"),
+      agentsStoppedSince,
+      name: "Studio iMac",
+      status,
+    });
+    expect(isDeviceStopped(stopped)).toBe(true);
+    expect(deviceStoppedLabel(stopped, now, "en-US")).toBe(
+      `Stopped on Studio iMac · since ${time}`,
+    );
+    expect(computerStatus(stopped, now)).toEqual({
+      label: deviceStoppedLabel(stopped, now),
+      tone: "waiting",
+    });
+    expect(
+      devicesView({ machines: [stopped], sessions: [], hereId: null }).devices[0]?.status,
+    ).toBe(deviceStoppedLabel(stopped));
+  }
+  const running = MachineSummarySchema.parse({
+    ...machine("rnr_mac", "computer"),
+    status: "online",
+  });
+  expect(isDeviceStopped(running)).toBe(false);
+  expect(computerStatus(running, now).label).toBe("Online");
 });

@@ -1,10 +1,38 @@
+import { readMachineBootId, type ExecutionContainment } from "../runtime/execution-containment.js";
 import { AppServerError } from "../apps/app-server-manager.js";
 import { harnessMinimumVersion } from "@opensteer/core";
 import { meetsMinimumVersion } from "@opensteer/harness";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { noFollowFlag } from "@opensteer/shared/privateFiles";
 import { RunFiles, RunFileError, type RunFilePort } from "../attachments/run-files.js";
-import type { HostRunFileRequest } from "@opensteer/protocol";
-import { sameRunnerConnectionFence, computerAppMaxTimeoutMs } from "@opensteer/protocol";
+import {
+  HomeFilesError,
+  HomeFilesHandler,
+  createHttpHomeFilesTransferClient,
+  type HomeFilesTransferClient,
+} from "../folders/home-files.js";
+import type {
+  HostHomeFileRequest,
+  HostOutputImageUpload,
+  HostRunFileRequest,
+} from "@opensteer/protocol";
+import {
+  CorrelationIdSchema,
+  HomeFileOutputImageExtensionSchema,
+  agentHomeFilesCapability,
+  homeFilesOutputImageMaxBytes,
+  runFileTransferProofPayload,
+  runnerPowerStateCapability,
+  triggerStopGenerationCapability,
+  attemptStopStateCapability,
+  runnerAgentStopCapability,
+  agentSessionGuardsCapability,
+  runnerRestartingCloseCode,
+  sameRunnerConnectionFence,
+  computerAppMaxTimeoutMs,
+} from "@opensteer/protocol";
 import { openAppTunnel } from "../apps/app-tunnel.js";
 import type { HostAppRequest, HostAppsSync } from "@opensteer/protocol";
 import type { AppServerState } from "../apps/app-server-manager.js";
@@ -16,6 +44,7 @@ import type {
   HarnessInstanceId,
   RunId,
   RunnerCapability,
+  ToolOutputImage,
 } from "@opensteer/core";
 import { sameStringSet } from "@opensteer/core";
 import {
@@ -61,7 +90,7 @@ import {
   type RunnerModuleStream,
 } from "@opensteer/runner-client";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { randomUUID } from "node:crypto";
+import { randomUUID, sign } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import { ComputerAppModuleHandler } from "../computer-apps/module-handler.js";
 import type { PreparedIntegrationsModule } from "../computer-apps/prepare.js";
@@ -71,6 +100,8 @@ import {
   RunnerRuntime,
   errorCatalog,
   type HarnessDriverAvailability,
+  type ProxyTokenRenewalResult,
+  type ProxyTokenRenewalTarget,
   type RefreshedRunCredentials,
   type RunnerMessageSink,
 } from "../runtime/runtime.js";
@@ -78,7 +109,10 @@ import { probeFullDiskAccess, type FullDiskAccessProbeOptions } from "../shell/f
 import type { PreparedShellModule } from "../shell/shell-host-key.js";
 import { ShellModuleHandler } from "../shell/shell-module-handler.js";
 
-const maximumFrameBytes = 1024 * 1024;
+/** Maximum inbound Host->Runner control WebSocket frame size; accommodates worst-case JSON-escaped trigger.execute (AA14.6). */
+export const runnerControlMaxFrameBytes = 4 * 1024 * 1024;
+const maximumFrameBytes = runnerControlMaxFrameBytes;
+const maximumOutboundFrameBytes = 1024 * 1024;
 const maximumQueuedInboundBytes = 4 * maximumFrameBytes;
 const maximumQueuedInboundItems = 64;
 const maximumBufferedOutboundBytes = 8 * 1024 * 1024;
@@ -145,6 +179,7 @@ type PostAuthenticationHostMessage = Exclude<
  */
 interface RunnerModuleHandler {
   readonly maxPayloadBytes: number;
+  busy?(): boolean;
   attach(stream: RunnerModuleStream): Promise<void> | void;
   detach(): Promise<void> | void;
   handleFrame(frame: Buffer, isBinary: boolean): Promise<void>;
@@ -155,8 +190,10 @@ function computerAppModuleHandler(
   logger: RunnerLogger,
   config: Pick<RunnerConfig, "hostUrl" | "controlCaPath" | "mode">,
   port?: RunFilePort,
+  stopped = false,
 ): RunnerModuleHandler {
   const handler = new ComputerAppModuleHandler({
+    stopped,
     ...(integrations.files
       ? {
           files: new RunFiles({
@@ -186,6 +223,7 @@ function computerAppModuleHandler(
     detach: () => handler.detach(),
     handleFrame: (frame, isBinary) => handler.handleFrame(frame, isBinary),
     maxPayloadBytes: handler.maxPayloadBytes,
+    busy: () => handler.busy,
   };
 }
 
@@ -236,6 +274,8 @@ export interface ReconnectingHostConnectionOptions {
   readonly agents?: RunnerAgentsConnection;
   readonly browserBridge?: RunnerConfig["browserBridge"];
   readonly bootId: RunnerDescriptor["bootId"];
+  /** Stable OS boot identity override for tests; defaults to the host's OS boot ID. */
+  readonly machineBootId?: string | null;
   readonly config: RunnerConfig;
   /** The computer this Runner runs on, read once at start. */
   readonly device?: RunnerDescriptor["device"];
@@ -257,16 +297,28 @@ export interface ReconnectingHostConnectionOptions {
   readonly onDisconnected?: () => Promise<void> | void;
   /** Called once, instead of reconnecting, when the Host revokes this identity. */
   readonly onRevoked?: () => Promise<void> | void;
+  /** Host OS platform override for tests; defaults to `process.platform`. */
+  readonly platform?: NodeJS.Platform;
   readonly runtimeVersion: string;
   readonly shellModule?: PreparedShellModule;
+  /**
+   * The person's Stop for agent work on this computer. When given, this Runner
+   * tells a Home that accepts it when agents are stopped and when they resume,
+   * and its shell module refuses and ends agent shells while stopped.
+   */
+  readonly agentsStoppedSince?: string | null;
+  readonly containment?: ExecutionContainment;
+  readonly updateHeld?: () => boolean;
 }
 
 export class ReconnectingHostConnection {
   readonly #agents: RunnerAgentsConnection | undefined;
   readonly #browserBridge: RunnerConfig["browserBridge"];
   readonly #bootId: RunnerDescriptor["bootId"];
+  readonly #machineBootId: string | undefined;
   readonly #config: Omit<RunnerConfig, "enrollmentToken">;
   readonly #device: RunnerDescriptor["device"];
+  readonly #platform: NodeJS.Platform;
   readonly #fullDiskAccessProbe: FullDiskAccessProbeOptions;
   readonly #identityStore: ReconnectingHostConnectionOptions["identityStore"];
   readonly #computerUse: PreparedIntegrationsModule["computerUse"];
@@ -307,6 +359,11 @@ export class ReconnectingHostConnection {
     string,
     (credentials: RefreshedRunCredentials | undefined) => void
   >();
+  /** On-demand proxy token renewals this connection has asked for and not yet been answered. */
+  readonly #proxyTokenWaiters = new Map<
+    string,
+    (result: ProxyTokenRenewalResult | undefined) => void
+  >();
   #enrollmentCredential: RunnerEnrollmentCredential | undefined;
   /**
    * The macOS grant as this Runner last probed it, which the prepared module
@@ -320,6 +377,21 @@ export class ReconnectingHostConnection {
   /** Set after the Host rejects this Runner's persisted key; see `#proof`. */
   #reenroll = false;
   #socket: WebSocket | undefined;
+  /** Authenticated sink for the active primary socket, so power transitions send fenced frames once. */
+  #activeSink:
+    | {
+        readonly sink: CausallyOrderedRunnerSink;
+        readonly socket: WebSocket;
+        sleepingSent: boolean;
+      }
+    | undefined;
+  readonly #agentsStoppedSince: string | null | undefined;
+  readonly #containment: ExecutionContainment | undefined;
+  readonly #updateHeld: () => boolean;
+  #moduleWork = 0;
+  #updateModules: readonly RunnerModuleHandler[] = [];
+  /** The socket the Home accepted agent-stop notices on, and how to stop telling it. */
+  /** The last agent-stop notice sent, settled whether or not it reached the Home. */
   /** The engines the current socket's hello advertised; see `recheckEngines`. */
   #advertisedEngines: { readonly signature: string; readonly socket: WebSocket } | undefined;
   /** The work this socket is serving, so a recheck can see whether any is still queued. */
@@ -332,11 +404,17 @@ export class ReconnectingHostConnection {
       options.executionClock ? { now: options.executionClock.now } : {},
     );
     this.#agents = options.agents;
+    this.#agentsStoppedSince = options.agentsStoppedSince;
     this.#browserBridge = options.browserBridge;
     this.#bootId = options.bootId;
+    this.#machineBootId =
+      options.machineBootId === null
+        ? undefined
+        : (options.machineBootId ?? readMachineBootId(options.platform ?? process.platform));
     const { enrollmentToken, ...config } = options.config;
     this.#config = config;
     this.#device = options.device;
+    this.#platform = options.platform ?? process.platform;
     this.#enrollmentCredential = runnerEnrollmentCredential(enrollmentToken);
     this.#fullDiskAccess = options.shellModule?.descriptor.fullDiskAccess;
     this.#fullDiskAccessProbe = options.fullDiskAccessProbe ?? {};
@@ -351,6 +429,7 @@ export class ReconnectingHostConnection {
           this.#logger,
           this.#config,
           options.agents?.runtime,
+          this.#agentsStoppedSince != null,
         )
       : undefined;
     this.#messagingDescriptor = options.messagingModule?.descriptor;
@@ -362,6 +441,8 @@ export class ReconnectingHostConnection {
     this.#onRevoked = options.onRevoked;
     this.#runtimeVersion = options.runtimeVersion;
     this.#shellModule = options.shellModule;
+    this.#containment = options.containment;
+    this.#updateHeld = options.updateHeld ?? (() => false);
     if (
       !options.agents &&
       !options.browserBridge &&
@@ -374,6 +455,20 @@ export class ReconnectingHostConnection {
     if (this.#config.maxConcurrentRuns > 1_000) {
       throw new Error("OPENSTEER_MAX_CONCURRENT_RUNS cannot exceed 1000");
     }
+  }
+
+  idleForUpdate(): boolean {
+    const serving = this.#work;
+    if (!serving || serving.socket !== this.#socket || serving.socket.readyState !== WebSocket.OPEN)
+      return false;
+    const { work } = serving;
+    return (
+      work.idle() &&
+      this.#moduleWork === 0 &&
+      !this.#updateModules.some((module) => module.busy?.()) &&
+      Object.values(work.activity()).every((ids) => ids.length === 0) &&
+      (this.#agents?.runtime.idleForUpdate() ?? true)
+    );
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -431,7 +526,8 @@ export class ReconnectingHostConnection {
       const ceiling = this.#unenrollable()
         ? unenrollableReconnectDelayMs
         : Math.min(
-            (this.#agents?.runtime.attachInventory().length ?? 0) > 0
+            (this.#agents?.runtime.attachInventory().length ?? 0) > 0 ||
+              (this.#agents?.runtime.attachFiringInventory().length ?? 0) > 0
               ? reconnectDelayHoldingRunsMs
               : maximumReconnectDelayMs,
             500 * 2 ** Math.min(failures, 6),
@@ -449,6 +545,36 @@ export class ReconnectingHostConnection {
   close(): void {
     const socket = this.#socket;
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1001, "Runner shutting down");
+  }
+
+  /**
+   * Whether this computer reports sleep transitions to its Home. Linux servers
+   * and Android Agent Phones never advertise or send power-state frames.
+   */
+  #supportsPowerState(): boolean {
+    const devicePlatform = this.#device?.platform;
+    if (devicePlatform === "linux" || devicePlatform === "android") return false;
+    if (devicePlatform === "macos" || devicePlatform === "windows") return true;
+    return this.#platform === "darwin" || this.#platform === "win32";
+  }
+
+  /**
+   * Tells the Home on the current primary connection that this computer is
+   * about to sleep. Best effort, sent at most once per connection, and never
+   * sent on Linux or Android.
+   */
+  notifySleeping(): Promise<void> {
+    if (!this.#supportsPowerState()) return Promise.resolve();
+    const active = this.#activeSink;
+    if (!active || active.socket !== this.#socket) return Promise.resolve();
+    if (active.socket.readyState !== WebSocket.OPEN || active.sleepingSent)
+      return Promise.resolve();
+    active.sleepingSent = true;
+    return active.sink.send({ type: "runner.power.sleeping" }).catch(() => undefined);
+  }
+
+  notifyAwake(): void {
+    if (this.#activeSink) this.#activeSink.sleepingSent = false;
   }
 
   /**
@@ -492,7 +618,14 @@ export class ReconnectingHostConnection {
     const absorbSocketError = (): void => undefined;
     socket.on("error", absorbSocketError);
     this.#socket = socket;
-    const abort = () => socket.close(1001, "Runner stopping");
+    const abort = () => {
+      const restarting =
+        signal.reason instanceof Error && signal.reason.message === "device-restarting";
+      socket.close(
+        restarting ? runnerRestartingCloseCode : 1001,
+        restarting ? "The device is restarting." : "Runner stopping",
+      );
+    };
     signal.addEventListener("abort", abort, { once: true });
 
     const inbox = new BoundedRunnerInbox<InboundFrame>({
@@ -541,8 +674,13 @@ export class ReconnectingHostConnection {
         iterator,
         signal,
       );
-      sink = new CausallyOrderedRunnerSink(new WebSocketMessageSink(socket, this.#fence), (runId) =>
-        this.#refreshRunCredentials(socket, runId),
+      sink = new CausallyOrderedRunnerSink(
+        new WebSocketMessageSink(socket, this.#fence),
+        (runId) => this.#refreshRunCredentials(socket, runId),
+        welcome.acceptsAttemptStopState === true,
+        welcome.acceptsAutomationScripts === true
+          ? (target) => this.#renewProxyToken(socket, target)
+          : undefined,
       );
       const browserHandler = this.#browserModuleHandler();
       const integrationsHandler = this.#integrationsHandler;
@@ -560,6 +698,14 @@ export class ReconnectingHostConnection {
       if (disallowed) {
         throw new Error(`This Runner's enrollment does not allow the ${disallowed.module} module`);
       }
+      if (welcome.acceptsPowerState && this.#supportsPowerState())
+        this.#activeSink = { sink, sleepingSent: false, socket };
+      if (welcome.acceptsAgentStop && this.#agentsStoppedSince)
+        await sink.send({ type: "runner.agents.stopped", stoppedAt: this.#agentsStoppedSince });
+      await this.#onConnected?.({
+        environmentId: this.#agents ? this.#identity.environmentId : null,
+        runnerId: this.#identity.runnerId,
+      });
       await this.#serve(
         socket,
         sink,
@@ -598,6 +744,7 @@ export class ReconnectingHostConnection {
       socket.off("close", onClose);
       socket.off("error", onError);
       socket.off("error", absorbSocketError);
+      if (this.#activeSink?.socket === socket) this.#activeSink = undefined;
       if (this.#socket === socket) this.#socket = undefined;
       if (this.#advertisedEngines?.socket === socket) this.#advertisedEngines = undefined;
       if (sink) {
@@ -699,10 +846,6 @@ export class ReconnectingHostConnection {
       environmentId: this.#identity.environmentId,
       runnerId: this.#identity.runnerId,
     });
-    await this.#onConnected?.({
-      environmentId: this.#agents ? this.#identity.environmentId : null,
-      runnerId: this.#identity.runnerId,
-    });
     // Only a module that is actually running is reported ready. A reach-only
     // computer says nothing here; its shell module reports itself once its own
     // stream is open.
@@ -728,10 +871,25 @@ export class ReconnectingHostConnection {
       ? await new LocalBrowserRuntimeBridge(bridge).capabilities()
       : {};
     return {
+      ...(this.#agentsStoppedSince === undefined
+        ? {}
+        : { agentsStoppedSince: this.#agentsStoppedSince }),
       bootId: this.#bootId,
+      ...(this.#machineBootId ? { machineBootId: this.#machineBootId } : {}),
       capabilities: [
         ...runnerCapabilities(harnessDrivers),
-        ...(agents ? ([runEventsCapability] as const) : []),
+        ...(agents?.runFileOptions || agents?.runtime.homeFileOptions?.()
+          ? [agentHomeFilesCapability]
+          : []),
+        ...(this.#supportsPowerState() ? [runnerPowerStateCapability] : []),
+        ...(this.#agentsStoppedSince === undefined ? [] : [runnerAgentStopCapability]),
+        ...(agents
+          ? ([
+              runEventsCapability,
+              triggerStopGenerationCapability,
+              attemptStopStateCapability,
+            ] as const)
+          : []),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]
           : []),
@@ -758,6 +916,7 @@ export class ReconnectingHostConnection {
                 tabRestoreVersion: 1,
                 surfaceState: 1,
                 popupFollowVersion: 1,
+                actorClaim: 1,
                 captureRegion: 1,
                 rasterDemand: 1,
                 editing: 2,
@@ -794,7 +953,6 @@ export class ReconnectingHostConnection {
       computerTool: 1,
       ...(agents.runFileOptions ? { runFiles: 1 as const } : {}),
       maxConcurrentRuns: this.#config.maxConcurrentRuns,
-      providerStateModes: [...agents.runtime.providerStateModes()],
     };
   }
 
@@ -875,7 +1033,15 @@ export class ReconnectingHostConnection {
       maxPayloadBytes: handler.maxPayloadBytes,
       module,
       mode: this.#config.mode,
-      onFrame: (frame, isBinary) => handler.handleFrame(frame, isBinary),
+      onFrame: async (frame, isBinary) => {
+        if (this.#updateHeld()) throw new Error("Opensteer is preparing to update");
+        this.#moduleWork += 1;
+        try {
+          await handler.handleFrame(frame, isBinary);
+        } finally {
+          this.#moduleWork -= 1;
+        }
+      },
       onInvalidated: () => handler.detach(),
       privateKey: this.#identity.privateKey,
       runnerId: this.#identity.runnerId,
@@ -898,7 +1064,10 @@ export class ReconnectingHostConnection {
     }
     return {
       close: async () => {
-        opened.close();
+        const restarting =
+          signal.reason instanceof Error && signal.reason.message === "device-restarting";
+        if (restarting) opened.close(runnerRestartingCloseCode, "The device is restarting.");
+        else opened.close();
         await handler.detach();
       },
       closed: opened.closed,
@@ -925,17 +1094,28 @@ export class ReconnectingHostConnection {
       this.#ticketWaiters.set(requestId, { module, reject, resolve });
     });
     try {
-      await sendWireMessage(socket, {
-        ...this.#fence.fence,
-        module,
-        requestId,
-        type: "runner.auxiliary.ticket-request",
-      });
-      return await withTimeout(issued, handshakeTimeoutMs, {
-        abortFallback: "Runner connection closed",
-        signal,
-        timeoutError: () => new Error(`Host did not issue a ${module} module ticket`),
-      });
+      // The answer is awaited together with the request's own write, never
+      // after it: a connection that closes while the request is still being
+      // written rejects the answer, and that rejection must already have a
+      // listener, or it surfaces as unhandled.
+      const [, ticket] = await withTimeout(
+        Promise.all([
+          sendWireMessage(socket, {
+            ...this.#fence.fence,
+            module,
+            requestId,
+            type: "runner.auxiliary.ticket-request",
+          }),
+          issued,
+        ]),
+        handshakeTimeoutMs,
+        {
+          abortFallback: "Runner connection closed",
+          signal,
+          timeoutError: () => new Error(`Host did not issue a ${module} module ticket`),
+        },
+      );
+      return ticket;
     } finally {
       this.#ticketWaiters.delete(requestId);
     }
@@ -967,6 +1147,32 @@ export class ReconnectingHostConnection {
       }).catch(() => undefined);
     } finally {
       this.#credentialWaiters.delete(requestId);
+    }
+  }
+
+  /** Asks the Host for a fresh capability token for an active watch or firing on demand. */
+  async #renewProxyToken(
+    socket: WebSocket,
+    target: ProxyTokenRenewalTarget,
+  ): Promise<ProxyTokenRenewalResult | undefined> {
+    const requestId = CorrelationIdSchema.parse(randomUUID());
+    const answered = new Promise<ProxyTokenRenewalResult | undefined>((resolve) => {
+      this.#proxyTokenWaiters.set(requestId, resolve);
+    });
+    try {
+      await sendWireMessage(socket, {
+        ...this.#fence.fence,
+        requestId,
+        target,
+        type: "runner.proxy-token.renew",
+      });
+      return await withTimeout(answered, handshakeTimeoutMs, {
+        abortFallback: "Runner connection closed",
+        signal: AbortSignal.timeout(handshakeTimeoutMs * 2),
+        timeoutError: () => new Error("Host did not answer a proxy token renewal"),
+      }).catch(() => undefined);
+    } finally {
+      this.#proxyTokenWaiters.delete(requestId);
     }
   }
 
@@ -1060,8 +1266,10 @@ export class ReconnectingHostConnection {
         runtimeId: bridge.runtimeId,
         url: bridge.url,
       }),
+      this.#agentsStoppedSince != null,
     );
     return {
+      busy: () => relay.busy,
       attach: (stream) => relay.attach(stream),
       detach: () => relay.detach(),
       handleFrame: (frame, isBinary) => relay.handleFrame(frame, isBinary),
@@ -1073,6 +1281,8 @@ export class ReconnectingHostConnection {
     const shell = this.#shellModule;
     if (!shell) return undefined;
     const handler = new ShellModuleHandler({
+      stopped: this.#agentsStoppedSince != null,
+      ...(this.#containment ? { containment: this.#containment } : {}),
       helperBinary: shell.helperBinary,
       hostKeyPath: shell.hostKeyPath,
       logger: this.#logger,
@@ -1083,6 +1293,7 @@ export class ReconnectingHostConnection {
       detach: () => handler.detach(),
       handleFrame: (frame, isBinary) => handler.handleFrame(frame, isBinary),
       maxPayloadBytes: handler.maxPayloadBytes,
+      busy: () => handler.busy,
     };
   }
 
@@ -1127,22 +1338,34 @@ export class ReconnectingHostConnection {
       ? new AgentsWorkSession({
           agents,
           agentHome: welcome.agentHome,
+          agentHomeIsProvisional: welcome.agentHomeIsProvisional === true,
+          ...(welcome.acceptsHomeFiles
+            ? {
+                signFileTransfer: (payload: string) =>
+                  sign(null, Buffer.from(payload), this.#identity.privateKey).toString("base64url"),
+              }
+            : {}),
           runRetryEvents: welcome.runRetryEvents === true,
           appTransport: this.#config,
           environmentId: () => requiredEnvironmentId(this.#identity),
           fail: (reason) => socket.close(1011, reason),
           fence: this.#fence,
           heartbeatNow: () => sendHeartbeat(),
+          logger: this.#logger,
           signal,
           sink,
           supportsUsageWindowProviderIds,
         })
       : reachOnlyWorkSession(sink);
     this.#work = { socket, work };
+    this.#updateModules = handlers.map(({ handler }) => handler);
     // Module streams are opened from inside the serving loop, because the
     // ticket each one needs is answered on this connection: the loop below is
     // the only reader of it, so it is the only place that can hand a ticket
     // over. Their own lifetime ends with this connection, never before it.
+    const stopped = this.#agentsStoppedSince != null;
+    const stoppedReplies = stopped ? reachOnlyWorkSession(sink, "stopped") : undefined;
+    const updateReplies = reachOnlyWorkSession(sink, "update");
     const modules = new Map<RunnerAuxiliaryModule, OpenedRunnerModule>();
     const moduleLifetime = new AbortController();
     const moduleSignal = AbortSignal.any([signal, moduleLifetime.signal]);
@@ -1196,8 +1419,19 @@ export class ReconnectingHostConnection {
             );
             this.#credentialWaiters.delete(message.requestId);
             break;
+          case "host.proxy-token.renewed":
+            this.#proxyTokenWaiters.get(message.requestId)?.({
+              browserCdp: message.browserCdp,
+              mcp: message.mcp,
+              ...(message.reason !== undefined ? { reason: message.reason } : {}),
+            });
+            this.#proxyTokenWaiters.delete(message.requestId);
+            break;
           default:
-            await work.handle(message);
+            if (stoppedReplies && !stoppedWorkAllowed[message.type])
+              await stoppedReplies.handle(message);
+            else if (this.#updateHeld()) await updateReplies.handle(message);
+            else await work.handle(message);
         }
       },
     });
@@ -1205,9 +1439,12 @@ export class ReconnectingHostConnection {
       // The Host hears the first settings.json read, then every Run this Runner
       // holds, and answers which continue here before it dispatches anything.
       await work.initialReports();
+      const firings =
+        welcome.acceptsAutomationScripts === true ? work.attachFiringInventory?.() : undefined;
       await sink.send({
         complete: true,
         executions: work.attachInventory(),
+        ...(firings && firings.length > 0 ? { firings } : {}),
         type: "runner.executions.attach",
       });
       for (;;) {
@@ -1231,6 +1468,7 @@ export class ReconnectingHostConnection {
       }
       this.#ticketWaiters.clear();
       this.#credentialWaiters.clear();
+      this.#proxyTokenWaiters.clear();
       await Promise.allSettled(supervision);
       await work.close();
     }
@@ -1247,6 +1485,43 @@ type RunnerHeartbeatActivity = Pick<
 type RunnerWorkMessage = Exclude<
   PostAuthenticationHostMessage,
   { readonly type: "host.welcome" | "host.connection.lease-renewed" | "host.auxiliary.ticket" }
+>;
+
+export const stoppedWorkAllowed = {
+  "host.app.cancel": false,
+  "host.app.connect": false,
+  "host.app.start": false,
+  "host.app.stop": false,
+  "host.apps.sync": false,
+  "host.background-text": false,
+  "host.command": false,
+  "host.discover-model-servers": true,
+  "host.executions.acked": true,
+  "host.executions.attached": true,
+  "host.executions.renewed": true,
+  "host.harness-authentication": true,
+  "host.home-files.cancel": true,
+  "host.home-files.download": true,
+  "host.home-files.list": true,
+  "host.home-files.read": true,
+  "host.home-files.resolve": true,
+  "host.home-files.write": false,
+  "host.inspect-harnesses": true,
+  "host.live.resync": false,
+  "host.output-image.upload": false,
+  "host.reconcile-harnesses": true,
+  "host.run-file.cancel": false,
+  "host.run-file.receive": false,
+  "host.run-file.send": false,
+  "host.runs.revoked": true,
+  "host.thread.stop.recheck": true,
+  "host.voice": false,
+} satisfies Record<
+  Exclude<
+    RunnerWorkMessage["type"],
+    "host.grants.credentials" | "host.proxy-token.renewed" | "host.shell.probe-full-disk-access"
+  >,
+  boolean
 >;
 
 type HarnessCatalogRequest = Extract<
@@ -1270,11 +1545,15 @@ interface RunnerWorkSession {
    * and then cancelled by a reconnect.
    */
   settled(): boolean;
+  idle(): boolean;
   /** Every Run this Runner holds, announced before any other work on a connection. */
   attachInventory(): Extract<
     RunnerOperationalReport,
     { readonly type: "runner.executions.attach" }
   >["executions"];
+  attachFiringInventory?(): NonNullable<
+    Extract<RunnerOperationalReport, { readonly type: "runner.executions.attach" }>["firings"]
+  >;
   /** What the Host must hear before it dispatches anything: the first read of settings.json. */
   initialReports(): Promise<void>;
   handle(message: RunnerWorkMessage): Promise<void>;
@@ -1287,11 +1566,15 @@ interface AgentsWorkSessionOptions {
   readonly agents: RunnerAgentsConnection;
   /** The Agent home this computer hosts, as the Host's welcome named it. */
   readonly agentHome?: ComputerFolder | undefined;
+  readonly agentHomeIsProvisional?: boolean;
+  readonly signFileTransfer?: (payload: string) => string;
   /** Whether the connected Host confirmed support for `run.retry` events on welcome. */
   readonly runRetryEvents?: boolean | undefined;
   readonly environmentId: () => EnvironmentId;
   readonly fail: (reason: string) => void;
   readonly fence: RunnerConnectionFenceLedger;
+  /** Where a failure the Host cannot see is told: the Host only ever hears its report. */
+  readonly logger?: RunnerLogger;
   /** Sends a heartbeat now rather than at the next interval. */
   readonly heartbeatNow: () => void;
   readonly signal: AbortSignal;
@@ -1303,6 +1586,15 @@ interface AgentsWorkSessionOptions {
 /** One connection's worth of agent work: harness catalogs, commands, storage. */
 export class AgentsWorkSession implements RunnerWorkSession {
   readonly #fileRequests = new Map<string, AbortController>();
+  readonly #homeFileRequests = new Map<string, AbortController>();
+  readonly #outputImagePublishes = new Map<
+    string,
+    {
+      readonly resolve: (response: HostOutputImageUpload) => void;
+    }
+  >();
+  readonly #homeFiles: HomeFilesHandler | undefined;
+  readonly #outputImageTransfers: HomeFilesTransferClient;
   readonly #appRequests = new Map<string, { appId: string; controller: AbortController }>();
   readonly #options: AgentsWorkSessionOptions;
   readonly #lifetime = new AbortController();
@@ -1329,6 +1621,29 @@ export class AgentsWorkSession implements RunnerWorkSession {
     this.#options = options;
     options.agents.runtime.setHostRunRetryEvents(options.runRetryEvents === true);
     this.#signal = AbortSignal.any([options.signal, this.#lifetime.signal]);
+    const transport = {
+      hostOrigin: options.appTransport.hostUrl,
+      mode: options.appTransport.mode,
+      ...(options.appTransport.controlCaPath
+        ? { controlCaPath: options.appTransport.controlCaPath }
+        : {}),
+    };
+    this.#outputImageTransfers = createHttpHomeFilesTransferClient(
+      transport,
+      (binding, id, method) =>
+        options.signFileTransfer?.(runFileTransferProofPayload(binding, id, method)),
+    );
+    const homeFileOptions =
+      options.agents.runFileOptions ?? options.agents.runtime.homeFileOptions?.();
+    if (homeFileOptions && options.signFileTransfer) {
+      this.#homeFiles = new HomeFilesHandler({
+        ...homeFileOptions,
+        transfers: this.#outputImageTransfers,
+      });
+      options.sink.setOutputImagePublisher((image, signal) =>
+        this.#publishOutputImage(image, signal),
+      );
+    }
     options.agents.runtime.observeAgentHomeSkills(async (bindingGeneration, scan) => {
       await this.#reportSkills(
         bindingGeneration,
@@ -1337,12 +1652,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
           : { status: "failed", reason: "unreadable" },
       );
     });
-    this.#initialSettings = options.agents.runtime
-      .observeAgentHomeSettings(
-        (read) => this.#reportSettings(read),
-        options.agentHome ? { agentHome: options.agentHome, signal: this.#signal } : undefined,
-      )
-      .catch(() => undefined);
+    this.#initialSettings = this.#initializeAgentHome(options.agentHome).catch(() => undefined);
     this.#initialSkills = Promise.resolve();
     this.#unobserveApps = options.agents.runtime.appServers.observe((state) =>
       this.#reportAppState(state),
@@ -1370,6 +1680,10 @@ export class AgentsWorkSession implements RunnerWorkSession {
 
   attachInventory(): ReturnType<RunnerWorkSession["attachInventory"]> {
     return this.#options.agents.runtime.attachInventory();
+  }
+
+  attachFiringInventory(): ReturnType<NonNullable<RunnerWorkSession["attachFiringInventory"]>> {
+    return this.#options.agents.runtime.attachFiringInventory();
   }
 
   async handle(message: RunnerWorkMessage): Promise<void> {
@@ -1442,11 +1756,33 @@ export class AgentsWorkSession implements RunnerWorkSession {
       case "host.live.resync":
         this.#options.agents.runtime.resynchronizeLive(message.runId);
         return;
+      case "host.thread.stop.recheck": {
+        void this.#options.agents.runtime
+          .recheckThreadStop(message.threadId)
+          .then(
+            ({ proven }) =>
+              this.#options.sink.send({
+                type: "runner.thread.stop.recheck.result",
+                requestId: message.requestId,
+                proven,
+              }),
+            () =>
+              this.#options.sink.send({
+                type: "runner.thread.stop.recheck.result",
+                requestId: message.requestId,
+                proven: false,
+              }),
+          )
+          .catch(() => undefined);
+        return;
+      }
       case "host.executions.acked":
-        this.#options.agents.runtime.acknowledge(message.acks);
+        this.#options.agents.runtime.acknowledge(message.acks, message.firingAcks);
         return;
       case "host.executions.renewed":
         this.#options.agents.runtime.renewLeases(message);
+        return;
+      case "host.proxy-token.renewed":
         return;
       // In order with commands: a revocation names Runs the Host saw this
       // connection execute, so it must never overtake the execute it follows.
@@ -1468,6 +1804,25 @@ export class AgentsWorkSession implements RunnerWorkSession {
           this.#options.fail("File response failed"),
         );
         return;
+      case "host.home-files.list":
+      case "host.home-files.read":
+      case "host.home-files.resolve":
+      case "host.home-files.download":
+      case "host.home-files.write":
+      case "host.home-files.cancel":
+        if (!this.#options.signFileTransfer) return;
+        void this.#answerHomeFileRequest(message).catch(() =>
+          this.#options.fail("Home file response failed"),
+        );
+        return;
+      case "host.output-image.upload": {
+        const waiter = this.#outputImagePublishes.get(message.requestId);
+        if (waiter) {
+          this.#outputImagePublishes.delete(message.requestId);
+          waiter.resolve(message);
+        }
+        return;
+      }
       case "host.app.start":
       case "host.app.connect":
       case "host.app.stop":
@@ -1483,9 +1838,13 @@ export class AgentsWorkSession implements RunnerWorkSession {
   async close(): Promise<void> {
     this.#unsubscribePreparation();
     this.#unobserveApps();
+    this.#options.sink.setOutputImagePublisher(undefined);
     this.#options.agents.runtime.observeAgentHomeSkills(undefined);
     void this.#options.agents.runtime.observeAgentHomeSettings(undefined);
     this.#lifetime.abort(new Error("Host connection stopped"));
+    for (const controller of this.#homeFileRequests.values()) controller.abort();
+    this.#homeFileRequests.clear();
+    this.#outputImagePublishes.clear();
     await withTimeout(
       Promise.allSettled([
         this.#ordered.then(() => Promise.allSettled(this.#commandResponses)),
@@ -1503,6 +1862,17 @@ export class AgentsWorkSession implements RunnerWorkSession {
 
   settled(): boolean {
     return this.#orderedPending === 0 && this.#commandResponses.size === 0;
+  }
+
+  idle(): boolean {
+    return (
+      this.settled() &&
+      this.#fileRequests.size === 0 &&
+      this.#homeFileRequests.size === 0 &&
+      this.#appRequests.size === 0 &&
+      this.#authenticationResponses.size === 0 &&
+      this.#voiceResponses.size === 0
+    );
   }
 
   /** Orders admission without awaiting engine controls already in flight. */
@@ -1693,6 +2063,8 @@ export class AgentsWorkSession implements RunnerWorkSession {
       if (!fileOptions) throw new Error("Update this Runner to move files.");
       const files = new RunFiles({
         ...fileOptions,
+        proof: (id, method) =>
+          this.#options.signFileTransfer?.(runFileTransferProofPayload(request, id, method)),
         transport: {
           hostOrigin: config.hostUrl,
           mode: config.mode,
@@ -1737,6 +2109,167 @@ export class AgentsWorkSession implements RunnerWorkSession {
     } finally {
       if (controller && this.#fileRequests.get(request.requestId) === controller)
         this.#fileRequests.delete(request.requestId);
+    }
+  }
+
+  async #initializeAgentHome(agentHome: ComputerFolder | undefined): Promise<void> {
+    let resolvedHome = agentHome;
+    if (agentHome && typeof this.#options.agents.runtime.ensureAgentHome === "function") {
+      try {
+        const canonicalPath = await this.#options.agents.runtime.ensureAgentHome(
+          agentHome,
+          this.#signal,
+          !this.#options.agentHomeIsProvisional,
+        );
+        resolvedHome = { ...agentHome, path: canonicalPath };
+        if (this.#homeFiles && !this.#signal.aborted) {
+          const rootIdentity = await this.#homeFiles.initializeAgentHome(
+            canonicalPath,
+            this.#signal,
+          );
+          await this.#options.sink.send({
+            environmentId: this.#options.environmentId(),
+            path: canonicalPath,
+            rootIdentity,
+            type: "runner.agent-home.report",
+          });
+        }
+      } catch (error) {
+        // Without this report a fresh Home stays not ready; say why where the desktop reads it.
+        if (!this.#signal.aborted)
+          this.#options.logger?.error("Agent home could not be prepared on this computer", {
+            code:
+              error instanceof Error && "code" in error && typeof error.code === "string"
+                ? error.code
+                : error instanceof Error
+                  ? error.name
+                  : "unknown",
+          });
+        return;
+      }
+    }
+    await this.#options.agents.runtime.observeAgentHomeSettings(
+      (read) => this.#reportSettings(read),
+      resolvedHome ? { agentHome: resolvedHome, signal: this.#signal } : undefined,
+    );
+  }
+
+  async #answerHomeFileRequest(request: HostHomeFileRequest): Promise<void> {
+    const echo = {
+      type: "runner.home-files.result" as const,
+      requestId: request.requestId,
+    };
+    let controller: AbortController | undefined;
+    try {
+      if (!sameRunnerConnectionFence(request, this.#options.fence.fence))
+        throw new HomeFilesError("conflict", "This Runner connection has changed.");
+      if (request.type === "host.home-files.cancel") {
+        const pending = this.#homeFileRequests.get(request.requestId);
+        if (pending) {
+          pending.abort();
+          return;
+        }
+        await this.#options.sink.send({ ...echo, data: { kind: "cancel" }, ok: true });
+        return;
+      }
+      if (this.#homeFileRequests.size >= 20)
+        throw new HomeFilesError("unavailable", "Agent home file requests are busy; retry soon.");
+      if (this.#homeFileRequests.has(request.requestId))
+        throw new HomeFilesError(
+          "conflict",
+          "A file request with this identity is already running.",
+        );
+      if (!this.#homeFiles)
+        throw new HomeFilesError("unavailable", "Update this Runner to serve Agent home files.");
+      controller = new AbortController();
+      this.#homeFileRequests.set(request.requestId, controller);
+      const signal = AbortSignal.any([
+        this.#signal,
+        controller.signal,
+        AbortSignal.timeout(computerAppMaxTimeoutMs),
+      ]);
+      const data = await this.#homeFiles.handle(request, signal);
+      await this.#options.sink.send({ ...echo, data, ok: true });
+    } catch (error) {
+      const mapped =
+        error instanceof HomeFilesError
+          ? error
+          : new HomeFilesError(
+              "unavailable",
+              error instanceof Error && error.message
+                ? error.message.slice(0, 500)
+                : "Agent home file operation failed",
+            );
+      await this.#options.sink.send({
+        ...echo,
+        errorCode: mapped.code,
+        message: mapped.message.slice(0, 500),
+        ok: false,
+        ...(mapped.sizeBytes !== undefined ? { sizeBytes: mapped.sizeBytes } : {}),
+      });
+    } finally {
+      if (controller && this.#homeFileRequests.get(request.requestId) === controller)
+        this.#homeFileRequests.delete(request.requestId);
+    }
+  }
+
+  async #publishOutputImage(image: ToolOutputImage, signal: AbortSignal): Promise<void> {
+    const transfers = this.#outputImageTransfers;
+    const fileName = basename(image.path);
+    const match = /^([a-f0-9]{64})\.([a-z0-9]+)$/u.exec(fileName);
+    if (!match) return;
+    const sha256 = match[1]!;
+    const extensionParsed = HomeFileOutputImageExtensionSchema.safeParse(match[2]);
+    if (!extensionParsed.success) return;
+    const linked = AbortSignal.any([this.#signal, signal]);
+    linked.throwIfAborted();
+    const handle = await open(
+      image.path,
+      constants.O_RDONLY | constants.O_NONBLOCK | noFollowFlag(),
+    );
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size < 1 || info.size > homeFilesOutputImageMaxBytes) return;
+      const requestId = randomUUID();
+      const response = Promise.withResolvers<HostOutputImageUpload>();
+      this.#outputImagePublishes.set(requestId, { resolve: response.resolve });
+      try {
+        linked.throwIfAborted();
+        const [, upload] = await withTimeout(
+          Promise.all([
+            this.#options.sink.send({
+              extension: extensionParsed.data,
+              mediaType: image.mediaType,
+              requestId,
+              sha256,
+              sizeBytes: info.size,
+              type: "runner.output-image.publish",
+            }),
+            response.promise,
+          ]),
+          15_000,
+          { signal: linked, timeoutError: () => new Error("Host did not answer image publish") },
+        );
+        if (upload.status === "rejected")
+          throw new Error(upload.message ?? "Output image publish refused");
+        if (upload.status !== "upload" || !upload.transfer) return;
+        linked.throwIfAborted();
+        const body = handle.createReadStream({ autoClose: false });
+        try {
+          await transfers.upload(
+            upload.transfer,
+            { body, name: fileName, size: info.size },
+            linked,
+            upload,
+          );
+        } finally {
+          body.destroy();
+        }
+      } finally {
+        this.#outputImagePublishes.delete(requestId);
+      }
+    } finally {
+      await handle.close().catch(() => undefined);
     }
   }
 
@@ -1932,8 +2465,16 @@ export class AgentsWorkSession implements RunnerWorkSession {
  * Answering plainly is still what keeps a person unblocked: the Run fails now,
  * with a sentence, instead of waiting on a Runner that will never reply.
  */
-function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSession {
-  const notRunningAgents = "This computer does not run agents.";
+function reachOnlyWorkSession(
+  sink: CausallyOrderedRunnerSink,
+  mode?: "stopped" | "update",
+): RunnerWorkSession {
+  const notRunningAgents =
+    mode === "stopped"
+      ? "Agents are stopped on this computer. Resume them on this computer to continue."
+      : mode === "update"
+        ? "Opensteer is preparing to update on this computer."
+        : "This computer does not run agents.";
   return {
     activity: () => ({
       activeRunIds: [],
@@ -1944,8 +2485,16 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
     initialReports: () => Promise.resolve(),
     close: () => Promise.resolve(),
     settled: () => true,
+    idle: () => true,
     handle: async (message) => {
       switch (message.type) {
+        case "host.background-text":
+          await sink.send({
+            type: "runner.background-text-result",
+            attemptId: message.attemptId,
+            result: { ok: false, failure: "unavailable" },
+          });
+          return;
         case "host.reconcile-harnesses":
         case "host.inspect-harnesses":
           await sink.send({
@@ -1988,7 +2537,14 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
           await sink.send({
             commandId: message.command.commandId,
             correlationId: message.command.correlationId,
-            error: { code: "forbidden", message: notRunningAgents, retryable: false },
+            error: mode
+              ? {
+                  code: "conflict",
+                  message: notRunningAgents,
+                  ...(mode === "stopped" ? { reason: "computer_stopped" } : {}),
+                  retryable: true,
+                }
+              : { code: "forbidden", message: notRunningAgents, retryable: false },
             type: "runner.command-rejected",
           });
           return;
@@ -2001,6 +2557,22 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
             ok: false,
             message: notRunningAgents,
           });
+          return;
+        case "host.home-files.list":
+        case "host.home-files.read":
+        case "host.home-files.resolve":
+        case "host.home-files.download":
+        case "host.home-files.write":
+        case "host.home-files.cancel":
+          await sink.send({
+            type: "runner.home-files.result",
+            requestId: message.requestId,
+            ok: false,
+            errorCode: "unavailable",
+            message: notRunningAgents,
+          });
+          return;
+        case "host.output-image.upload":
           return;
         case "host.app.cancel":
           return;
@@ -2036,11 +2608,19 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
             error: notRunningAgents,
           });
           return;
+        case "host.thread.stop.recheck":
+          await sink.send({
+            type: "runner.thread.stop.recheck.result",
+            requestId: message.requestId,
+            proven: true,
+          });
+          return;
         // A computer that runs no agents holds no Runs to stop, resume or renew.
         case "host.runs.revoked":
         case "host.executions.attached":
         case "host.executions.acked":
         case "host.executions.renewed":
+        case "host.proxy-token.renewed":
           return;
       }
     },
@@ -2082,18 +2662,42 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
   #closed = false;
 
   readonly #refresh: ((runId: RunId) => Promise<RefreshedRunCredentials | undefined>) | undefined;
+  readonly #acceptsAttemptStopState: boolean;
+  readonly #renewProxyToken:
+    ((target: ProxyTokenRenewalTarget) => Promise<ProxyTokenRenewalResult | undefined>) | undefined;
+  #publishOutputImage: RunnerMessageSink["publishOutputImage"] | undefined;
 
   constructor(
     delegate: RunnerReportSink,
     refresh?: (runId: RunId) => Promise<RefreshedRunCredentials | undefined>,
+    acceptsAttemptStopState = false,
+    renewProxyToken?: (
+      target: ProxyTokenRenewalTarget,
+    ) => Promise<ProxyTokenRenewalResult | undefined>,
   ) {
     this.#delegate = delegate;
     this.#refresh = refresh;
+    this.#acceptsAttemptStopState = acceptsAttemptStopState;
+    this.#renewProxyToken = renewProxyToken;
+  }
+
+  setOutputImagePublisher(publisher: RunnerMessageSink["publishOutputImage"] | undefined): void {
+    this.#publishOutputImage = publisher;
+  }
+
+  publishOutputImage(image: ToolOutputImage, signal: AbortSignal): Promise<void> {
+    if (this.#closed || !this.#publishOutputImage) return Promise.resolve();
+    return this.#publishOutputImage(image, signal);
   }
 
   refreshRunCredentials(runId: RunId): Promise<RefreshedRunCredentials | undefined> {
     if (this.#closed || !this.#refresh) return Promise.resolve(undefined);
     return this.#refresh(runId);
+  }
+
+  renewProxyToken(target: ProxyTokenRenewalTarget): Promise<ProxyTokenRenewalResult | undefined> {
+    if (this.#closed || !this.#renewProxyToken) return Promise.resolve(undefined);
+    return this.#renewProxyToken(target);
   }
 
   send(message: RunnerOperationalReport): Promise<void> {
@@ -2139,6 +2743,9 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
               commandId: command.commandId,
               correlationId: command.correlationId,
               type: "runner.command-accepted",
+              ...(this.#acceptsAttemptStopState && decision.stopState
+                ? { stopState: decision.stopState }
+                : {}),
               ...(decision.workspacePath ? { workspacePath: decision.workspacePath } : {}),
             }
           : decision.status === "rejected"
@@ -2226,7 +2833,7 @@ export class WebSocketMessageSink implements RunnerMessageSink {
       frame = serializeJsonFrame(parsed);
       if (
         parsed.type === "runner.harness-catalog" &&
-        Buffer.byteLength(frame, "utf8") > maximumFrameBytes
+        Buffer.byteLength(frame, "utf8") > maximumOutboundFrameBytes
       ) {
         parsed = fitHarnessCatalogFrame(parsed);
         frame = serializeJsonFrame(parsed);
@@ -2236,7 +2843,7 @@ export class WebSocketMessageSink implements RunnerMessageSink {
       return Promise.reject(error);
     }
     const bytes = Buffer.byteLength(frame, "utf8");
-    if (bytes > maximumFrameBytes) {
+    if (bytes > maximumOutboundFrameBytes) {
       this.#socket.close(1009, "Runner frame exceeded size limit");
       return Promise.reject(new Error("Runner frame exceeded size limit"));
     }
@@ -2313,7 +2920,7 @@ function fitHarnessCatalogFrame(
     .toSorted((left, right) => right.savedBytes - left.savedBytes);
 
   for (const candidate of replacements) {
-    if (frameBytes <= maximumFrameBytes) break;
+    if (frameBytes <= maximumOutboundFrameBytes) break;
     catalogs[candidate.index] = candidate.replacement;
     frameBytes -= candidate.savedBytes;
   }
@@ -2402,7 +3009,7 @@ export function runnerCapabilities(
     "browser-page-input-v1",
     "browser-profile-create-v1",
     "environment-list-v1",
-    "trigger-program-v5",
+    "automation-script-v1",
     "native-place-input-v1",
     "execution-plane-v2",
     "filesystem",
@@ -2418,6 +3025,7 @@ export function runnerCapabilities(
     "task-done-v1",
     "person-show-v1",
     "full-disk-access-probe-v1",
+    agentSessionGuardsCapability,
   ];
 }
 
@@ -2447,7 +3055,7 @@ async function sendWireMessage(socket: WebSocket, message: RunnerToHostMessage):
       ? RunnerWireProofSchema.parse(message)
       : RunnerToHostMessageSchema.parse(message);
   const frame = serializeJsonFrame(parsed);
-  if (Buffer.byteLength(frame, "utf8") > maximumFrameBytes) {
+  if (Buffer.byteLength(frame, "utf8") > maximumOutboundFrameBytes) {
     throw new Error("Runner authentication frame exceeded size limit");
   }
   await new Promise<void>((resolvePromise, reject) => {

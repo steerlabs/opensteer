@@ -21,14 +21,12 @@ export interface ActionLineValue {
 }
 
 /**
- * The answer to a tap, in one short line next to where it happened: never a
- * box, a toast or a banner. A link, such as Check or Try again, stays in
- * view however the words are cut.
+ * The answer to a tap, next to where it happened: never a box, a toast or a banner. Its words
+ * are a sentence a person needs, so they wrap whole at every text size and are never cut; the
+ * link beside them, such as Check or Try again, is a label and stays one line in view.
  */
 export const ActionLine = memo(function ActionLine(props: {
   readonly line: ActionLineValue;
-  /** One line where a row's height must not change; two in a sheet or under buttons. */
-  readonly numberOfLines?: 1 | 2;
   /** A refusal is dismissed by tapping it. */
   readonly onDismiss?: (() => void) | undefined;
 }): ReactNode {
@@ -45,12 +43,7 @@ export const ActionLine = memo(function ActionLine(props: {
   }, [key]);
   const link = props.line.link ?? null;
   const words = (
-    <AppText
-      numberOfLines={props.numberOfLines ?? 1}
-      role="caption"
-      style={styles.words}
-      tone={props.line.tone}
-    >
+    <AppText role="caption" style={styles.words} tone={props.line.tone}>
       {text}
     </AppText>
   );
@@ -86,15 +79,14 @@ export const ActionLine = memo(function ActionLine(props: {
 });
 
 /**
- * A list row's second line: its subtitle, or the outcome of an action on the
- * row in the subtitle's place, at the same one-line height, so the row never
- * grows. The title above it stays.
+ * A list row's second line: its subtitle, a one-line label, or the outcome of an action on the
+ * row in the subtitle's place, which wraps whole as every outcome does. The title above it stays.
  */
 export function RowSubtitle(props: {
   readonly subtitle: ReactNode;
   readonly line: ActionLineValue | null;
 }): ReactNode {
-  if (props.line !== null) return <ActionLine line={props.line} numberOfLines={1} />;
+  if (props.line !== null) return <ActionLine line={props.line} />;
   return typeof props.subtitle === "string" ? (
     <AppText numberOfLines={1} role="caption" tone="muted">
       {props.subtitle}
@@ -105,8 +97,8 @@ export function RowSubtitle(props: {
 }
 
 /**
- * A sheet's one-line slot above its primary button, reserved whether or not
- * it holds a line, so the button never jumps when an outcome arrives.
+ * A sheet's slot above its primary button, one line high while empty, so the button never jumps
+ * when a short outcome arrives; a longer one wraps whole and moves the button down.
  */
 export function ActionLineSlot(props: {
   readonly line: ActionLineValue | null;
@@ -122,7 +114,7 @@ export function ActionLineSlot(props: {
           </AppText>
         </View>
       ) : (
-        <ActionLine line={props.line} numberOfLines={1} onDismiss={props.onDismiss} />
+        <ActionLine line={props.line} onDismiss={props.onDismiss} />
       )}
     </View>
   );

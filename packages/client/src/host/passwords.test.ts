@@ -134,7 +134,7 @@ describe("passwordSignInOutcome", () => {
 describe("sign-in consent copy", () => {
   it("names the site and account", () => {
     expect(passwordSignInPrivacy("https://github.com")).toBe(
-      "Your agents can type your saved login on github.com and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.",
+      "Opensteer fills your saved login on github.com, and in apps on your devices, like your phone, for your own agents and connected agents you allow. It isn't handed to the agent, but an agent working in that page can read it, and a tricked agent could reveal it.",
     );
     expect(passwordSignInNoAccount("https://github.com")).toBe("No saved password for github.com.");
     expect(passwordSignInAllowRemembers("alex@company.example")).toBe(
@@ -277,6 +277,21 @@ describe("Passwords from anywhere but its Mac", () => {
       "Not available on this Opensteer",
     );
   });
+
+  it("never sends a Home that isn't on the person's Mac to a Passwords it doesn't have", () => {
+    const words = passwordsElsewhere({
+      homeName: "My Cloud Computer",
+      personal: true,
+      onMac: false,
+    });
+    expect(words).toBe(
+      "Saved logins and cards work only when your Home is on your Mac. On this Home, sign in to a site in its own browser.",
+    );
+    expect(words).not.toContain("My Cloud Computer");
+    expect(
+      passwordsSettingsSubtitle({ homeName: "My Cloud Computer", personal: true, onMac: false }),
+    ).toBe("Only on a Home on your Mac");
+  });
 });
 
 function passwordRequest(
@@ -342,9 +357,11 @@ describe("agent sign-in steps in the transcript", () => {
   it("never reads copied Chrome cookies as more than copied", () => {
     expect(
       chromeCookiesStep({ status: "copied", site, sourceName: "Work", profileName: null }),
-    ).toEqual({
+    ).toMatchObject({
       hint: "From Work",
+      hintParts: ["From ", { name: "Work" }],
       label: "Copied your Chrome sign-in for example.com",
+      labelParts: ["Copied your Chrome sign-in for ", { address: "example.com" }],
       succeeded: true,
     });
     expect(

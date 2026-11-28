@@ -23,12 +23,10 @@
 @import "./desktop.css";
 @import "./places.css";
 @import "./settings.css";
+@import "./address.css";
 @import "./devices.css";
 @import "./plugins.css";
 @import "./dictation.css";
 @import "./voice.css";
 @import "./tasks-home.css";
-@import "./team-chat.css";
-@import "./team-admin.css";
-@import "./teams.css";
 @import "./connection.css";

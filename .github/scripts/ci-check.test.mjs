@@ -444,6 +444,24 @@ test("real-browser command fails its existing job and Check and uploads inventor
   ])
     assert.ok(step.run.includes(flag), flag);
   assert.equal(step.env.CI_LANE, "browser");
+  // Each shard runs its share of the browser files and of the web journeys, and Check reads both.
+  assert.deepEqual(job.strategy.matrix.shard, [1, 2]);
+  assert.equal(job.strategy["fail-fast"], false);
+  assert.match(
+    step.run,
+    /pnpm test:browser --shard=\$\{\{ matrix.shard \}\}\/\$\{\{ strategy.job-total \}\}/,
+  );
+  assert.equal(step.env.CI_SHARD, "${{ matrix.shard }}");
+  const journeys = job.steps.filter((entry) => /test:journeys/.test(entry.run ?? ""));
+  assert.equal(journeys.length, 1);
+  assert.match(journeys[0].run, /set -o pipefail/);
+  assert.match(
+    journeys[0].run,
+    /test:journeys --shard \$\{\{ matrix.shard \}\}\/\$\{\{ strategy.job-total \}\} .*--inventory "\$RUNNER_TEMP\/evidence\/journeys-\$\{\{ matrix.shard \}\}.inventory.json"/,
+  );
+  assert.equal(journeys[0].if, undefined);
+  // One way journeys run: no step calls a single journey's script.
+  assert.ok(job.steps.every((entry) => !/@opensteer\/web test:(?!journeys)/.test(entry.run ?? "")));
   assert.ok(
     job.steps.indexOf(step) >
       job.steps.findIndex((entry) => entry.uses === "./.github/actions/ci-browser"),
@@ -461,16 +479,21 @@ test("real-browser command fails its existing job and Check and uploads inventor
     assert.equal(uploads[0].with.path.trim(), "${{ runner.temp }}/evidence", lane);
   }
   const aggregate = readFileSync("scripts/ci-check.ts", "utf8");
-  assert.match(aggregate, /read\("browser-journeys", "browser-1.inventory.json"\)/);
+  assert.match(
+    aggregate,
+    /read\(`browser-journeys-\$\{i \+ 1\}`, `\$\{name\}-\$\{i \+ 1\}.inventory.json`\)/,
+  );
   // A lane's test code writes into its own evidence; merged artifacts would let it forge the plan.
   const download = workflow.jobs.Check.steps.find((entry) =>
     entry.uses?.startsWith("actions/download-artifact@"),
   );
   assert.equal(download.with["merge-multiple"], undefined);
   assert.match(aggregate, /read\("plan", "ci-plan.json"\)/);
-  assert.match(aggregate, /checkInventories\(\[inventory\], 1, "browser"\)/);
-  assert.match(aggregate, /inventory.discovered/);
+  assert.match(aggregate, /checkInventories\(browser, count, "browser"\)/);
+  assert.match(aggregate, /checkInventories\(journeys, count, "journeys"\)/);
+  assert.match(aggregate, /strategy\.matrix\.shard\.length/);
   assert.match(aggregate, /realBrowserTests/);
+  assert.match(aggregate, /webJourneys/);
 });
 test("the release-gating verification ignores only the named lanes' results", () => {
   const red = structuredClone(everything.needs);

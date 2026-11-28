@@ -133,28 +133,30 @@ export function createNativeBrowserE2EKit(options: {
     );
     let previous: { x: number; y: number } | null = null;
     await until(async () => {
-      try {
-        const point = await elementPoint(shell!.webContents, selector);
-        const stable = previous?.x === point.x && previous.y === point.y;
-        previous = point;
-        return stable;
-      } catch {
+      const point = await tryElementPoint(shell!.webContents, selector);
+      if (!point) {
         previous = null;
         return false;
       }
+      const stable = previous?.x === point.x && previous.y === point.y;
+      previous = point;
+      return stable;
     }, `stable visible hit-tested app control ${selector}`);
     const point = await elementPoint(shell.webContents, selector);
     artifacts.event("input.appMouseStandIn", { selector, point });
     mouse(shell.webContents, point);
     await delay(100);
   }
-  async function elementPoint(
+  async function tryElementPoint(
     contents: WebContents,
     selector: string,
-  ): Promise<{ x: number; y: number }> {
-    const point = z.object({ x: z.number(), y: z.number() }).parse(
-      await contents.executeJavaScript(
-        `(() => {
+  ): Promise<{ x: number; y: number } | null> {
+    const point = z
+      .object({ x: z.number(), y: z.number() })
+      .nullable()
+      .parse(
+        await contents.executeJavaScript(
+          `(() => {
           for (const el of document.querySelectorAll(${JSON.stringify(selector)})) {
           if (!el.checkVisibility() || el.disabled) continue;
           const r = el.getBoundingClientRect();
@@ -165,10 +167,11 @@ export function createNativeBrowserE2EKit(options: {
             continue;
           return {x, y};
           }
-          throw Error('Control is offscreen, inert or fails hit-testing: ' + ${JSON.stringify(selector)});
+          return null;
         })()`,
-      ),
-    );
+        ),
+      );
+    if (!point) return null;
     const zoom = contents.getZoomFactor();
     if (shell && contents === shell.webContents) {
       const bounds = shell.getContentBounds();
@@ -193,6 +196,14 @@ export function createNativeBrowserE2EKit(options: {
         );
       }
     }
+    return point;
+  }
+  async function elementPoint(
+    contents: WebContents,
+    selector: string,
+  ): Promise<{ x: number; y: number }> {
+    const point = await tryElementPoint(contents, selector);
+    if (!point) throw new Error(`Control is offscreen, inert or fails hit-testing: ${selector}`);
     return point;
   }
 
@@ -340,7 +351,9 @@ export function createNativeBrowserE2EKit(options: {
         }
         const snapshot = client?.getSnapshot();
         const selected = document.querySelector('.side-tab.is-active')?.getAttribute('data-place-key');
-        const [, selectedSession, selectedSurface] = selected?.split(':') ?? [];
+        const tabViewer = selected ? client?.tabViewer(selected) : null;
+        const selectedSession = tabViewer?.kind === 'page' ? tabViewer.sessionId : null;
+        const selectedSurface = tabViewer?.kind === 'page' ? tabViewer.surfaceId : null;
         const session = snapshot?.browserSessions.find(s => s.id === selectedSession);
         const viewer = selectedSession && selectedSurface ? client?.browserViewerState(selectedSession,selectedSurface) : null;
         return {stageText: document.querySelector('.browser-stage')?.textContent,
@@ -443,7 +456,7 @@ export function createNativeBrowserE2EKit(options: {
   async function selectBrowserTab(sessionId: string, surfaceId: string): Promise<void> {
     if (!process.argv.includes("--no-serial")) await foregroundApp();
     await openSidebar();
-    const selector = `[data-place-key="browser:${sessionId}:${surfaceId}"] .side-tab__main`;
+    const selector = `[data-place-key="${surfaceId}"] .side-tab__main`;
     await until(
       async () =>
         (await evaluateApp(`!!document.querySelector(${JSON.stringify(selector)})`)) === true,
@@ -994,6 +1007,43 @@ popup.onclick=()=>open('/q','_blank');fullscreen.onclick=()=>document.documentEl
         }),
     };
   }
+  /**
+   * A connected agent's attachment, opened exactly as the runtime opens one for a lineage
+   * ticket: the Home issues a lineage only for a connected agent's own direct work.
+   */
+  async function connectedAgentCdp(surface = activeSurface()) {
+    const client = runtimeState(surface.sessionId).controller.openStandardCdp(
+      false,
+      () => undefined,
+      {
+        attachmentId: randomUUID(),
+        seedSurfaceId: BrowserSurfaceIdSchema.parse(surface.surfaceId),
+      },
+    );
+    cleanup.push(async function closeConnectedAgentChannel() {
+      client.close();
+      await client.settled;
+    });
+    const attached = z.object({ sessionId: z.string() }).parse(
+      await client.send({
+        method: "Target.attachToTarget",
+        parameters: { targetId: await surface.page.targetId(), flatten: true },
+      }),
+    );
+    artifacts.event("agent.channel", {
+      surfaceId: surface.surfaceId,
+      route: "connected-agent-lineage",
+      hostRouted: false,
+    });
+    return {
+      send: (method: string, parameters?: CdpParameters, root = false) =>
+        client.send({
+          method,
+          ...(parameters ? { parameters } : {}),
+          ...(root ? {} : { sessionId: attached.sessionId }),
+        }),
+    };
+  }
   // Runtime internals are discovered once here because production deliberately
   // exposes no IPC that grants a test an agent attachment or controller.
   function runtimeControllers() {
@@ -1125,6 +1175,7 @@ popup.onclick=()=>open('/q','_blank');fullscreen.onclick=()=>document.documentEl
     resizeStage,
     /** Open the real runtime hub agent channel; trace labels it non-Host-routed. */
     agentCdp,
+    connectedAgentCdp,
     /** Existing live controller/ledger; read-only discovery never creates authority. */
     runtimeState,
     /** Actual runtime controllers, including the independent remote viewers. */

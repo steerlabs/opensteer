@@ -5,6 +5,7 @@ import {
   DisplayInputEventSchema,
   trackHeldDisplayInput,
   displaySourceKey,
+  displayInputPatienceMs,
   DisplayClientDiagnosticSchema,
   type DisplayClientDiagnostic,
   DisplayViewerClientMessageSchema,
@@ -27,7 +28,13 @@ import type { DisplayUnavailableReason } from "./computer-watch-status.js";
 
 /** The contract's bound on one input batch (`DisplayInputEventsSchema`). */
 export const maxDisplayInputEvents = 64;
-const maxInputBytes = 256 * 1_024;
+/**
+ * Wire size bound for one client `display.input` batch. Leaves 256 bytes under the Mac helper's
+ * 128 KiB `OwnerInputAdmission.maxBytes` for `MacOwnerInput.InputParams` (`streamId` + `source`).
+ */
+export const maxDisplayInputBytes = 128 * 1_024 - 256;
+/** Thrown before sending when a single event or atomic batch exceeds the wire size bound (A4). */
+export class DisplayInputTooLargeError extends Error {}
 /** Viewer JSON is a state or editing line; anything near this is not one. */
 const maxServerTextCharacters = 256 * 1_024;
 const retryBaseMs = 300;
@@ -119,6 +126,7 @@ export interface DisplayLease {
     geometry: number,
     events: readonly DisplayInputEvent[],
     onSequence?: (sequence: number) => void,
+    options?: { readonly atomic?: boolean; readonly inputDeadline?: number },
   ): boolean;
   /**
    * The decoder lost its state: asks the Host for a decodable start, and
@@ -171,6 +179,8 @@ interface Connection {
   replayRestarts: boolean;
   /** A keyframe request awaiting its keyframe: how often it was asked, and the next ask. */
   keyframe: { attempts: number; timer: ReturnType<typeof setTimeout> | null } | null;
+  /** A frame reached this socket. */
+  framed: boolean;
 }
 
 interface Entry {
@@ -443,9 +453,9 @@ export class DisplayStreams {
         if (!released && (current.holder === null || current.holder === lease))
           this.#resetInput(current);
       },
-      input: (geometry, events, onSequence) => {
+      input: (geometry, events, onSequence, options) => {
         if (released || (current.holder !== null && current.holder !== lease)) return false;
-        const sent = this.#input(current, geometry, events, onSequence);
+        const sent = this.#input(current, geometry, events, onSequence, options);
         if (!sent) return false;
         for (const event of events) trackHeldDisplayInput(current.held, event);
         current.holder = current.held.size > 0 ? lease : null;
@@ -609,6 +619,7 @@ export class DisplayStreams {
       replayThrough: null,
       replayRestarts: false,
       keyframe: null,
+      framed: false,
     };
     entry.connection = connection;
     this.#set(entry, { connection: "connecting", closeCode: null, keyframeFailed: false });
@@ -638,6 +649,7 @@ export class DisplayStreams {
         return;
       }
       if (received.kind === "frame") {
+        connection.framed = true;
         if (received.header.key) this.#keyframeArrived(entry, connection);
         this.#deliver(entry, connection, received);
       } else if (received.message.type === "display.state") {
@@ -650,6 +662,17 @@ export class DisplayStreams {
         // The Host ends the person lane on a new picture or when the stream
         // stops being live, releasing whatever this viewer held.
         const previous = entry.snapshot.display;
+        // Which state the Host said, and when: names a passing state in the next run's log.
+        if (
+          previous?.state !== received.message.state ||
+          previous.reason !== received.message.reason
+        )
+          this.#log(entry, {
+            transition: "display-state",
+            displayState: received.message.state,
+            ...(received.message.reason ? { displayReason: received.message.reason } : {}),
+            framed: connection.framed,
+          });
         if (
           received.message.state !== "live" ||
           (previous !== null && previous.generation !== received.message.generation)
@@ -804,12 +827,17 @@ export class DisplayStreams {
 
   #resetInput(entry: Entry): void {
     this.#forgetHeld(entry);
-    if (
-      entry.connection?.confirmed &&
-      entry.connection.socket.readyState === 1 &&
-      entry.snapshot.display?.sharedInput === 1
-    )
-      send(entry.connection, { type: "display.input-reset" });
+    const connection = entry.connection;
+    if (!connection?.confirmed || connection.socket.readyState !== 1) return;
+    try {
+      send(connection, { type: "display.input-reset" });
+    } catch {
+      // A broken channel must release this source at the Home on close.
+      connection.socket.close(
+        displayViewerCloseCodes.tryAgain,
+        "Display input reset could not be sent",
+      );
+    }
   }
 
   #power(entry: Entry, action: "wake" | "lock"): boolean {
@@ -828,6 +856,7 @@ export class DisplayStreams {
     geometry: number,
     events: readonly DisplayInputEvent[],
     onSequence?: (sequence: number) => void,
+    options?: { readonly atomic?: boolean; readonly inputDeadline?: number },
   ): boolean {
     const connection = entry.connection;
     if (
@@ -863,31 +892,38 @@ export class DisplayStreams {
       (entry.target.editing !== 1 || entry.snapshot.display?.editingVersion !== 1)
     )
       return false;
+    const timeoutMs =
+      options?.inputDeadline === undefined
+        ? displayInputPatienceMs
+        : Math.floor(options.inputDeadline - performance.now());
+    if (timeoutMs <= 0) return false;
     const batches: string[] = [];
     let batch: DisplayInputEvent[] = [];
     const serialize = (items: DisplayInputEvent[]) =>
       JSON.stringify(
-        DisplayViewerClientMessageSchema.parse({
-          type: "display.input",
-          geometry,
-          sequence: entry.inputSequence + batches.length,
-          events: items,
-        }),
+        DisplayViewerClientMessageSchema.parse(
+          displayInputFrame(geometry, entry.inputSequence + batches.length, items, timeoutMs),
+        ),
       );
     for (const event of parsed) {
       const candidate = [...batch, event];
       if (
         candidate.length > maxDisplayInputEvents ||
-        new TextEncoder().encode(serialize(candidate)).byteLength > maxInputBytes
+        new TextEncoder().encode(serialize(candidate)).byteLength > maxDisplayInputBytes
       ) {
-        if (batch.length === 0) throw new Error("Display input event exceeds its byte limit.");
+        if (options?.atomic)
+          throw new DisplayInputTooLargeError(
+            "Dependent display input batch exceeds its single-batch limit.",
+          );
+        if (batch.length === 0)
+          throw new DisplayInputTooLargeError("Display input event exceeds its byte limit.");
         batches.push(serialize(batch));
         batch = [event];
       } else batch = candidate;
     }
     const last = serialize(batch);
-    if (new TextEncoder().encode(last).byteLength > maxInputBytes)
-      throw new Error("Display input event exceeds its byte limit.");
+    if (new TextEncoder().encode(last).byteLength > maxDisplayInputBytes)
+      throw new DisplayInputTooLargeError("Display input event exceeds its byte limit.");
     batches.push(last);
     const first = entry.inputSequence;
     entry.inputSequence += batches.length;
@@ -981,6 +1017,15 @@ function stopKeyframeRequests(connection: Connection): void {
   connection.keyframe = null;
 }
 
+export function displayInputFrame(
+  geometry: number,
+  sequence: number,
+  events: readonly DisplayInputEvent[],
+  timeoutMs = displayInputPatienceMs,
+) {
+  return { type: "display.input" as const, geometry, sequence, timeoutMs, events };
+}
+
 function send(connection: Connection, message: DisplayViewerClientMessage): void {
   connection.socket.send(JSON.stringify(DisplayViewerClientMessageSchema.parse(message)));
 }
@@ -1065,7 +1110,12 @@ export function computerDisplayScope(
 function captureRefused(machine: MachineSummary): boolean {
   if (machine.phoneDisplay) {
     const { state, reason } = machine.phoneDisplay.view;
-    return state !== "ready" && reason?.kind !== "driver-offline";
+    return (
+      state !== "ready" &&
+      reason?.kind !== "driver-offline" &&
+      reason?.kind !== "driver-asleep" &&
+      reason?.kind !== "driver-stopped"
+    );
   }
   return (
     machine.computerUse?.permissions?.screenRecording === "denied" ||

@@ -23,8 +23,17 @@ import {
   PluginOAuthStatusSchema,
 } from "./plugin-oauth.js";
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
-import { DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
+import {
+  AgentGrantSchema,
+  AgentCommandActivitySchema,
+  AgentOperationViewSchema,
+  AgentSessionIdSchema,
+  DeviceIdSchema,
+  DeviceDriverGenerationSchema,
+  TabIdSchema,
+} from "@opensteer/core";
 import { MachineListSummarySchema } from "./machines.js";
+import { ProblemViewSchema, problemsLimit } from "./problems.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
 import {
   TabCommandSchema,
@@ -46,7 +55,6 @@ import {
   TranscriptFileContentInputSchema,
   TranscriptFileContentSchema,
 } from "./transcript-files.js";
-import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
 import {
   CompactionSendChoiceSchema,
@@ -54,9 +62,9 @@ import {
   IdleCompactionPolicyViewSchema,
 } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
-import { TeamCommandSchema, teamReadSchemas } from "./team-api.js";
 import {
   AgentConnectionSchema,
+  BridgeSendersSchema,
   AgentConnectionIdSchema,
   AgentConnectionConsentSchema,
 } from "./agent-connections.js";
@@ -71,21 +79,16 @@ import { CardApprovalSchema } from "./card-use.js";
 import { PasswordSignInCardViewSchema, PasswordSignInApprovalSchema } from "./password-sign-in.js";
 import { ComputerUseResolvedAppSchema } from "./computer-use.js";
 import {
-  ChannelAccessGrantViewSchema,
-  ChannelAccessPolicySchema,
   ChannelAccountIdSchema,
   ChannelAccountViewSchema,
-  ChannelBindingIdSchema,
-  ChannelBindingViewSchema,
   ChannelDashboardViewSchema,
-  ChannelExecutionPolicySchema,
-  ChannelRouteSelectorSchema,
   IntegrationConnectionViewSchema,
 } from "@opensteer/channel-core";
 import {
   PersonalRemoteAdministrationIntentSchema,
   PersonalRemoteAdministrationOperationSchema,
   PersonalRemoteAdministrationStatusSchema,
+  PersonalAccountLinkStatusSchema,
   IssuePersonalPairingCodeResponseSchema,
   ApprovePersonalHostAccountLinkRequestSchema,
   ApprovePersonalHostAccountLinkResponseSchema,
@@ -132,6 +135,7 @@ import {
   RequestIdSchema,
   RequestResponseSchema,
   RequestViewSchema,
+  commandRequestOutcomeSchema,
   RunAttemptViewSchema,
   RunIdSchema,
   RunViewSchema,
@@ -183,6 +187,7 @@ import {
   DeviceComputerAppSetupRequestViewSchema,
   DeviceIntegrationConnectionSummaryViewSchema,
 } from "@opensteer/integration-core";
+import { MAX_AUTOMATION_SECRETS } from "@opensteer/triggers/bounds";
 import {
   CreateTriggerHttpBodySchema,
   TriggerOccurrenceViewSchema,
@@ -190,8 +195,10 @@ import {
   TriggerSummaryViewSchema,
   TriggerViewSchema,
   TriggerWatchActivationViewSchema,
+  TriggerWebhookAddressViewSchema,
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers/models";
+import { AutomationSecretMapSchema, AutomationSecretNameSchema } from "@opensteer/triggers/script";
 import { z } from "zod";
 import { ReferenceResolveInputSchema, ReferenceResolveResultSchema } from "./references.js";
 import { AppIdSchema } from "@opensteer/core";
@@ -297,6 +304,18 @@ const ComputerUseInstalledAppViewSchema = z.object({
 const idempotencyKeySchema = z.string().trim().min(1).max(255);
 /** Client-generated, so a retried take is the same lease. */
 const threadInputEditLeaseIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
+/**
+ * Who this Home's report goes to, from its operator's configuration alone: `operator`, a Cloud
+ * Computer, whose health report Opensteer, which runs it, receives; `own`, the collector a
+ * self-hosted Home's operator set; `none`, nothing leaves this computer.
+ */
+export const ProblemReportingSchema = z.object({
+  destination: z.enum(["operator", "own", "none"]),
+  lastSentAt: z.iso.datetime().optional(),
+  lastResult: z.enum(["sent", "refused", "unreachable"]).optional(),
+});
+export type ProblemReporting = z.infer<typeof ProblemReportingSchema>;
+
 export const messageRevisionsPageSize = 20;
 const emailSchema = z.email().max(320);
 // An interrupted native OAuth authorization rides through sign-in as its opaque
@@ -320,12 +339,7 @@ const oidcReturnPathSchema = z
  * Phones, Runners and open windows update apart from their Host, so it serves
  * every caller whose window overlaps its own.
  */
-export {
-  hostApiCurrentHeader,
-  hostApiVersionHeader,
-  teamApiVersion,
-  teamApiVersionHeader,
-} from "@opensteer/deployment-authority";
+export { hostApiCurrentHeader, hostApiVersionHeader } from "@opensteer/deployment-authority";
 
 export const HostApiErrorSchema = z.object({
   provenance: z.enum(["transport", "host", "proxy", "protocol", "local"]).optional(),
@@ -461,6 +475,12 @@ export const DeviceMachineSessionBindCommandSchema = z.strictObject({
 });
 export type DeviceMachineSessionBindCommand = z.infer<typeof DeviceMachineSessionBindCommandSchema>;
 
+const AgentOperationPageSchema = z.object({
+  operations: z.array(AgentOperationViewSchema).max(100),
+  nextBefore: z.string().max(200).nullable(),
+  /** The commands sent through the door in the same span as this page's operations, newest first. */
+  commands: z.array(AgentCommandActivitySchema).max(100),
+});
 const otherCommandInputSchema = z.discriminatedUnion("type", [
   IphoneScreenAttachCommandSchema,
   IphoneScreenDetachCommandSchema,
@@ -604,6 +624,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.inputQueue.resume"),
   }),
   z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.stop.recheck"),
+  }),
+  z.strictObject({
     type: z.literal("thread.visit"),
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
@@ -707,6 +732,17 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("request.respond"),
   }),
   z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    requestId: RequestIdSchema,
+    /**
+     * The revision of the Request the person reviewed. The Home runs the proposal it stored,
+     * exactly; the approval carries no command of its own. A command that carries a value only
+     * the person types is never approved this way.
+     */
+    expectedRevision: PersonalRevisionSchema,
+    type: z.literal("request.command.approve"),
+  }),
+  z.strictObject({
     /** Source fields the person filled in (a base URL, a region); the driver validates them. */
     config: z.record(z.string().max(60), z.string().max(2_048)).optional(),
     driverKind: HarnessIdSchema,
@@ -785,6 +821,16 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("harness.authentication.cancel"),
   }),
+  /**
+   * Opens a pending browser sign-in that returns to the engine's own computer
+   * in that computer's browser, as a tab the person finishes it in.
+   */
+  z.strictObject({
+    environmentId: EnvironmentIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("harness.authentication.browse"),
+  }),
   DeviceMachineRevokeCommandSchema,
   DeviceMachineRenameCommandSchema,
   z.strictObject({
@@ -831,6 +877,16 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("personal.accountLink.resume"),
   }),
+  /**
+   * Ends this Home's Account link here and at the Account, with no Remote access involved. The
+   * Mac app sends it as two steps with its Account work between them: `revoke-sessions` ends the
+   * Home's Remote access sessions, `remove-link` forgets the link. Without `step`, both.
+   */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    step: z.enum(["revoke-sessions", "remove-link"]).optional(),
+    type: z.literal("personal.accountLink.unlink"),
+  }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     connectionId: AgentConnectionIdSchema,
@@ -845,9 +901,44 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
         kind: z.literal("approve"),
         label: z.string().trim().min(1).max(120),
         accessMode: ThreadAccessModeSchema,
+        verificationSnapshot: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/u)
+          .optional(),
+        /** Sent by a client with the grant screen; without it the connection may do everything. */
+        grant: AgentGrantSchema.optional(),
       }),
     ]),
     type: z.literal("connection.authorize"),
+  }),
+  /** Changes take effect on the agent's next call; a narrowing stops its live work. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    connectionId: AgentConnectionIdSchema,
+    expectedRevision: z.number().int().min(1),
+    label: z.string().trim().min(1).max(120).optional(),
+    accessMode: ThreadAccessModeSchema.optional(),
+    grant: AgentGrantSchema.optional(),
+    type: z.literal("connection.update"),
+  }),
+  /** The person checked what the agent's last uncertain action did. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    connectionId: AgentConnectionIdSchema,
+    type: z.literal("connection.uncertain.acknowledge"),
+  }),
+  /** The person's Stop on a task a connected agent works itself, bound to the session they saw. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    threadId: ThreadIdSchema,
+    agentSessionId: AgentSessionIdSchema,
+    type: z.literal("agent.session.stop"),
+  }),
+  /** Takes a revoked or expired connection off the list. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    connectionId: AgentConnectionIdSchema,
+    type: z.literal("connection.remove"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -913,6 +1004,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     requestId: z.uuid(),
     type: z.literal("integration.computer.setup.cancel"),
   }),
+  /** The person ends one computer-use session from its live view: it narrows, and runs now. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    sessionId: ComputerUseSessionIdSchema,
+    type: z.literal("integration.computer.session.stop"),
+  }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     setupRequestId: z.uuid(),
@@ -949,7 +1046,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.disconnect"),
   }),
   z.strictObject({
-    accessPolicy: ChannelAccessPolicySchema,
     credentials: z.record(z.string(), z.string()),
     idempotencyKey: idempotencyKeySchema,
     provider: z.string().min(1),
@@ -964,48 +1060,43 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   /**
    * A channel whose transport runs on one of the owner's computers — iMessage
-   * through that Mac — pinned there, using its app connection. `ownerHandles`
-   * are where the owner writes from, linked to them at once.
+   * through that Mac — pinned there, using its app connection. "Me" on it is
+   * linked as on any account: by sending, from the owner's phone, a code
+   * Opensteer shows.
    */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    ownerHandles: z.array(z.string().trim().min(3).max(320)).min(1).max(8),
     provider: z.string().min(1),
     runnerId: RunnerIdSchema,
     type: z.literal("channel.connection.computer.create"),
   }),
+  /**
+   * A chat: a connection reached through a chat account, for its direct messages or for one
+   * named channel. Who may give it work is chosen here and never changes; "anyone" only for a
+   * named channel, holding tasks and plugins only.
+   */
   z.strictObject({
-    accessPolicy: ChannelAccessPolicySchema,
     accountId: ChannelAccountIdSchema,
-    executionPolicy: ChannelExecutionPolicySchema,
+    conversation: z
+      .strictObject({
+        id: z.string().trim().min(1).max(512),
+        name: z.string().trim().min(1).max(160),
+      })
+      .nullable(),
+    senders: BridgeSendersSchema,
+    accessMode: ThreadAccessModeSchema,
+    grant: AgentGrantSchema,
     idempotencyKey: idempotencyKeySchema,
-    selector: ChannelRouteSelectorSchema,
-    type: z.literal("channel.binding.create"),
+    type: z.literal("channel.chat.create"),
   }),
+  /**
+   * A code the person sends from their own account on the chat account, to link it as "me".
+   * Linking another replaces the one linked before. Nothing is said in the chat.
+   */
   z.strictObject({
-    bindingId: ChannelBindingIdSchema,
+    accountId: ChannelAccountIdSchema,
     idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.binding.revoke"),
-  }),
-  z.strictObject({
-    accessPolicy: ChannelAccessPolicySchema,
-    bindingId: ChannelBindingIdSchema,
-    expectedRevision: z.number().int().positive(),
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.binding.update"),
-  }),
-  z.strictObject({
-    bindingId: ChannelBindingIdSchema,
-    externalUserId: z.string().trim().min(1).max(512),
-    expectedRevision: z.number().int().positive(),
-    decision: z.enum(["approved", "declined", "revoked"]),
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.access.review"),
-  }),
-  z.strictObject({
-    code: z.string().trim().min(8).max(32),
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.identity.link"),
+    type: z.literal("channel.me.link"),
   }),
   z.strictObject({
     connectionId: IntegrationConnectionIdSchema,
@@ -1093,6 +1184,27 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     sessionId: z.string().min(1),
     type: z.literal("browser.session.close"),
   }),
+  /**
+   * The owner's Restart browser on a Cloud Computer's pooled browser: its pages and saved state
+   * are discarded and it starts fresh. Sent only to a Home that reports that pooled browser;
+   * every other Home refuses it.
+   */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    runnerId: z.string().min(1).max(200),
+    type: z.literal("browser.pool.restart"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    sessionId: z.string().min(1),
+    type: z.literal("browser.session.dismiss"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    surfaceId: z.string().min(1).max(200),
+    noticeId: z.string().min(1).max(200),
+    type: z.literal("browser.pool.notice.seen"),
+  }),
   /** Forgets one address from the person's own profile's history, and its site's icon when unused. */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1135,13 +1247,41 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     triggerId: TriggerIdSchema,
     type: z.literal("trigger.cancel"),
   }),
+  z
+    .strictObject({
+      clearAll: z.literal(true).optional(),
+      idempotencyKey: idempotencyKeySchema,
+      names: z.array(AutomationSecretNameSchema).min(1).max(MAX_AUTOMATION_SECRETS).optional(),
+      remove: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).optional(),
+      set: AutomationSecretMapSchema.optional(),
+      triggerId: TriggerIdSchema,
+      type: z.literal("trigger.secrets.set"),
+    })
+    .superRefine((command, ctx) => {
+      const hasNames = command.names !== undefined;
+      const hasClearAll = command.clearAll === true;
+      const hasPatch = command.set !== undefined || command.remove !== undefined;
+      if (hasNames && (hasPatch || hasClearAll)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["names"],
+          message: "Pass either `names` (to ask the person) or a patch (`set`/`remove`), not both.",
+        });
+      }
+      if (hasClearAll && hasPatch) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["clearAll"],
+          message: "`clearAll` cannot be combined with `set` or `remove`.",
+        });
+      }
+    }),
 ]);
 
 const commandInputSchema = z.union([
   DeviceMachineAccessUpdateCommandSchema,
   ...TabCommandSchema.options,
   ...AppCommandSchema.options,
-  ...TeamCommandSchema.options,
   SettingsPluginEnableCommandSchema,
   ...PluginCommandSchema.options,
   ...otherCommandInputSchema.options,
@@ -1152,7 +1292,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   IphoneScreenDetachResultSchema,
   ...TabCommandResultSchema.options,
   ...AppCommandResultSchema.options,
-  ...TeamCommandResultViewSchema.options,
   SettingsPluginEnableResultSchema,
   ...PluginCommandResultSchema.options,
   ComputerViewCloseResultSchema,
@@ -1180,6 +1319,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     asOfSequence: SequenceSchema,
     thread: ThreadViewSchema,
     type: z.literal("thread.inputQueue.resume"),
+  }),
+  z.object({
+    proven: z.boolean(),
+    type: z.literal("thread.stop.recheck"),
   }),
   z.object({ input: ThreadInputViewSchema, type: z.literal("thread.input.cancel") }),
   z.object({ type: z.literal("thread.input.move") }),
@@ -1254,6 +1397,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("node.stop"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
+  z.object({
+    type: z.literal("request.command.approve"),
+    outcome: commandRequestOutcomeSchema,
+  }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
   z.object({ installation: HarnessInstallationSchema, type: z.literal("harness.update") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.rename") }),
@@ -1265,6 +1412,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   harnessAuthenticationEnvelopeSchema.extend({ type: z.literal("harness.authentication.submit") }),
   harnessAuthenticationEnvelopeSchema.extend({ type: z.literal("harness.authentication.logout") }),
   harnessAuthenticationEnvelopeSchema.extend({ type: z.literal("harness.authentication.cancel") }),
+  z.object({ tabId: TabIdSchema, type: z.literal("harness.authentication.browse") }),
   z.object({ type: z.literal("machine.revoke") }),
   z.object({ type: z.literal("machine.rename") }),
   z.object({ type: z.literal("machine.session.bind") }),
@@ -1297,7 +1445,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("personal.accountLink.resume"),
     access: PersonalRemoteAccessStatusSchema,
   }),
+  z.object({ type: z.literal("personal.accountLink.unlink") }),
   z.object({ type: z.literal("connection.revoke") }),
+  z.object({ type: z.literal("connection.update"), connection: AgentConnectionSchema }),
+  z.object({ type: z.literal("connection.remove") }),
+  z.object({ type: z.literal("connection.uncertain.acknowledge") }),
+  z.object({ ended: z.boolean(), type: z.literal("agent.session.stop") }),
   z.object({
     type: z.literal("connection.authorize"),
     completionPath: z.string().startsWith("/oauth/mcp/complete?"),
@@ -1336,6 +1489,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.computer.setup.request"),
   }),
   z.object({ type: z.literal("integration.computer.setup.cancel") }),
+  z.object({ type: z.literal("integration.computer.session.stop") }),
   z.object({
     type: z.literal("integration.computer.setup.respond"),
   }),
@@ -1358,28 +1512,20 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     account: ChannelAccountViewSchema,
-    binding: ChannelBindingViewSchema,
     connection: IntegrationConnectionViewSchema,
     type: z.literal("channel.connection.create"),
   }),
   z.object({ type: z.literal("channel.connection.credentials.replace") }),
   z.object({
     account: ChannelAccountViewSchema,
-    binding: ChannelBindingViewSchema,
     connection: IntegrationConnectionViewSchema,
     type: z.literal("channel.connection.computer.create"),
   }),
-  z.object({ binding: ChannelBindingViewSchema, type: z.literal("channel.binding.create") }),
-  z.object({ type: z.literal("channel.binding.revoke") }),
-  z.object({ binding: ChannelBindingViewSchema, type: z.literal("channel.binding.update") }),
-  z.object({ grant: ChannelAccessGrantViewSchema, type: z.literal("channel.access.review") }),
+  z.object({ connection: AgentConnectionSchema, type: z.literal("channel.chat.create") }),
   z.object({
-    account: ChannelAccountViewSchema,
-    identity: z.object({
-      displayName: z.string().min(1).max(160),
-      externalUserId: z.string().min(1).max(512),
-    }),
-    type: z.literal("channel.identity.link"),
+    code: z.string().min(8).max(32),
+    expiresAt: z.iso.datetime({ offset: true }),
+    type: z.literal("channel.me.link"),
   }),
   z.object({ type: z.literal("channel.connection.status.set") }),
   StartHostedBrowserResponseSchema.extend({ type: z.literal("browser.session.start") }),
@@ -1408,6 +1554,9 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
   }),
   z.object({ type: z.literal("browser.session.close") }),
+  z.object({ type: z.literal("browser.session.dismiss") }),
+  z.object({ type: z.literal("browser.pool.restart") }),
+  z.object({ type: z.literal("browser.pool.notice.seen") }),
   z.object({ type: z.literal("browser.history.remove") }),
   z.object({ type: z.literal("browser.history.clear") }),
   z.object({
@@ -1415,7 +1564,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     trigger: TriggerViewSchema,
     type: z.literal("trigger.create"),
     wasDuplicate: z.boolean(),
-    webhook: z.object({ secret: z.string().min(1), url: z.url() }).optional(),
+    webhook: z
+      .object({
+        scope: z.enum(["public", "local"]),
+        url: z.url(),
+      })
+      .optional(),
   }),
   z.object({
     revision: TriggerRevisionViewSchema,
@@ -1427,6 +1581,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({
     canceledOccurrenceIds: z.array(z.string().min(1)).max(100),
     type: z.literal("trigger.cancel"),
+  }),
+  z.object({
+    secretNames: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS),
+    type: z.literal("trigger.secrets.set"),
   }),
 ]);
 
@@ -1463,204 +1621,9 @@ const hostApiGroup1 = defineRpc({
     }),
     NeedsYouPageSchema,
   ),
-  "team.bootstrap.get": declaration(
-    "POST",
-    teamReadSchemas["team.bootstrap.get"].input,
-    teamReadViews["team.bootstrap.get"],
-  ),
-  "team.sidebar.get": declaration(
-    "POST",
-    teamReadSchemas["team.sidebar.get"].input,
-    teamReadViews["team.sidebar.get"],
-  ),
-  "team.channels.list": declaration(
-    "POST",
-    teamReadSchemas["team.channels.list"].input,
-    teamReadViews["team.channels.list"],
-  ),
-  "team.channel.get": declaration(
-    "POST",
-    teamReadSchemas["team.channel.get"].input,
-    teamReadViews["team.channel.get"],
-  ),
-  "team.channel.access.get": declaration(
-    "POST",
-    teamReadSchemas["team.channel.access.get"].input,
-    teamReadViews["team.channel.access.get"],
-  ),
-  "team.channel.instructions.get": declaration(
-    "POST",
-    teamReadSchemas["team.channel.instructions.get"].input,
-    teamReadViews["team.channel.instructions.get"],
-  ),
-  "team.messages.page": declaration(
-    "POST",
-    teamReadSchemas["team.messages.page"].input,
-    teamReadViews["team.messages.page"],
-  ),
-  "team.thread.page": declaration(
-    "POST",
-    teamReadSchemas["team.thread.page"].input,
-    teamReadViews["team.thread.page"],
-  ),
-  "team.message.get": declaration(
-    "POST",
-    teamReadSchemas["team.message.get"].input,
-    teamReadViews["team.message.get"],
-  ),
-  "team.messages.check": declaration(
-    "POST",
-    teamReadSchemas["team.messages.check"].input,
-    teamReadViews["team.messages.check"],
-  ),
-  "team.search": declaration(
-    "POST",
-    teamReadSchemas["team.search"].input,
-    teamReadViews["team.search"],
-  ),
-  "team.members.list": declaration(
-    "POST",
-    teamReadSchemas["team.members.list"].input,
-    teamReadViews["team.members.list"],
-  ),
-  "team.groups.list": declaration(
-    "POST",
-    teamReadSchemas["team.groups.list"].input,
-    teamReadViews["team.groups.list"],
-  ),
-  "team.group.get": declaration(
-    "POST",
-    teamReadSchemas["team.group.get"].input,
-    teamReadViews["team.group.get"],
-  ),
-  "team.invites.list": declaration(
-    "POST",
-    teamReadSchemas["team.invites.list"].input,
-    teamReadViews["team.invites.list"],
-  ),
-  "team.invite.current.get": declaration(
-    "POST",
-    teamReadSchemas["team.invite.current.get"].input,
-    teamReadViews["team.invite.current.get"],
-  ),
-  "team.audit.page": declaration(
-    "POST",
-    teamReadSchemas["team.audit.page"].input,
-    teamReadViews["team.audit.page"],
-  ),
-  "team.notices.page": declaration(
-    "POST",
-    teamReadSchemas["team.notices.page"].input,
-    teamReadViews["team.notices.page"],
-  ),
-  "team.knowledge.topics.list": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.topics.list"].input,
-    teamReadViews["team.knowledge.topics.list"],
-  ),
-  "team.knowledge.topic.get": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.topic.get"].input,
-    teamReadViews["team.knowledge.topic.get"],
-  ),
-  "team.knowledge.topic.access.get": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.topic.access.get"].input,
-    teamReadViews["team.knowledge.topic.access.get"],
-  ),
-  "team.agent.recipient.get": declaration(
-    "POST",
-    teamReadSchemas["team.agent.recipient.get"].input,
-    teamReadViews["team.agent.recipient.get"],
-  ),
-  "team.agent.requests.get": declaration(
-    "POST",
-    teamReadSchemas["team.agent.requests.get"].input,
-    teamReadViews["team.agent.requests.get"],
-  ),
-  "team.share.participants.get": declaration(
-    "GET",
-    teamReadSchemas["team.share.participants.get"].input,
-    teamReadViews["team.share.participants.get"],
-  ),
-  "team.shares.list": declaration(
-    "GET",
-    teamReadSchemas["team.shares.list"].input,
-    teamReadViews["team.shares.list"],
-  ),
-  "team.partners.list": declaration(
-    "POST",
-    teamReadSchemas["team.partners.list"].input,
-    teamReadViews["team.partners.list"],
-  ),
-  "team.partner.invite.preview": declaration(
-    "POST",
-    teamReadSchemas["team.partner.invite.preview"].input,
-    teamReadViews["team.partner.invite.preview"],
-  ),
-  "team.partner.invites.list": declaration(
-    "POST",
-    teamReadSchemas["team.partner.invites.list"].input,
-    teamReadViews["team.partner.invites.list"],
-  ),
-  "team.sharing.policy.get": declaration(
-    "POST",
-    teamReadSchemas["team.sharing.policy.get"].input,
-    teamReadViews["team.sharing.policy.get"],
-  ),
 } as const);
 
 const hostApiGroup2 = defineRpc({
-  "team.links.list": declaration(
-    "POST",
-    teamReadSchemas["team.links.list"].input,
-    teamReadViews["team.links.list"],
-  ),
-  "teams.links.list": declaration(
-    "POST",
-    teamReadSchemas["teams.links.list"].input,
-    teamReadViews["teams.links.list"],
-  ),
-  "teams.threadTask.get": declaration(
-    "POST",
-    teamReadSchemas["teams.threadTask.get"].input,
-    teamReadViews["teams.threadTask.get"],
-  ),
-  "teams.replyTask.get": declaration(
-    "POST",
-    teamReadSchemas["teams.replyTask.get"].input,
-    teamReadViews["teams.replyTask.get"],
-  ),
-  "team.mentions.page": declaration(
-    "POST",
-    teamReadSchemas["team.mentions.page"].input,
-    teamReadViews["team.mentions.page"],
-  ),
-  "team.pins.page": declaration(
-    "POST",
-    teamReadSchemas["team.pins.page"].input,
-    teamReadViews["team.pins.page"],
-  ),
-  "team.files.page": declaration(
-    "POST",
-    teamReadSchemas["team.files.page"].input,
-    teamReadViews["team.files.page"],
-  ),
-  "team.knowledge.notes.page": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.notes.page"].input,
-    teamReadViews["team.knowledge.notes.page"],
-  ),
-  "team.knowledge.note.get": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.note.get"].input,
-    teamReadViews["team.knowledge.note.get"],
-  ),
-  "team.knowledge.note.history": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.note.history"].input,
-    teamReadViews["team.knowledge.note.history"],
-  ),
   "browser.searchSuggestions.get": declaration(
     "GET",
     z.strictObject({ query: z.string().trim().min(1).max(200) }),
@@ -1727,6 +1690,8 @@ const hostApiGroup2 = defineRpc({
   "auth.oidc.begin": declaration(
     "POST",
     z.strictObject({
+      /** Ask the provider who is signing in, even when it holds a session. */
+      chooseAccount: z.literal(true).optional(),
       oauthQuery: oauthQuerySchema.optional(),
       providerId: oidcProviderIdSchema,
       returnPath: oidcReturnPathSchema,
@@ -1787,8 +1752,30 @@ const hostApiGroup3 = defineRpc({
   "channels.get": declaration("GET", emptyInputSchema, ChannelDashboardViewSchema),
   "connections.list": declaration(
     "GET",
-    emptyInputSchema,
-    z.object({ connections: z.array(AgentConnectionSchema) }),
+    z.strictObject({ includeRevoked: z.boolean().optional() }),
+    z.object({
+      connections: z.array(AgentConnectionSchema),
+      /** Present on Homes with grants. Legacy readers still see only active connections. */
+      endedConnections: z.array(AgentConnectionSchema).optional(),
+    }),
+  ),
+  /** A connected agent's direct operations, newest first, paged. */
+  "connections.activity": declaration(
+    "GET",
+    z.strictObject({
+      connectionId: AgentConnectionIdSchema,
+      before: z.string().min(1).max(200).optional(),
+    }),
+    AgentOperationPageSchema,
+  ),
+  /** One task's direct operations, newest first, paged; empty for any other task. */
+  "threads.activity": declaration(
+    "GET",
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      before: z.string().min(1).max(200).optional(),
+    }),
+    AgentOperationPageSchema,
   ),
   "connections.authorization.get": declaration(
     "GET",
@@ -1800,6 +1787,7 @@ const hostApiGroup3 = defineRpc({
     emptyInputSchema,
     PersonalRemoteAdministrationStatusSchema,
   ),
+  "personal.accountLink.get": declaration("GET", emptyInputSchema, PersonalAccountLinkStatusSchema),
   "plugins.overview.get": declaration("GET", z.strictObject({}), PluginsOverviewViewSchema),
   "devices.overview.get": declaration("GET", z.strictObject({}), DevicesOverviewViewSchema),
   "plugins.installed.list": declaration(
@@ -2007,11 +1995,6 @@ const hostApiGroup3 = defineRpc({
    * Stop a live session from any client, which is the person saying so from
    * somewhere other than the Mac's own pill. Only that Mac's owner may.
    */
-  "integration.computer.session.stop": declaration(
-    "POST",
-    z.strictObject({ sessionId: ComputerUseSessionIdSchema }),
-    emptyOutputSchema,
-  ),
 } as const);
 
 const hostApiGroup4 = defineRpc({
@@ -2232,7 +2215,10 @@ const hostApiGroup4 = defineRpc({
       createdByThreadTitle: ThreadViewSchema.shape.title.nullable().default(null),
       occurrences: z.array(TriggerOccurrenceViewSchema).max(100),
       revision: TriggerRevisionViewSchema,
+      secretNames: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).default([]),
+      secretsUnreadable: z.boolean().default(false),
       trigger: TriggerViewSchema,
+      webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
     }),
   ),
   "triggers.list": declaration(
@@ -2283,7 +2269,12 @@ const workspaceHostApi = defineRpc({
         runtimeId: z.string().trim().min(1).max(255),
       }),
     ]),
-    z.object({ ready: z.boolean() }),
+    z.object({
+      ready: z.boolean(),
+      pluginAgentWorkStoppedSince: IsoDateTimeSchema.optional(),
+      /** Not ready because the connected hosting computer has not reported Agent home yet. */
+      pending: z.literal("agent-home").optional(),
+    }),
   ),
   "thread.snapshot.get": declaration(
     "GET",
@@ -2338,6 +2329,17 @@ const workspaceHostApi = defineRpc({
       cursor: z.string().max(4096).optional(),
     }),
     PersonalResourceDetailSchema,
+  ),
+  // This Home's problems now, and the one report it sends or would send, exactly.
+  "problems.get": declaration(
+    "GET",
+    emptyInputSchema,
+    z.object({
+      problems: z.array(ProblemViewSchema).max(problemsLimit),
+      reporting: ProblemReportingSchema,
+      /** Exactly the bytes this Home sends, or would send; null where there is nowhere to send. */
+      body: z.string().max(65_536).nullable(),
+    }),
   ),
   "machines.list": declaration(
     "GET",

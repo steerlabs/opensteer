@@ -1,5 +1,5 @@
-import type { MessageEdit, MessageRevisionView, TeamAudience } from "@opensteer/core";
-import type { NeedsYouPage, PersonalInputQueue } from "@opensteer/protocol";
+import type { MessageEdit, MessageRevisionView } from "@opensteer/core";
+import type { PersonalInputQueue } from "@opensteer/protocol";
 import type { MessageEntry } from "./client.js";
 import { messageAuthorName } from "./conversation-presentation.js";
 import { messageBody } from "./transcript.js";
@@ -28,8 +28,8 @@ interface WaitingInputCommon {
   /** Its words, or "Attachment" when it has none: for labels and previews. */
   readonly text: string;
   /**
-   * The version shown, 0 until edited. An editor starts from it and an
-   * approval names it, so the Host acts on exactly what the person saw.
+   * The version shown, 0 until edited. An editor starts from it, so the Host
+   * acts on exactly what the person saw.
    */
   readonly revision: number;
   /** Set once edited: the "Edited" mark, which opens `listMessageRevisions`. */
@@ -39,7 +39,7 @@ interface WaitingInputCommon {
   readonly lease: WaitingInputLease;
 }
 
-/** A message in line for the agent: the person's own, or a teammate's ask already approved. */
+/** A message in line for the agent: the person's own. */
 export interface WaitingMessage extends WaitingInputCommon {
   readonly kind: "message";
   /**
@@ -52,56 +52,16 @@ export interface WaitingMessage extends WaitingInputCommon {
   readonly canSteer: boolean;
 }
 
-/**
- * A teammate's ask, mentioning the person's agent in a team channel, that
- * waits for the person's answer. It cannot reach the agent until approved,
- * and approval puts it at the back of the line. Declining ends it, and its
- * task too when the ask was all the task ever held.
- */
-export interface WaitingAsk extends WaitingInputCommon {
-  readonly kind: "ask";
-  readonly teamId: string;
-  readonly requestId: string;
-  /** Who asked, as the task names them ("Maya", or "Maya's agent"). */
-  readonly asker: string;
-  /**
-   * Approved, here or on another device, and waiting for the team to confirm
-   * before it joins the line. Answer, Decline and edits are closed meanwhile.
-   */
-  readonly approving: boolean;
-  readonly consent: WaitingAskConsent;
-  /** When the ask lapses unanswered, once Needs you has said; null until then. */
-  readonly consentExpiresAt: string | null;
-}
-
-export type WaitingInput = WaitingMessage | WaitingAsk;
-
-/** Where the agent's answer to an ask will be posted, and who will read it. */
-export interface WaitingAskConsent {
-  readonly teamName: string;
-  readonly channelName: string;
-  readonly channelKind: TeamAudience["channelKind"];
-  readonly memberCount: number;
-  /** Other teams the channel is shared with, whose members read the answer too. */
-  readonly sharedWith: readonly string[];
-  /** The quiet line under the ask: "Replies in #general · 12 people · Shared with Globex". */
-  readonly line: string;
-}
+export type WaitingInput = WaitingMessage;
 
 /**
  * Everything waiting to reach the person's agent at the foot of a task, in
- * the order it will go: their messages in line, then teammates' asks awaiting
- * their answer. Opensteer follow-ups, delegation results and automation runs
- * wait in the same queue, but they are nobody's words to edit or take back,
- * and each has its own place in the conversation. `needsYou` adds
- * each ask's consent deadline.
+ * the order it will go: their messages in line. Opensteer follow-ups,
+ * delegation results and automation runs wait in the same queue, but they are
+ * nobody's words to edit or take back, and each has its own place in the
+ * conversation.
  */
-export function waitingInputs(
-  queue: PersonalInputQueue,
-  viewer: {
-    readonly needsYou?: NeedsYouPage | null;
-  },
-): WaitingInput[] {
+export function waitingInputs(queue: PersonalInputQueue): WaitingInput[] {
   const first = queue.items[0];
   return queue.items.flatMap((item): WaitingInput[] => {
     const { input, message } = item;
@@ -138,28 +98,8 @@ export function waitingInputs(
       text: message.preview || "Attachment",
       threadId: queue.threadId,
     };
-    if (input.state === "awaiting-approval") {
-      if (!item.ask) return [];
-      const { teamId, requestId, audience } = item.ask;
-      const listed = viewer.needsYou?.entries.find(
-        (row) => row.kind === "team-ask" && row.teamId === teamId && row.requestId === requestId,
-      );
-      return [
-        {
-          ...common,
-          kind: "ask",
-          // The Host closes edits to an ask once its approval is under way.
-          approving: !item.canEdit,
-          asker: messageAuthorName(message.author),
-          consent: waitingAskConsent(audience),
-          consentExpiresAt: listed?.kind === "team-ask" ? listed.consentExpiresAt : null,
-          requestId,
-          teamId,
-        },
-      ];
-    }
     if (input.state !== "pending") return [];
-    if (message.author.kind !== "human" && message.author.kind !== "team-member") return [];
+    if (message.author.kind !== "human") return [];
     return [
       {
         ...common,
@@ -171,29 +111,6 @@ export function waitingInputs(
       },
     ];
   });
-}
-
-export function waitingAskConsent(audience: TeamAudience): WaitingAskConsent {
-  const sharedWith = audience.externalTeams?.map((team) => team.name) ?? [];
-  const where =
-    audience.channelKind === "dm"
-      ? "a direct message"
-      : audience.channelKind === "group_dm"
-        ? "a group message"
-        : `#${audience.channelName}`;
-  const people = `${audience.memberCount} ${audience.memberCount === 1 ? "person" : "people"}`;
-  return {
-    channelKind: audience.channelKind,
-    channelName: audience.channelName,
-    line: [
-      `Replies in ${where}`,
-      ...(audience.channelKind === "dm" ? [] : [people]),
-      ...(sharedWith.length ? [`Shared with ${sharedWith.join(", ")}`] : []),
-    ].join(" · "),
-    memberCount: audience.memberCount,
-    sharedWith,
-    teamName: audience.teamName,
-  };
 }
 
 /** One version in a message's edit history, as its history sheet lists it. */
@@ -217,8 +134,7 @@ export interface MessageRevisionRow {
 /**
  * A message's versions, newest first, as one page or several pages of
  * `listMessageRevisions` joined in order, for the sheet the "Edited" mark
- * opens. For a teammate's ask, the original is theirs and every edit the
- * person's own.
+ * opens.
  */
 export function messageRevisionRows(
   revisions: readonly MessageRevisionView[],

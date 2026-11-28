@@ -12,7 +12,11 @@ import { HostAppsChangedSchema } from "./apps.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
 import { PluginChangeSchema, PluginEngineStateViewSchema } from "./plugins.js";
 
-import { DeploymentIdSchema, DeploymentResumeCursorSchema } from "@opensteer/core";
+import {
+  AgentWorkingInSchema,
+  DeploymentIdSchema,
+  DeploymentResumeCursorSchema,
+} from "@opensteer/core";
 
 import {
   LiveRunProgressViewSchema,
@@ -35,9 +39,11 @@ import {
   RunnerIdSchema,
 } from "@opensteer/core";
 import { z } from "zod";
+import { AgentConnectionIdSchema } from "./agent-connections.js";
 
 import { ProtocolErrorSchema, type RealtimeFrameDiagnostic } from "./common.js";
 import { ComputerUseSessionIdSchema, computerUseMaxSessionApps } from "./computer-use.js";
+import { PersonalTaskExternalWorkSchema } from "./personal-sync.js";
 import { ShellCloseReasonSchema, ShellSessionSummarySchema } from "./shell.js";
 
 const clientMessageBase = {} as const;
@@ -191,6 +197,10 @@ export const taskLineMaxLength = 280;
  * `taskLineMaxLength`, read from the latest published reply and latest Run.
  */
 export const TaskEntryViewSchema = z.object({
+  /** Kept beside Thread because the person's task pages alone carry this lineage. */
+  originConnectionId: AgentConnectionIdSchema.optional(),
+  /** Session metadata belongs to the person's view, beside the shared Thread. */
+  externalWork: PersonalTaskExternalWorkSchema.optional(),
   failure: z.string().max(taskLineMaxLength).nullable(),
   lastReply: z.string().max(taskLineMaxLength).nullable(),
   thread: ThreadViewSchema,
@@ -200,6 +210,29 @@ export const TaskEntryViewSchema = z.object({
   retry: RunRetryViewSchema.nullable().optional(),
 });
 export type TaskEntryView = z.infer<typeof TaskEntryViewSchema>;
+
+/** Project the same owner task-page entry for a real Home and the preview. */
+export function taskPageEntryView({
+  thread,
+  failure,
+  lastReply,
+  originConnectionId,
+  externalWork,
+  runQueued,
+  retry,
+}: Omit<TaskEntryView, "externalWork" | "originConnectionId"> & {
+  externalWork?: TaskEntryView["externalWork"] | null;
+  originConnectionId?: string | null | undefined;
+}): TaskEntryView {
+  return {
+    thread,
+    ...(externalWork ? { externalWork } : originConnectionId ? { originConnectionId } : {}),
+    failure: failure?.slice(0, taskLineMaxLength) ?? null,
+    lastReply: lastReply?.slice(0, taskLineMaxLength) ?? null,
+    ...(runQueued === undefined ? {} : { runQueued }),
+    ...(retry === undefined ? {} : { retry }),
+  };
+}
 
 export const TaskPageSchema = z.object({
   asOfSequence: SequenceSchema,
@@ -331,6 +364,14 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
       .min(1)
       .max(100),
     type: z.literal("host.computer-presence"),
+  }),
+  // Where a connected agent's session on a task is working now: sent when its tab changes or is
+  // no longer its own, when the session ends, and for each named tab as the socket attaches. In
+  // the Home's memory only, and only to the person who owns the Home; no read carries it.
+  z.object({
+    ...clientMessageBase,
+    ...AgentWorkingInSchema.shape,
+    type: z.literal("host.agent-working-in"),
   }),
   // The computers list changed — a Runner connected or disconnected, a computer
   // was added, renamed, or removed, or an access policy was written. It names

@@ -4,7 +4,7 @@ import { utf8ByteLength, utf8Prefix, type RunId, type ThreadId } from "@openstee
 import { sql, type Insertable, type Selectable, type Kysely, type InferResult } from "kysely";
 import { type PersonalMutation, type PersonalMutationTransaction } from "./personal-mutation.js";
 import { itemColumns, itemView, type NodeFacts } from "./personal-sync-store.js";
-import { runDeliverySelection, runUsageFromRow } from "./thread-row-mappers.js";
+import { runUsageFromRow } from "./thread-row-mappers.js";
 import type { DatabaseSchema } from "./schema.js";
 import type { TranscriptPreview, TranscriptItemTable } from "./personal-state-schema.js";
 import type { MessageTextFacts } from "./transcript-store.js";
@@ -30,6 +30,8 @@ export function transcriptRuns(database: Kysely<DatabaseSchema>) {
       "completedAt",
       "terminalReplyMessageId",
       "failure",
+      "interruptedCause",
+      "stopConfirmedAt",
       "providerRetry",
       "maintenance",
       "phase",
@@ -40,8 +42,7 @@ export function transcriptRuns(database: Kysely<DatabaseSchema>) {
       "cacheWriteTokens",
       "reasoningTokens",
       "costUsd",
-    ])
-    .select(runDeliverySelection);
+    ]);
 }
 
 export function describeTranscriptRun(
@@ -58,10 +59,20 @@ export function describeTranscriptRun(
   const view = {
     status,
     ...(run.completedAt ? { endedAt: run.completedAt.toISOString() } : {}),
+    ...(run.stopConfirmedAt ? { stopConfirmedAt: run.stopConfirmedAt.toISOString() } : {}),
+    ...(run.interruptedCause ? { interruptedCause: run.interruptedCause } : {}),
     ...(run.terminalReplyMessageId ? { replyMessageId: run.terminalReplyMessageId } : {}),
     ...(usage ? { usage } : {}),
     ...(run.failure
-      ? { failure: { ...run.failure, message: utf8Prefix(run.failure.message, 512) } }
+      ? {
+          failure: {
+            ...run.failure,
+            message: utf8Prefix(run.failure.message, 512),
+            ...(run.failure.ownerMessage !== undefined
+              ? { ownerMessage: utf8Prefix(run.failure.ownerMessage, 512) }
+              : {}),
+          },
+        }
       : {}),
     ...(active && !run.finishIntent && run.providerRetry?.status === "retrying"
       ? {
@@ -71,10 +82,14 @@ export function describeTranscriptRun(
           },
         }
       : {}),
-    ...(run.delivery ? { runDelivery: { ...run.delivery } } : {}),
   };
   while (utf8ByteLength(JSON.stringify(view)) > 1_920) {
-    if (view.failure?.message) {
+    if (view.failure?.ownerMessage) {
+      view.failure.ownerMessage = utf8Prefix(
+        view.failure.ownerMessage,
+        Math.floor(utf8ByteLength(view.failure.ownerMessage) / 2),
+      );
+    } else if (view.failure?.message) {
       view.failure.message = utf8Prefix(
         view.failure.message,
         Math.floor(utf8ByteLength(view.failure.message) / 2),
@@ -84,12 +99,6 @@ export function describeTranscriptRun(
         view.retry.message,
         Math.floor(utf8ByteLength(view.retry.message) / 2),
       );
-    } else if (view.runDelivery?.reason) {
-      view.runDelivery.reason =
-        utf8Prefix(
-          view.runDelivery.reason,
-          Math.floor(utf8ByteLength(view.runDelivery.reason) / 2),
-        ).trim() || null;
     } else {
       if (view.failure) view.failure.code = utf8Prefix(view.failure.code, 128);
       break;

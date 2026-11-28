@@ -63,6 +63,8 @@ export type SetupPlanAction =
     }
   | { readonly kind: "add"; readonly environmentId: string }
   | { readonly kind: "get"; readonly installUrl: string }
+  /** An account of the plan is here but cannot run, and its engine said why. */
+  | { readonly kind: "attention"; readonly detail: string }
   | { readonly kind: "working" };
 
 export type SetupAiRow =
@@ -163,6 +165,9 @@ function planAction(
       placement: signIn,
     };
   }
+  // Its engine answered: the reason is the row, never a wait.
+  const failed = accounts.find(({ availability }) => availability === "unavailable");
+  if (failed) return { detail: failed.detail, kind: "attention" };
   if (!main?.connected) return null;
   const driver = main.harnessDrivers.find(({ driverKind }) => driverKind === candidate.driverKind);
   if (!driver) return null;
@@ -182,7 +187,7 @@ function planAction(
   if (accounts.length > 0 || !candidate.addable) return null;
   const source = driver.sources.find(({ sourceId }) => sourceId === candidate.sourceId);
   if (!source || !source.stateKinds.includes("isolated") || source.fields.length > 0) return null;
-  if (!main.harnessAuthenticationAllowed || !main.providerStateModes.includes("isolated")) {
+  if (!main.harnessAuthenticationAllowed || main.harnessDrivers.length === 0) {
     return null;
   }
   return { environmentId: main.id, kind: "add" };

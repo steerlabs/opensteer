@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+CLI_SCRIPT="${OPENSTEER_CLI:-$SCRIPT_DIR/../cli/opensteer-cli.mjs}"
+exec "${OPENSTEER_NODE:-node}" "$CLI_SCRIPT" "$@"

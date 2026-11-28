@@ -169,31 +169,57 @@ it.each([false, true])(
   },
 );
 
-it("installs a ready update on ordinary quit only after cleanup", async () => {
+it("never hands off to the updater for a quit that did not ask to install", async () => {
   const { shutdown, application } = fixture();
-  const calls: string[] = [];
   const recover = vi.fn();
   shutdown.setUpdateRecovery(recover);
-  shutdown.add({
-    component: "child",
-    step: "stop",
-    order: 1,
-    timeoutMs: 100,
-    stop: () => {
-      calls.push("stop");
-    },
-  });
-  shutdown.setUpdateInstaller(() => {
-    calls.push("install");
-  });
-  application.emit("before-quit", { preventDefault: vi.fn() });
+  shutdown.request("quit-completely");
   await vi.advanceTimersByTimeAsync(1);
-  expect(calls).toEqual(["stop", "install"]);
-  expect(application.exit).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(desktopShutdownTimeoutMs);
-  expect(application.exit).toHaveBeenCalledWith(1);
+  expect(application.exit).toHaveBeenCalledExactlyOnceWith(0);
   expect(recover).not.toHaveBeenCalled();
 });
+
+it.each([
+  ["SIGTERM", (_power: EventEmitter) => process.emit("SIGTERM")],
+  ["system shutdown", (power: EventEmitter) => power.emit("shutdown", { preventDefault: vi.fn() })],
+])(
+  "lets %s during an update's cleanup end the session with no install or relaunch",
+  async (_name, terminate) => {
+    const application = Object.assign(new EventEmitter(), { exit: vi.fn() });
+    const power = new EventEmitter();
+    const shutdown = new DesktopShutdown({
+      application: application as unknown as Pick<App, "on" | "exit">,
+      power: power as unknown as Pick<PowerMonitor, "on">,
+      log: vi.fn(),
+    });
+    const recover = vi.fn();
+    shutdown.setUpdateRecovery(recover);
+    let release!: () => void;
+    shutdown.add({
+      component: "personal",
+      step: "stop",
+      order: 1,
+      timeoutMs: 1_000,
+      stop: () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    });
+    const install = vi.fn();
+    const updating = shutdown.requestUpdate(install);
+    const rejected = expect(updating).rejects.toThrow(
+      /ended the app before the update could finish/,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    terminate(power);
+    release();
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(install).not.toHaveBeenCalled();
+    expect(recover).not.toHaveBeenCalled();
+    expect(application.exit).toHaveBeenCalledExactlyOnceWith(0);
+  },
+);
 
 it.each(["throw", "watchdog"])(
   "relaunches the Personal stack after a failed update handoff (%s)",

@@ -6,7 +6,9 @@ import {
   type HostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
 import { describe, expect, it, vi } from "vitest";
+import { resolveConnection } from "./connection-resolver.js";
 import { DeploymentCatalogStore } from "./deployment-catalog.js";
+import { usesHostNativeOAuth, verifyDeploymentAddress } from "./home-address.js";
 import { PrivateDeploymentConnectionService } from "./private-deployment-connection.js";
 import {
   establishedCookieSession,
@@ -152,59 +154,71 @@ describe("PrivateDeploymentConnectionService", () => {
     expect(sessions.establish).not.toHaveBeenCalled();
   });
 
-  it("stores signed self-hosted canonical discovery without manufacturing a signed-in session", async () => {
+  it("adds a Home on its own server by address, pinned by its signed discovery", async () => {
     const catalog = newCatalog();
-    const discovery = selfHostedDiscovery();
+    const home = selfHostedDiscovery("https://home.example.test");
     const sessions = sessionPort();
-    const fetch = vi.fn(async () => discoveryResponse(discovery));
+    const fetch = vi.fn(async (input: string | URL | Request) =>
+      String(input).includes("/v1/rpc/auth.config")
+        ? setupStateResponse("complete")
+        : discoveryResponse(home),
+    );
     const service = new PrivateDeploymentConnectionService({ catalog, fetch, sessions });
 
-    await service.connect({
-      kind: "team",
-      origin: discovery.document.canonicalOrigin,
-    });
+    await service.connect({ kind: "address", origin: home.document.canonicalOrigin });
 
-    expect(fetch).toHaveBeenCalledOnce();
     expect(fetch).toHaveBeenCalledWith(
-      `${discovery.document.canonicalOrigin}/.well-known/opensteer`,
+      `${home.document.canonicalOrigin}/.well-known/opensteer`,
       expect.objectContaining({ credentials: "omit", redirect: "error" }),
     );
     expect(sessions.probe).not.toHaveBeenCalled();
     expect(sessions.establish).not.toHaveBeenCalled();
-    await expect(catalog.load()).resolves.toMatchObject({
-      deployments: [
-        {
-          authority: discovery,
-          endpoints: [{ kind: "canonical", origin: discovery.document.canonicalOrigin }],
-          kind: "team",
-          source: { kind: "manual" },
-        },
-      ],
-      selectedDeploymentId: discovery.document.deploymentId,
+    const stored = (await catalog.load()).deployments[0]!;
+    expect(stored).toMatchObject({
+      authority: home,
+      endpoints: [{ kind: "canonical", origin: home.document.canonicalOrigin }],
+      kind: "personal",
+      name: "home.example.test",
+      reachability: "canonical",
+    });
+    expect(usesHostNativeOAuth(stored)).toBe(true);
+    expect(resolveConnection(stored, null, { authorization: null })).toMatchObject({
+      access: "native",
+      origin: home.document.canonicalOrigin,
+      route: null,
     });
   });
 
-  it("never switches discovery protocols when the explicitly selected connection kind is wrong", async () => {
+  it("refuses a Home nobody has claimed yet, and a Mac Home reached only by route", async () => {
     const catalog = newCatalog();
-    const personalDiscovery = selfHostedDiscovery("https://personal.example.test", "personal");
     const sessions = sessionPort();
-    const fetch = vi.fn(async (input: string | URL | Request) => {
-      expect(String(input)).toBe(
-        `${personalDiscovery.document.canonicalOrigin}/.well-known/opensteer`,
-      );
-      return discoveryResponse(personalDiscovery);
+    const unclaimed = selfHostedDiscovery("https://new-home.example.test");
+    const unclaimedService = new PrivateDeploymentConnectionService({
+      catalog,
+      fetch: vi.fn(async (input: string | URL | Request) =>
+        String(input).includes("/v1/rpc/auth.config")
+          ? setupStateResponse("required")
+          : discoveryResponse(unclaimed),
+      ),
+      sessions,
     });
-    const service = new PrivateDeploymentConnectionService({ catalog, fetch, sessions });
+    await expect(
+      unclaimedService.connect({ kind: "address", origin: unclaimed.document.canonicalOrigin }),
+    ).rejects.toThrow(/has no owner yet/u);
+
+    const mac = selfHostedDiscovery("http://127.0.0.1:4310");
+    const macService = new PrivateDeploymentConnectionService({
+      catalog,
+      fetch: vi.fn(async () => discoveryResponse(mac)),
+      sessions,
+    });
+    await expect(
+      macService.connect({ kind: "address", origin: mac.document.canonicalOrigin }),
+    ).rejects.toThrow(/reached by Remote access/u);
 
     await expect(
-      service.connect({
-        kind: "team",
-        origin: personalDiscovery.document.canonicalOrigin,
-      }),
-    ).rejects.toThrow(/is a computer, not a server/u);
-
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(sessions.probe).not.toHaveBeenCalled();
+      verifyDeploymentAddress({ fetch: vi.fn(), origin: "http://home.example.test" }),
+    ).rejects.toThrow(/needs https/u);
     expect(sessions.establish).not.toHaveBeenCalled();
     await expect(catalog.load()).resolves.toMatchObject({ deployments: [], revision: 0 });
   });
@@ -223,7 +237,7 @@ describe("PrivateDeploymentConnectionService", () => {
     ).rejects.toThrow();
     await expect(
       service.connect({
-        kind: "team",
+        kind: "address",
         origin: "https://self-hosted.example.test",
         pairingCode,
       }),
@@ -319,12 +333,9 @@ function routeResponse(route: PersonalHostAccessRouteEnvelope): Response {
 
 function selfHostedDiscovery(
   canonicalOrigin = "https://self-hosted.example.test",
-  kind: "personal" | "team" = "team",
 ): HostDiscoveryEnvelope {
   const keys = testHostAuthorityKeys();
-  const deploymentShape = {
-    kind: kind === "personal" ? ("personal" as const) : ("team" as const),
-  };
+  const deploymentShape = { kind: "personal" as const };
   const document: HostDiscoveryDocument = {
     canonicalOrigin,
     deploymentId: createId("deployment"),
@@ -335,6 +346,31 @@ function selfHostedDiscovery(
     deploymentShape,
   };
   return signTestDiscoveryEnvelope(document, keys);
+}
+
+function setupStateResponse(setupState: "complete" | "required"): Response {
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      data: {
+        deployment: { kind: "personal", name: "Test Home" },
+        emailDeliveryAvailable: false,
+        localPasswordEnabled: false,
+        machineOwner: false,
+        oidcProviders: [],
+        passkeysEnabled: false,
+        exposure: "networked",
+        portalOrigin: null,
+        publicOrigin: "https://home.example.test",
+        setupState,
+        signupPolicy: "closed",
+      },
+    }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    },
+  );
 }
 
 function discoveryResponse(discovery: HostDiscoveryEnvelope): Response {

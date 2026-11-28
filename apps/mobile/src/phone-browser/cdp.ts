@@ -75,25 +75,20 @@ export class PhoneCdpSession {
       },
       send: (method, params) => this.#send(method, params ?? {}),
     };
-    this.#router = new SessionCdpRouter(
-      backend,
-      {
-        uuid: owner.uuid,
-        isNormalizedAbsolutePath: (value) =>
-          value.startsWith("/") &&
-          value
-            .slice(1)
-            .split("/")
-            .every((part) => part !== "" && part !== "." && part !== ".."),
-        containsFile: (root, value) =>
-          root === owner.filesRoot &&
-          value.startsWith(`${root}/`) &&
-          !value.split("/").some((part) => part === ".." || part === ".") &&
-          !value.includes("\0"),
-      },
-      {},
-      true,
-    );
+    this.#router = new SessionCdpRouter(backend, {
+      uuid: owner.uuid,
+      isNormalizedAbsolutePath: (value) =>
+        value.startsWith("/") &&
+        value
+          .slice(1)
+          .split("/")
+          .every((part) => part !== "" && part !== "." && part !== ".."),
+      containsFile: (root, value) =>
+        root === owner.filesRoot &&
+        value.startsWith(`${root}/`) &&
+        !value.split("/").some((part) => part === ".." || part === ".") &&
+        !value.includes("\0"),
+    });
     const first = owner.tabs()[0];
     if (!first) throw new PhoneBrowserError("target-closed", "The session has no tabs.");
     this.#rootSurfaceId = first.id;

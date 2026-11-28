@@ -44,6 +44,7 @@ export default defineConfig([
     entry: {
       "autofill-preload": "src/browser/autofill-preload.ts",
       "glass-preload": "src/browser/glass-preload.ts",
+      "menu-bar-preload": "src/app/menu-bar-preload.ts",
       "browser-page-preload": "src/browser/browser-page-preload.ts",
       "chrome-extension-api-preload": "src/browser/extensions/chrome-extension-api-preload.ts",
       "chrome-web-store-preload": "src/browser/extensions/chrome-web-store-preload.ts",

@@ -146,14 +146,14 @@ final class LoginReceiverTests: XCTestCase {
     let connection = IPCConnection(
       id: 1, fileDescriptor: -1, onFrame: { _, _ in }, onClose: { _ in })
     XCTAssertNil(connection.loginReceiver)
-    connection.markGreeted(protocolVersion: 10, loginText: 1)
+    connection.markGreeted(protocolVersion: 11, loginText: 1)
     let receiver = try XCTUnwrap(connection.loginReceiver)
     connection.close()
     XCTAssertNil(connection.loginReceiver)
     XCTAssertThrowsError(try prepare(receiver, [action(receiver)]))
     let hello = try JSONDecoder().decode(
       Wire.HelloParams.self,
-      from: Data(#"{"protocolVersion":10,"futureExtension":1}"#.utf8))
+      from: Data(#"{"protocolVersion":11,"futureExtension":1}"#.utf8))
     XCTAssertNil(hello.loginText)
   }
 }

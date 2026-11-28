@@ -90,7 +90,7 @@ export function pluginSignInChoices(
     const setup = entry.setup;
     if (setup.kind !== "oauth2" || setup.grant !== "authorization_code") continue;
     if (setup.oneClickUnavailable === "account-not-linked")
-      oneClickUnavailable = "One-click sign-in needs a linked Opensteer Account.";
+      oneClickUnavailable = "One-click sign-in needs a linked Opensteer account.";
     else if (setup.oneClickUnavailable === "no-provider-app")
       oneClickUnavailable = `Opensteer has no sign-in app for ${providerName}.`;
     const scopes = strings(setup.scopes);
@@ -260,7 +260,7 @@ export type PluginSignInEnd =
 export function pluginSignInFailure(failureCode: string | null): string {
   switch (failureCode) {
     case "account-link-mismatch":
-      return "Your Opensteer Account link changed during sign-in. Sign in again.";
+      return "Your Opensteer account link changed during sign-in. Sign in again.";
     case "plugin-declaration-changed":
       return "The plugin changed what it asks for during sign-in. Review it and sign in again.";
     case "scope-escalation":
@@ -307,7 +307,7 @@ export function pluginSignInRefusal(
     return {
       kind: "account-link-required",
       message:
-        "This computer must be linked to an Opensteer Account before you can sign in from here.",
+        "This computer must be linked to an Opensteer account before you can sign in from here.",
     };
   if (reason === "plugin-consent-changed")
     return {

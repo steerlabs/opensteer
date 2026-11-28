@@ -1,3 +1,4 @@
+import { AsleepStepLine, isAsleepStep } from "./asleep-moment.js";
 import { RetainedToolImage } from "./asset-image.js";
 import { useVirtualTranscript } from "./virtual-transcript.js";
 import { useWindowedRows } from "./workspace/windowed-rows.js";
@@ -25,7 +26,6 @@ import {
   providerRetryDetail,
   providerRetryLabel,
 } from "@opensteer/client/host";
-import { TeamInputSource } from "../team/task-source-chip.js";
 import {
   useTabRead,
   useToolOutput,
@@ -75,8 +75,13 @@ import {
   formatClockTime,
   groupTranscriptEntries,
   hasRunOutcome,
+  isRunEngineRetired,
+  isRunTerminationUnproven,
+  runInterruptedMessage,
+  runInterruptedTitle,
+  runOutcomeMessage,
+  runOutcomeTitle,
   silentRunLabel,
-  teamDeliveryLabel,
   isTerminalRunEntryStatus,
   incomingMessagePreview,
   justSent,
@@ -246,7 +251,6 @@ const TranscriptBrowsers = createContext<TranscriptTabSource>(noTabs);
 /** Whose transcript this is and the reader's Workspaces, which say who speaks in it. */
 const Speakers = createContext<{
   readonly threadId: string | null;
-  readonly teamChannelName?: string;
 }>({ threadId: null });
 
 /**
@@ -408,7 +412,6 @@ export const AgentTranscript = memo(function AgentTranscript({
   revealMessage = null,
   startHold = null,
   threadId = null,
-  teamChannelName = null,
   inputQueuePaused = false,
   queued = null,
   afterQueue = noLocalMessages,
@@ -460,7 +463,6 @@ export const AgentTranscript = memo(function AgentTranscript({
   revealMessage?: { readonly id: string } | null;
   /** Why the Thread's queued work has not started, from `threadStartHold`. */
   startHold?: string | null;
-  teamChannelName?: string | null;
   /** The Thread this transcript is, whose mark its own replies wear. */
   threadId?: string | null;
   inputQueuePaused?: boolean;
@@ -587,15 +589,7 @@ export const AgentTranscript = memo(function AgentTranscript({
     live && !(requestShown && activity === "waiting_for_you")
       ? threadActivityIndicator(activity, { conversation, groups, startHold })
       : null;
-  const teamInput = entries.find((entry) => entry.kind === "message" && entry.teamSource);
-  const deliveryChannelName =
-    teamInput?.kind === "message"
-      ? (teamInput.teamSource?.audience.channelName ?? teamChannelName ?? "channel")
-      : (teamChannelName ?? "channel");
-  const speakers = useMemo(
-    () => ({ threadId, teamChannelName: deliveryChannelName }),
-    [threadId, deliveryChannelName],
-  );
+  const speakers = useMemo(() => ({ threadId }), [threadId]);
   const agents = useAgentSource(subagentReader, entries, threadId, live);
   const passwordsOffer = useMemo(
     () => (renderPasswordsSuggestion ? passwordsSetupOffer(groups) : null),
@@ -994,7 +988,6 @@ function TurnView({
         reveal={reveal?.id ?? null}
         live={live}
       />
-      {!turn.continued && turn.run?.delivery ? <TeamDelivery run={turn.run} /> : null}
       {placesShown && !placesUnderOutcome ? <ReplySurfaces turn={turn} turnKey={turnKey} /> : null}
       {renderTask?.(turn.assignments)}
       {turn.run && outcome ? <RunOutcome run={turn.run} /> : null}
@@ -1332,7 +1325,6 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
     !startHold &&
     !view.reply &&
     !outcome &&
-    !(!turn.continued && turn.run?.delivery) &&
     tasks.length === 0 &&
     !helpers?.length
   )
@@ -1366,7 +1358,6 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       ) : startHold !== null ? (
         <WorkingIndicator label={startHold} />
       ) : null}
-      {!turn.continued && turn.run?.delivery ? <TeamDelivery run={turn.run} /> : null}
       {view.reply && settled && !placesUnderOutcome ? (
         <ReplySurfaces turn={turn} turnKey={turnKey} />
       ) : null}
@@ -2262,6 +2253,10 @@ function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; tur
     row.group === "computer" && only?.kind === "tool"
       ? only.integration?.computerApp?.computer
       : null;
+  // A step the Home refused because its Device sleeps says so whether or not the row is open.
+  const asleep = row.entries.find(
+    (entry): entry is ToolEntry => entry.kind === "tool" && isAsleepStep(entry),
+  );
   return (
     <div className={open ? "trace-step trace-step--open" : "trace-step"}>
       <StepHead
@@ -2278,6 +2273,7 @@ function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; tur
         ))}
         {...(single?.kind === "request" ? {} : { onToggle: () => setOpen(!open), open })}
       />
+      {asleep ? <AsleepStepLine tool={asleep} /> : null}
       {open && computer && !single ? <p className="trace-step__place">on {computer}</p> : null}
       {open && single?.kind === "tool" ? (
         <ToolDetail tool={single} />
@@ -3033,7 +3029,6 @@ function OwnMessage({
             </div>
           </div>
         ) : null}
-        {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
         {note ? (
           <ActionLine line={{ key: sendKey, tone: "danger", text: note }} />
         ) : takeBack.line ? (
@@ -3227,7 +3222,6 @@ function updateSource(author: UpdateAuthor): {
     case "watch":
       return { glyph: "bolt", href: automationPath(author.triggerId), name };
     case "connection":
-    case "team-member":
     case "platform":
       return { glyph: "message", href: null, name };
   }
@@ -3302,23 +3296,7 @@ function InputMessage({
           ) : (
             <span className="input-card__sender">{sender}</span>
           )}
-          {action ? (
-            <span className="input-card__action">{action}</span>
-          ) : message.edit?.ownerEdited ? (
-            // An ask its owner reworded before approving is no longer only its sender's words.
-            <span className="input-card__action">
-              ·{" "}
-              {queued ? (
-                "edited by you"
-              ) : (
-                <TranscriptEditMark
-                  label="edited by you"
-                  message={{ ...message, edit: message.edit }}
-                  viewerUserId={viewerUserId}
-                />
-              )}
-            </span>
-          ) : null}
+          {action ? <span className="input-card__action">{action}</span> : null}
           {message.body && !queued ? (
             <CopyMark className="input-card__copy" label="Copy message" text={message.body} />
           ) : null}
@@ -3355,7 +3333,6 @@ function InputMessage({
           </button>
         ) : null}
       </article>
-      {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
       {message.delivery ? (
         <p className="form-actions__error" role="alert">
           {message.delivery.reason}
@@ -3399,7 +3376,6 @@ function inputSource(message: MessageEntry): {
         name,
       };
     case "connection":
-    case "team-member":
       return { glyph: null, href: null, markdown: "assistant", name };
     case "human":
       return {
@@ -3495,19 +3471,56 @@ function RunOutcome({
   conversation?: boolean;
   run: RunEntry;
 }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [rechecking, setRechecking] = useState(false);
+  const [recheckNote, setRecheckNote] = useState<string | null>(null);
   const restart = restarted(run) ? (
     <RunRestart>Restarted to include your message</RunRestart>
   ) : null;
   if (run.status === "failed") {
+    const message = runOutcomeMessage(run);
+    const unproven = isRunTerminationUnproven(run);
     return (
       <>
         <div className="run-failure" role="alert">
           <span className="run-failure__title">
             <Icon name="alert-circle" />
-            {conversation ? "Opensteer couldn’t finish" : "Run failed"}
+            {runOutcomeTitle(run, { conversation })}
           </span>
-          {run.error ? <p className="run-failure__message">{run.error.message}</p> : null}
-          {run.error?.retryable ? (
+          {message ? <p className="run-failure__message">{message}</p> : null}
+          {unproven && client && threadId ? (
+            <div className="run-failure__actions">
+              <button
+                className="btn btn--small btn--ghost"
+                disabled={rechecking}
+                type="button"
+                onClick={() => {
+                  setRechecking(true);
+                  setRecheckNote(null);
+                  void client
+                    .recheckThreadStop(threadId)
+                    .then(({ proven }) => {
+                      setRecheckNote(
+                        proven
+                          ? "Confirmed stopped."
+                          : "Still couldn’t confirm this stopped. Something may still be running on that device.",
+                      );
+                    })
+                    .catch((error: unknown) => {
+                      setRecheckNote(
+                        failureWords(error) ?? "Couldn’t check right now. Try again in a moment.",
+                      );
+                    })
+                    .finally(() => setRechecking(false));
+                }}
+              >
+                {rechecking ? "Checking…" : "Check again"}
+              </button>
+              {recheckNote ? <p className="action-note">{recheckNote}</p> : null}
+            </div>
+          ) : null}
+          {run.error?.retryable && !unproven ? (
             <p className="action-note">This looks temporary — sending again may work.</p>
           ) : null}
         </div>
@@ -3516,10 +3529,33 @@ function RunOutcome({
     );
   }
   if (run.status === "interrupted") {
+    const retired = isRunEngineRetired(run);
+    const message = runInterruptedMessage(run);
+    if (retired && message) {
+      return (
+        <>
+          <div className="run-failure" role="status">
+            <span className="run-failure__title">
+              <Icon name="alert-circle" />
+              {runInterruptedTitle(run, { conversation })}
+            </span>
+            <p className="run-failure__message">{message}</p>
+          </div>
+          {restart}
+        </>
+      );
+    }
+    const confirmedLabel = run.stopConfirmedAt
+      ? ` Confirmed stopped at ${new Date(run.stopConfirmedAt).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })}.`
+      : "";
     return (
       <>
         <p className="run-note">
-          <Icon name="stop" /> {conversation ? "Stopped." : "Run stopped."}
+          <Icon name="stop" /> {runInterruptedTitle(run, { conversation })}
+          {confirmedLabel}
         </p>
         {restart}
       </>
@@ -3537,13 +3573,6 @@ function WorkingIndicator({ label }: { label: string }) {
       <span className="working__label">{label}</span>
     </div>
   );
-}
-
-function TeamDelivery({ run }: { readonly run: RunEntry }) {
-  const channelName = useContext(Speakers).teamChannelName ?? "channel";
-  const delivery = run.delivery;
-  if (!delivery) return null;
-  return <small className="team-run-delivery">{teamDeliveryLabel(delivery, channelName)}</small>;
 }
 
 function CompactionDivider({ run }: { run: RunEntry }) {

@@ -66,11 +66,11 @@ export function ModelServersCard({
   const [discovery, setDiscovery] = useState<Discovery>({ kind: "looking" });
   const [adding, setAdding] = useState(false);
   const generation = useRef(0);
-  // Only a computer the person owns runs the engines that talk to these
-  // servers; a shared one reports only the ambient-free state modes.
-  const ownComputer = environment.providerStateModes.includes("ambient");
+  // Only a computer that runs engines uses these servers.
   const manageable =
-    ownComputer && environment.connected && environment.harnessAuthenticationAllowed;
+    environment.harnessDrivers.length > 0 &&
+    environment.connected &&
+    environment.harnessAuthenticationAllowed;
   const environmentId = environment.id;
 
   const lookAgain = useCallback(() => {
@@ -160,7 +160,7 @@ export function ModelServersCard({
                   disabled={disabled || engine === undefined}
                   onClick={() => connect(server)}
                   title={
-                    engine ? undefined : "Pi can't run here. Add the server with another engine."
+                    engine ? undefined : "Pi can't run here. Add the server with another agent."
                   }
                   type="button"
                 >

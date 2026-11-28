@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { DeploymentIdSchema } from "@opensteer/core";
+import { apiVersionQueryParameter } from "@opensteer/deployment-authority";
 import { passkeyNotice } from "@opensteer/client/host";
 import {
   BrowserClientMessageSchema,
   BrowserServerMessageSchema,
   type BrowserServerMessage,
 } from "@opensteer/protocol";
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { PasskeyProviderTestAuthenticator } from "@opensteer/browser-runtime-core/test-support/passkey-provider";
 import { servePasskeyRoutingFixture } from "@opensteer/browser-runtime-core/test-support/passkey-routing";
@@ -111,6 +113,7 @@ export async function createNativePasskeyJourney({
           kit.context.hostOrigin,
         );
         url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        url.searchParams.set(apiVersionQueryParameter, String(scopedPersonalApiVersion));
         const other = kit.context.network.openWebSocket(
           {
             authorization: null,

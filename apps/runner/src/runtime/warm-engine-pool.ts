@@ -43,16 +43,50 @@ export interface WarmEngine {
   readonly threadId: ThreadId;
 }
 
+const mebibyte = 1024 ** 2;
 const gibibyte = 1024 ** 3;
 
 /**
- * How many idle engines a computer keeps warm. Each is a resident provider
- * process tree, so a small laptop keeps one or two rather than eight.
+ * The memory one Run's engine may need, measured: OpenCode 1.18.32 writing a
+ * 500-word essay on a 4 GB Cloud Computer (Nov 25) peaked at 0.98 to 1.06 GiB
+ * of anonymous memory; this is that peak and half again, the same allowance a
+ * Cloud Computer's Home sizes its Runner's Runs by (deploy/home/common.sh
+ * run_allowance). The other engines are not measured yet.
  */
-export function warmEngineIdleCap(totalMemoryBytes: number = totalmem()): number {
-  if (totalMemoryBytes <= 4 * gibibyte) return 1;
-  if (totalMemoryBytes <= 8 * gibibyte) return 2;
-  return 8;
+export const runMemoryAllowanceBytes = 1536 * mebibyte;
+/** The Runner's own process and its supervisor: 131 MiB at rest there, 152 at that peak. */
+const runnerItselfBytes = 192 * mebibyte;
+
+/**
+ * The memory the Runner runs under: its container's limit when it has one below the computer's
+ * memory, the computer's otherwise. A Cloud Computer's Runner is limited well below its VM.
+ */
+export function runnerMemoryBytes(
+  constrained: number | undefined = process.constrainedMemory(),
+  total: number = totalmem(),
+): number {
+  return constrained !== undefined && constrained > 0 && constrained < total ? constrained : total;
+}
+
+/**
+ * How many idle engines a Runner keeps warm. Each is a resident provider
+ * process tree, so a small laptop keeps one or two rather than eight; and what
+ * the Runner may hold at once, its Runs and its warm engines together, fits its
+ * memory at one allowance each: a warm engine takes only the room its
+ * `maxConcurrentRuns` Runs leave. A Runner without room for a second allowance beside its Runs
+ * (a Cloud Computer's on a 4 GiB machine, 2,450 MiB, with no swap) therefore keeps none: one
+ * beside the Run would invite an out-of-memory kill.
+ */
+export function warmEngineIdleCap(
+  totalMemoryBytes: number = runnerMemoryBytes(),
+  maxConcurrentRuns = 1,
+): number {
+  const sized = totalMemoryBytes <= 4 * gibibyte ? 1 : totalMemoryBytes <= 8 * gibibyte ? 2 : 8;
+  const room = Math.floor(
+    (totalMemoryBytes - runnerItselfBytes - maxConcurrentRuns * runMemoryAllowanceBytes) /
+      runMemoryAllowanceBytes,
+  );
+  return Math.max(0, Math.min(sized, room));
 }
 
 interface Idle {
@@ -170,14 +204,14 @@ export class WarmEnginePool {
  */
 export function warmEngineKey(input: {
   readonly warmSelection?: HarnessCapabilities["warmSelection"];
-  readonly attachmentRoot: string | null;
+  /** Where this Run's attachments are delivered, or null when they are not. */
+  readonly attachmentDirectory: string | null;
   readonly baseEnvironment: Readonly<Record<string, string>>;
   readonly context: Extract<RunnerCommand, { readonly type: "run.execute" }>["context"];
   readonly instructions: string | null;
   /** What the engine's launch directory for other computers was written from. */
   readonly machineAccessLaunch: string;
   readonly providerSessionReference: string | null;
-  readonly runtimeBoundary: string;
   /** The skill catalog the engine was started with; an engine reads it at startup. */
   readonly skills: HarnessSkillPlan | undefined;
   readonly homeSkillsDigest: string;
@@ -206,6 +240,7 @@ export function warmEngineKey(input: {
         context.agentTools.skills,
         context.taskPurpose,
         context.personalContext,
+        context.personLineage,
         input.warmSelection
           ? {
               providerId: context.modelSelection.providerId,
@@ -226,9 +261,8 @@ export function warmEngineKey(input: {
         context.plugins.skillPolicy ?? null,
         context.agentTools.url,
         context.browserCdp.url,
-        input.attachmentRoot,
+        input.attachmentDirectory,
         input.baseEnvironment,
-        input.runtimeBoundary,
         input.machineAccessLaunch,
       ]),
     )

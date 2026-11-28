@@ -5,12 +5,11 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import {
   type DeploymentId,
   type DeploymentKind,
-  deploymentPolicy,
   MessageIdSchema,
+  teamWorkEndedCancelReason,
   type MessageAuthor,
   type MessageId,
   type MessageKind,
-  type TeamSource,
   type ThreadInputPolicy,
   ExecutionNodeIdSchema,
   type RunId,
@@ -22,7 +21,7 @@ import { resendableControlCommandTypes } from "./command-delivery.js";
 import { checkoutSession } from "./connection.js";
 import { describeTranscriptMessage, transcriptMessageTextBytes } from "./transcript-store.js";
 import { messageEditFromRow } from "./thread-row-mappers.js";
-import { executionDate, runOfflineSettlement } from "./personal-transaction.js";
+import { runOfflineSettlement } from "./personal-transaction.js";
 import { createNextPersonalTranscriptOrderIndex } from "./personal-state-schema.js";
 import { runNewsAt } from "./personal-attention-store.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
@@ -119,11 +118,17 @@ async function countCanonical(tx: Tx) {
 const offlineCommandTypes = ["run.execute", "run.steer", ...resendableControlCommandTypes];
 
 async function retireOfflineDelivery(tx: Tx, runId: RunId, cutAt: Date) {
-  // A team reply target is unique to its admitted Run. It cannot be admitted again.
-  const inputs = await sql<{ message_id: MessageId; can_requeue: boolean; delivery: string }>`
-      select i.message_id, i.policy='queue' and not (
-        i.message_id=r.seed_input_id and (r.reply_target->>'kind'='team-thread') is true
-      ) as can_requeue,
+  // Work a teammate asked for is never put back in line as the person's own: an unsent one ends
+  // with the reason every Team ask that never started has (0110 dropped its team reply target, and
+  // the request id it keeps is what marks it here).
+  const inputs = await sql<{
+    message_id: MessageId;
+    can_requeue: boolean;
+    team: boolean;
+    delivery: string;
+  }>`
+      select i.message_id, i.policy='queue' and i.team_request_id is null as can_requeue,
+        i.team_request_id is not null as team,
         case
           when c.type='run.steer' and c.status='succeeded' then 'delivered'
           when (i.steer_command_id is null or c.type='run.restart') and
@@ -152,13 +157,14 @@ async function retireOfflineDelivery(tx: Tx, runId: RunId, cutAt: Date) {
           else 'unknown' end,
         delivered_at=case when b.delivery='delivered' then coalesce(i.delivered_at,${cutAt}) end,
         cancel_reason=case when b.delivery='unsent' and not b.can_requeue
-          then case when i.steer_command_id is null then 'run-ended-before-start' else 'steer-not-delivered' end
+          then case when b.team then ${teamWorkEndedCancelReason}
+            when i.steer_command_id is null then 'run-ended-before-start' else 'steer-not-delivered' end
         end,
         run_id=case when b.delivery='unsent' and b.can_requeue then null else i.run_id end,
         steer_command_id=case when b.delivery='unsent' and b.can_requeue then null else i.steer_command_id end,
         updated_at=${cutAt}
       from jsonb_to_recordset(${JSON.stringify(inputs.rows)}::jsonb)
-        as b(message_id text, can_requeue boolean, delivery text) where i.message_id=b.message_id
+        as b(message_id text, can_requeue boolean, team boolean, delivery text) where i.message_id=b.message_id
     `.execute(tx);
     const requeued = inputs.rows
       .filter((row) => row.can_requeue && row.delivery === "unsent")
@@ -333,7 +339,6 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
     policy: ThreadInputPolicy | null;
     state: string | null;
     cancelReason: string | null;
-    teamSource: TeamSource | null;
     admittedSeed: boolean;
     seedInRun: boolean;
     assigned: boolean;
@@ -358,7 +363,7 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
     ), derived as (
     select m.id,page.batch_offset,
       placement.run_id as "runId",m.kind,m.author,m.revision,m.edited_at as "editedAt",
-      i.policy,i.state,i.cancel_reason as "cancelReason",i.team_source as "teamSource",
+      i.policy,i.state,i.cancel_reason as "cancelReason",
       (seed.status in ('queued','starting','running','waiting')) is true
         or marker.id is not null as "admittedSeed",
       (placement.run_id=seed.id) is true as "seedInRun",
@@ -393,10 +398,10 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
     ), groups as (
       select array_agg(id order by batch_offset) as ids,
         array_agg(batch_offset order by batch_offset) as offsets,
-        "runId",kind,author,revision,"editedAt",policy,state,"cancelReason","teamSource",
+        "runId",kind,author,revision,"editedAt",policy,state,"cancelReason",
         "admittedSeed","seedInRun",assigned,"hasContent","hasRichParts",text,"richParts"
       from derived group by "runId",kind,author,revision,"editedAt",policy,state,"cancelReason",
-        "teamSource","admittedSeed","seedInRun",assigned,"hasContent","hasRichParts",text,"richParts"
+        "admittedSeed","seedInRun",assigned,"hasContent","hasRichParts",text,"richParts"
     )
     select (select json_build_array(thread_id,sequence::text) from page
         order by batch_offset desc limit 1) as key,
@@ -416,7 +421,6 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
       author: row.author,
       ...(row.policy && row.state ? { policy: row.policy, state: row.state } : {}),
       cancelReason: row.cancelReason,
-      ...(row.teamSource ? { teamSource: row.teamSource } : {}),
       ...(edit ? { edit } : {}),
       edited: row.revision > 0,
       admittedSeed: row.admittedSeed,
@@ -665,12 +669,11 @@ async function deriveThreadSummaries(tx: Tx, source: Source, cursor: UpgradeCurs
         when summary.latest_failed then 'failed' else 'idle' end
     from (
       select source_thread.id,
-        (select count(*) from requests where originating_thread_id=source_thread.id and status='pending')
-          + (select count(*) from thread_inputs where thread_id=source_thread.id and state='awaiting-approval') as pending,
+        (select count(*) from requests where originating_thread_id=source_thread.id and status='pending') as pending,
         ${runNewsAt("latest")} as completed_at,
         current_run.status as active_status,
         last_run.status='failed' and last_run.maintenance is null as latest_failed,
-        case when last_run.status='failed' and last_run.maintenance is null then left(last_run.failure->>'message',280) end as failure,
+        case when last_run.status='failed' and last_run.maintenance is null then left(coalesce(last_run.failure->>'ownerMessage',last_run.failure->>'message'),280) end as failure,
         reply.id as reply_id,left(reply.view->>'preview',280) as reply
       from threads source_thread
       left join lateral (
@@ -708,46 +711,15 @@ async function deriveAttentionRequests(tx: Tx, cursor: UpgradeCursor) {
     : stage(cursor, "attention-asks");
 }
 
-async function deriveAttentionAsks(tx: Tx, cursor: UpgradeCursor) {
-  const key = cursor.key
-    ? z.tuple([z.string(), z.string()]).parse(JSON.parse(cursor.key))
-    : ["", ""];
-  const page = await sql<{ teamDeploymentId: string; teamRequestId: string }>`
-    insert into personal_attention(id,kind,team_deployment_id,team_request_id,thread_id,sort_at,expires_at)
-    select 'team:'||team_deployment_id||':'||request_id,
-      case when terminal_state='failed' then 'failed-ask' else 'team-ask' end,
-      team_deployment_id,request_id,local_task_id,created_at,
-      case when terminal_state is null then consent_expires_at end
-    from personal_team_requests where kind='ask'
-      and (team_deployment_id,request_id)>(${key[0]},${key[1]})
-      and ((remote_state='awaiting_approval' and local_decision is null and terminal_state is null
-        and consent_expires_at > ${executionDate(tx)})
-        or (terminal_state='failed' and released_at is null and blocked_reason is not null))
-    order by team_deployment_id,request_id limit ${batchSize}
-    returning team_deployment_id,team_request_id
-  `.execute(tx);
-  const last = page.rows.at(-1);
-  return last
-    ? { ...cursor, key: JSON.stringify([last.teamDeploymentId, last.teamRequestId]) }
-    : stage(cursor, "attention-links");
+/** Kept by name so an upgrade resumed across releases goes on; team asks are no attention now. */
+async function deriveAttentionAsks(_tx: Tx, cursor: UpgradeCursor) {
+  return stage(cursor, "attention-links");
 }
 
 async function deriveAttentionLinks(tx: Tx, source: Source, cursor: UpgradeCursor) {
-  const page = await sql<{ id: string }>`
-    select id from personal_team_links where id>${cursor.key} order by id limit ${batchSize} for no key update
-  `.execute(tx);
-  const last = page.rows.at(-1);
-  if (last) {
-    await sql`update personal_team_links link set approval_attention_count=(
-      select count(*) from personal_attention where kind='team-ask' and team_deployment_id=link.team_deployment_id
-    ) where id=any(${page.rows.map((row) => row.id)}::text[])`.execute(tx);
-    return { ...cursor, key: last.id };
-  }
   await sql`update client_sync_state set
       pending_request_count=(select count(*) from personal_attention where kind='request'),
-      needs_you_count=(select count(*) from personal_attention where kind in ('request','failed-ask'))
-        + coalesce((select sum(approval_attention_count) from personal_team_links
-          where state in ('active','unreachable','needs_update')),0),
+      needs_you_count=(select count(*) from personal_attention where kind='request'),
       unread_task_count=(select count(*) from threads t left join thread_visits v on v.thread_id=t.id and v.user_id=t.created_by
         where t.listed and t.purpose='task' and t.status<>'archived' and t.removed_at is null
           and t.latest_run_completed_at is not null and (v.last_visited_at is null or t.latest_run_completed_at>v.last_visited_at))
@@ -952,7 +924,7 @@ async function convertBatch(
   tx: Tx,
   deployment: Deployment | null,
 ): Promise<{ stage: UpgradeCursor["stage"]; done: boolean }> {
-  if (!deployment || !deploymentPolicy(deployment).services.personal) {
+  if (!deployment) {
     const unexpected = (
       await sql<{ present: boolean }>`select
       (exists(select 1 from deployment_events limit 1) or exists(select 1 from client_sync_state limit 1)) as present`.execute(
@@ -1134,8 +1106,7 @@ export async function completePersonalStateConversion(
       signal.throwIfAborted();
       return result;
     });
-    if (startup.deployment && deploymentPolicy(startup.deployment).services.personal)
-      options?.afterBatch?.(batch.stage);
+    if (startup.deployment) options?.afterBatch?.(batch.stage);
     if (batch.done) break;
   }
 }

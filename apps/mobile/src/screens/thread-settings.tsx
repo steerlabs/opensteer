@@ -9,6 +9,7 @@ import {
   type ModelSetting,
   lastExecutionSelection,
   accessModeOptions,
+  connectionModeDescriptions,
   accessModeUnavailableReason,
   placementForSelection,
   selectionForRoute,
@@ -67,11 +68,19 @@ import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js"
 import { SheetBarButton } from "../ui/sheet-bar.js";
 import { ActionLine } from "../ui/action-line.js";
 import { unreadyIssue } from "../ui/client-feedback.js";
-import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../ui/primitives.js";
+import {
+  AppText,
+  DisplayTitle,
+  Notice,
+  PrimaryButton,
+  SecondaryButton,
+  SwitchRow,
+} from "../ui/primitives.js";
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
 import { ReasoningSlider } from "../thread/settings/reasoning-slider.js";
 import { Symbol } from "../ui/symbol.js";
+import { useShowTab } from "../tabs/viewer-open.js";
 import { placementSignIn, useAccountSignIn } from "./use-account-sign-in.js";
 
 export type ThreadSettingsScreenProps = StaticScreenProps<{
@@ -610,6 +619,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       accessMode={props.thread.accessMode}
       accessPlacement={currentPlacement}
       onChangeAccess={changeAccess}
+      startedByOther={props.thread.startedByOther}
       applyingKey={applyingKey}
       disabledReason={applyingKey === null ? disabledReason : "Updating thread settings…"}
       failure={failure}
@@ -706,11 +716,11 @@ function ExecutionSwitchReviewPanel(props: {
   const [accessMode, setAccessMode] = useState(review.accessMode);
   return (
     <View style={styles.review}>
-      <AppText role="displaySmall">
+      <DisplayTitle size="small">
         {fresh
           ? `Start fresh with ${review.engineName}?`
           : `Use ${review.engineName} for this conversation?`}
-      </AppText>
+      </DisplayTitle>
       {review.startsFresh ? (
         <AppText role="secondary" tone="muted">
           Your messages stay here. {review.engineName} starts fresh, with recent messages, your
@@ -764,6 +774,7 @@ interface CurrentSettingsProps {
   readonly accessMode: ThreadAccessMode;
   readonly accessPlacement: ThreadPlacementOption | null;
   readonly onChangeAccess: (mode: ThreadAccessMode) => void;
+  readonly startedByOther?: boolean | undefined;
 }
 
 function ModelPickerList(
@@ -799,10 +810,16 @@ function ModelPickerList(
     };
   }, []);
   const [signedIn, setSignedIn] = useState<string | null>(null);
-  const accountSignIn = useAccountSignIn(props.hostClient, (outcome) => {
-    if (outcome.kind === "done") setSignedIn(outcome.message);
-    else props.onFailure(outcome.message);
-  });
+  const { selection } = useMobileState();
+  const showTab = useShowTab(selection.deploymentId ?? "");
+  const accountSignIn = useAccountSignIn(
+    props.hostClient,
+    (outcome) => {
+      if (outcome.kind === "done") setSignedIn(outcome.message);
+      else props.onFailure(outcome.message);
+    },
+    selection.deploymentId === null ? {} : { showTab },
+  );
   const chooseAccount = (row: AccountRow): void => {
     if (row.action.kind === "sign-in") {
       if (props.disabledReason !== null) return;
@@ -884,7 +901,6 @@ function ModelPickerList(
       {props.failure ? (
         <ActionLine
           line={{ key: props.failure, text: props.failure, tone: "muted", haptic: "warning" }}
-          numberOfLines={2}
           onDismiss={props.onDismissFailure}
         />
       ) : null}
@@ -899,7 +915,7 @@ function ModelPickerList(
           {accessModeOptions.map((option) => {
             const reason = accessModeUnavailableReason(
               option.mode,
-              props.accessPlacement ?? { accessModes: null, engineName: "This engine" },
+              props.accessPlacement ?? { accessModes: null, engineName: "This agent" },
             );
             return (
               <Pressable
@@ -916,7 +932,10 @@ function ModelPickerList(
                 <View style={styles.rowCopy}>
                   <AppText>{option.label}</AppText>
                   <AppText role="caption" tone="muted">
-                    {reason ?? option.description}
+                    {reason ??
+                      (props.startedByOther
+                        ? connectionModeDescriptions[option.mode]
+                        : option.description)}
                   </AppText>
                 </View>
                 {option.mode === props.accessMode ? <Symbol name="checkmark" /> : null}
@@ -970,7 +989,7 @@ function ModelPickerList(
                     key={engine.driverKind}
                     accessibilityRole="button"
                     accessibilityState={{ selected }}
-                    accessibilityLabel={`Engine: ${engine.name}${engine.note ? `, ${engine.note}` : ""}`}
+                    accessibilityLabel={`Agent: ${engine.name}${engine.note ? `, ${engine.note}` : ""}`}
                     onPress={() => props.onEngine(engine.driverKind)}
                     style={({ pressed }) => [
                       styles.chip,
@@ -1357,7 +1376,7 @@ function SubscribedNewThread(props: {
         liveSelection === null ? null : placementForSelection(livePlacements, liveSelection);
       const reason = accessModeUnavailableReason(
         mode,
-        placement ?? { accessModes: null, engineName: "This engine" },
+        placement ?? { accessModes: null, engineName: "This agent" },
       );
       if (reason !== null) {
         setFailure(reason);

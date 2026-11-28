@@ -1,3 +1,4 @@
+import { homeFailureText } from "./failure-text.js";
 import type { App, AppId } from "@opensteer/core";
 import type { TabsClient } from "./tabs-contract.js";
 
@@ -65,7 +66,7 @@ export function appNoticeTitle(notice: AppActionNotice): string {
 }
 
 function message(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : "Something went wrong.";
+  return homeFailureText(error, "Something went wrong.");
 }
 
 /**

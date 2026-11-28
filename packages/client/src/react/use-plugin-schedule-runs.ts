@@ -2,7 +2,7 @@ import type { PluginScheduledRunView } from "@opensteer/protocol";
 import { useMemo, useSyncExternalStore } from "react";
 import type { HostClient } from "../host/client.js";
 import { pluginChangeAffects, readPluginScheduleRuns } from "../plugins/index.js";
-import { PagedList } from "../team/paged-list.js";
+import { PagedList } from "../reads/paged-list.js";
 
 export function usePluginScheduleRuns(client: HostClient, pluginId: string) {
   const list = useMemo(() => {

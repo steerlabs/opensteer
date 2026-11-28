@@ -13,6 +13,8 @@ const { checks, check, abort } = journeyChecks();
 const web = await openMockWeb("opensteer-navigation-web");
 try {
   const context = await web.browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  // A fresh page must reach its first tab even when Chromium cannot fetch build files over TCP.
+  await context.setOffline(true);
   await context.route(
     (url) => url.origin !== web.origin,
     (route) => route.fulfill({ body: "", status: 204 }),
@@ -22,6 +24,7 @@ try {
   await page.goto(web.origin);
   const row = page.locator('.side-tab[data-kind="page"]').first();
   await row.waitFor();
+  await context.setOffline(false);
   const key = (await row.getAttribute("data-place-key"))!;
   const tabId = key;
   await page.evaluate(() => {

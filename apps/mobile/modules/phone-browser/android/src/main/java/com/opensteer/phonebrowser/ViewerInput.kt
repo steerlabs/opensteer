@@ -19,8 +19,12 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
     PhoneBrowserNative.authority?.requireViewer(input.epoch, input.channelId, input.sessionId, true) ?: throw BrowserFailure("forbidden")
     val message = JSONObject(input.message)
     val copied = if (message.optString("type") == "clipboard.copy") {
-      val tab = pool.ui(input.epoch) { pool.check(input, true).also(admission) }
-      JSONObject(pool.evaluate(tab, input.epoch, "(()=>{const e=document.activeElement;if(e&&e.tagName==='INPUT'&&e.type==='password')return {sensitive:true,text:''};return {sensitive:false,text:e&&typeof e.selectionStart==='number'?e.value.slice(e.selectionStart,e.selectionEnd):String(getSelection())}})()"))
+      val copyTab = pool.ui(input.epoch) {
+        val tab = pool.check(input, true).also(admission)
+        if (message.getString("contextId") == tab.contextId && !sensitive(tab)) tab else null
+      }
+      if (copyTab != null) JSONObject(pool.evaluate(copyTab, input.epoch, "(()=>{let e=document.activeElement;while(e&&e.shadowRoot&&e.shadowRoot.activeElement)e=e.shadowRoot.activeElement;if(e&&e.tagName==='INPUT'&&e.type==='password')return {sensitive:true,text:''};return {sensitive:false,text:e&&typeof e.selectionStart==='number'?e.value.slice(e.selectionStart,e.selectionEnd):String(getSelection())}})()"))
+      else null
     } else null
     pool.ui(input.epoch) {
       val type = message.optString("type")
@@ -73,12 +77,15 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
         "clipboard.copy" -> {
           val consumer = message.optString("consumerToken").takeIf { it.isNotEmpty() } ?: throw BrowserFailure("forbidden")
           val operation = message.getString("operationId")
-          if (copied == null || copied.getBoolean("sensitive") || sensitive(tab)) throw BrowserFailure("forbidden")
-          val bytes = copied.getString("text").toByteArray(Charsets.UTF_8)
-          if (bytes.size > 1048576) throw BrowserFailure("too-large")
-          val result = mapOf("type" to "clipboard.result", "consumerToken" to consumer, "surfaceId" to tab.id, "operationId" to operation, "outcome" to if (bytes.isEmpty()) "empty" else "copied") + if (bytes.isNotEmpty()) mapOf("items" to listOf(mapOf("type" to "text/plain", "size" to bytes.size))) else emptyMap()
-          server(tab, input.channelId, result)
-          if (bytes.isNotEmpty()) (0 until (bytes.size+524287)/524288).forEach { index -> val part = bytes.copyOfRange(index*524288, minOf(bytes.size,(index+1)*524288)); server(tab, input.channelId, mapOf("type" to "clipboard.part", "consumerToken" to consumer, "part" to mapOf("operationId" to operation, "index" to index, "data" to android.util.Base64.encodeToString(part, android.util.Base64.NO_WRAP)))) }
+          if (message.getString("contextId") != tab.contextId || copied == null || copied.getBoolean("sensitive") || sensitive(tab)) {
+            server(tab, input.channelId, mapOf("type" to "clipboard.result", "consumerToken" to consumer, "surfaceId" to tab.id, "operationId" to operation, "outcome" to "refused"))
+          } else {
+            val bytes = copied.getString("text").toByteArray(Charsets.UTF_8)
+            if (bytes.size > 1048576) throw BrowserFailure("too-large")
+            val result = mapOf("type" to "clipboard.result", "consumerToken" to consumer, "surfaceId" to tab.id, "operationId" to operation, "outcome" to if (bytes.isEmpty()) "empty" else "copied") + if (bytes.isNotEmpty()) mapOf("items" to listOf(mapOf("type" to "text/plain", "size" to bytes.size))) else emptyMap()
+            server(tab, input.channelId, result)
+            if (bytes.isNotEmpty()) (0 until (bytes.size+524287)/524288).forEach { index -> val part = bytes.copyOfRange(index*524288, minOf(bytes.size,(index+1)*524288)); server(tab, input.channelId, mapOf("type" to "clipboard.part", "consumerToken" to consumer, "part" to mapOf("operationId" to operation, "index" to index, "data" to android.util.Base64.encodeToString(part, android.util.Base64.NO_WRAP)))) }
+          }
         }
         "clipboard.paste-data" -> {
           val items = message.getJSONArray("items")
@@ -87,32 +94,47 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
           if (size !in 0..1048576) throw BrowserFailure("too-large")
           val consumer = message.optString("consumerToken").takeIf { it.isNotEmpty() } ?: throw BrowserFailure("forbidden")
           val operation = message.getString("operationId")
-          val key = input.channelId to operation
-          if (pastes.containsKey(key)) throw BrowserFailure("stale-input")
-          if (pastes.size >= 8) throw BrowserFailure("too-large")
-          val pending = Paste(tab, tab.documentId!!, tab.contextId, input.epoch, input.channelId, operation, consumer, size, SystemClock.elapsedRealtime()+10000)
-          pastes[key] = pending
-          pool.main.postDelayed({ if (pastes[key] === pending) pastes.remove(key) },10000)
+          // A paste is made for one field's context; one that arrives after focus moved lands nowhere.
+          if (message.getString("contextId") != tab.contextId) {
+            server(tab, input.channelId, mapOf("type" to "clipboard.result", "consumerToken" to consumer, "surfaceId" to tab.id, "operationId" to operation, "outcome" to "refused"))
+          } else {
+            val key = input.channelId to operation
+            if (pastes.containsKey(key)) throw BrowserFailure("stale-input")
+            if (pastes.size >= 8) throw BrowserFailure("too-large")
+            val pending = Paste(tab, tab.documentId!!, tab.contextId, input.epoch, input.channelId, operation, consumer, size, SystemClock.elapsedRealtime()+10000)
+            pastes[key] = pending
+            pool.main.postDelayed({ if (pastes[key] === pending) pastes.remove(key) },10000)
+          }
         }
         "clipboard.part" -> {
           val part = message.getJSONObject("part")
           val key = input.channelId to part.getString("operationId")
           val pending = pastes[key] ?: throw BrowserFailure("stale-document")
-          if (pending.tab !== tab || pending.document != tab.documentId || pending.context != tab.contextId || pending.epoch != input.epoch || pending.deadline < SystemClock.elapsedRealtime()) { pastes.remove(key); throw BrowserFailure("stale-document") }
-          val data = part.getString("data")
-          if (data.length > 699052 || part.getInt("index") != pending.index) throw BrowserFailure("invalid-offset")
-          val bytes = try { android.util.Base64.decode(data, android.util.Base64.NO_WRAP) } catch (_: Exception) { throw BrowserFailure("forbidden") }
-          if (bytes.size > 524288 || pending.bytes.size()+bytes.size > pending.size) throw BrowserFailure("too-large")
-          pending.index++; pending.bytes.write(bytes)
-          if (pending.bytes.size() == pending.size) {
+          if (pending.tab !== tab || pending.document != tab.documentId || pending.context != tab.contextId || pending.epoch != input.epoch || pending.deadline < SystemClock.elapsedRealtime()) {
             pastes.remove(key)
-            val decoder = Charsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT).onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
-            val text = try { decoder.decode(java.nio.ByteBuffer.wrap(pending.bytes.toByteArray())).toString() } catch (_: Exception) { throw BrowserFailure("forbidden") }
-            if (!connection(tab).commitText(text,1)) throw BrowserFailure("outcome-unknown")
-            server(tab,input.channelId,mapOf("type" to "clipboard.result", "consumerToken" to pending.consumer, "surfaceId" to tab.id, "operationId" to pending.operation, "outcome" to "pasted"))
+            server(tab, input.channelId, mapOf("type" to "clipboard.result", "consumerToken" to pending.consumer, "surfaceId" to tab.id, "operationId" to pending.operation, "outcome" to "refused"))
+          } else {
+            val data = part.getString("data")
+            if (data.length > 699052 || part.getInt("index") != pending.index) throw BrowserFailure("invalid-offset")
+            val bytes = try { android.util.Base64.decode(data, android.util.Base64.NO_WRAP) } catch (_: Exception) { throw BrowserFailure("forbidden") }
+            if (bytes.size > 524288 || pending.bytes.size()+bytes.size > pending.size) throw BrowserFailure("too-large")
+            pending.index++; pending.bytes.write(bytes)
+            if (pending.bytes.size() == pending.size) {
+              pastes.remove(key)
+              val decoder = Charsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT).onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+              val text = try { decoder.decode(java.nio.ByteBuffer.wrap(pending.bytes.toByteArray())).toString() } catch (_: Exception) { throw BrowserFailure("forbidden") }
+              val conn = connection(tab)
+              if (pending.context != tab.contextId) {
+                server(tab, input.channelId, mapOf("type" to "clipboard.result", "consumerToken" to pending.consumer, "surfaceId" to tab.id, "operationId" to pending.operation, "outcome" to "refused"))
+              } else {
+                if (!conn.commitText(text,1)) throw BrowserFailure("outcome-unknown")
+                server(tab,input.channelId,mapOf("type" to "clipboard.result", "consumerToken" to pending.consumer, "surfaceId" to tab.id, "operationId" to pending.operation, "outcome" to "pasted"))
+              }
+            }
           }
         }
         "clipboard.paste" -> {
+          if (message.getString("contextId") != tab.contextId) throw BrowserFailure("stale-document")
           val connection = connection(tab)
           val text = message.getString("text")
           if (text.length > 100000) throw BrowserFailure("too-large")
@@ -142,6 +164,9 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
           if (!accepted) throw BrowserFailure("outcome-unknown")
         }
         "input.command" -> {
+          // A phone browser's field has one context at a time: a command made for any other is
+          // refused, as an edit is.
+          if (message.getString("contextId") != tab.contextId) throw BrowserFailure("stale-document")
           val connection = connection(tab)
           val accepted = when (message.getString("command")) {
             "selectAll" -> connection.performContextMenuAction(android.R.id.selectAll)

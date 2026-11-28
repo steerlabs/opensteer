@@ -1,0 +1,15 @@
+services:
+  browser-egress:
+    environment:
+      OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED: "true"
+      OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL_FILE: /run/secrets/egress_url
+      OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME_FILE: /run/secrets/egress_username
+      OPENSTEER_BROWSER_EGRESS_UPSTREAM_PASSWORD_FILE: /run/secrets/egress_password
+    secrets: [egress_url, egress_username, egress_password]
+secrets:
+  egress_url:
+    file: ./secrets/egress_url
+  egress_username:
+    file: ./secrets/egress_username
+  egress_password:
+    file: ./secrets/egress_password

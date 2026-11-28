@@ -1,4 +1,5 @@
 import type { AgentTool } from "@opensteer/agent-tools";
+import type { Tab } from "@opensteer/core";
 import type { z } from "zod";
 import type { AgentCaller } from "../agent-caller.js";
 
@@ -10,6 +11,9 @@ export type ToolCall<Name extends AgentTool["name"]> = {
   readonly operationKey: string;
   readonly signal?: AbortSignal;
   readonly checkLive?: () => Promise<void>;
+  readonly liveCaller?: () => Promise<AgentCaller>;
+  readonly discoveryInput?: ToolInput<"discover">;
+  readonly discoveryTab?: (tab: Tab) => boolean;
 };
 // Domains may return richer records; callTool validates and projects the wire output once.
 export type AgentToolHandlers = {

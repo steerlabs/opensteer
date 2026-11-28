@@ -39,7 +39,7 @@ import {
 import { AccessibilityInfo, Pressable, StyleSheet, View } from "react-native";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { ActionReviewSheet } from "../ui/action-review.js";
-import { AgentOrb } from "../team/team-marks.js";
+import { AgentOrb } from "../ui/agent-orb.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";

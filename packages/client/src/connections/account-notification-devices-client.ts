@@ -30,7 +30,7 @@ export class PushNotConfiguredError extends ClientOperationError {
   readonly reason = "push-not-configured" as const;
 
   constructor() {
-    super("This Opensteer Account service does not send notifications.", "blocked");
+    super("This Opensteer account service does not send notifications.", "blocked");
     this.name = "PushNotConfiguredError";
   }
 }
@@ -48,7 +48,7 @@ export class DeviceLimitReachedError extends ClientOperationError {
   readonly reason = "device-limit" as const;
 
   constructor() {
-    super("This Opensteer Account has no room for another device.", "blocked");
+    super("This Opensteer account has no room for another device.", "blocked");
     this.name = "DeviceLimitReachedError";
   }
 }
@@ -127,7 +127,7 @@ export class AccountNotificationDevicesClient {
   ): Promise<T> {
     const accountOrigin = this.#accountOrigin;
     if (accountOrigin === null) {
-      throw new Error("Opensteer Account isn't available yet.");
+      throw new Error("Opensteer account isn't available yet.");
     }
     const lease = await this.#authorization.accountAuthorizationLease();
     if (!lease || !/^Bearer [^\p{Control}\s]+$/u.test(lease.authorization)) {
@@ -136,7 +136,7 @@ export class AccountNotificationDevicesClient {
       throw new AccountRequestError({
         code: null,
         status: 401,
-        message: "Sign in to your Opensteer Account to manage notifications.",
+        message: "Sign in to your Opensteer account to manage notifications.",
       });
     }
     if (lease.issuer !== accountOrigin) {
@@ -175,7 +175,7 @@ export class AccountNotificationDevicesClient {
       const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
       if (!response.ok) throw await this.#rejection(response, contentType);
       if (contentType !== "application/json") {
-        throw new Error("The Opensteer Account returned an invalid notification response.");
+        throw new Error("The Opensteer account returned an invalid notification response.");
       }
       return schema.parse(JSON.parse(await this.#text(response)) as unknown);
     } catch (error) {
@@ -185,7 +185,7 @@ export class AccountNotificationDevicesClient {
           : new Error("The notification registration was cancelled.", { cause: error });
       }
       if (error instanceof SyntaxError) {
-        throw new Error("The Opensteer Account returned an invalid notification response.");
+        throw new Error("The Opensteer account returned an invalid notification response.");
       }
       throw error;
     } finally {
@@ -200,7 +200,7 @@ export class AccountNotificationDevicesClient {
       return new AccountRequestError({
         code: null,
         status: response.status,
-        message: "The Opensteer Account rejected the notification registration.",
+        message: "The Opensteer account rejected the notification registration.",
       });
     }
     const errorBody = ControlPlaneErrorResponseSchema.safeParse(
@@ -219,14 +219,14 @@ export class AccountNotificationDevicesClient {
       reason: errorBody?.error.reason ?? null,
       status: response.status,
       message:
-        errorBody?.error.message ?? "The Opensteer Account rejected the notification registration.",
+        errorBody?.error.message ?? "The Opensteer account rejected the notification registration.",
     });
   }
 
   async #text(response: Response): Promise<string> {
     return readBoundedText(response, {
       maximumBytes: maximumDevicesResponseBytes,
-      sizeError: () => new Error("The Opensteer Account notification response is too large."),
+      sizeError: () => new Error("The Opensteer account notification response is too large."),
     });
   }
 }

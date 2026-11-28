@@ -136,7 +136,10 @@ run("Browser Sessions through a whole deployment", () => {
       const rows = await stack.host.store.database
         .selectFrom("personalTabs")
         .select(["id", "closedAt"])
-        .where(sql<string>`page_binding ->> 'sessionId'`, "=", sessionId)
+        // The session's rows: its bound tabs, and its first tab, which a close lets go of.
+        .where(
+          sql<boolean>`(page_binding ->> 'sessionId' = ${sessionId} or id = ${initial.tabs[0]!.id})`,
+        )
         .orderBy("id")
         .execute();
       const binding = await stack.host.store.getBrowserTabOpen(owner.id, command.idempotencyKey);
@@ -182,7 +185,9 @@ run("Browser Sessions through a whole deployment", () => {
         await stack.host.store.database
           .selectFrom("personalTabs")
           .select(["id", "closedAt"])
-          .where(sql<string>`page_binding ->> 'sessionId'`, "=", sessionId)
+          .where(
+            sql<boolean>`(page_binding ->> 'sessionId' = ${sessionId} or id = ${initial.tabs[0]!.id})`,
+          )
           .orderBy("id")
           .execute(),
       ).toEqual(rows);
@@ -562,17 +567,18 @@ run("Browser Sessions through a whole deployment", () => {
     );
     const owner = await stack.host.store.firstUser();
     if (!owner) throw new Error("The deployment has no owner");
-    const transition = stack.host.store.transitionBrowserSession.bind(stack.host.store);
+    // The terminal write: a session that is not pooled closes through its own writer (W5).
+    const close = stack.host.store.closeUnpooledBrowserSession.bind(stack.host.store);
     const persisting = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const held = vi
-      .spyOn(stack.host.store, "transitionBrowserSession")
+      .spyOn(stack.host.store, "closeUnpooledBrowserSession")
       .mockImplementation(async (input) => {
-        if (input.sessionId === sessionId && input.state === "closed") {
+        if (input.sessionId === sessionId) {
           persisting.resolve();
           await release.promise;
         }
-        return transition(input);
+        return close(input);
       });
     let closeCompleted = false;
     const closing = stack.host.browser.stop(owner.id, sessionId).then(() => {
@@ -710,15 +716,23 @@ run("Browser Sessions through a whole deployment", () => {
         consumerClosed,
       );
       const transition = stack.host.store.transitionBrowserSession.bind(stack.host.store);
+      const close = stack.host.store.closeUnpooledBrowserSession.bind(stack.host.store);
       const failure = new Error("Injected terminal database failure");
       let attempts = 0;
+      // Both terminal writes fail: a close (its own writer, W5) and a failure.
+      const closeSpy = vi
+        .spyOn(stack.host.store, "closeUnpooledBrowserSession")
+        .mockImplementation(async (input) => {
+          if (input.sessionId === sessionId) {
+            attempts += 1;
+            throw failure;
+          }
+          return close(input);
+        });
       const spy = vi
         .spyOn(stack.host.store, "transitionBrowserSession")
         .mockImplementation(async (input) => {
-          if (
-            input.sessionId === sessionId &&
-            (input.state === "closed" || input.state === "failed")
-          ) {
+          if (input.sessionId === sessionId && input.state === "failed") {
             attempts += 1;
             throw failure;
           }
@@ -768,6 +782,7 @@ run("Browser Sessions through a whole deployment", () => {
         });
       } finally {
         spy.mockRestore();
+        closeSpy.mockRestore();
         reported.mockRestore();
         attachment.close();
         await stack.host.browser.stop(owner.id, sessionId);

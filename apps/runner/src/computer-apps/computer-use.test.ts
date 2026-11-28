@@ -183,6 +183,38 @@ describe("computer use over the desktop bridge", () => {
     ).toEqual([]);
   });
 
+  it("uses only the existing-window helper methods when launch is forbidden", async () => {
+    const fixture = await setup();
+    for (const [operation, method] of [
+      ["windows", "session.windowsExisting"],
+      ["bind", "session.bindExisting"],
+    ] as const) {
+      fixture.bridge.answer(method, () => ({
+        error: { code: "app-not-running", message: "The app is closed." },
+      }));
+      await fixture.handle(
+        frame(operation, {
+          access: "read-write",
+          app: notes,
+          operation,
+          params: operation === "bind" ? { windowId: null, noLaunch: true } : { noLaunch: true },
+        }),
+      );
+      await fixture.settled(operation === "windows" ? 1 : 2);
+    }
+    expect(methodsOf(fixture.bridge)).toEqual([
+      "permissions.get",
+      "session.open",
+      "session.windowsExisting",
+      "session.bindExisting",
+    ]);
+    for (const id of ["windows", "bind"])
+      expect(resultFor(fixture.events, id)?.result).toMatchObject({
+        kind: "error",
+        code: "app-not-running",
+      });
+  });
+
   it("forwards windows, bind and observation refs, and acts without a forced observation", async () => {
     const fixture = await setup();
     await fixture.handle(
@@ -1029,7 +1061,10 @@ describe("computer use over the desktop bridge", () => {
         {
           ...fence,
           type: "runner.integrations.computer-use-event",
-          event: { event: "session.stopped", params: { reason: "app-quit", sessionId } },
+          event: {
+            event: "session.stopped",
+            params: { reason: "app-quit", sessionId, unconfirmed: true },
+          },
         },
       ]),
     );
@@ -1207,6 +1242,9 @@ describe("computer use over the desktop bridge", () => {
     await fixture.handle(observeFrame("theirs", calendar, otherSessionId));
     await fixture.settled(2);
     fixture.bridge.answer("session.act", () => "hold");
+    fixture.bridge.answer("session.close", () => ({
+      error: { code: "failed", message: "The session could not be ended." },
+    }));
 
     await fixture.handle({ ...actFrame("late"), timeoutMs: 100 });
     await fixture.settled(3);
@@ -1225,7 +1263,10 @@ describe("computer use over the desktop bridge", () => {
       {
         ...fence,
         type: "runner.integrations.computer-use-event",
-        event: { event: "session.stopped", params: { reason: "app-quit", sessionId } },
+        event: {
+          event: "session.stopped",
+          params: { reason: "app-quit", sessionId, unconfirmed: true },
+        },
       },
     ]);
 

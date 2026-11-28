@@ -1,40 +1,26 @@
 import type {
+  AgentGrant,
+  AgentOperationDecision,
+  AgentOperationId,
+  AgentOperationEnding,
+  AgentOperationOutcome,
+  AgentOperationState,
+  AgentOperationTarget,
+  AgentSessionEndReason,
+  AgentSessionId,
+  CommandRequestOutcome,
   DeviceId,
   DeviceKind,
   DevicePlatform,
   DeviceForm,
   DeviceDriverRole,
 } from "@opensteer/core";
-import type {
-  Sequence,
-  KnowledgeNoteId,
-  KnowledgeTopicId,
-  TaskPurpose,
-  TeamAgentRequestId,
-  TeamChannelId,
-  TeamMessageId,
-  TeamSource,
-  TeamGroupId,
-  TeamInviteId,
-  TeamLinkId,
-  TeamBlobId,
-  TeamNoticeId,
-  TeamAgentRequestState,
-  TeamAgentRequestKind,
-  TeamAskPresentation,
-  TeamAskDecision,
-  TeamAgentReturnPayload,
-  TeamReturnAdmission,
-  TeamChannelKind,
-  TeamHandle,
-} from "@opensteer/core";
-import type { TeamStatusStepSchema } from "@opensteer/core";
+import type { TaskPurpose } from "@opensteer/core";
 import type { z } from "zod";
 import type { ThreadCallerAuthority } from "./thread-caller.js";
 
 import type {
   ChannelAccountId,
-  ChannelBindingId,
   ChannelConnectionIssueKind,
   ChannelConversationId,
   ChannelDeliveryId,
@@ -55,6 +41,7 @@ import type {
   AuthSessionId,
   AuthVerificationId,
   BrowserProfileId,
+  BrowserSurfaceId,
   BrowserSourceId,
   CausalChainId,
   CommandId,
@@ -84,6 +71,8 @@ import type {
   RunAttemptId,
   RunFailure,
   RunId,
+  RunInterruptedCause,
+  RunStartHoldReason,
   RunnerId,
   SecurityAuditId,
   ThreadAccessMode,
@@ -125,6 +114,7 @@ import type {
   BrowserTabOpenBinding,
   HarnessInstanceCatalog,
   MachineAccessPolicy,
+  RunnerAuxiliaryFrameFence,
   RunnerDevice,
   RunnerModuleName,
   RunnerModules,
@@ -132,7 +122,12 @@ import type {
   ShellCloseReason,
   ShellSessionId,
 } from "@opensteer/protocol";
-import type { StoredTriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
+import type {
+  AutomationPausedBy,
+  AutomationScript,
+  TriggerScriptEvent,
+  TriggerSource,
+} from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
 import type {
   ClientChangesTable,
@@ -572,6 +567,8 @@ interface RunnerTable {
   moduleDescriptors: JsonColumn<RunnerModules>;
   /** What the computer says it is, from its last signed hello; null until it says. */
   device: JsonColumn<RunnerDevice | null>;
+  /** Stable OS boot identity from the Runner's last signed hello; null until reported. */
+  machineBootId: Generated<string | null>;
   connectionGeneration: ColumnType<string, number | string, number | string>;
   /** Null for a Runner with no agents module, which executes nothing. */
   maxConcurrentRuns: number | null;
@@ -607,6 +604,18 @@ interface MachineAccessSessionTable {
   endReason: ShellCloseReason | null;
   bytesIn: ColumnType<string, number | string | undefined, number | string>;
   bytesOut: ColumnType<string, number | string | undefined, number | string>;
+  /**
+   * The connection whose lineage the Run that opened it is in, with the grant it was admitted
+   * under: the session is then an attempt in that connection's Disconnect set (rule 3).
+   */
+  connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
+  /** The exact `shell` stream of the target Runner that was asked to serve it. */
+  targetFence: Generated<RunnerAuxiliaryFrameFence | null>;
+  /** The target's own close receipt on that stream, or the moment contact with it was lost. */
+  terminalEvidenceAt: Generated<Date | null>;
+  contactLostAt: Generated<Date | null>;
 }
 
 /** One audited SSH request, exactly as the target's helper reported it. */
@@ -725,18 +734,19 @@ export interface ThreadTable {
   inputQueueRevision: Generated<string>;
   lastReplyMessageId: Generated<MessageId | null>;
   lastReplyPreview: Generated<string | null>;
+  failureCode: Generated<string | null>;
   failurePreview: Generated<string | null>;
+  runStartHoldReason: Generated<RunStartHoldReason | null>;
+  /** Unresolved unproven-stop Run whose boot containment has not yet been confirmed. */
+  unconfirmedStopRunId: Generated<RunId | null>;
   latestRunCompletedAt: Generated<Date | null>;
   latestPlace: Generated<PlaceView | null>;
   removedAt: Generated<Date | null>;
   inputQueuePaused: Generated<boolean>;
   inputQueuePausedBy: Generated<UserId | null>;
-  accessMode: Generated<ThreadAccessMode>;
+  accessMode: ThreadAccessMode;
 
   purpose: TaskPurpose;
-  teamId: DeploymentId | null;
-  channelId: TeamChannelId | null;
-  threadRootId: TeamMessageId | null;
   id: ThreadId;
   lineageRootThreadId: ThreadId;
 
@@ -755,8 +765,10 @@ export interface ThreadTable {
   createdByPrincipalId: PrincipalId;
   nextMessageSequence: Generated<string>;
   nextRunOrdinal: Generated<number>;
-  /** Admission of a teammate's ask created it; it is removed if only declined asks ever reached it. */
-  teamAskOrigin: Generated<boolean>;
+  /** The connected agent whose lineage this task is in; immutable, inherited by child tasks. */
+  originConnectionId: Generated<string | null>;
+  /** `external`: an agent session's task; it never starts a native Run. */
+  worker: Generated<"native" | "external">;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -814,8 +826,6 @@ export interface AttachmentTable {
 export interface ThreadInputTable {
   approvalSort: Generated<number>;
   freshContext: Generated<boolean>;
-  teamRequestId: TeamAgentRequestId | null;
-  teamSource: JsonColumn<TeamSource | null>;
   assignmentId: Generated<AssignmentId | null>;
   actorPrincipalId: PrincipalId;
   authoritySource: JsonColumn<Readonly<Record<string, unknown>>>;
@@ -840,6 +850,8 @@ export interface ThreadInputTable {
   editLeaseSessionId: Generated<AuthSessionId | null>;
   editLeaseDeviceLabel: Generated<string | null>;
   editLeaseExpiresAt: Generated<Date | null>;
+  /** The connected agent this input came from, directly or through its lineage. */
+  connectionId: Generated<string | null>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -918,6 +930,10 @@ export interface RunTable {
   seedInputId: MessageId;
   /** The live voice call this Run carries; null for every other Run. */
   voiceSessionId: Generated<string | null>;
+  /** The task's origin connection, otherwise its activating input's; null for owner work. */
+  connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
   nextRunnerOrdinal: Generated<number>;
   /** The binding generation this Run acquired; null until it has one. */
   bindingGeneration: Generated<number | null>;
@@ -928,6 +944,9 @@ export interface RunTable {
   /** The reply its channel was sent when a turn ended in the background. */
   turnReplyMessageId: Generated<MessageId | null>;
   status: "queued" | "starting" | "running" | "waiting" | "completed" | "failed" | "interrupted";
+  interruptedCause: Generated<RunInterruptedCause | null>;
+  startHoldReason: Generated<RunStartHoldReason | null>;
+  stopConfirmedAt: Generated<Date | null>;
   createdAt: Timestamp;
   startedAt: NullableTimestamp;
   completedAt: NullableTimestamp;
@@ -951,6 +970,11 @@ export interface RunTable {
  * The current attempt's outcome is the Run's own status.
  */
 export interface RunAttemptTable {
+  connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
+  terminalEvidenceAt: Generated<Date | null>;
+  contactLostAt: Generated<Date | null>;
   id: RunAttemptId;
   runId: RunId;
   ordinal: number;
@@ -963,6 +987,7 @@ export interface RunAttemptTable {
   bindingGeneration: number | null;
   runnerId: RunnerId | null;
   runnerBootId: string | null;
+  machineBootId: Generated<string | null>;
   /** The selection the attempt was dispatched with. */
   modelSelection: JsonColumn<ModelSelection | null>;
   dispatchedAt: NullableTimestamp;
@@ -1069,15 +1094,20 @@ export interface DelegationTable {
   updatedAt: Timestamp;
 }
 
-export interface WatchControlRequestTable {
-  activationId: TriggerWatchActivationId;
-  action: "thread.delegate" | "thread.message";
-  observationId: string;
-  requestFingerprint: string;
-  requestId: string;
-  createdAt: Timestamp;
+/** A command with an effect outside the database: recorded before it acts, settled after (G4). */
+export interface CommandAttemptTable {
+  id: string;
+  requestedBy: UserId;
+  callerKey: string;
+  /** The connection whose Disconnect waits on it, when a connection (or its lineage) asked. */
+  connectionId: string | null;
+  type: string;
+  idempotencyKey: string;
+  state: Generated<"running" | "done" | "failed" | "unknown">;
+  startedAt: Generated<Date>;
+  settledAt: Date | null;
+  outcome: Generated<CommandRequestOutcome | null>;
 }
-
 export interface RequestTable {
   revision: Generated<string>;
   id: RequestId;
@@ -1092,6 +1122,12 @@ export interface RequestTable {
   originatingWatchActivationId: Generated<
     import("@opensteer/core").TriggerWatchActivationId | null
   >;
+  /** The agent session that asked, for a Request about an external agent's direct work. */
+  originatingAgentSessionId: Generated<AgentSessionId | null>;
+  /** The direct operation this Request decides, in its parts (`Request.agentOperation`). */
+  agentOperation: Generated<Readonly<Record<string, unknown>> | null>;
+  /** The Home command an agent proposed, in its parts (`Request.command`). */
+  command: Generated<Readonly<Record<string, unknown>> | null>;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
   callId: string;
@@ -1151,11 +1187,22 @@ interface TriggerTable {
   status: "active" | "paused" | "archived";
   currentRevisionId: TriggerRevisionId;
   nextFireAt: NullableTimestamp;
-  consecutiveFailures: number;
   pauseReason: string | null;
+  pausedBy: Generated<AutomationPausedBy | null>;
+  pausedByConnectionId: Generated<string | null>;
+  pausedByThreadId: Generated<ThreadId | null>;
+  pausedAt: Generated<Date | null>;
+  failingSince: Generated<Date | null>;
+  failureNotifiedAt: Generated<Date | null>;
+  overrunNotifiedAt: Generated<Date | null>;
+  watchCrashNotifiedAt: Generated<Date | null>;
+  encryptedSecrets: Generated<Buffer | null>;
+  secretNames: Generated<string[] | null>;
+  secretsKeyVersion: Generated<number | null>;
   waitingReason: Generated<string | null>;
   webhookRouteKey: string | null;
-  webhookSecretHash: string | null;
+  /** The connected agent whose lineage created it; occurrences and Watches derive from it. */
+  originConnectionId: Generated<string | null>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -1165,13 +1212,21 @@ interface TriggerRevisionTable {
   triggerId: TriggerId;
   ordinal: number;
   source: JsonColumn<TriggerSource>;
-  program: JsonColumn<StoredTriggerProgram>;
+  script: JsonColumn<AutomationScript> | null;
+  legacyLanguage: Generated<string | null>;
+  legacySource: Generated<string | null>;
+  legacyToolContractVersion: Generated<number | null>;
   createdBy: UserId;
   createdByThreadId: ThreadId | null;
   createdAt: Timestamp;
 }
 
 export interface TriggerWatchActivationTable {
+  connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
+  terminalEvidenceAt: Generated<Date | null>;
+  contactLostAt: Generated<Date | null>;
   id: TriggerWatchActivationId;
   triggerId: TriggerId;
   revisionId: TriggerRevisionId;
@@ -1180,7 +1235,7 @@ export interface TriggerWatchActivationTable {
   anchorThreadId: ThreadId;
   createdBy: UserId;
   desired: "active" | "stopped";
-  observed: "starting" | "running" | "backoff" | "expired" | "stopped";
+  observed: "starting" | "running" | "backoff" | "halted" | "expired" | "stopped";
   executionGeneration: ColumnType<string, number | string, number | string>;
   runnerId: RunnerId | null;
   runnerBootId: string | null;
@@ -1202,6 +1257,11 @@ export interface TriggerWatchActivationTable {
 }
 
 export interface TriggerOccurrenceTable {
+  connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
+  terminalEvidenceAt: Generated<Date | null>;
+  contactLostAt: Generated<Date | null>;
   causalChainId: Generated<CausalChainId | null>;
   id: TriggerOccurrenceId;
   triggerId: TriggerId;
@@ -1209,8 +1269,13 @@ export interface TriggerOccurrenceTable {
   commandId: CommandId;
   environmentId: EnvironmentId;
   sourceKey: string;
-  event: JsonColumn<TriggerProgramEvent>;
-  status: "pending" | "running" | "succeeded" | "failed" | "canceled";
+  event: JsonColumn<TriggerScriptEvent>;
+  status: "pending" | "running" | "succeeded" | "failed" | "canceled" | "unknown";
+  frameSentAt: Generated<Date | null>;
+  runnerReportedAt: Generated<Date | null>;
+  provenNotStartedAt: Generated<Date | null>;
+  outputPrunedAt: Generated<Date | null>;
+  webhookBody: Generated<Buffer | null>;
   executionGeneration: Generated<number>;
   runnerId: RunnerId | null;
   runnerBootId: string | null;
@@ -1225,9 +1290,22 @@ export interface TriggerOccurrenceTable {
   updatedAt: Timestamp;
 }
 
+export interface TriggerOccurrenceAttemptTable {
+  occurrenceId: TriggerOccurrenceId;
+  executionGeneration: number;
+  connectionId: string;
+  runnerId: RunnerId;
+  runnerBootId: string;
+  admittedGrantRevision: number | null;
+  admittedAccessMode: ThreadAccessMode | null;
+  terminalEvidenceAt: Date | null;
+  contactLostAt: Date | null;
+}
+
 export interface ProviderSessionTable {
   contextSnapshot: Generated<import("@opensteer/core").ProviderContextSnapshot | null>;
   personalContext: Generated<boolean>;
+  personLineage: Generated<boolean>;
   active: boolean;
   stateLayout: "thread" | "session";
   id: ProviderSessionId;
@@ -1261,6 +1339,7 @@ export interface CommandTable {
   encryptedRequestResponse: Generated<Buffer | null>;
   requestResponseKeyVersion: Generated<number | null>;
   status: CommandStatus;
+  frameSentAt: Generated<Date | null>;
   attempts: Generated<number>;
   dispatcherId: string | null;
   lastError: JsonColumn<unknown> | null;
@@ -1351,7 +1430,16 @@ export interface AutomationFailureNoticeTable {
   triggerId: TriggerId;
   occurrenceId: TriggerOccurrenceId | null;
   activationId: TriggerWatchActivationId | null;
-  reason: "final-occurrence-failed" | "final-occurrence-interrupted" | "paused";
+  reason:
+    | "final-occurrence-failed"
+    | "final-occurrence-interrupted"
+    | "paused"
+    | "started-failing"
+    | "started-unknown"
+    | "overran-schedule"
+    | "watch-crash-loop"
+    | "watch-halted"
+    | "outcome-unknown";
   detail: string;
   attempts: Generated<number>;
   nextAttemptAt: Generated<Date>;
@@ -1398,6 +1486,8 @@ export interface BrowserProfileTable {
   storageBindingId: Generated<string | null>;
   storageEngine: Generated<BrowserEngine | null>;
   initialized: Generated<boolean>;
+  /** `engine-sign-in`: the profile an AI engine signs in through; no grant may name it. */
+  purpose: Generated<"person" | "engine-sign-in">;
   archivedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
@@ -1436,6 +1526,7 @@ interface BrowserHistoryIconTable {
 }
 
 interface BrowserSessionTable {
+  standardCdpAttempts: Generated<Readonly<Record<string, unknown>>>;
   tabGroupId: BrowserSessionId;
   tabRevision: Generated<number>;
   opener: JsonColumn<BrowserSessionOpenerRecord | null>;
@@ -1475,6 +1566,8 @@ interface BrowserSessionUseTable {
 }
 
 interface BrowserSourceTable {
+  deviceId: Generated<DeviceId | null>;
+  liveTabsOnly: Generated<boolean>;
   id: BrowserSourceId;
   ownerId: UserId;
   name: string;
@@ -1489,6 +1582,7 @@ interface BrowserSourceTable {
 }
 
 interface BrowserSourcePairingTable {
+  deviceId: Generated<DeviceId | null>;
   codeHash: string;
   ownerId: UserId;
   createdAt: Timestamp;
@@ -1720,34 +1814,6 @@ export interface ChannelAccountTable {
   updatedAt: Timestamp;
 }
 
-export interface ChannelBindingTable {
-  id: ChannelBindingId;
-  accountId: ChannelAccountId;
-
-  createdBy: UserId;
-  selector: JsonColumn<Readonly<Record<string, unknown>>>;
-  executionPolicy: JsonColumn<Readonly<Record<string, unknown>>>;
-  accessPolicy: JsonColumn<Readonly<Record<string, unknown>>>;
-  revision: number;
-  status: "active" | "paused" | "revoked";
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-export interface ChannelAccessGrantTable {
-  accountId: ChannelAccountId;
-  bindingId: ChannelBindingId;
-  externalUserId: string;
-  displayName: string;
-  status: "pending" | "approved" | "declined" | "revoked";
-  revision: number;
-  requestedAt: Timestamp;
-  requestIngressId: ChannelIngressId | null;
-  decidedAt: NullableTimestamp;
-  decidedBy: UserId | null;
-  updatedAt: Timestamp;
-}
-
 interface ChannelIdentityTable {
   id: ChannelIdentityId;
   accountId: ChannelAccountId;
@@ -1756,26 +1822,6 @@ interface ChannelIdentityTable {
   displayName: string;
   linkedUserId: UserId | null;
   status: "unlinked" | "linked";
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-interface ChannelConversationTable {
-  personalContext: Generated<boolean>;
-  id: ChannelConversationId;
-  accountId: ChannelAccountId;
-  provider: ChannelProvider;
-  externalAccountId: string;
-  bindingId: ChannelBindingId;
-  bindingRevision: number;
-
-  externalScopeId: string | null;
-  externalConversationId: string;
-  externalThreadId: string | null;
-  conversationType: "dm" | "group" | "channel";
-  displayName: string | null;
-  activeThreadId: ThreadId | null;
-  providerState: JsonColumn<Readonly<Record<string, unknown>>>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -1793,57 +1839,12 @@ interface ChannelIngressEventTable {
   claimExpiresAt: NullableTimestamp;
   nextAttemptAt: Timestamp;
   lastError: string | null;
-  conversationId: ChannelConversationId | null;
   messageId: MessageId | null;
   runId: RunId | null;
   receivedAt: Timestamp;
   processedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-}
-
-export interface ChannelDeliveryTable {
-  id: ChannelDeliveryId;
-  accountId: ChannelAccountId;
-  /** Exactly one of these is set: a routed conversation, or the ignored ingress a status answers. */
-  conversationId: ChannelConversationId | null;
-  ingressId: ChannelIngressId | null;
-  messageId: MessageId | null;
-  audience: "conversation" | "actor";
-  kind: "reply" | "status";
-  /** One provider message. A reply longer than the provider allows becomes `partCount` of these. */
-  part: Generated<number>;
-  partCount: Generated<number>;
-  content: JsonColumn<readonly unknown[]>;
-  status:
-    "pending" | "leased" | "attempt-started" | "sent" | "retryable-failed" | "unknown" | "dead";
-  attempts: Generated<number>;
-  claimTokenHash: string | null;
-  claimOwner: string | null;
-  claimExpiresAt: NullableTimestamp;
-  nextAttemptAt: Timestamp;
-  lastError: string | null;
-  receipt: JsonColumn<Readonly<Record<string, unknown>>> | null;
-  sentAt: NullableTimestamp;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-/**
- * A code is minted FOR a channel identity and consumed BY the Opensteer user
- * who redeems it in the web app, so the identity is known from the start and
- * the user only at consumption.
- */
-interface ChannelLinkCodeTable {
-  id: string;
-  accountId: ChannelAccountId;
-  userId: UserId | null;
-  codeHash: string;
-  expiresAt: Timestamp;
-  consumedAt: NullableTimestamp;
-  identityId: ChannelIdentityId;
-  requestIngressId: ChannelIngressId | null;
-  createdAt: Timestamp;
 }
 
 interface ComputerUsePolicyTable {
@@ -1900,6 +1901,7 @@ export interface AppVersionTable {
 }
 
 export interface AgentConnectionTable {
+  sharedChromeAttempts: Generated<Readonly<Record<string, unknown>>>;
   id: string;
   userId: UserId;
   label: string;
@@ -1912,9 +1914,169 @@ export interface AgentConnectionTable {
   lastUsedAt: NullableTimestamp;
   expiresAt: Timestamp;
   revokedAt: NullableTimestamp;
+  grant: ColumnType<AgentGrant, AgentGrant | undefined, AgentGrant>;
+  grantRevision: Generated<number>;
+  consentVersion: Generated<number>;
+  /** SHA-256 of the signed client registration the person approved; null before 0044. */
+  clientFingerprint: Generated<string | null>;
+  /** The redirect destination the person consented to; null before 0044. */
+  redirectUri: Generated<string | null>;
+  /** Contact was lost with a handed-off execution in this lineage while it was being stopped. */
+  lastActionUncertainAt: Generated<Date | null>;
+  acknowledgedUncertaintyAt: Generated<Date | null>;
+  /** What the person should check: the Device, tool, target and when. */
+  lastActionUncertain: Generated<Readonly<Record<string, unknown>> | null>;
+  /** Disconnect or expiry: one durable cleanup, driven to completion by the Home. */
+  cleanupReason: Generated<"revoked" | "expired" | "narrowed" | null>;
+  cleanupMinimumGrantRevision: Generated<number | null>;
+  cleanupMaximumMode: Generated<ThreadAccessMode | null>;
+  cleanupClaimToken: Generated<string | null>;
+  cleanupClaimExpiresAt: Generated<Date | null>;
+  cleanupRequestedAt: Generated<Date | null>;
+  cleanupCompletedAt: Generated<Date | null>;
+  /** The person removed this revoked connection from their list. */
+  removedAt: Generated<Date | null>;
+  /** Who the person was shown at consent (`AgentConnectionIdentityAtConsent`); null before 0045. */
+  identityAtConsent: Generated<Readonly<Record<string, unknown>> | null>;
+  verificationWithdrawnAt: Generated<Date | null>;
+  /** A messaging bridge: the provider account it speaks through. Null for an MCP connection. */
+  bridgeAccountId: Generated<ChannelAccountId | null>;
+  /** The one channel or group it covers; null covers direct messages. */
+  bridgeConversationId: Generated<string | null>;
+  /** Who may speak: the linked owner only, or anyone in its one conversation. */
+  bridgeSenders: Generated<BridgeSenders | null>;
+  /** The channel's name, for a bridge that covers one channel. */
+  bridgeConversationName: Generated<string | null>;
+  /** Why the bridge ended, recorded when it was revoked. */
+  bridgeEndedBy: Generated<BridgeEndedBy | null>;
+}
+
+export type BridgeSenders = "owner" | "anyone";
+export type BridgeEndedBy = "you" | "account" | "computer";
+
+export interface BridgeConversationTable {
+  id: ChannelConversationId;
+  bridgeId: string;
+  accountId: ChannelAccountId;
+  externalScopeId: string | null;
+  externalConversationId: string;
+  externalThreadId: string | null;
+  conversationType: "dm" | "group" | "channel";
+  displayName: string | null;
+  threadId: ThreadId | null;
+  createdAt: Generated<Date>;
+  updatedAt: Generated<Date>;
+}
+
+export type BridgeDeliveryStatus =
+  | "pending"
+  | "leased"
+  | "attempt-started"
+  | "sent"
+  | "retryable-failed"
+  | "unknown"
+  | "dead"
+  | "cancelled";
+
+/** One message to a chat: an attempt of its bridge, written before it is sent. */
+export interface BridgeDeliveryTable {
+  id: ChannelDeliveryId;
+  bridgeId: string;
+  accountId: ChannelAccountId;
+  conversationId: ChannelConversationId;
+  messageId: MessageId | null;
+  kind: "reply" | "status";
+  part: Generated<number>;
+  partCount: Generated<number>;
+  content: JsonColumn<readonly unknown[]>;
+  status: BridgeDeliveryStatus;
+  attempts: Generated<number>;
+  claimTokenHash: Generated<string | null>;
+  claimOwner: Generated<string | null>;
+  claimExpiresAt: Generated<Date | null>;
+  nextAttemptAt: Generated<Date>;
+  lastError: Generated<string | null>;
+  receipt: JsonColumn<Readonly<Record<string, unknown>>> | null;
+  sentAt: Generated<Date | null>;
+  createdAt: Generated<Date>;
+  updatedAt: Generated<Date>;
+}
+
+/** Shown in Opensteer and sent by the person from their own account to link "me". */
+export interface BridgeLinkCodeTable {
+  id: string;
+  accountId: ChannelAccountId;
+  userId: UserId;
+  codeHash: string;
+  expiresAt: Date;
+  consumedAt: Generated<Date | null>;
+  identityId: Generated<ChannelIdentityId | null>;
+  createdAt: Generated<Date>;
+}
+
+interface AgentDirectoryCacheTable {
+  issuer: string;
+  document: Readonly<Record<string, unknown>>;
+  acceptedAt: Date;
+}
+
+export interface AgentSessionTable {
+  id: AgentSessionId;
+  connectionId: string;
+  userId: UserId;
+  threadId: ThreadId;
+  status: "active" | "ended";
+  startedAt: Generated<Date>;
+  lastActiveAt: Generated<Date>;
+  endedAt: Date | null;
+  endReason: AgentSessionEndReason | null;
+  stopNoticeDeliveredAt: Date | null;
+}
+
+export interface AgentOperationTable {
+  id: AgentOperationId;
+  sessionId: AgentSessionId;
+  connectionId: string;
+  userId: UserId;
+  operationKey: string;
+  tool: string;
+  argumentDigest: string;
+  target: JsonColumn<AgentOperationTarget>;
+  targetGeneration: string | null;
+  grantRevision: number;
+  mode: ThreadAccessMode;
+  effect: "read" | "write";
+  state: AgentOperationState;
+  decision: JsonColumn<AgentOperationDecision> | null;
+  requestId: RequestId | null;
+  calls: string;
+  agentReason: string | null;
+  handedOffAt: Date | null;
+  /** The executor returned, the operation never left the Home, or its process is gone. */
+  terminalEvidenceAt: Generated<Date | null>;
+  /** Handed off and lost without a confirmed outcome: what "last action uncertain" names. */
+  contactLostAt: Generated<Date | null>;
+  completedAt: Date | null;
+  outcome: AgentOperationOutcome | null;
+  /** Why an unknown outcome ended, where the Home knows it: what the person and the agent read. */
+  ending: Generated<AgentOperationEnding | null>;
+  resultSummary: JsonColumn<Readonly<Record<string, unknown>>> | null;
+  createdAt: Generated<Date>;
+  updatedAt: Generated<Date>;
+}
+
+export interface AgentSessionDeviceHoldTable {
+  id: string;
+  sessionId: AgentSessionId;
+  deviceName: string;
+  homeProcessId: string;
+  unconfirmedAt: Date | null;
 }
 
 export interface DatabaseSchema {
+  agentSessions: AgentSessionTable;
+  agentSessionDeviceHolds: AgentSessionDeviceHoldTable;
+  agentOperations: AgentOperationTable;
   pluginOauthRecords: {
     id: string;
     ownerUserId: UserId;
@@ -1930,12 +2092,25 @@ export interface DatabaseSchema {
     versionAuthors: JsonColumn<Record<string, "catalog" | "agent">>;
   };
   pluginExecutions: {
+    engineProcess: Generated<Readonly<{
+      launchId: string;
+      namespace: string;
+      pid: number;
+      machineId?: string;
+    }> | null>;
+    engineUnsent: Generated<boolean | null>;
+    connectionId: Generated<string | null>;
+    admittedGrantRevision: Generated<number | null>;
+    admittedAccessMode: Generated<ThreadAccessMode | null>;
+    terminalEvidenceAt: Generated<Date | null>;
+    contactLostAt: Generated<Date | null>;
     id: string;
     ownerUserId: UserId;
     threadId: ThreadId;
     runId: RunId | null;
     occurrenceId: TriggerOccurrenceId | null;
     watchActivationId: import("@opensteer/core").TriggerWatchActivationId | null;
+    agentSessionId: Generated<AgentSessionId | null>;
     caller: string;
     mode: "ask" | "automatic";
     state:
@@ -1984,113 +2159,6 @@ export interface DatabaseSchema {
     fileError: JsonColumn<import("@opensteer/protocol").AgentHomeSettingsError> | null;
     settings: JsonColumn<import("@opensteer/core").AgentHomeSettings>;
   };
-  teamMembers: TeamMemberTable;
-  teamPrincipals: TeamPrincipalTable;
-  teamSharingSettings: {
-    singletonKey: "team";
-    policy: "off" | "admins" | "members-propose" | "members";
-  };
-  teamPartnerInvites: {
-    id: string;
-    verifierHash: string;
-    createdBy: UserId;
-    createdAt: Timestamp;
-    expiresAt: Timestamp;
-    consumedAt: NullableTimestamp;
-    revokedAt: NullableTimestamp;
-  };
-  teamPartnerLinks: TeamPartnerLinkTable;
-  teamAccessState: TeamAccessStateTable;
-  teamGroups: TeamGroupTable;
-  teamGroupPeople: TeamGroupPersonTable;
-  teamGroupEdges: TeamGroupEdgeTable;
-  teamInvites: TeamInviteTable;
-  teamInviteUses: TeamInviteUseTable;
-  teamAudit: TeamAuditTable;
-  teamNotices: TeamNoticeTable;
-  teamChannels: TeamChannelTable;
-  teamChannelMembers: TeamChannelMemberTable;
-  teamChannelMemberState: TeamChannelMemberStateTable;
-  teamShares: TeamShareTable;
-  teamShareAsks: TeamShareAskTable;
-  teamRequestStatuses: TeamAgentRequestTable & {
-    pendingRemote: boolean;
-    askRefusal: "people-only" | "no-access" | "no-link" | "rate-limited" | null;
-  };
-  teamShareParticipants: TeamShareParticipantTable;
-  teamShareRelays: TeamShareRelayTable;
-  teamMessages: TeamMessageTable;
-  teamMentions: TeamMentionTable;
-  teamMessagePins: TeamMessagePinTable;
-  teamBlobs: TeamBlobTable;
-  teamMessageAttachments: TeamMessageAttachmentTable;
-  teamTopics: TeamTopicTable;
-  teamTopicGrants: TeamTopicGrantTable;
-  teamNotes: TeamNoteTable;
-  teamNoteVersions: TeamNoteVersionTable;
-  teamOutbox: TeamOutboxTable;
-  teamLinks: TeamLinkTable;
-  teamAgentRequests: TeamAgentRequestTable;
-  teamAccessChanges: {
-    revision: string;
-    effects: JsonColumn<unknown>;
-    createdAt: Generated<Date>;
-  };
-  teamPresence: {
-    connectionId: string;
-    processId: string;
-    userId: UserId;
-    visible: boolean;
-    channelIds: ColumnType<TeamChannelId[], TeamChannelId[] | undefined, TeamChannelId[]>;
-    seenAt: Timestamp;
-  };
-  teamLinkConnections: {
-    linkId: TeamLinkId;
-    epoch: string;
-    processId: string;
-    seenAt: Timestamp;
-  };
-  teamPartnerCalls: {
-    id: string;
-    linkId: string;
-    operation: JsonColumn<unknown>;
-    state: "queued" | "claimed" | "done" | "failed";
-    claimedBy: string | null;
-    result: JsonColumn<unknown> | null;
-    error: JsonColumn<unknown> | null;
-    createdAt: Generated<Date>;
-    expiresAt: Timestamp;
-  };
-  teamInstallation: {
-    singletonKey: "team";
-    sealedAccountBundle: Buffer;
-    updatedAt: Generated<Date>;
-  };
-  personalTeamLinks: PersonalTeamLinkTable;
-  personalTeamPosts: {
-    teamDeploymentId: DeploymentId;
-    clientMessageId: string;
-    localLinkId: string;
-    remoteLinkId: TeamLinkId;
-    runId: RunId;
-    messageId: TeamMessageId | null;
-    channelId: TeamChannelId;
-    threadRootId: TeamMessageId | null;
-    targetBindings: JsonColumn<
-      readonly {
-        readonly ownerUserId: UserId;
-        readonly handle: string;
-        readonly requestId: TeamAgentRequestId;
-      }[]
-    >;
-    mentionedAgentHandles: readonly string[];
-    bodyMarkdown: string;
-    attachmentIds: JsonColumn<readonly TeamBlobId[]>;
-    requestId: TeamAgentRequestId | null;
-    createdAt: Timestamp;
-  };
-  personalTeamRequests: PersonalTeamRequestTable;
-  teamAgentRecipients: TeamAgentRecipientTable;
 
   personalSettings: PersonalSettingsTable;
   clientSyncState: ClientSyncStateTable;
@@ -2102,6 +2170,7 @@ export interface DatabaseSchema {
   personalAttention: PersonalAttentionTable;
 
   agentConnections: AgentConnectionTable;
+  agentDirectoryCache: AgentDirectoryCacheTable;
   apps: AppTable;
   appServers: AppServerTable;
   appVersions: AppVersionTable;
@@ -2190,6 +2259,7 @@ export interface DatabaseSchema {
   grants: GrantTable;
   delegations: DelegationTable;
   requests: RequestTable;
+  commandAttempts: CommandAttemptTable;
   taskQuestionNotices: {
     requestId: RequestId;
     messageId: MessageId | null;
@@ -2200,8 +2270,8 @@ export interface DatabaseSchema {
   triggers: TriggerTable;
   triggerRevisions: TriggerRevisionTable;
   triggerWatchActivations: TriggerWatchActivationTable;
-  watchControlRequests: WatchControlRequestTable;
   triggerOccurrences: TriggerOccurrenceTable;
+  triggerOccurrenceAttempts: TriggerOccurrenceAttemptTable;
   providerSessions: ProviderSessionTable;
   commands: CommandTable;
   agentControlRequests: AgentControlRequestTable;
@@ -2213,6 +2283,103 @@ export interface DatabaseSchema {
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
   browserProfileDeletions: BrowserProfileDeletionTable;
+  /** W8: a replaced target the Home goes on asking for the end of the Stops it held. */
+  browserPoolRetiredTargets: {
+    slotId: string;
+    term: number;
+    runnerId: RunnerId;
+    runtimeId: string;
+    instanceId: string;
+    epoch: number;
+    target: JsonColumn<Readonly<Record<string, unknown>>>;
+    retiredAt: Generated<Timestamp>;
+  };
+  /** W1: the target (slot and term) each pooled session belongs to. */
+  browserPoolSessions: {
+    sessionId: BrowserSessionId;
+    runnerId: RunnerId;
+    slotId: string;
+    term: number;
+    dismissedAt: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  };
+  browserPoolSlots: {
+    runnerId: RunnerId;
+    runtimeId: string;
+    slotId: string;
+    term: number;
+    instanceId: string;
+    epoch: number;
+    intentSequence: number;
+    intentId: string | null;
+    attachmentGeneration: number;
+    /** `releasing`: the device was removed; the row goes once the guest is known stopped. */
+    phase: "running" | "preparing" | "parked" | "waking" | "releasing";
+    retained: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    savedState: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    outcome: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    phaseSince: ColumnType<Date, Date | undefined, Date>;
+    /** The last fresh start: why, when, and its id. */
+    lastStart: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    failedStarts: ColumnType<number, number | undefined, number>;
+    /** The owner's restart keys already handled, newest first, bounded: a retry does nothing. */
+    restartKeys: ColumnType<readonly string[], readonly string[] | undefined, readonly string[]>;
+    /** Restart keys accepted and not yet answered, written before the restart's first effect. */
+    restartWanted: ColumnType<readonly string[], readonly string[] | undefined, readonly string[]>;
+  };
+  browserPoolControllerCalls: {
+    id: string;
+    runnerId: RunnerId;
+    slotId: string;
+    term: number;
+    intentId: string | null;
+    kind: string;
+    request: JsonColumn<Readonly<Record<string, unknown>>>;
+    result: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    createdAt: Generated<Timestamp>;
+    settledAt: Timestamp | null;
+    /** A restart's Start: the keys it answers, written with the call before it is sent. */
+    restartKeys: JsonColumn<readonly string[] | null>;
+    /** A Start whose guest the slot holds: never installed again in place of a new one. */
+    installedAt: Timestamp | null;
+  };
+  browserPoolDocumentLosses: {
+    intentId: string;
+    runnerId: RunnerId;
+    ownerId: UserId;
+    sessionId: BrowserSessionId;
+    surfaceId: BrowserSurfaceId;
+    documentId: string | null;
+    reason: string;
+    /**
+     * The page held typed text that was not sent, as known when the loss was written; null: not
+     * known (a running page, a partial thaw).
+     */
+    typed: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
+    lostAt: Generated<Timestamp>;
+    noticedAt: Timestamp | null;
+  };
+  /** A pooled Cloud Computer's Home: its key registration's attempt and the target it read. */
+  browserPoolTargets: {
+    cloudComputerId: string;
+    /** The public halves of a registration sent and not yet answered; cleared when answered. */
+    attemptKeys: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    attemptIssuedAt: Timestamp | null;
+    /** The public halves the account answered a registration for. */
+    registeredKeys: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    status: "unregistered" | "preparing" | "ready" | "failed";
+    target: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    updatedAt: Timestamp;
+  };
+  browserPoolRelays: {
+    id: string;
+    runnerId: RunnerId;
+    runtimeId: string;
+    slotId: string;
+    term: number;
+    instanceId: string;
+    epoch: number;
+    createdAt: Generated<Timestamp>;
+  };
   browserHistoryEntries: BrowserHistoryEntryTable;
   browserHistoryIcons: BrowserHistoryIconTable;
   browserSessions: BrowserSessionTable;
@@ -2282,13 +2449,11 @@ export interface DatabaseSchema {
 
   integrationGrants: IntegrationGrantTable;
   channelAccounts: ChannelAccountTable;
-  channelAccessGrants: ChannelAccessGrantTable;
-  channelBindings: ChannelBindingTable;
   channelIdentities: ChannelIdentityTable;
-  channelConversations: ChannelConversationTable;
   channelIngressEvents: ChannelIngressEventTable;
-  channelDeliveries: ChannelDeliveryTable;
-  channelLinkCodes: ChannelLinkCodeTable;
+  bridgeConversations: BridgeConversationTable;
+  bridgeDeliveries: BridgeDeliveryTable;
+  bridgeLinkCodes: BridgeLinkCodeTable;
 }
 
 export type DeploymentRow = Selectable<DeploymentTable>;
@@ -2296,10 +2461,15 @@ export type DeploymentRow = Selectable<DeploymentTable>;
 export type ThreadRow = Selectable<ThreadTable>;
 export type RunRow = Selectable<RunTable>;
 export type RequestRow = Selectable<RequestTable>;
-export type CommandRow = Selectable<CommandTable>;
+export type CommandRow = Omit<Selectable<CommandTable>, "frameSentAt">;
 /** A command awaiting dispatch, with the AI account of the Run it names. */
 export type PendingCommandRow = CommandRow & {
   readonly runHarnessInstanceId: HarnessInstanceId | null;
+  /**
+   * Why the Run it names is held back, as this listing read it. A dispatcher that holds the Run
+   * marks it here too, until the next listing reads the row again.
+   */
+  runStartHoldReason: RunStartHoldReason | null;
 };
 
 export interface PersonalSettingsTable {
@@ -2323,467 +2493,6 @@ export interface PersonalSettingsTable {
     { readonly issuer: string; readonly subject: string } | null
   >;
 }
-export interface TeamMemberTable {
-  userId: UserId;
-  handle: TeamHandle;
-  role: "owner" | "admin" | "member";
-  state: "active" | "removed";
-  generation: Generated<string>;
-  joinedAt: Timestamp;
-  changedAt: Timestamp;
-  changedBy: UserId | null;
-}
-export interface TeamPrincipalTable {
-  id: UserId;
-  homeTeamId: DeploymentId;
-  homeUserId: string;
-  memberUserId: UserId | null;
-  displayName: string | null;
-  handle: TeamHandle | null;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-export interface TeamAccessStateTable {
-  singletonKey: "team";
-  revision: Generated<string>;
-  directoryRevision: Generated<string>;
-  updatedAt: Timestamp;
-}
-export interface TeamGroupTable {
-  id: TeamGroupId;
-  name: string;
-  normalizedName: string;
-  createdBy: UserId;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-  deletedAt: NullableTimestamp;
-}
-export interface TeamGroupPersonTable {
-  groupId: TeamGroupId;
-  userId: UserId;
-  addedBy: UserId;
-  addedAt: Timestamp;
-}
-export interface TeamGroupEdgeTable {
-  parentGroupId: TeamGroupId;
-  childGroupId: TeamGroupId;
-  addedBy: UserId;
-  addedAt: Timestamp;
-}
-export interface TeamInviteTable {
-  id: TeamInviteId;
-  selector: string;
-  verifierHash: string;
-  /** Set only on reusable invites, which `team.invite.reset` creates; at most one is unrevoked. */
-  sealedVerifier: Buffer | null;
-  maxUses: number | null;
-  usedCount: Generated<number>;
-  expiresAt: Timestamp;
-  revokedAt: NullableTimestamp;
-  createdBy: UserId;
-  createdAt: Timestamp;
-}
-export interface TeamInviteUseTable {
-  inviteId: TeamInviteId;
-  userId: UserId;
-  acceptedAt: Timestamp;
-  memberGeneration: string;
-}
-export interface TeamAuditTable {
-  callerRunId: Generated<RunId | null>;
-  operationId: Generated<string | null>;
-  id: Generated<string>;
-  occurredAt: Timestamp;
-  actorUserId: UserId | null;
-  actorKind: "human" | "agent" | "system";
-  linkId: TeamLinkId | null;
-  agentRequestId: TeamAgentRequestId | null;
-  action: string;
-  resourceKind: string;
-  resourceId: string | null;
-  channelId: TeamChannelId | null;
-  outcome: "allowed" | "denied";
-  metadata: JsonColumn<Readonly<Record<string, unknown>>>;
-}
-export interface TeamNoticeTable {
-  id: TeamNoticeId;
-  recipientUserId: UserId;
-  kind: "admin-self-added";
-  resourceKind: "channel" | "topic";
-  resourceId: string;
-  auditId: string;
-  dedupeKey: string;
-  createdAt: Timestamp;
-  readAt: NullableTimestamp;
-}
-export interface TeamChannelTable {
-  id: TeamChannelId;
-  kind: TeamChannelKind;
-  name: string | null;
-  normalizedName: string | null;
-  createdBy: UserId;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-  archivedAt: NullableTimestamp;
-  peopleOnly: boolean;
-  instructionsMarkdown: string;
-  instructionsRevision: Generated<string>;
-  changeSeq: Generated<string>;
-  latestMessageId: TeamMessageId | null;
-  dmKey: string | null;
-}
-export interface TeamChannelMemberTable {
-  memberUserId: ColumnType<UserId | null, never, never>;
-  channelId: TeamChannelId;
-  subjectKind: "person" | "group";
-  subjectId: string;
-  level: "read" | "post";
-  manage: boolean;
-  addedBy: UserId;
-  addedAt: Timestamp;
-}
-export interface TeamChannelMemberStateTable {
-  channelId: TeamChannelId;
-  userId: UserId;
-  lastReadMessageId: TeamMessageId | null;
-  notificationLevel: "mentions" | "all" | "muted";
-  updatedAt: Timestamp;
-}
-export interface TeamMessageTable {
-  publicId: Generated<string>;
-  createdSeq: Generated<string>;
-  ownerChangeSeq: Generated<string | null>;
-  agentLinkId: Generated<TeamLinkId | null>;
-  personalDeploymentId: Generated<DeploymentId | null>;
-  callerRunId: Generated<RunId | null>;
-  operationId: Generated<string | null>;
-  id: Generated<TeamMessageId>;
-  channelId: TeamChannelId;
-  threadRootId: TeamMessageId | null;
-  authorUserId: UserId;
-  authorKind: "human" | "agent";
-  agentRequestId: TeamAgentRequestId | null;
-  clientMessageId: string;
-  bodyMarkdown: string;
-  plainText: string;
-  searchDocument: Generated<string>;
-  createdAt: Timestamp;
-  editedAt: NullableTimestamp;
-  deletedAt: NullableTimestamp;
-  changeSeq: string;
-}
-export interface TeamMentionTable {
-  messageId: TeamMessageId;
-  channelId: TeamChannelId;
-  targetUserId: UserId;
-  targetKind: "person" | "agent";
-  createdAt: Timestamp;
-}
-export interface TeamMessagePinTable {
-  messageId: TeamMessageId;
-  channelId: TeamChannelId;
-  pinnedBy: UserId;
-  pinnedAt: Timestamp;
-}
-export interface TeamBlobTable {
-  cacheOriginalReserved: Generated<boolean>;
-  cachePreviewReserved: Generated<boolean>;
-  publicId: Generated<string>;
-  remoteShareId: Generated<string | null>;
-  previewSha256: Generated<string | null>;
-  agentLinkId: Generated<TeamLinkId | null>;
-  personalDeploymentId: Generated<DeploymentId | null>;
-  callerRunId: Generated<RunId | null>;
-  operationId: Generated<string | null>;
-  id: TeamBlobId;
-  channelId: TeamChannelId;
-  uploaderUserId: UserId;
-  uploaderKind: "human" | "agent";
-  agentRequestId: TeamAgentRequestId | null;
-  clientUploadId: string;
-  storageKey: string;
-  filename: string;
-  declaredType: string;
-  verifiedType: string | null;
-  sizeBytes: number;
-  sha256: string | null;
-  state: "uploading" | "ready" | "deleting";
-  receivedBytes: Generated<number>;
-  previewStorageKey: string | null;
-  previewMediaType: string | null;
-  previewSizeBytes: number | null;
-  createdAt: Timestamp;
-  expiresAt: Timestamp;
-  completedAt: NullableTimestamp;
-  generation: Generated<string | null>;
-  previewGeneration: Generated<string | null>;
-  uploadLease: Generated<string | null>;
-  uploadLeaseExpiresAt: Generated<Date | null>;
-}
-export interface TeamMessageAttachmentTable {
-  messageId: TeamMessageId;
-  position: number;
-  blobId: TeamBlobId;
-  channelId: TeamChannelId;
-  createdAt: Timestamp;
-}
-export interface TeamTopicTable {
-  id: KnowledgeTopicId;
-  name: string;
-  description: Generated<string>;
-  /** Null for the topic every team starts with. */
-  createdBy: UserId | null;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-  archivedAt: NullableTimestamp;
-  accessRevision: Generated<string>;
-}
-export interface TeamTopicGrantTable {
-  memberUserId: ColumnType<UserId | null, never, never>;
-  topicId: KnowledgeTopicId;
-  subjectKind: "person" | "group" | "everyone";
-  /** A user or group id; "team" for everyone. */
-  subjectId: string;
-  level: "read" | "write" | "manage";
-  addedBy: UserId | null;
-  addedAt: Timestamp;
-}
-export interface TeamNoteTable {
-  id: KnowledgeNoteId;
-  topicId: KnowledgeTopicId;
-  version: number;
-  title: string;
-  body: string;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-  deletedAt: NullableTimestamp;
-  search: ColumnType<string, never, never>;
-}
-export interface TeamNoteVersionTable {
-  noteId: KnowledgeNoteId;
-  version: number;
-  title: string;
-  body: string;
-  deleted: boolean;
-  writerKind: "human" | "agent";
-  writerUserId: UserId;
-  linkId: TeamLinkId | null;
-  requestId: TeamAgentRequestId | null;
-  writtenAt: Timestamp;
-}
-export interface TeamOutboxTable {
-  id: Generated<string>;
-  kind: "message" | "agent-status" | "notice";
-  channelId: TeamChannelId | null;
-  messageId: TeamMessageId | null;
-  noticeId: TeamNoticeId | null;
-  createdAt: Timestamp;
-}
-export interface TeamLinkTable {
-  id: TeamLinkId;
-  ownerUserId: UserId;
-  personalDeploymentId: DeploymentId | null;
-  installationLabel: string | null;
-  state: "pending" | "active" | "revoked";
-  codeHash: string;
-  codeExpiresAt: Timestamp;
-  credentialHash: string | null;
-  lastSeenAt: NullableTimestamp;
-  createdAt: Timestamp;
-  revokedAt: NullableTimestamp;
-  connectionEpoch: Generated<string>;
-}
-export interface TeamAgentRequestTable {
-  shareId: Generated<string | null>;
-  targetAgentHandle: Generated<string | null>;
-  kind: Generated<TeamAgentRequestKind>;
-  presentation: ColumnType<
-    TeamAskPresentation | null,
-    TeamAskPresentation | null | undefined,
-    TeamAskPresentation | null
-  >;
-  returnPayload: ColumnType<
-    TeamAgentReturnPayload | null,
-    TeamAgentReturnPayload | null | undefined,
-    TeamAgentReturnPayload | null
-  >;
-  consentExpiresAt: NullableTimestamp;
-  id: TeamAgentRequestId;
-  ownerUserId: UserId;
-  channelId: TeamChannelId;
-  threadRootId: TeamMessageId;
-  triggerMessageId: TeamMessageId;
-  linkId: TeamLinkId;
-  state: TeamAgentRequestState;
-  steps: JsonColumn<readonly z.infer<typeof TeamStatusStepSchema>[]>;
-  createdAt: Timestamp;
-  acceptedAt: NullableTimestamp;
-  expiresAt: NullableTimestamp;
-  finishedAt: NullableTimestamp;
-  replyMessageId: TeamMessageId | null;
-  failureCode: string | null;
-  changeSeq: string;
-}
-export interface PersonalTeamLinkTable {
-  approvalAttentionCount: Generated<number>;
-  id: string;
-  teamDeploymentId: DeploymentId;
-  teamHostInstanceId: HostInstanceId;
-  hostKeyFingerprint: string;
-  approvedOrigin: string;
-  authorityEnvelope: JsonColumn<Readonly<Record<string, unknown>>>;
-  remoteLinkId: TeamLinkId | null;
-  remoteOwnerUserId: UserId | null;
-  state: "joining" | "active" | "unreachable" | "leaving" | "revoked" | "needs_update";
-  credentialReference: string | null;
-  createdAt: Timestamp;
-  lastContactAt: NullableTimestamp;
-}
-export interface TeamAgentRecipientTable {
-  version: Generated<Sequence>;
-  userId: UserId;
-  channelId: TeamChannelId;
-  rootId: TeamMessageId;
-  enabled: boolean;
-  updatedAt: Timestamp;
-}
-export interface PersonalTeamRequestTable {
-  kind: Generated<TeamAgentRequestKind>;
-  remoteState: Generated<TeamAgentRequestState>;
-  presentation: ColumnType<
-    TeamAskPresentation | null,
-    TeamAskPresentation | null | undefined,
-    TeamAskPresentation | null
-  >;
-  returnPayload: ColumnType<
-    TeamAgentReturnPayload | null,
-    TeamAgentReturnPayload | null | undefined,
-    TeamAgentReturnPayload | null
-  >;
-  consentExpiresAt: NullableTimestamp;
-  localDecision: Generated<TeamAskDecision | null>;
-  decisionAt: NullableTimestamp;
-  /** The revision of the task's copy the owner approved; only that revision may be released. */
-  approvedRevision: Generated<number | null>;
-  /** When an approved ask's input joined its queue. Never set for an ask that did not run. */
-  releasedAt: Generated<Date | null>;
-  returnAdmission: Generated<TeamReturnAdmission | null>;
-  answerMessageId: Generated<MessageId | null>;
-  answerPayload: ColumnType<
-    { readonly bodyMarkdown: string; readonly attachmentIds: readonly TeamBlobId[] } | null,
-    | { readonly bodyMarkdown: string; readonly attachmentIds: readonly TeamBlobId[] }
-    | null
-    | undefined,
-    { readonly bodyMarkdown: string; readonly attachmentIds: readonly TeamBlobId[] } | null
-  >;
-  clientMessageId: Generated<string | null>;
-  deliveryVia: Generated<"final" | "tool" | null>;
-  blockedReason: Generated<string | null>;
-  teamDeploymentId: DeploymentId;
-  requestId: TeamAgentRequestId;
-  triggerMessageId: TeamMessageId;
-  localTaskId: ThreadId | null;
-  localInputId: MessageId | null;
-  runId: RunId | null;
-  publicationState: "pending" | "accepted" | "blocked";
-  terminalState: "done" | "failed" | "stopped" | "cancelled" | null;
-  acceptedMessageId: TeamMessageId | null;
-  explicitReply: Generated<boolean>;
-  source: JsonColumn<TeamSource>;
-  createdAt: Timestamp;
-  finishedAt: NullableTimestamp;
-}
-
-export interface TeamPartnerLinkTable {
-  id: string;
-  partnerTeamId: DeploymentId;
-  partnerOrigin: string;
-  partnerHostKeyFingerprint: string;
-  partnerHostInstanceId: HostInstanceId;
-  partnerAuthority: JsonColumn<import("@opensteer/protocol").TeamPartnerAuthority>;
-  partnerName: string;
-  role: "dialer" | "listener";
-  state: "pending" | "active" | "revoked";
-  localApproved: boolean;
-  partnerApproved: boolean;
-  createdBy: UserId;
-  approvedBy: UserId | null;
-  createdAt: Timestamp;
-  approvedAt: NullableTimestamp;
-  lastSeenAt: NullableTimestamp;
-  lastError: "identity-mismatch" | "unsupported-partner-version" | "unreachable" | null;
-  revokedAt: NullableTimestamp;
-  revokedBy: "local" | "partner" | null;
-  sealedOffer: Generated<Buffer | null>;
-}
-
-export interface TeamShareTable {
-  policyRevision: Generated<string>;
-  agentsEnabled: Generated<boolean>;
-  historyFromShareId: string | null;
-  syncError: Generated<"update-required" | null>;
-  storedRows: Generated<number>;
-  storedBytes: Generated<string>;
-  id: string;
-  channelId: TeamChannelId | null;
-  partnerLinkId: string;
-  role: "owner" | "follower";
-  state: "offered" | "active" | "ended";
-  generation: number;
-  name: string;
-  peopleOnly: boolean;
-  offeredBy: UserId | null;
-  acceptedBy: UserId | null;
-  localApproved: boolean;
-  cursor: Generated<string>;
-  creationCursor: Generated<string>;
-  cursorPublicId: Generated<string>;
-  ready: Generated<boolean>;
-  createdAt: Timestamp;
-  endedAt: NullableTimestamp;
-}
-export interface TeamShareParticipantTable {
-  blocked: Generated<boolean>;
-  shareId: string;
-  principalId: UserId;
-  handle: TeamHandle;
-  level: "read" | "post";
-  state: "active" | "removed";
-}
-export interface TeamShareRelayTable {
-  pendingBodies: Generated<string[]>;
-  attachmentPublicIds: Generated<string[]>;
-  agentTargets: ColumnType<readonly UserId[], readonly UserId[] | undefined, readonly UserId[]>;
-  publication: Generated<boolean>;
-  admitted: Generated<boolean>;
-  agentLinkId: Generated<TeamLinkId | null>;
-  personalDeploymentId: Generated<DeploymentId | null>;
-  callerRunId: Generated<RunId | null>;
-  shareId: string;
-  authorUserId: UserId;
-  authorKind: "human" | "agent";
-  clientMessageId: string;
-  bodyMarkdown: string;
-  threadRootPublicId: string | null;
-  publicId: string | null;
-}
-
-export interface TeamShareAskTable {
-  id: TeamAgentRequestId;
-  shareId: string;
-  channelId: TeamChannelId;
-  triggerMessageId: TeamMessageId;
-  threadRootId: TeamMessageId;
-  targetPrincipalId: UserId;
-  targetAgentHandle: string;
-  localRequestId: TeamAgentRequestId | null;
-  status: JsonColumn<import("@opensteer/protocol").TeamShareAskStatus | null>;
-  outcome: TeamAgentReturnPayload["outcome"] | null;
-  replyMessageId: TeamMessageId | null;
-  createdAt: Timestamp;
-  changeSeq: string;
-}
-
 export interface PersonalTabTable {
   id: import("@opensteer/core").TabId;
   ownerId: UserId;

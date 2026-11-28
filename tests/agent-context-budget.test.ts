@@ -5,6 +5,8 @@ import {
   OpensteerAgentSkillNameSchema,
   opensteerAgentSkillNames,
 } from "../packages/agent-tools/src/skills.js";
+import { AgentGrantSchema } from "../packages/core/src/agent-grants.js";
+import { createId } from "../packages/core/src/ids.js";
 import type { RunToolCapabilities } from "../packages/agent-tools/src/registry.js";
 import { renderHarnessSkillCatalog } from "../packages/harness/src/skill-catalog.js";
 import { loadAgentSkillBundle, planAgentSkills } from "../apps/runner/src/skills/agent-skills.js";
@@ -52,6 +54,48 @@ it("matches the caller-visible MCP context byte budget", async () => {
     listed[kind] = JSON.parse(context.toolsJson) as { name: string }[];
     metrics[`opensteer.${kind}.toolsJsonBytes`] = bytes(context.toolsJson);
     metrics[`opensteer.${kind}.instructionsBytes`] = bytes(context.instructions);
+    if (kind === "connection") {
+      metrics["opensteer.connection.toolCount"] = context.tools.length;
+      expect(bytes(context.toolsJson)).toBeLessThan(25_000);
+    }
+  }
+  const resourcesByCase = {
+    chromeTabs: { kind: "chrome-tabs", sourceId: createId("browserSource") },
+    tasksOnly: null,
+    oneReadWritePlugin: {
+      kind: "plugin",
+      target: { kind: "installed", pluginId: "fixture" },
+      access: "read-write",
+    },
+    onePhone: {
+      kind: "computer-app",
+      deviceId: createId("device"),
+      approvalId: "con_9ff5456a-1a0a-4f3a-8624-ad2e56604518",
+      app: { kind: "phone-screen", definitionId: "iphone-screen" },
+    },
+    oneProfile: { kind: "browser-profile", profileId: createId("browserProfile") },
+    oneReadOnlyPlugin: {
+      kind: "plugin",
+      target: { kind: "installed", pluginId: "plg_9ff5456a-1a0a-4f3a-8624-ad2e56604518" },
+      access: "read",
+    },
+    oneMacApp: {
+      kind: "computer-app",
+      deviceId: createId("device"),
+      approvalId: "con_9ff5456a-1a0a-4f3a-8624-ad2e56604518",
+      app: { kind: "mac-app", bundleId: "com.apple.Notes", teamId: null },
+    },
+  };
+  for (const [name, resource] of Object.entries(resourcesByCase)) {
+    const grant = AgentGrantSchema.parse({
+      scope: "selected",
+      tasks: resource === null,
+      resources: resource ? [resource] : [],
+    });
+    const narrow = await measureMcpContext("connection", { grant });
+    metrics[`opensteer.connection.${name}.toolsJsonBytes`] = bytes(narrow.toolsJson);
+    metrics[`opensteer.connection.${name}.toolCount`] = narrow.tools.length;
+    metrics[`opensteer.connection.${name}.instructionsBytes`] = bytes(narrow.instructions);
   }
   for (const purpose of ["task", "background-job", "voice"] as const) {
     for (const personalContext of [true, false])

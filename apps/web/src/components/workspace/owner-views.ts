@@ -4,8 +4,11 @@ import type { HostSnapshot } from "@opensteer/client/host";
 
 /**
  * One current-state decision controls both polling and the words when it
- * stops: the computer's readiness, shared with a task's view of the same app
- * or phone, then this exact view's own state.
+ * stops. A computer that is offline or updating says so first. Then a view
+ * that is not showing says its own state: one that is opening is opening, and
+ * one whose open ended says why, never what the computer may lack. Only a
+ * view that is showing defers to the computer's readiness, shared with a
+ * task's view of the same app or phone.
  */
 export function ownerViewReadiness(
   machine: HostSnapshot["machines"][number] | null | undefined,
@@ -21,7 +24,18 @@ export function ownerViewReadiness(
   )
     return computer;
   if (!view) return "closed";
-  if (computer !== null) return computer;
   if (view.state !== "ready") return view.unavailableReason ?? view.state;
-  return null;
+  return computer;
+}
+
+/**
+ * What a view that stopped offers. A window the Mac no longer knows (its Opensteer
+ * restarted since the tab chose it) is chosen again from the app's windows: opening
+ * it again would ask for the same lost window. Everything else opens again.
+ */
+export function ownerViewRecovery(
+  readiness: string | null,
+  phone: boolean,
+): "choose-window" | "open-again" {
+  return !phone && readiness === "window-identity-lost" ? "choose-window" : "open-again";
 }

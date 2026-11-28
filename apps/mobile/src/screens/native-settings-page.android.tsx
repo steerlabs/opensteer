@@ -1,8 +1,9 @@
 import { Box, ModalBottomSheet, RNHostView, Row, Text, TextButton } from "@expo/ui/jetpack-compose";
-import { fillMaxWidth, padding } from "@expo/ui/jetpack-compose/modifiers";
+import { fillMaxWidth, padding, weight } from "@expo/ui/jetpack-compose/modifiers";
 import { SymbolView, type AndroidSymbol } from "expo-symbols";
 import { useState, type ReactNode } from "react";
 import { color } from "../theme.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 import { RowMarkIcon } from "../ui/integration-icon.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
@@ -17,6 +18,7 @@ import {
   PlaceholderRow,
   PrimaryButton,
   SectionHeader,
+  SelectRow,
   SettingsHost,
   SettingsList,
   StatusRow,
@@ -87,7 +89,8 @@ export function NativeSettingsPage(props: NativeSettingsPageProps): ReactNode {
           horizontalArrangement="spaceBetween"
           modifiers={[fillMaxWidth(), padding(16, 0, 8, 4)]}
         >
-          <Text color={color.text} style={{ typography: "titleLarge" }}>
+          {/* The title takes the row's room and wraps; Close stays on screen. */}
+          <Text color={color.text} modifiers={[weight(1)]} style={{ typography: "titleLarge" }}>
             {sheet.title}
           </Text>
           <TextButton onClick={sheet.onClose}>
@@ -100,27 +103,76 @@ export function NativeSettingsPage(props: NativeSettingsPageProps): ReactNode {
   );
 }
 
+/** The sections of a page, for a form that draws its own header above them. */
+export function NativeSettingsSections(props: {
+  readonly sections: NativeSettingsPageProps["sections"];
+}): ReactNode {
+  return props.sections.map((section) => [
+    section.title ? <SectionHeader key={`${section.key}:title`} title={section.title} /> : null,
+    ...section.rows.map((row) => <Row_ key={`${section.key}:${row.key}`} row={row} />),
+    section.footer ? (
+      <Footer
+        key={`${section.key}:footer`}
+        link={section.footer.link ?? null}
+        text={section.footer.text}
+        tone={section.footer.tone}
+      />
+    ) : null,
+  ]);
+}
+
 function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
+  // At the largest sizes a row's mark takes a line of its own (`stacked-layout.ts`).
+  const stacked = useStackedLayout();
   switch (row.kind) {
+    case "content":
+      return (
+        <RNHostView matchContents={{ vertical: true }} modifiers={[fillMaxWidth()]}>
+          {row.content}
+        </RNHostView>
+      );
     case "chips":
       return (
         <ChoiceRow
           choices={row.choices}
+          menu={row.menu}
           onChange={row.onChange}
           title={row.label}
           value={row.value}
         />
       );
-    case "text":
+    case "choice":
       return (
-        <LinkRow
+        <SelectRow
           detail={row.detail}
-          lead={row.initial === undefined ? null : <Avatar initial={row.initial} />}
+          disabled={row.disabled}
+          multiple={row.multiple}
+          onPress={row.onPress}
+          selected={row.selected}
           title={row.label}
         />
       );
+    case "text":
+      return (
+        <LinkRow
+          {...rowAddress(row.addressIn)}
+          detail={row.detail}
+          lead={row.initial === undefined ? null : <Avatar initial={row.initial} />}
+          leadAbove={stacked}
+          title={row.label}
+          titleParts={row.labelParts}
+        />
+      );
     case "status":
-      return <StatusRow detail={row.detail} label={row.label} steps={row.steps} tone={row.tone} />;
+      return (
+        <StatusRow
+          addressIn={row.addressIn}
+          detail={row.detail}
+          label={row.label}
+          steps={row.steps}
+          tone={row.tone}
+        />
+      );
     case "primary":
       return <PrimaryButton disabled={row.disabled} label={row.label} onPress={row.onPress} />;
     case "placeholder":
@@ -148,6 +200,10 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
             <RowMarkIcon mark={row.mark} size={28} />
           </RNHostView>
         </Box>
+      ) : row.lead ? (
+        <Box modifiers={[]}>
+          <RNHostView matchContents>{row.lead}</RNHostView>
+        </Box>
       ) : material !== undefined ? (
         <Box modifiers={[]}>
           <RNHostView matchContents>
@@ -158,6 +214,7 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
       if (row.actions?.length)
         return (
           <MenuRow
+            {...rowAddress(row.addressIn)}
             actions={row.actions}
             destructive={row.destructive}
             detail={row.detail}
@@ -179,8 +236,10 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
         );
       return (
         <LinkRow
+          {...rowAddress(row.addressIn)}
           destructive={row.destructive}
           detail={row.detail}
+          detailTone={row.tone}
           disabled={row.disabled}
           lead={lead}
           onPress={row.onPress}
@@ -191,8 +250,16 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
   }
 }
 
+/** A row's `addressIn` as the row's lines name them. */
+function rowAddress(addressIn: "label" | "detail" | undefined): {
+  readonly addressIn?: "title" | "detail";
+} {
+  return addressIn === undefined ? {} : { addressIn: addressIn === "label" ? "title" : "detail" };
+}
+
 const materialSymbols: Partial<Record<SFSymbolName, AndroidSymbol>> = {
   camera: "videocam",
+  checklist: "checklist",
   desktopcomputer: "desktop_mac",
   globe: "language",
   hifispeaker: "speaker",
@@ -200,6 +267,8 @@ const materialSymbols: Partial<Record<SFSymbolName, AndroidSymbol>> = {
   lightbulb: "lightbulb",
   macmini: "host",
   powerplug: "power",
+  "puzzlepiece.extension": "extension",
+  "rectangle.on.rectangle": "apps",
   "server.rack": "dns",
   smartphone: "smartphone",
   tv: "tv",

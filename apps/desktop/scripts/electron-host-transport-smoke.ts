@@ -36,6 +36,9 @@ import type { DesktopBridgeContext } from "../src/bridge/context.js";
 import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
 import { handleCancelHostRequest } from "../src/bridge/methods/host.js";
 import { DesktopHostTransport } from "../src/connections/host-transport.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("host-transport", 180000);
 
 const root = mkdtempSync(
   path.join(
@@ -80,6 +83,7 @@ async function run(): Promise<void> {
   const pending = new Set<string>();
   const counts = new Map<string, number>();
   let rpcMode: "large" | "stall" | "unreachable" | "normal" = "large";
+  let heldAttention: import("node:http").ServerResponse | null = null;
   let sessionStatus = 200;
   const handleRequest: RequestListener = (request, response) => {
     const target = request.url ?? "/";
@@ -104,6 +108,14 @@ async function run(): Promise<void> {
     const session = url.pathname === "/v1/auth/session-exchange";
     // No headers at all, so only the renderer's cancel can end it.
     if (url.pathname === "/v1/withheld") return;
+    // A summary read whose body stops halfway, until the smoke finishes it.
+    if (url.pathname === "/v1/rpc/attention.get") {
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json");
+      response.write('{"ok":true,"data":');
+      heldAttention = response;
+      return;
+    }
     const stall =
       url.pathname === "/v1/stall" ||
       url.pathname === "/v1/stalled-unauthorized" ||
@@ -176,20 +188,39 @@ async function run(): Promise<void> {
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
-      deploymentShape: { kind: "team" },
+      deploymentShape: { kind: "personal" },
     }),
     bootstrapMethods: ["password"],
     createdAt: now,
     endpoints: [{ kind: "canonical", origin, verifiedAt: now }],
-    kind: "team",
+    kind: "personal",
     lastUsedAt: null,
     name: "Transport smoke",
     reachability: "canonical",
     source: { kind: "manual" },
     updatedAt: now,
   });
+  // A second personal Home, never selected here: the switcher reads it through its own pin.
+  const otherHome = DeploymentConnectionSchema.parse({
+    authority: testDiscoveryEnvelope({
+      canonicalOrigin: origin,
+      deploymentId: createId("deployment"),
+      hostInstanceId: createId("hostInstance"),
+      hostKey: { algorithm: "Ed25519" },
+      deploymentShape: { kind: "personal" },
+    }),
+    bootstrapMethods: ["password"],
+    createdAt: now,
+    endpoints: [{ kind: "canonical", origin, verifiedAt: now }],
+    kind: "personal",
+    lastUsedAt: null,
+    name: "Transport smoke, not selected",
+    reachability: "canonical",
+    source: { kind: "manual" },
+    updatedAt: now,
+  });
   let catalog: DeploymentCatalog = DeploymentCatalogSchema.parse({
-    deployments: [connection],
+    deployments: [connection, otherHome],
     revision: 1,
     schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId: connection.authority.document.deploymentId,
@@ -542,6 +573,7 @@ async function run(): Promise<void> {
       revision: 3,
       selectedDeploymentId: connection.authority.document.deploymentId,
     };
+    await transport.selection();
     cases.push({ case: "attachment-fence", code: "deployment-changed" });
 
     const bridgeToken = randomBytes(32).toString("base64url");
@@ -576,30 +608,56 @@ async function run(): Promise<void> {
         ),
       );
       const execute = (
-        action: "rpc" | "abort-start" | "abort-finish" | "binary",
+        action: "rpc" | "abort-start" | "abort-finish" | "binary" | "attention",
+        deploymentId = connection.authority.document.deploymentId,
       ): Promise<unknown> =>
         window.webContents.executeJavaScript(
-          `window.hostTransportSmoke(${JSON.stringify(origin)}, ${JSON.stringify(connection.authority.document.deploymentId)}, ${JSON.stringify(action)})`,
+          `window.hostTransportSmoke(${JSON.stringify(origin)}, ${JSON.stringify(deploymentId)}, ${JSON.stringify(action)})`,
         );
-      for (const [mode, code, retryable] of [
-        ["large", "response-too-large", false],
-        ["unreachable", "unreachable", true],
+      for (const [mode, code, reason, retryable] of [
+        ["large", "response-too-large", "response-too-large", false],
+        ["unreachable", "unreachable", "transport-unreachable", true],
       ] as const) {
         rpcMode = mode;
         const result = z
           .strictObject({ ok: z.literal(false), error: HostApiErrorSchema })
           .parse(await execute("rpc"));
-        assert.equal(result.error.reason, `transport-${code}`);
+        assert.equal(result.error.reason, reason);
         assert.equal(result.error.retryable, retryable);
         assert.equal(result.error.message, new HostTransportError(code).message);
         cases.push({ case: `renderer-rpc-${mode}`, ...result });
       }
+      // A summary read of a Home that is not selected is pinned to that Home: the selection
+      // moving mid-body does not cut it.
+      heldAttention = null;
+      const pinnedMidBody = execute("attention", otherHome.authority.document.deploymentId);
+      await waitUntil(() => heldAttention !== null);
+      catalog = { ...catalog, revision: 4, selectedDeploymentId: null };
+      await transport.selection();
+      assert(!heldAttention!.destroyed, "A selection move cut a pinned read of another Home.");
+      heldAttention!.end('{"needsYou":2,"unread":false}}');
+      heldAttention = null;
+      const pinned = z
+        .strictObject({
+          ok: z.literal(true),
+          data: z.strictObject({ needsYou: z.literal(2), unread: z.literal(false) }),
+        })
+        .parse(await pinnedMidBody);
+      cases.push({ case: "renderer-unselected-home-unaffected-by-selection-move", ...pinned });
+      catalog = {
+        ...catalog,
+        revision: 5,
+        selectedDeploymentId: connection.authority.document.deploymentId,
+      };
+      await transport.selection();
+
+      // The selected Home's own in-flight request is cut by the selection moving, with deployment-changed.
       rpcMode = "stall";
       const moved = execute("rpc");
       await waitUntil(() =>
         [...pending].some((target) => target.startsWith("/v1/rpc/auth.config")),
       );
-      catalog = { ...catalog, revision: 4, selectedDeploymentId: null };
+      catalog = { ...catalog, revision: 6, selectedDeploymentId: null };
       await transport.selection();
       const movedResult = z
         .object({
@@ -612,12 +670,13 @@ async function run(): Promise<void> {
       cases.push({ case: "renderer-deployment-changed", ...movedResult.rejected });
       catalog = {
         ...catalog,
-        revision: 5,
+        revision: 7,
         selectedDeploymentId: connection.authority.document.deploymentId,
       };
+      await transport.selection();
       const binary = z
         .strictObject({
-          code: z.literal("transport-response-too-large"),
+          code: z.literal("response-too-large"),
           retryable: z.literal(false),
         })
         .parse(await execute("binary"));

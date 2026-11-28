@@ -311,6 +311,33 @@ export const material = {
 export const controlFontScaleLimit = 1.6;
 
 /**
+ * How far a display heading may grow. iOS grows its own large titles far less than body text
+ * at the largest sizes; uncapped, a 28-point heading at the largest size runs past the
+ * composer at the foot of the screen. Body text carries no cap at all.
+ */
+export const displayFontScaleLimit = 2;
+
+/**
+ * The same limit for a SwiftUI title (`dynamicTypeSize({ max })`): the Dynamic Type size whose
+ * text is about twice the default, as `displayFontScaleLimit` is.
+ */
+export const displayDynamicTypeLimit = "accessibility2";
+
+/**
+ * How far a one-word status may grow beside a row's mark: as large as the narrowest phone's
+ * text column (320 points) still holds whole, so it moves to its own line rather than breaking
+ * inside the word. Body text carries no cap at all.
+ */
+export const statusFontScaleLimit = 3;
+
+/**
+ * The text size from which a row stacks: its marks and controls on a line of their own, its
+ * words the full width under them. Beside a mark and two controls, a column at an accessibility
+ * text size is narrower than one long word, which would then break inside itself.
+ */
+export const stackedFontScale = 2;
+
+/**
  * The same limit for the navigation bar, which is tighter still.
  *
  * The system's own bar does not grow its title at all, and its left and right

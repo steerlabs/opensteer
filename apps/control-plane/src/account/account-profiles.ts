@@ -18,6 +18,7 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import { requireCurrentAuthority, type HostAuthority } from "../database/store.js";
 import { ControlPlaneError } from "../server/errors.js";
+import { personalReachability } from "./personal-host-proof.js";
 
 type Database = Kysely<ControlPlaneDatabaseSchema> | Transaction<ControlPlaneDatabaseSchema>;
 
@@ -34,7 +35,7 @@ export type AccountJwtSigner = (payload: Record<string, unknown>) => Promise<str
 /**
  * The one writer of a person's shared name. Every change bumps `name_revision` in the same
  * statement that checks the caller saw the current one, and every answer carries a signed receipt
- * a client relays to the copies Account cannot reach (team servers).
+ * a client can relay to a copy Account cannot reach.
  */
 export class AccountProfiles {
   readonly #database: Kysely<ControlPlaneDatabaseSchema>;
@@ -141,13 +142,13 @@ export class AccountProfiles {
     await requireCurrentAuthority(transaction, authority);
     const deployment = await transaction
       .selectFrom("deployments")
-      .select(["accountLink", "lifecycle", "ownerAccountId", "reachability"])
+      .select(["accountLink", "authorityEnvelope", "lifecycle", "ownerAccountId", "reachability"])
       .where("id", "=", authority.deploymentId)
       .executeTakeFirstOrThrow();
     const link = AccountDeploymentAccountLinkSchema.safeParse(deployment.accountLink);
-    // Only a personal Host linked to its owner speaks for that person; a team never does.
+    // Only a personal Host linked to its owner speaks for that person.
     if (
-      deployment.reachability !== "routed" ||
+      deployment.reachability !== personalReachability(deployment.authorityEnvelope) ||
       deployment.lifecycle !== "active" ||
       !link.success ||
       link.data.issuer !== this.#issuer ||

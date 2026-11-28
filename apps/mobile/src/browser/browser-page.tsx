@@ -3,14 +3,18 @@ import { useTabSuggestions } from "./tab-suggestions.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
 import {
+  useBrowserSleep,
   useBrowserViewerSurface,
   usePlaceActivity,
   useTab,
   useTabStrip,
 } from "@opensteer/client/react";
 import {
+  browserRestartFailure,
+  browserSleepWords,
   passkeyNotice,
   passwordSaveResultMessage,
+  restartPooledBrowser,
   browserSiteForTab,
   browserTabTitle,
   parseNavigationInput,
@@ -20,7 +24,7 @@ import {
   type HostClient,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, type BrowserPageContentPart } from "@opensteer/core";
-import { browserPromptTextMaxLength, browserViewportFits } from "@opensteer/protocol";
+import { browserViewportFits } from "@opensteer/protocol";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import {
@@ -34,13 +38,13 @@ import {
   type Ref,
 } from "react";
 import {
+  AccessibilityInfo,
   Alert,
   I18nManager,
   Linking,
   Pressable,
   Share,
   StyleSheet,
-  TextInput,
   useWindowDimensions,
   View,
   type LayoutChangeEvent,
@@ -72,7 +76,7 @@ import {
 } from "../../modules/remote-text-input/src/editing-proxy.js";
 import { LegacyInput } from "../../modules/remote-text-input/src/legacy-input.js";
 import type { EditingTargetAbilities } from "@opensteer/client/editing";
-import { color, material, radius, space, touchTarget, type as textType } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
 import { appear, duration, exit, move } from "../ui/motion.js";
@@ -86,6 +90,7 @@ import { PasswordSaveBanner } from "./password-save-banner.js";
 import { createPageAutofill } from "./page-autofill.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
+import { FitToScreenChip } from "./fit-chip.js";
 import { FloatingPlaceStatus, PlaceVoiceDock, usePlaceStatus } from "./place-foot.js";
 import { barFloats } from "./floating-bar.js";
 import { PageChromeProvider, PageEdge, useFloatingBar, type PageChrome } from "./floating-page.js";
@@ -95,6 +100,8 @@ import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.j
 import { systemBrowserLabel } from "./system-browser.js";
 import { failureWords, refusal } from "../ui/client-feedback.js";
 import { tabActionSpecs } from "../tabs/tab-actions.js";
+import type { SentencePart } from "../ui/sentence-parts.js";
+import { PageDialog } from "./page-dialog.js";
 
 /** The shape a page takes before its first picture says otherwise. */
 const defaultPageAspect = 16 / 9;
@@ -166,7 +173,39 @@ export function BrowserPage(props: {
   const promptText = prompt?.id === dialog?.id ? (prompt?.text ?? "") : "";
   // This tab's own row, and the exact page a viewer holds: nothing of the other tabs.
   const listed = useTab(hostClient, tabId);
+  // A Cloud Computer's browser sleeps and wakes; every other browser is `not-pooled` and shows
+  // nothing of it.
   const viewer = useBrowserViewerSurface(hostClient, session.id, tabId);
+  const sleep = useBrowserSleep(hostClient, tabId, viewer?.reopenedAt);
+  const pooledComputer = sleep.browser.kind === "not-pooled" ? null : sleep.browser.computerId;
+  const [restarting, setRestarting] = useState(false);
+  const restartBrowser = () => {
+    if (pooledComputer === null) return;
+    setRestarting(true);
+    void restartPooledBrowser(hostClient, pooledComputer)
+      .catch((error: unknown) =>
+        Alert.alert(browserSleepWords.restartRefusedTitle, browserRestartFailure(error)),
+      )
+      .finally(() => setRestarting(false));
+  };
+  const askRestart = () =>
+    Alert.alert(browserSleepWords.restartTitle, browserSleepWords.restartBody, [
+      { style: "cancel", text: browserSleepWords.restartCancel },
+      { onPress: restartBrowser, style: "destructive", text: browserSleepWords.restartConfirm },
+    ]);
+  // The note a page that came back by reloading says once: until it is dismissed, the page is
+  // touched, or the person leaves it.
+  const noteShown = props.presence.shown && sleep.note !== null;
+  const shownNote = useRef<{ readonly key: string; readonly seen: () => void } | null>(null);
+  useEffect(() => {
+    const key = noteShown ? sleep.noteKey : null;
+    if (shownNote.current && shownNote.current.key !== key) shownNote.current.seen();
+    shownNote.current = key ? { key, seen: sleep.seen } : null;
+  }, [noteShown, sleep.noteKey, sleep.seen]);
+  const noteWords = noteShown && sleep.note ? `${sleep.note.title}. ${sleep.note.detail}` : null;
+  useEffect(() => {
+    if (noteWords !== null) AccessibilityInfo.announceForAccessibility(noteWords);
+  }, [noteWords]);
   // The row as the page chrome reads it: the viewer's page adds what the page shows now.
   const row = useMemo(
     () =>
@@ -234,6 +273,18 @@ export function BrowserPage(props: {
   );
   const [mayType, setMayType] = useState(false);
   const [typing, setTyping] = useState(false);
+  const tapContextId = useRef<string | null>(null);
+  const tapReopenUntil = useRef(0);
+  const tapReopenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearTapReopen = useCallback(() => {
+    tapContextId.current = null;
+    tapReopenUntil.current = 0;
+    if (tapReopenTimer.current !== null) {
+      clearTimeout(tapReopenTimer.current);
+      tapReopenTimer.current = null;
+    }
+  }, []);
+  useEffect(() => clearTapReopen, [clearTapReopen]);
   const [pageFocused, setPageFocused] = useState(true);
   const [dragSelect, setDragSelect] = useState(false);
   const [inputEpoch, setInputEpoch] = useState(0);
@@ -288,7 +339,18 @@ export function BrowserPage(props: {
   useEffect(() => {
     if (!editable) {
       setTyping(false);
-      setMayType(false);
+      const remaining = tapReopenUntil.current - Date.now();
+      if (remaining > 0) {
+        setMayType(true);
+        if (tapReopenTimer.current !== null) clearTimeout(tapReopenTimer.current);
+        tapReopenTimer.current = setTimeout(() => {
+          tapReopenTimer.current = null;
+          tapReopenUntil.current = 0;
+          setMayType(false);
+        }, remaining);
+      } else {
+        setMayType(false);
+      }
     }
   }, [editable]);
   useEffect(() => {
@@ -308,7 +370,10 @@ export function BrowserPage(props: {
     const timer = setTimeout(() => setFillNotice(null), fillNoticeMs);
     return () => clearTimeout(timer);
   }, [fillNotice]);
-  const [saveNotice, setSaveNotice] = useState<{ title: string; detail: string } | null>(null);
+  const [saveNotice, setSaveNotice] = useState<{
+    title: string;
+    detail: string | readonly SentencePart[];
+  } | null>(null);
   useEffect(() => {
     if (saveNotice === null) return;
     const timer = setTimeout(() => setSaveNotice(null), fillNoticeMs);
@@ -330,7 +395,11 @@ export function BrowserPage(props: {
         said.ok && offer.kind === "save"
           ? {
               title: said.message,
-              detail: `${offer.username} · ${pageSite(offer.origin) ?? offer.origin}`,
+              detail: [
+                { address: offer.username },
+                " · ",
+                { address: pageSite(offer.origin) ?? offer.origin },
+              ],
             }
           : { title: "Your login wasn’t saved", detail: said.message },
       );
@@ -375,12 +444,19 @@ export function BrowserPage(props: {
   // tap on a field does in Safari. Only a page that reports its fields can say
   // so; on an older one the tap offers the keyboard instead.
   const fieldFocused = editingState.negotiated && editingState.context?.field != null;
+  const fieldContextId = editingState.context?.contextId ?? null;
   useEffect(() => {
     if (mayType && fieldFocused && ready) {
-      setMayType(false);
-      setTyping(true);
+      if (!typing) {
+        clearTapReopen();
+        setMayType(false);
+        setTyping(true);
+      } else if (fieldContextId !== tapContextId.current) {
+        clearTapReopen();
+        setMayType(false);
+      }
     }
-  }, [fieldFocused, mayType, ready]);
+  }, [clearTapReopen, fieldContextId, fieldFocused, mayType, ready, typing]);
 
   const viewed = tab === undefined ? null : viewedPage(session, { ...tab, navigationFailed });
   const viewedKey =
@@ -580,11 +656,17 @@ export function BrowserPage(props: {
         (action === "cut" && !pageMenu.editable)
       )
         return;
-      editing.send({ kind: action });
-    } else if (action === "select-all") editing.send({ kind: "command", command: "selectAll" });
-    else if (action === "paste") {
+      const contextId = editingState.menuContext;
+      if (contextId) editing.send({ kind: action, contextId });
+    } else if (action === "select-all") {
+      // CZ3: made for the field the menu was opened in, and refused in any other.
+      const contextId = editingState.menuContext;
+      if (contextId) editing.send({ kind: "command", command: "selectAll", contextId });
+    } else if (action === "paste") {
       if (!pageMenu.editable) return;
-      const context = editingState.context?.contextId;
+      // CZ5: made for the field the menu was opened in, and refused in any other.
+      const context = editingState.menuContext;
+      if (!context) return;
       void Clipboard.getStringAsync()
         .then((text) => {
           if (
@@ -599,7 +681,12 @@ export function BrowserPage(props: {
             setProblem("Clipboard too large.");
             return;
           }
-          if (bytes.length) editing.send({ kind: "paste", items: [{ type: "text/plain", bytes }] });
+          if (bytes.length)
+            editing.send({
+              kind: "paste",
+              items: [{ type: "text/plain", bytes }],
+              contextId: context,
+            });
         })
         .catch(() => setProblem("Clipboard unavailable."));
     } else if (action === "copy-link" && pageMenu.linkUrl) {
@@ -746,6 +833,19 @@ export function BrowserPage(props: {
           },
         ],
     ...(pair?.menu ?? []),
+    ...(pooledComputer === null
+      ? []
+      : [
+          [
+            {
+              // No mark: Reload's arrow would say it does the same thing.
+              disabled: restarting || sleep.browser.kind === "restarting",
+              id: "restart-browser",
+              label: browserSleepWords.restart,
+              onPress: askRestart,
+            } satisfies NativeMenuOption,
+          ],
+        ]),
     [
       {
         destructive: true,
@@ -758,7 +858,7 @@ export function BrowserPage(props: {
     ],
   ];
 
-  const address = (
+  const addressCapsule = (
     <AddressCapsule
       acting={acting}
       arriving={arrival !== 0}
@@ -796,7 +896,7 @@ export function BrowserPage(props: {
   const bar = (
     <Toolbar edge={top ? "top" : "bottom"} testID="page-toolbar">
       <ToolbarLeave />
-      {address}
+      {addressCapsule}
       {tabsButton}
       {pair === null ? <ToolbarAsk /> : null}
       {dragButtonFits ? (
@@ -973,13 +1073,17 @@ export function BrowserPage(props: {
                   onPageSize={onPageSize}
                   onPresentedGeometry={setDrawnGeometry}
                   onPointerDown={() => {
+                    if (sleep.note) sleep.seen();
                     setPageFocused(true);
                     menuInteraction.current++;
                     editing.dismissMenu();
                     proxy.current?.interrupt();
                   }}
                   zoom={zoom.scale}
-                  onScroll={() => setMayType(false)}
+                  onScroll={() => {
+                    clearTapReopen();
+                    setMayType(false);
+                  }}
                   onTap={() => {
                     setAddressOpen(false);
                     setAddressDraft(null);
@@ -987,6 +1091,8 @@ export function BrowserPage(props: {
                     // A page that reports its fields keeps the keyboard up from one
                     // field to the next and puts it away when nothing has focus.
                     if (!editing.get().negotiated) setTyping(false);
+                    tapContextId.current = editing.get().context?.contextId ?? null;
+                    if (typing) tapReopenUntil.current = Date.now() + 500;
                     setMayType(true);
                   }}
                   session={session}
@@ -1011,27 +1117,7 @@ export function BrowserPage(props: {
                     : { bottom: status.height, right: 0, top: 0, width: picture.left },
                 ]}
               >
-                <Pressable
-                  accessibilityHint="Resizes the page to fill your screen"
-                  accessibilityLabel="Fit to screen"
-                  accessibilityRole="button"
-                  onPress={fit}
-                  style={({ pressed }) => pressed && styles.pressed}
-                >
-                  <GlassSurface
-                    interactive
-                    shape="capsule"
-                    style={offer.words ? styles.fitChip : styles.fitGlyph}
-                  >
-                    <Symbol
-                      name="arrow.up.left.and.arrow.down.right"
-                      size={14}
-                      tint={color.ember}
-                      weight="semibold"
-                    />
-                    {offer.words ? <AppText role="secondaryMedium">Fit to screen</AppText> : null}
-                  </GlassSurface>
-                </Pressable>
+                <FitToScreenChip onPress={fit} words={offer.words} />
               </Animated.View>
             ) : null}
             {addressOpen ? (
@@ -1049,7 +1135,8 @@ export function BrowserPage(props: {
             !feed.inputError &&
             !passkey &&
             !fillNotice &&
-            !saveNotice ? null : (
+            !saveNotice &&
+            !sleep.note ? null : (
               <View pointerEvents="box-none" style={styles.top}>
                 {passkey ? (
                   <View style={styles.card}>
@@ -1072,6 +1159,15 @@ export function BrowserPage(props: {
                 ) : saveNotice !== null ? (
                   <Animated.View entering={appear} exiting={exit}>
                     <Notice detail={saveNotice.detail} title={saveNotice.title} tone="neutral" />
+                  </Animated.View>
+                ) : sleep.note !== null ? (
+                  <Animated.View entering={appear} exiting={exit}>
+                    <Notice
+                      action={{ label: browserSleepWords.dismiss, onPress: sleep.seen }}
+                      detail={sleep.note.detail}
+                      title={sleep.note.title}
+                      tone="neutral"
+                    />
                   </Animated.View>
                 ) : null}
               </View>
@@ -1153,11 +1249,13 @@ export function BrowserPage(props: {
           focused={pageFocused}
           softKeyboard={keyboardOpen}
           onBlur={() => {
+            clearTapReopen();
             setPageFocused(false);
             setTyping(false);
             setMayType(false);
           }}
           onDone={() => {
+            clearTapReopen();
             setTyping(false);
             setMayType(false);
           }}
@@ -1380,81 +1478,6 @@ export function slideFor(caret: EditingCaret | null, pageHeight: number, visible
   return Math.max(lowest, Math.min(0, visible * 0.4 - top));
 }
 
-/**
- * A page's own alert, confirm or prompt, drawn as the system draws an alert
- * and naming the site that asks, so it is never taken for Opensteer's own. It
- * is the app's view rather than the system alert because the page can answer
- * or withdraw it from another screen, and only a view of the app's own goes
- * away when it does.
- */
-function PageDialog(props: {
-  readonly channelReady: boolean;
-  readonly dialog: NonNullable<BrowserSessionSummary["dialog"]>;
-  readonly onAnswer: (accept: boolean) => void;
-  readonly onPrompt: (text: string) => void;
-  readonly promptText: string;
-  readonly site: string | null;
-}): ReactNode {
-  const { dialog } = props;
-  return (
-    <Animated.View entering={appear} exiting={exit} style={styles.dialogScrim}>
-      <View accessibilityViewIsModal style={styles.dialog}>
-        <View style={styles.dialogFrom}>
-          <Symbol name="globe" size={12} tint={color.muted} />
-          <AppText numberOfLines={1} role="caption" tone="muted">
-            {props.site === null ? "This page says" : `${props.site} says`}
-          </AppText>
-        </View>
-        <AppText role="secondary" style={styles.dialogMessage}>
-          {dialog.message}
-        </AppText>
-        {dialog.type === "prompt" ? (
-          <TextInput
-            accessibilityLabel="Your answer"
-            autoFocus
-            editable={props.channelReady}
-            key={dialog.id}
-            keyboardAppearance="dark"
-            maxLength={browserPromptTextMaxLength}
-            onChangeText={props.onPrompt}
-            selectionColor={color.ember}
-            style={styles.input}
-            value={props.promptText}
-          />
-        ) : null}
-        <View style={styles.dialogActions}>
-          {dialog.type === "alert" ? null : (
-            <Pressable
-              accessibilityHint="Dismisses this page’s dialog"
-              accessibilityLabel="Cancel"
-              accessibilityRole="button"
-              onPress={() => props.onAnswer(false)}
-              style={({ pressed }) => [styles.dialogButton, pressed && styles.pressed]}
-            >
-              <AppText role="secondaryMedium">Cancel</AppText>
-            </Pressable>
-          )}
-          <Pressable
-            accessibilityHint="Accepts this page’s dialog"
-            accessibilityLabel="OK"
-            accessibilityRole="button"
-            onPress={() => props.onAnswer(true)}
-            style={({ pressed }) => [
-              styles.dialogButton,
-              styles.dialogPrimary,
-              pressed && styles.pressed,
-            ]}
-          >
-            <AppText role="secondaryMedium" style={styles.dialogPrimaryText}>
-              OK
-            </AppText>
-          </Pressable>
-        </View>
-      </View>
-    </Animated.View>
-  );
-}
-
 function noop(): void {}
 
 /**
@@ -1537,70 +1560,14 @@ const styles = StyleSheet.create({
     gap: space[8],
     padding: space[12] - (1 - StyleSheet.hairlineWidth),
   },
-  dialog: {
-    ...material.float,
-    borderRadius: radius.xxl + space[4],
-    gap: space[10],
-    maxWidth: 320,
-    paddingBottom: space[14],
-    paddingHorizontal: space[18],
-    paddingTop: space[18],
-    width: "100%",
-  },
-  dialogActions: { flexDirection: "row", gap: space[8], marginTop: space[6] },
-  dialogButton: {
-    alignItems: "center",
-    backgroundColor: color.surfaceRaised,
-    borderRadius: radius.full,
-    flex: 1,
-    justifyContent: "center",
-    minHeight: touchTarget,
-  },
-  dialogFrom: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: space[6],
-    justifyContent: "center",
-  },
-  dialogMessage: { textAlign: "center" },
-  dialogPrimary: { backgroundColor: color.ember },
-  dialogPrimaryText: { color: color.inkOnEmber },
-  dialogScrim: {
-    ...StyleSheet.absoluteFill,
-    alignItems: "center",
-    backgroundColor: "rgba(0, 0, 0, 0.45)",
-    justifyContent: "center",
-    padding: space[24],
-  },
   dim: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(0, 0, 0, 0.5)" },
   fitBand: { alignItems: "center", justifyContent: "center", position: "absolute" },
-  fitChip: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: space[8],
-    height: 40,
-    paddingHorizontal: space[16],
-  },
-  fitGlyph: {
-    alignItems: "center",
-    height: touchTarget,
-    justifyContent: "center",
-    width: touchTarget,
-  },
   grow: { flex: 1, minWidth: 0 },
   iconButton: {
     alignItems: "center",
     height: touchTarget,
     justifyContent: "center",
     width: touchTarget,
-  },
-  input: {
-    ...material.control,
-    ...textType.secondary,
-    borderRadius: radius.md,
-    color: color.text,
-    minHeight: touchTarget,
-    paddingHorizontal: space[12],
   },
   // A round control in the corner, clear of the page's own controls along its edges.
   keyboard: { bottom: space[12], position: "absolute", right: space[12], zIndex: 6 },

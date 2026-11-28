@@ -15,7 +15,7 @@ import type {
 } from "@opensteer/protocol";
 import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
 import type { BrowserService, BrowserSignInTarget } from "./browser-service.js";
-import type { PasswordSignInService } from "./password-sign-in-service.js";
+import type { PasswordSignInService, SessionSignInScope } from "./password-sign-in-service.js";
 import {
   PasswordsOffers,
   type PasswordsOffer,
@@ -31,6 +31,8 @@ interface AgentCall {
   readonly callId: string;
   readonly reason: string;
   readonly site: string;
+  /** Set by this service from the Run's lineage; callers never supply it. */
+  readonly scope?: string;
 }
 
 export type SavedLoginInput = AgentCall & {
@@ -45,7 +47,8 @@ export type CardUseInput = AgentCall & { readonly tabId: BrowserSurfaceId };
 type Passwords = Pick<
   PasswordSignInService,
   "join" | "probe" | "probeCard" | "replayResult" | "request" | "requestCard"
->;
+> &
+  Partial<Pick<PasswordSignInService, "requestForSession" | "replaySessionResult">>;
 
 /**
  * Agents' way into Opensteer Passwords: saved logins and cards, each released
@@ -59,6 +62,7 @@ export class SavedLoginService {
   readonly #refusesSite: (site: string) => Promise<boolean>;
   readonly #onLoginSaved: (offer: PasswordsOffer) => Promise<void>;
   readonly #stoppedByPerson: (threadId: ThreadId) => Promise<boolean>;
+  readonly #lineageScope: (ownerId: UserId, runId: RunId) => Promise<string | undefined>;
   readonly #now: () => number;
   readonly #offers: PasswordsOffers;
   readonly #calls = new Map<string, number[]>();
@@ -75,6 +79,11 @@ export class SavedLoginService {
     readonly onLoginSaved: (offer: PasswordsOffer) => Promise<void>;
     /** Whether the person stopped the Thread's newest Run themselves. */
     readonly stoppedByPerson: (threadId: ThreadId) => Promise<boolean>;
+    /**
+     * The scope a fill for this Run must not leave: for a connected agent's lineage, its
+     * connection, grant revision and execution; undefined for the person's own work.
+     */
+    readonly lineageScope?: (ownerId: UserId, runId: RunId) => Promise<string | undefined>;
     readonly onError?: (error: unknown) => void;
     readonly now?: () => number;
   }) {
@@ -84,6 +93,7 @@ export class SavedLoginService {
     this.#refusesSite = signInSiteRefusal(options);
     this.#onLoginSaved = options.onLoginSaved;
     this.#stoppedByPerson = options.stoppedByPerson;
+    this.#lineageScope = options.lineageScope ?? (async () => undefined);
     this.#now = options.now ?? Date.now;
     this.#offers = new PasswordsOffers({
       now: this.#now,
@@ -93,7 +103,57 @@ export class SavedLoginService {
     });
   }
 
-  async useSavedLogin(input: SavedLoginInput): Promise<SavedLoginResult> {
+  async useSessionCredential(input: {
+    readonly credential: "login" | "card";
+    readonly scope: SessionSignInScope;
+    readonly target: BrowserSignInTarget;
+    readonly reason: string;
+    readonly site: string;
+    readonly ownerId: UserId;
+    readonly taskId: ThreadId;
+  }) {
+    const site = parseSignInSite(input.site);
+    const target = input.target;
+    if (await this.#refusesSite(site)) return unavailable(site, "not-allowed");
+    if (!target.main) return unavailable(site, "main-browser-required");
+    if (input.credential === "card" ? !target.cardFill || !target.computer : !target.signIn)
+      return unavailable(site, "runtime-outdated");
+    if (!this.#passwords.requestForSession) return unavailable(site, "unsupported");
+    if (!(await input.scope.authorized(input.scope.tabGeneration)))
+      return unavailable(site, "stopped");
+    if (input.credential === "card") {
+      const available = await this.#passwords.probeCard(input.ownerId);
+      if (available !== "has-card")
+        return { status: "unavailable" as const, site, reason: available };
+    } else {
+      const available = await this.#passwords.probe(input.ownerId, site);
+      if (available !== "has-login") return unavailable(site, availabilityReason(available));
+    }
+    return this.#passwords.requestForSession({
+      ...(input.credential === "card"
+        ? { credential: "card" as const, cardRunnerId: target.computer!.runnerId }
+        : {}),
+      site,
+      ownerId: input.ownerId,
+      reason: input.reason,
+      deploymentId: target.deploymentId,
+      threadId: input.taskId,
+      callId: input.scope.operationId,
+      scope: input.scope.operationId,
+      direct: input.scope,
+      sessionId: target.sessionId,
+      surfaceId: target.tabId,
+      admitStart: () => this.#admit(input.scope.sessionId, target.sessionId, site),
+    });
+  }
+
+  replaySessionCredential(operationId: string) {
+    return this.#passwords.replaySessionResult?.(operationId);
+  }
+
+  async useSavedLogin(unscoped: SavedLoginInput): Promise<SavedLoginResult> {
+    const scope = await this.#lineageScope(unscoped.ownerId, unscoped.runId);
+    const input = { ...unscoped, ...(scope ? { scope } : {}) };
     const site = parseSignInSite(input.site);
     if (await this.#refusesSite(site)) return unavailable(site, "not-allowed");
     const target =
@@ -128,7 +188,9 @@ export class SavedLoginService {
     return result;
   }
 
-  async useCard(input: CardUseInput): Promise<UseCardResult> {
+  async useCard(unscoped: CardUseInput): Promise<UseCardResult> {
+    const scope = await this.#lineageScope(unscoped.ownerId, unscoped.runId);
+    const input = { ...unscoped, ...(scope ? { scope } : {}) };
     const site = parseSignInSite(input.site);
     const unavailable = (reason: Extract<UseCardResult, { status: "unavailable" }>["reason"]) => ({
       status: "unavailable" as const,
@@ -243,7 +305,7 @@ export class SavedLoginService {
           code: "conflict",
           message: "This call already asked for a different site.",
         });
-      return this.#passwords.replayResult(prior, input.deploymentId);
+      return this.#passwords.replayResult(prior, input.deploymentId, input.scope);
     }
     if (sessionId !== null) {
       if (!target?.live) return unavailable(site, "session-closed");
@@ -278,7 +340,7 @@ export class SavedLoginService {
   }
 
   /** In-memory, so a restart forgets it; the admission ledger still bounds each Run. */
-  #admit(runId: RunId, target: string, site: string): boolean {
+  #admit(runId: string, target: string, site: string): boolean {
     return admitSignIn(this.#calls, this.#now(), { runId, target, site });
   }
 

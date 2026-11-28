@@ -53,7 +53,10 @@ export interface PhoneViewDiagnostic {
 interface Options {
   readonly selfDeviceId?: (runnerId: import("@opensteer/core").RunnerId) => Promise<DeviceId>;
   readonly onPhoneView?: (status: PhoneViewDiagnostic) => void;
-  readonly hub: Pick<ComputerAppHub, "ownerViewSupported" | "withRunnerAdmission" | "attached"> &
+  readonly hub: Pick<
+    ComputerAppHub,
+    "ownerViewReported" | "ownerViewSupported" | "withRunnerAdmission" | "attached"
+  > &
     Partial<Pick<ComputerAppHub, "withDeviceAdmission" | "captureRoute" | "routeCurrent">> & {
       sendComputerView(input: {
         runnerId: ComputerTargetId;
@@ -379,6 +382,20 @@ export class ComputerViewService {
       try {
         const result = await this.#send(view, "open");
         await this.#authorize(view, owner);
+        if (result.kind === "error" && result.code === "no-answer") {
+          // The open may yet land on the computer: ask it to close, and say what
+          // happened, so the page offers opening it again rather than a reason
+          // the computer never gave.
+          view.record = {
+            ...view.record,
+            state: "unavailable",
+            captureTargetId: null,
+            unavailableReason: "no-answer",
+          };
+          this.#publish(view);
+          void this.#send(view, "close").catch(() => undefined);
+          return this.#public(view);
+        }
         if (result.kind === "error")
           throw this.#refusal(
             result.code === "unsupported"
@@ -576,10 +593,13 @@ export class ComputerViewService {
     );
   }
 
-  forgetRunner(runnerId: import("@opensteer/core").RunnerId): void {
+  forgetRunner(
+    runnerId: import("@opensteer/core").RunnerId,
+    displayReason?: "device-restarting",
+  ): void {
     for (const held of this.#views.values())
       if (held.route?.runnerId === runnerId || (!held.route && held.deviceId === runnerId))
-        this.#end(held, "disconnected");
+        this.#end(held, "disconnected", displayReason);
   }
   forgetDriver(binding: DeviceDriverIdentity): void {
     for (const held of this.#views.values())
@@ -637,10 +657,14 @@ export class ComputerViewService {
     if (!this.#options.hub.attached(machine))
       throw this.#refusal("computer-view-unavailable", "This computer is offline.");
     if (!this.#options.hub.ownerViewSupported(machine))
-      throw this.#refusal(
-        "computer-view-unsupported",
-        "Update this computer to view apps and devices.",
-      );
+      // A computer that just connected has not said yet what it supports: it is still
+      // connecting, which the page waits out, never unable to show views.
+      throw this.#options.hub.ownerViewReported(machine)
+        ? this.#refusal(
+            "computer-view-unsupported",
+            "Update this computer to view apps and devices.",
+          )
+        : this.#refusal("computer-view-unavailable", "This computer is still connecting.");
     return app;
   }
   async #authorize(view: HeldView, owner: UserId): Promise<void> {
@@ -692,6 +716,7 @@ export class ComputerViewService {
   #end(
     view: HeldView,
     reason: "closed" | "expired" | "revoked" | "disconnected" | "host-restarted",
+    displayReason?: "device-restarting",
   ): void {
     if (view.record.state === "closed" || view.record.state === "expired") return;
     if (view.timer) clearTimeout(view.timer);
@@ -715,6 +740,7 @@ export class ComputerViewService {
       generation: view.record.generation,
       machineId: DeviceIdSchema.parse(view.deviceId),
       reason,
+      ...(displayReason === undefined ? {} : { displayReason }),
     });
     if (reason !== "disconnected") void this.#send(view, "close").catch(() => undefined);
     // Closed generations are needed only for bounded command replay and stale-generation checks.

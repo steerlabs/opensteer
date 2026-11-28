@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BrowserAttachTicketClaims } from "@opensteer/protocol";
@@ -276,6 +276,8 @@ describe("Ed25519AttachTicketVerifier", () => {
       replayLedgerPath,
       resolvePublicKey: () => keys.publicKey,
     });
+    // The runtime has used its state since the ledger was written: its session files are there.
+    await mkdir(path.join(path.dirname(replayLedgerPath), "session-files"));
     await rm(replayLedgerPath);
 
     await expect(
@@ -288,6 +290,43 @@ describe("Ed25519AttachTicketVerifier", () => {
       message: "The browser attach ticket replay ledger is unavailable.",
     });
   });
+
+  it.each([
+    ["empty", [] as string[]],
+    ["holding only its own unfinished write", [".attach-ticket-replay-0000.tmp"]],
+    ["holding only a profile's staging", ["profile-abc123"]],
+  ])(
+    "starts an empty ledger in a runtime state directory %s: a ledger never written is not a lost one",
+    async (_case, entries) => {
+      const keys = generateKeyPairSync("ed25519");
+      const replayLedgerPath = await temporaryLedgerPath();
+      const directory = path.dirname(replayLedgerPath);
+      // A stop or a full disk between making the directory and the ledger's first write.
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      for (const entry of entries)
+        if (entry.startsWith("profile-")) await mkdir(path.join(directory, entry), { mode: 0o700 });
+        else await writeFile(path.join(directory, entry), "partial", { mode: 0o600 });
+      const verifier = await Ed25519AttachTicketVerifier.create({
+        replayLedgerPath,
+        resolvePublicKey: () => keys.publicKey,
+      });
+      const token = ticket(validClaims(), keys.privateKey);
+      await verifier.verify(token, expectation());
+      // And it is the durable ledger from then on: the nonce stays used.
+      await expect(
+        (
+          await Ed25519AttachTicketVerifier.create({
+            initializationNow: expectation().now,
+            replayLedgerPath,
+            resolvePublicKey: () => keys.publicKey,
+          })
+        ).verify(token, expectation()),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "The browser attach ticket has already been used.",
+      });
+    },
+  );
 
   it("rejects a claim that would exceed the ledger byte bound without corrupting state", async () => {
     const keys = generateKeyPairSync("ed25519");
@@ -352,6 +391,69 @@ describe("Ed25519AttachTicketVerifier", () => {
     await expect(verifier.verify(forged, expectation())).rejects.toMatchObject({
       code: "forbidden",
     });
+  });
+
+  it("drains in-flight ledger writes on close() and rejects subsequent claims without touching disk", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const root = await temporaryDirectory();
+    const privateDir = path.join(root, "private");
+    const replayLedgerPath = path.join(privateDir, "attach-ticket-replay-v1.json");
+    const pausedKey = Promise.withResolvers<void>();
+    const releaseKey = Promise.withResolvers<void>();
+    let pauseNext = false;
+    const verifier = await Ed25519AttachTicketVerifier.create({
+      initializationNow: new Date("2030-01-01T00:01:00.000Z"),
+      replayLedgerPath,
+      resolvePublicKey: async () => {
+        if (pauseNext) {
+          pauseNext = false;
+          pausedKey.resolve();
+          await releaseKey.promise;
+        }
+        return keys.publicKey;
+      },
+    });
+
+    const concurrent = Array.from({ length: 10 }, (_, index) =>
+      verifier
+        .verify(
+          ticket(
+            validClaims({ nonce: `nonce-close-${String(index).padStart(16, "0")}` }),
+            keys.privateKey,
+          ),
+          expectation(),
+        )
+        .catch((error: unknown) => error),
+    );
+    pauseNext = true;
+    const pausedVerify = verifier
+      .verify(
+        ticket(validClaims({ nonce: "nonce-paused-000000000000000" }), keys.privateKey),
+        expectation(),
+      )
+      .catch((error: unknown) => error);
+    await pausedKey.promise;
+
+    await verifier.close();
+    await rm(root, { recursive: true });
+    releaseKey.resolve();
+    const pausedResult = await pausedVerify;
+    await Promise.all(concurrent);
+
+    expect(pausedResult).toMatchObject({
+      code: "forbidden",
+      message: "The browser attach ticket replay ledger is unavailable.",
+    });
+    await expect(
+      verifier.verify(
+        ticket(validClaims({ nonce: "nonce-after-close-0000000000" }), keys.privateKey),
+        expectation(),
+      ),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message: "The browser attach ticket replay ledger is unavailable.",
+    });
+    await expect(stat(privateDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

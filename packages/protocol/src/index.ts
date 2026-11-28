@@ -23,6 +23,7 @@ export * from "./display-stream.js";
 export * from "./editing.js";
 export * from "./files.js";
 export * from "./host-api.js";
+export * from "./command-arguments.js";
 export * from "./local-bootstrap.js";
 export * from "./machines.js";
 export * from "./personal-remote-access.js";
@@ -41,11 +42,11 @@ export * from "./voice.js";
 
 export * from "./apps.js";
 export * from "./run-files.js";
+export * from "./home-files.js";
 
 export * from "./agent-connections.js";
 export * from "./settings.js";
 export * from "./plugins.js";
-export * from "./team-access.js";
 export * from "./runner-skill-metadata.js";
 export * from "./runner-agent-home-settings.js";
 
@@ -53,27 +54,9 @@ export * from "./automatic-models.js";
 
 export * from "./card-use.js";
 
-export * from "./team-chat.js";
-export * from "./team-link.js";
-export * from "./team-knowledge.js";
-
-export * from "./team-api.js";
-export * from "./team-session.js";
-
 export * from "./needs-you.js";
-export {
-  readTeamFrame,
-  TeamClientFrameViewSchema,
-  TeamLinkClientFrameViewSchema,
-  TeamLinkServerFrameViewSchema,
-  TeamServerFrameViewSchema,
-} from "./team-views.js";
 
 export * from "./devices.js";
-
-export * from "./team-partner.js";
-
-export * from "./team-share.js";
 
 export * from "./references.js";
 export * from "./file-sources.js";

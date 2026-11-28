@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { mockConnectedAgents } from "@opensteer/client/mock";
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { placeList, type TabStrip } from "@opensteer/client/host";
@@ -50,6 +51,25 @@ async function key(init: KeyboardEventInit, done: () => void) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("one tab list", () => {
+  it.each([390, 1440])(
+    "names a shared Chrome tab and its connected agent at %d px",
+    async (width) => {
+      await mount("/", {
+        width,
+        mock: mockConnectedAgents("seeded"),
+        hostClient: (host) => {
+          host.mockAgentWork();
+          return host;
+        },
+      });
+      const tab = placeList(client.getSnapshot()).find(({ tab }) => tab.sharedByPerson)!;
+      const row = element(`[data-place-key="${tab.key}"]`);
+      expect(row.textContent).toContain(`Chrome · ${tab.tab.title}`);
+      expect(row.textContent).toContain(`Shared from ${tab.device.name}`);
+      expect(row.textContent).toContain("Used by Grok");
+    },
+  );
+
   it("draws every kind of tab in the Host's one order, a group's members under it, New tab last", async () => {
     await mount("/");
     expect(drawnRows()).toEqual(expectedRows());
@@ -119,6 +139,59 @@ describe("one tab list", () => {
     const last = visible.at(-1)!;
     await click(main(last));
     await key({ key: "w", metaKey: true }, () => expect(shown()).toBe(visible.at(-2)));
+  });
+
+  it("a group's editor opens with its whole title selected, so typing replaces it", async () => {
+    await mount("/");
+    const group = groupId();
+    await act(async () => {
+      element(`[data-tab-group-id="${group}"]`).dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+      );
+    });
+    const title = await until("The group's menu never offered its title", () =>
+      element<HTMLInputElement>('[aria-label="Group title"]'),
+    );
+    // A new group arrives named "New group": a name typed now must not run into it.
+    expect(document.activeElement).toBe(title);
+    expect(title.value.length).toBeGreaterThan(0);
+    expect([title.selectionStart, title.selectionEnd]).toEqual([0, title.value.length]);
+  });
+
+  it("Close group closes its tabs and the group with them, leaving no empty header", async () => {
+    await mount("/");
+    const group = groupId();
+    const members = strip().entries.find(
+      (entry) => entry.kind === "group" && entry.group.groupId === group,
+    );
+    if (members?.kind !== "group") throw new Error("The mock lists no group");
+    await act(async () => {
+      element(`[data-tab-group-id="${group}"]`).dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+      );
+    });
+    const close = await until("The group's menu never offered Close group", () => {
+      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((node) =>
+        node.textContent?.includes("Close group"),
+      );
+      expect(item).toBeDefined();
+      return item!;
+    });
+    const closeGroup = vi.spyOn(client, "closeTabGroup");
+    const closeTabs = vi.spyOn(client, "closeTabs");
+    const deleteGroup = vi.spyOn(client, "deleteTabGroup");
+    await click(close);
+    await until("Close group left its group behind", () => {
+      expect(document.querySelector(`[data-tab-group-id="${group}"]`)).toBeNull();
+      expect(
+        strip().entries.some((entry) => entry.kind === "group" && entry.group.groupId === group),
+      ).toBe(false);
+    });
+    for (const tabId of members.tabIds) expect(strip().ordered).not.toContain(tabId);
+    // One command, naming the group: the Home decides which tabs it held and whether it goes.
+    expect(closeGroup.mock.calls).toEqual([[group]]);
+    expect(closeTabs).not.toHaveBeenCalled();
+    expect(deleteGroup).not.toHaveBeenCalled();
   });
 
   it("a group's menu renames and ungroups it, keeping every tab where it was", async () => {

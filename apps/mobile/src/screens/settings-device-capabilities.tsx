@@ -80,7 +80,8 @@ export function SettingsDeviceCapabilities({
     if (!machine.access) return;
     const parsed = MachineAccessPolicySchema.safeParse(policy);
     if (!parsed.success) {
-      setInvalid(parsed.error.issues[0]?.message ?? "Check the folder path.");
+      // A validator's issue is never drawn as it is: the screen says what to check.
+      setInvalid("Check the folder path.");
       return;
     }
     setInvalid(null);
@@ -98,36 +99,7 @@ export function SettingsDeviceCapabilities({
       ))}
       {machine.access ? (
         <>
-          <AppText>{`Access from other computers: ${machine.access.policy.reach}`}</AppText>
-          {(
-            [
-              "nobody",
-              ...(machine.access.ownerReachAvailable ? ["owner" as const] : []),
-              "deployment",
-            ] as const
-          ).map((reach) => (
-            <SecondaryButton
-              key={reach}
-              label={
-                reach === "nobody"
-                  ? "Allow no other computers"
-                  : reach === "owner"
-                    ? "Allow my agents"
-                    : "Allow agents in this Opensteer"
-              }
-              disabled={pending || machine.access!.policy.reach === reach}
-              onPress={() =>
-                Alert.alert(
-                  "Change device access?",
-                  "This changes which agents may use Terminal and shared folders on this computer.",
-                  [
-                    { text: "Cancel", style: "cancel" },
-                    { text: "Apply", onPress: () => change({ ...machine.access!.policy, reach }) },
-                  ],
-                )
-              }
-            />
-          ))}
+          {/* Who can use it is chosen on the Device page, as chips. */}
           {machine.allowedModules.includes("shell") ? (
             <SwitchRow
               label="Terminal"
@@ -208,7 +180,6 @@ export function SettingsDeviceCapabilities({
       ) : line ? (
         <ActionLine
           line={line}
-          numberOfLines={2}
           onDismiss={() => {
             access.dismiss();
             removal.dismiss();

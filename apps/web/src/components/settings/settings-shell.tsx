@@ -34,8 +34,6 @@ import { ChromeSection } from "./sections/chrome.js";
 import { GeneralSection } from "./sections/general.js";
 import { PasswordsSection } from "./sections/passwords.js";
 import { PluginsArea } from "../plugins/plugins-area.js";
-import { TeamSettingsNavigation } from "../../team/team-settings-navigation.js";
-import { TeamSettingsRoute } from "../../team/team-settings-route.js";
 
 // Loaded with its page so connections cost nothing on attach.
 const ExternalAgentsSection = lazy(() =>
@@ -190,7 +188,6 @@ export function SettingsShell() {
               <SettingsNavigationLink item={item} key={item.id} />
             ))}
           </div>
-          <TeamSettingsNavigation />
         </nav>
         <div className="settings-navigation__account">
           <Link
@@ -251,7 +248,7 @@ export function SettingsSectionRoute({
       break;
     case "external-agents":
       content = (
-        <Suspense fallback={<p role="status">Loading external agents…</p>}>
+        <Suspense fallback={<p role="status">Loading connected agents…</p>}>
           <ExternalAgentsSection client={hostClient} view={view} />
         </Suspense>
       );
@@ -322,15 +319,6 @@ export function SettingsPage({
         <div className="settings-content__inner">{children}</div>
       </div>
     </div>
-  );
-}
-
-/** A team's pages inside personal Settings. */
-export function SettingsTeamRoute() {
-  return (
-    <SettingsPage title="Team">
-      <TeamSettingsRoute />
-    </SettingsPage>
   );
 }
 

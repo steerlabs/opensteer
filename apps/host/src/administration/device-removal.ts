@@ -46,6 +46,8 @@ export async function finishDeviceRemoval(
     await dependencies.computerApps.refreshDeviceDrivers();
     for (const sessionId of removed.closedBrowserSessions)
       dependencies.browser.abandonSession(sessionId);
+    if (runnerId)
+      await dependencies.browser.poolDeviceRemoved?.(runnerId, removed.closedBrowserSessions);
     await dependencies.browser.profilesRemoved(removed.deletedBrowserProfiles);
   } finally {
     // The removal committed even if a step above failed. Its logins end first, closing their

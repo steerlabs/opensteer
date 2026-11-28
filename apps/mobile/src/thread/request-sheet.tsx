@@ -49,6 +49,7 @@ import {
   type RequestFormField,
   type RequestOption,
   type RequestPayload,
+  type TabId,
 } from "@opensteer/core";
 import type { CardChoice, MachineSummary, PasswordSignInCard } from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -73,6 +74,7 @@ import {
 import { useComputerAppApproval } from "../computers/computer-app-approval.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { HomeMenu } from "../screens/profile-home-menu.js";
+import { useShowTab } from "../tabs/viewer-open.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Chip, monoFontFamily, Notice, StatusDot } from "../ui/primitives.js";
@@ -107,12 +109,16 @@ import {
   withRequestDraftValues,
   type RequestFormDraft,
 } from "./request-form-model.js";
+import { answeredInAPage, RequestPageLink } from "./request-page-link.js";
 import { updateRequestSession, type RequestSession } from "./request-session.js";
 import { signInAvailability, signInStatus } from "./request-sign-in-status.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 import { useRequestResponse, type RequestResponder } from "./use-request-response.js";
 import { QuestionCard } from "./waiting-questions.js";
+import { AddressSentence, AddressText } from "../ui/address-text.js";
+import { plainSentence, sentence } from "../ui/sentence-parts.js";
+import { isAddress } from "../ui/address-words.js";
 
 /** A native answer in English: the same word for a refusal on every kind of Request. */
 const declineLabel = "Don’t Allow";
@@ -281,7 +287,7 @@ function ReferencedRequest(props: {
     const line = readLine(read, read.refresh);
     return (
       <View style={[styles.gone, styles.referenced]}>
-        {line === null ? null : <ActionLine line={line} numberOfLines={2} />}
+        {line === null ? null : <ActionLine line={line} />}
         <AnswerRow>
           <AnswerPill label="Back" onPress={() => navigation.goBack()} tone="secondary" />
         </AnswerRow>
@@ -361,6 +367,12 @@ function SheetForRequest(props: {
   const { deploymentId, hostClient, surface, userId } = props;
   const navigation = useNavigation();
   const threadId = surface?.request.originatingThreadId ?? "";
+  // The page a Request is answered in, shown over its task once this sheet has closed.
+  const showTab = useShowTab(deploymentId, threadId);
+  const openPage = (tabId: TabId): void => {
+    props.onClose();
+    showTab(tabId);
+  };
   const { drafts } = useMobileClient();
   const { gate, owner } = useThreadMutation({ deploymentId, threadId, userId });
   const archived = useHostSelector(
@@ -373,6 +385,7 @@ function SheetForRequest(props: {
   if (isQuestionRequest(surface.request) && surface.denied === null)
     return (
       <ScrollView contentContainerStyle={styles.questionSheet} keyboardShouldPersistTaps="handled">
+        <RequestPageLink hostClient={hostClient} onOpen={openPage} request={surface.request} />
         <QuestionCard
           canRespond={props.canRespond}
           deploymentId={deploymentId}
@@ -401,6 +414,7 @@ function SheetForRequest(props: {
       hostClient={hostClient}
       machines={props.machines}
       onClose={props.onClose}
+      onOpenPage={openPage}
       reason={props.reason}
       onOpenSubagent={(asker) => {
         props.onClose();
@@ -450,6 +464,8 @@ export function RequestSheetContent(props: {
   readonly reason: boolean;
   /** Opens the asking subagent's own view, where it can be answered too. */
   readonly onOpenSubagent?: (asker: RequestAsker) => void;
+  /** Opens the page a Request is answered in: the sheet closes and the tab is shown. */
+  readonly onOpenPage?: (tabId: TabId) => void;
   readonly surface: SurfaceModel;
 }): ReactNode {
   const { surface } = props;
@@ -473,6 +489,9 @@ export function RequestSheetContent(props: {
   const { session } = responder;
   const answers = requestCardAnswers(request, surface.denied !== null);
   const title = requestTitle(request);
+  // The sheet's own safe area at each side, as iPhone Duo's vertical bar takes one; the
+  // gutter stands inside it.
+  const sides = { marginLeft: insets.left, marginRight: insets.right };
   // The agent's reason is labelled as the agent's in the password body below.
   const detail =
     presentation.detail === undefined ||
@@ -543,23 +562,28 @@ export function RequestSheetContent(props: {
       stickyHeaderIndices={[0]}
       style={styles.sheet}
     >
-      <View style={styles.bar}>
+      <View style={[styles.bar, sides]}>
         <SheetBarButton icon="xmark" label={`Close ${title}`} onPress={close} />
         <View accessibilityRole="header" style={styles.barTitle}>
-          <AppText maxFontSizeMultiplier={controlFontScaleLimit} numberOfLines={1} role="title">
-            {askingWhy ? "Tell the agent why" : title}
-          </AppText>
+          {/* The bar holds one line, which a title can outgrow at any text size: the title
+              is said once, whole, under it. */}
+          {askingWhy ? (
+            <AppText maxFontSizeMultiplier={controlFontScaleLimit} numberOfLines={1} role="title">
+              Tell the agent why
+            </AppText>
+          ) : null}
         </View>
         {send ?? <View style={styles.barSpace} />}
       </View>
-      <View style={styles.body}>
+      <View style={[styles.body, sides]}>
         {presentation.kind === "choice" && presentation.risk === "high" ? <HighRisk /> : null}
-        {/* The bar holds one line of a title that may run to several. */}
-        {!askingWhy && title.length > barTitleLength ? (
-          <AppText role="bodyMedium" selectable>
-            {title}
-          </AppText>
-        ) : null}
+        {askingWhy ? null : (
+          <View accessibilityRole="header">
+            <AppText role="title" selectable>
+              {title}
+            </AppText>
+          </View>
+        )}
         {presentation.agentProposed === true ? (
           <AppText accessibilityHint={requestAgentProposedDetail} role="caption" tone="muted">
             {requestAgentProposedLabel}
@@ -574,6 +598,13 @@ export function RequestSheetContent(props: {
         )}
         {detail === null ? null : (
           <RequestDetail mono={request.kind === "harness.approval"} text={detail} />
+        )}
+        {askingWhy || props.onOpenPage === undefined || !answeredInAPage(request) ? null : (
+          <RequestPageLink
+            hostClient={props.hostClient}
+            onOpen={props.onOpenPage}
+            request={request}
+          />
         )}
         {askingWhy ? (
           <>
@@ -636,7 +667,7 @@ export function RequestSheetContent(props: {
   return (
     <View style={styles.sheet}>
       {list}
-      <View style={[styles.pinned, { paddingBottom: insets.bottom + space[6] }]}>
+      <View style={[styles.pinned, sides, { paddingBottom: insets.bottom + space[6] }]}>
         <ResponseStatus failure={session.failure} reason={blocked} />
         <AnswerRow
           leading={
@@ -689,9 +720,6 @@ export function RequestSheetContent(props: {
   );
 }
 
-/** About what a sheet's bar shows on the narrowest phone before it cuts a title off. */
-const barTitleLength = 30;
-
 function HighRisk(): ReactNode {
   return (
     <View style={styles.highRisk}>
@@ -734,7 +762,7 @@ function ResponseStatus(props: {
           {props.reason}
         </AppText>
       )}
-      {props.failure === null ? null : <ActionLine line={props.failure} numberOfLines={2} />}
+      {props.failure === null ? null : <ActionLine line={props.failure} />}
     </View>
   );
 }
@@ -897,6 +925,7 @@ function RequestBody(props: {
         <PasswordSignInBody
           canRespond={canRespond}
           hostClient={props.hostClient}
+          oneTime={request.originatingAgentSessionId != null}
           payload={request.payload}
           reason={reason}
           requestId={request.id}
@@ -1117,32 +1146,37 @@ function BrowserSignInBody(props: {
   });
   const allow = (sourceId: BrowserSourceId): void =>
     void responder.respondSignIn({ decision: "allow", sourceId }, "browser-sign-in-allow");
+  const title = typeof status.title === "string" ? [status.title] : status.title;
   return (
     <View style={styles.section}>
-      <AppText role="secondary">
-        {`Your agent wants to use your ${domain} sign-in from ${selected?.name ?? "Chrome"}.`}
-      </AppText>
-      <AppText role="caption" tone="soft">
-        {`Your agent will be able to use ${domain} as you.`}
-      </AppText>
+      <AddressSentence
+        parts={[
+          ...sentence`Your agent wants to use your ${domain} sign-in from `,
+          `${selected?.name ?? "Chrome"}.`,
+        ]}
+        role="secondary"
+      />
+      <AddressSentence
+        parts={sentence`Your agent will be able to use ${domain} as you.`}
+        role="caption"
+        tone="soft"
+      />
       <View
         accessibilityLiveRegion="polite"
         accessible
         accessibilityLabel={
-          status.detail === null ? status.title : `${status.title}. ${status.detail}`
+          status.detail === null
+            ? plainSentence(title)
+            : `${plainSentence(title)}. ${plainSentence(status.detail)}`
         }
         style={styles.signInStatus}
       >
         <View style={styles.signInStatusHead}>
           <StatusDot live={status.live} tone={status.tone} />
-          <AppText role="secondaryMedium" style={styles.shrink}>
-            {status.title}
-          </AppText>
+          <AddressSentence parts={title} role="secondaryMedium" style={styles.shrink} />
         </View>
         {status.detail === null ? null : (
-          <AppText role="caption" tone="soft">
-            {status.detail}
-          </AppText>
+          <AddressSentence parts={status.detail} role="caption" tone="soft" />
         )}
       </View>
       {candidates.length > 1 && session.allowed === null ? (
@@ -1195,13 +1229,15 @@ const expiryTickMs = 5_000;
 
 function PasswordSignInBody(props: {
   readonly canRespond: boolean;
+  readonly oneTime: boolean;
   readonly hostClient: HostClient;
   readonly payload: Extract<RequestPayload, { kind: "browser.password-sign-in" }>;
   readonly reason: string | null;
   readonly requestId: string;
   readonly responder: RequestResponder;
 }): ReactNode {
-  const { canRespond, hostClient, requestId, responder } = props;
+  const { canRespond, hostClient, oneTime, requestId, responder } = props;
+  const declineText = oneTime ? "Don't allow" : declineLabel;
   const { session } = responder;
   const [now, setNow] = useState(() => new Date());
   const [query, setQuery] = useState("");
@@ -1228,6 +1264,7 @@ function PasswordSignInBody(props: {
         canRespond={canRespond}
         chosenId={chosenId}
         now={now}
+        oneTime={oneTime}
         onChoose={setChosenId}
         cardLine={cardLine}
         payload={props.payload}
@@ -1246,9 +1283,7 @@ function PasswordSignInBody(props: {
     list.map((group, index) => (
       <View key={group.host ?? index} style={styles.accounts}>
         {group.host === null ? null : (
-          <AppText role="caption" tone="muted">
-            {group.host}
-          </AppText>
+          <AddressText role="caption" tone="muted" value={group.host} />
         )}
         <View style={styles.group}>
           {group.rows.map(({ account, detail }, row) => (
@@ -1259,6 +1294,7 @@ function PasswordSignInBody(props: {
               hint="Choose one"
               key={account.id}
               label={account.username}
+              {...(isAddress(account.username) ? { addressIn: "label" as const } : {})}
               mode="one"
               onPress={() => setChosenId(account.id)}
               selected={chosen?.id === account.id}
@@ -1320,24 +1356,27 @@ function PasswordSignInBody(props: {
       {card?.stage === "approval" && accounts.length === 0 ? (
         <AppText role="secondary">{passwordSignInNoAccount(props.payload.site)}</AppText>
       ) : null}
+      {/* Gone has no time left on it: it says so, never beside a time it expires in. */}
       {card?.stage === "gone" ? (
         <AppText role="secondary">This sign-in is no longer running.</AppText>
       ) : null}
-      {chosen && card?.stage === "approval" ? (
+      {!oneTime && chosen && card?.stage === "approval" ? (
         <AppText role="caption" tone="muted">
           {passwordSignInAllowRemembers(chosen.username)}
         </AppText>
       ) : null}
-      <AppText role="caption" tone="muted">
-        {passwordSignInExpiry(props.payload.expiresAt, now)}
-      </AppText>
+      {card?.stage === "gone" ? null : (
+        <AppText role="caption" tone="muted">
+          {passwordSignInExpiry(props.payload.expiresAt, now)}
+        </AppText>
+      )}
       <ResponseStatus failure={session.failure ?? cardLine} reason={props.reason} />
       <AnswerRow>
         <AnswerPill
-          accessibilityLabel={declineLabel}
+          accessibilityLabel={declineText}
           busy={session.pendingId === "password-sign-in-decline"}
           disabled={disabled}
-          label={declineLabel}
+          label={declineText}
           onPress={() => void responder.respondPassword()}
           tone="secondary"
         />
@@ -1346,17 +1385,19 @@ function PasswordSignInBody(props: {
             <AnswerPill
               busy={session.pendingId === "password-once"}
               disabled={disabled}
-              label="Only this time"
+              label={oneTime ? "Allow once" : "Only this time"}
               onPress={() => approve(chosen, false)}
-              tone="secondary"
+              tone={oneTime ? "primary" : "secondary"}
             />
-            <AnswerPill
-              busy={session.pendingId === "password-allow"}
-              disabled={disabled}
-              label="Allow"
-              onPress={() => approve(chosen, true)}
-              tone="primary"
-            />
+            {!oneTime ? (
+              <AnswerPill
+                busy={session.pendingId === "password-allow"}
+                disabled={disabled}
+                label="Allow"
+                onPress={() => approve(chosen, true)}
+                tone="primary"
+              />
+            ) : null}
           </>
         ) : null}
       </AnswerRow>
@@ -1366,6 +1407,7 @@ function PasswordSignInBody(props: {
 
 function CardUseBody(props: {
   readonly canRespond: boolean;
+  readonly oneTime: boolean;
   readonly chosenId: string | null;
   readonly now: Date;
   readonly onChoose: (id: string) => void;
@@ -1383,11 +1425,15 @@ function CardUseBody(props: {
     cards.length === 1 ? cards[0] : cards.find(({ id }) => id === props.chosenId);
   const locked = session.pendingId !== null;
   const expired = Date.parse(props.payload.expiresAt) <= props.now.getTime();
+  // An ended card use says only what is true now: no deadline it no longer has.
+  const gone = card?.stage === "gone";
   return (
     <View style={styles.section}>
-      <AppText role="secondary" tone="soft">
-        {cardUseConsent(props.payload.site, props.payload.expiresAt)}
-      </AppText>
+      {gone ? null : (
+        <AppText role="secondary" tone="soft">
+          {cardUseConsent(props.payload.site, props.payload.expiresAt)}
+        </AppText>
+      )}
       <View>
         <AppText role="caption" tone="muted">
           Agent’s reason
@@ -1416,22 +1462,23 @@ function CardUseBody(props: {
       ) : null}
       {card?.stage === "gone" ? (
         <AppText role="secondary">This card use is no longer running.</AppText>
-      ) : null}
-      <AppText role="caption" tone="muted">
-        {passwordSignInExpiry(props.payload.expiresAt, props.now)}
-      </AppText>
+      ) : (
+        <AppText role="caption" tone="muted">
+          {passwordSignInExpiry(props.payload.expiresAt, props.now)}
+        </AppText>
+      )}
       <ResponseStatus failure={session.failure ?? props.cardLine} reason={props.reason} />
       <AnswerRow>
         <AnswerPill
           disabled={locked}
-          label={declineLabel}
+          label={props.oneTime ? "Don't allow" : declineLabel}
           onPress={() => void responder.respondPassword()}
           tone="secondary"
         />
         {chosen ? (
           <AnswerPill
             disabled={locked || expired}
-            label="Allow card use"
+            label={props.oneTime ? "Allow once" : "Allow card use"}
             onPress={() => void responder.respondPassword({ account: chosen, remember: false })}
             tone="primary"
           />
@@ -1680,6 +1727,8 @@ function RequestForm(props: {
  */
 function FormChoiceRow(props: {
   readonly accessibilityLabel?: string;
+  /** The label is an email address, a host or a URL (`isAddress`): drawn as one. */
+  readonly addressIn?: "label";
   readonly description: string | undefined;
   readonly disabled: boolean;
   readonly hint: string | undefined;
@@ -1707,7 +1756,11 @@ function FormChoiceRow(props: {
       ]}
     >
       <View style={styles.rowText}>
-        <AppText role="secondary">{props.label}</AppText>
+        {props.addressIn === "label" ? (
+          <AddressText role="secondary" value={props.label} />
+        ) : (
+          <AppText role="secondary">{props.label}</AppText>
+        )}
         {props.description === undefined || props.description === "" ? null : (
           <AppText role="caption" tone="muted">
             {props.description}

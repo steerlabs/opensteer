@@ -249,6 +249,7 @@ vi.mock("react-native-svg", () => ({
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/primitives.js", () => ({
+  DisplayTitle: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   AppText: ({
     children,
     numberOfLines,

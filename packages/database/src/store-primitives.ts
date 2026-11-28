@@ -2,6 +2,7 @@ import { PrincipalIdSchema, type PrincipalId } from "@opensteer/channel-core";
 import {
   IsoDateTimeSchema,
   OpensteerError,
+  raisedBeforeEffect,
   type EnvironmentId,
   type ThreadId,
   type UserId,
@@ -10,7 +11,6 @@ import { durableWindowCursorMaxCharacters } from "@opensteer/protocol";
 import { sql, type ExpressionBuilder, type Kysely, type Transaction } from "kysely";
 import { refreshExecuteClaimProof } from "./personal-run-state.js";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
-import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import {
   admitThreadExecution,
   executionEnvironmentIsAvailableToUser,
@@ -77,14 +77,17 @@ export function requireBoundedIdentity(value: string, label: string, maximum: nu
     });
   }
 }
+/** A key used for a different command: refused before this one did anything (rule 4). */
 export function idempotencyConflict(key: string): OpensteerError {
-  return new OpensteerError({
-    code: "conflict",
-    details: {
-      idempotencyKey: key,
-    },
-    message: "The idempotency key was already used for a different command",
-  });
+  return raisedBeforeEffect(
+    new OpensteerError({
+      code: "conflict",
+      details: {
+        idempotencyKey: key,
+      },
+      message: "The idempotency key was already used for a different command",
+    }),
+  );
 }
 export async function lockCommandIdempotency(
   transaction: Transaction<DatabaseSchema>,
@@ -102,7 +105,6 @@ export async function lockThreadRow(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
 ): Promise<void> {
-  await lockThreadChannelAuthorities(transaction, [threadId]);
   await transaction
     .selectFrom("threads")
     .select("id")
@@ -150,16 +152,40 @@ export async function principalIdForUser(
   }
   return principal.id;
 }
+/**
+ * Holds a queued Run as waiting for another Run on its computer to finish: the Home's own
+ * capacity decision (its Runner has no free slot) or that Runner's refusal for capacity
+ * (returnRunToQueue with the same reason). Writes nothing when the Run already has a hold.
+ */
+export async function holdRunForAnotherRun(
+  transaction: Transaction<DatabaseSchema>,
+  runId: import("@opensteer/core").RunId,
+): Promise<boolean> {
+  const held = await transaction
+    .updateTable("runs")
+    .set({ startHoldReason: "waiting-for-run" })
+    .where("id", "=", runId)
+    .where("status", "=", "queued")
+    .where("startHoldReason", "is", null)
+    .returning(["threadId"])
+    .executeTakeFirst(databaseOperationOptions());
+  if (!held) return false;
+  await publishRunQueue(transaction, held.threadId, runId);
+  await projectThreadState(transaction, held.threadId);
+  return true;
+}
 export async function returnRunToQueue(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly run: Pick<RunRow, "environmentId" | "id" | "threadId">;
+    readonly startHoldReason?: import("@opensteer/core").RunStartHoldReason | null;
   },
 ): Promise<void> {
   const queued = await transaction
     .updateTable("runs")
     .set({
       bindingGeneration: null,
+      startHoldReason: input.startHoldReason ?? null,
       status: "queued",
     })
     .where("id", "=", input.run.id)

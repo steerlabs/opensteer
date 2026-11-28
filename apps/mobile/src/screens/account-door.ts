@@ -2,17 +2,26 @@ import type { AccountDeploymentDirectoryUnavailable } from "@opensteer/client/co
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { deploymentUnavailableReasonExplanation } from "@opensteer/protocol/deployment-status";
 import type { DeploymentRow } from "../client/deployment-rows.js";
+import { signInStorageSentence } from "../platform/sign-in-storage.js";
+import { signInStorageWords } from "../ui/client-feedback.js";
 
 type AccountState = DesktopAccountAuthState["account"];
+
+/** Expo's own words for a Keychain or Keystore call the platform refused. */
+const secureStoreException =
+  /Keychain|SecureStore|entitlement|(?:get|set|delete)ValueWithKeyAsync|isAvailableAsync/u;
 
 export function accountDoorPresentation(
   account: AccountState,
   starting: boolean,
+  noun: "iPhone" | "phone" = "phone",
 ): { readonly description: string; readonly disabled: boolean; readonly title: string } {
   const signingIn = starting || account.status === "authorizing";
+  // The sign-in storage says this itself; an exception that still arrives in Expo's words
+  // reads the same, never as the exception.
   const unavailableDetail =
-    account.detail !== null && /Keychain|SecureStore/u.test(account.detail)
-      ? "This app cannot access this device’s secure credential storage. Sign-in is unavailable."
+    account.detail !== null && secureStoreException.test(account.detail)
+      ? signInStorageSentence(noun)
       : account.detail;
   if (signingIn) {
     return {
@@ -24,13 +33,22 @@ export function accountDoorPresentation(
   return {
     description: account.available
       ? account.status === "error"
-        ? (unavailableDetail ?? "Your Opensteer Account could not be reached.")
-        : "Your Account lists every deployment you can reach."
-      : (unavailableDetail ?? "This build was made without an Opensteer Account service."),
+        ? (unavailableDetail ?? "Your Opensteer account could not be reached.")
+        : "Your Opensteer account lists every Opensteer you can open."
+      : (unavailableDetail ?? "This build was made without an Opensteer account service."),
     disabled: !account.available,
     // Retrying is only something to offer when signing in is possible at all.
     title: account.available && account.status === "error" ? "Try signing in again" : "Sign in",
   };
+}
+
+/**
+ * What the first screen says when signing in to the Opensteer account didn't end signed in. The
+ * account may have answered and only this phone's storage refused to keep it: then its sentence
+ * (written by `signInStorage`), since signing in again elsewhere would change nothing.
+ */
+export function accountSignInFailureText(error: unknown): string {
+  return signInStorageWords(error) ?? "Couldn't sign in to your Opensteer account.";
 }
 
 export type DeploymentsPresentation = "list" | "signed-in-empty" | "welcome";
@@ -90,7 +108,7 @@ export function accountDirectoryUnavailablePresentation(
       entry.reason === "host-unavailable"
         ? `${sharedDetail} Pull down to try again.`
         : entry.reason === "not-active"
-          ? "This deployment is not ready yet."
+          ? "This Opensteer is not ready yet."
           : sharedDetail,
     title: `${entry.name} — Account listing`,
   };
@@ -108,7 +126,7 @@ export function signedInDirectoryPresentation(input: {
 } {
   if (input.status === "idle" || input.status === "loading") {
     return {
-      detail: "Checking your Account for deployments…",
+      detail: "Checking your Opensteer account…",
       refreshDisabled: true,
       refreshLabel: "Refreshing…",
       title: "Signed in to your Account",
@@ -116,25 +134,25 @@ export function signedInDirectoryPresentation(input: {
   }
   if (input.status === "error") {
     return {
-      detail: input.detail ?? "Your Account deployment list could not be refreshed.",
+      detail: input.detail ?? "Your list of Opensteers could not be refreshed.",
       refreshDisabled: false,
       refreshLabel: "Try refreshing again",
-      title: "Your deployment list could not be loaded",
+      title: "Your list of Opensteers could not be loaded",
     };
   }
   if (input.unavailableCount > 0) {
     return {
-      detail: `${input.unavailableCount === 1 ? "One deployment" : `${input.unavailableCount} deployments`} from your Account could not be verified on this phone.`,
+      detail: `${input.unavailableCount === 1 ? "One Opensteer" : `${input.unavailableCount} Opensteers`} from your account could not be verified on this phone.`,
       refreshDisabled: false,
-      refreshLabel: "Refresh deployments",
-      title: "Some deployments could not be loaded",
+      refreshLabel: "Refresh",
+      title: "Some Opensteers could not be loaded",
     };
   }
   return {
     detail:
-      "Your Account does not list any deployments yet. You can refresh or add one another way.",
+      "Your Opensteer account doesn’t list an Opensteer yet. You can refresh or add one another way.",
     refreshDisabled: false,
-    refreshLabel: "Refresh deployments",
-    title: "No Account deployments yet",
+    refreshLabel: "Refresh",
+    title: "No Opensteer in your account yet",
   };
 }

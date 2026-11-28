@@ -1,10 +1,3 @@
-import {
-  acceptsTeamApiVersion,
-  teamApiVersion,
-  teamApiVersionRefusal,
-  teamOidcStatePrefix,
-  teamOAuthVersionParameter,
-} from "@opensteer/deployment-authority";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
 import {
@@ -34,9 +27,7 @@ import {
   type AuthenticatedSession,
   type IdentityConfig,
   type NativeOAuthApplication,
-  type NativeOAuthClient,
   type NativeOAuthRegistrationMetadata,
-  type TeamInviteSecret,
   type PersonalRemoteSessionCredential,
   type PersonalRemoteSessionDelivery,
   type UserId,
@@ -44,10 +35,8 @@ import {
   identityPasswordMaxLength,
   identityPasswordMinLength,
 } from "@opensteer/core";
-import { personProfileReceiptClaim } from "@opensteer/control-plane-protocol";
 import type { DatabaseSchema } from "@opensteer/database";
 import { describeSessionDevice } from "./session-device.js";
-import { refuseEntry } from "./team-admission.js";
 import { sso } from "@better-auth/sso";
 import {
   oauthProvider,
@@ -66,10 +55,20 @@ import type {
   ConsumedAccountAdoptionProof,
   IdentityServiceOptions,
   IssuedAccountAdoptionProof,
-  VerifiedAccountAdoptionGrant,
 } from "./types.js";
 
 const internalAuthPath = "/internal/better-auth";
+/** The Home web app's page for a sign-in that could not be completed. */
+const homeSignInErrorPath = "/auth/error";
+/** What Better Auth reports when the browser came back without this sign-in's state. */
+const lapsedStateErrors = new Set(["invalid_state", "state_mismatch", "state_not_found"]);
+/** The refusal of a sign-in by an identity this Home has no person for. */
+const signupAdmissionRequiredCode = "SIGNUP_ADMISSION_REQUIRED";
+/** The Home's page names a managed Home's refusal of another Opensteer account by this. */
+export const anotherAccountSignInError = "another_account";
+/** As long as a started sign-in's state can come back (Better Auth keeps it ten minutes). */
+const restartedSignInLifetimeMs = 10 * 60_000;
+const maximumRestartedSignIns = 1_000;
 const publicNativeAuthPath = "/v1/auth/native";
 const idleSessionSeconds = 7 * 24 * 60 * 60;
 const absoluteSessionMilliseconds = 30 * 24 * 60 * 60 * 1_000;
@@ -92,11 +91,6 @@ const nativeOAuthReference = (clientId: string) => `${legacyNativeOAuthReference
 const nativeOAuthScopes = ["openid", "profile", "email", "offline_access", "host:access"] as const;
 const maxPendingAdmissions = 1_024;
 const maxPendingAdmissionsPerSubject = 1;
-/**
- * Browsers that may hold an admission for one shared invite at once. Its use cap is enforced when
- * someone accepts, so a capped invite with one use left still lets several people start.
- */
-const maxPendingAdmissionsPerInvite = 64;
 const accountAdoptionProofLifetimeMilliseconds = 5 * 60 * 1_000;
 const maxPendingAccountAdoptionProofs = 64;
 const accountAdoptionProofIdPattern =
@@ -162,21 +156,39 @@ export function deriveLocalSetupToken(secret: string): string {
 export class IdentityService {
   readonly #admissionLifetimeMilliseconds: number;
   #auth: OpensteerAuth;
+  /**
+   * A Personal Host's first-owner steps, one at a time. Claiming spans Better
+   * Auth's own sign-up transaction, so no database lock can hold across it;
+   * one Host process owns a Personal database, so queuing here is what lets
+   * exactly one of several concurrent claims win without leaving the loser's
+   * account behind.
+   */
+  #ownerSetup: Promise<unknown> = Promise.resolve();
+  /**
+   * The state of each sign-in this Home started again after its state lapsed,
+   * until it could no longer come back. One restart per attempt: a sign-in
+   * that comes back without its state twice ends on the Home's own page.
+   */
+  readonly #restartedSignIns = new Map<string, number>();
   readonly #database: Kysely<DatabaseSchema>;
   #options: IdentityServiceOptions;
 
   constructor(database: Kysely<DatabaseSchema>, options: IdentityServiceOptions) {
-    if (
-      options.team &&
-      (options.localMachineOwner || options.localPasswordEnabled || options.signupPolicy === "open")
-    )
-      throw new Error("A team uses Account sign-in and explicit admission only");
     if (options.secret.length < 32) {
       throw new Error("Opensteer identity secret must contain at least 32 characters");
     }
     if (options.localMachineOwner && options.exposure !== "loopback") {
       throw new Error("A local machine owner is allowed only on an unmanaged loopback Host");
     }
+    if (
+      options.managedOwner &&
+      (options.localMachineOwner ||
+        options.localPasswordEnabled ||
+        !options.oidcProviders.some(
+          (provider) => provider.providerId === options.managedOwner?.providerId,
+        ))
+    )
+      throw new Error("A managed Home signs its one owner in with its Opensteer Account only");
     this.#admissionLifetimeMilliseconds =
       options.exposure === "loopback"
         ? localAdmissionLifetimeMilliseconds
@@ -187,32 +199,9 @@ export class IdentityService {
   }
 
   #createAuth() {
-    return createOpensteerAuth(this.#database, this.#options, (request, email) =>
-      this.#requireSignupAdmission(request, email),
+    return createOpensteerAuth(this.#database, this.#options, (request) =>
+      this.#requireSignupAdmission(request),
     );
-  }
-
-  async issueSetupAccountAdoptionProof(headers: Headers, account: AccountAdoptionAccount) {
-    const proof = await this.#admissionFromHeaders(headers);
-    if (!this.#options.team || !proof)
-      throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
-    return this.#options.team.issueAdoption(proof, parseAccountAdoptionAccount(account));
-  }
-  async completeTeamAccountAdoption(grant: unknown, bundle: unknown, hostedBootstrap?: unknown) {
-    const team = this.#options.team;
-    if (!team)
-      throw new OpensteerError({ code: "not_found", message: "Team setup is unavailable" });
-    const { provider, receipt } = await team.completeAdoption(null, grant, bundle, hostedBootstrap);
-    await this.reloadAccountProvider(provider);
-    return { completed: true as const, ...(receipt ? { receipt } : {}) };
-  }
-
-  async reloadAccountProvider(
-    provider: NonNullable<IdentityServiceOptions["oidcProviders"]>[number],
-  ) {
-    this.#options = { ...this.#options, oidcProviders: [provider] };
-    this.#auth = this.#createAuth();
-    await this.#ensureNativeOAuthClients();
   }
 
   async initialize(): Promise<void> {
@@ -468,14 +457,6 @@ export class IdentityService {
     ) {
       throw new OpensteerError({ code: "unauthorized", message: "Native access token is invalid" });
     }
-    if (
-      this.#options.team &&
-      !(await this.#options.team.sessionActive(subject.data, session.memberGeneration))
-    )
-      throw new OpensteerError({
-        code: "unauthorized",
-        message: "Team session is no longer active",
-      });
     // The registration row, not the configuration, is the trusted statement of
     // which application holds this credential and of when the credentials it
     // issued stopped counting. A JWT access token has no row to delete, so
@@ -534,7 +515,6 @@ export class IdentityService {
     }
     const url = new URL(request.url);
     const publicPath = url.pathname.slice(publicNativeAuthPath.length);
-    if (this.#options.team) url.searchParams.delete(teamOAuthVersionParameter);
     if (request.method === "GET" && publicPath === "/oauth2/authorize") {
       forceInteractiveConsent(url);
     }
@@ -683,27 +663,24 @@ export class IdentityService {
     const enrollment = this.#options.initialOwnerEnrollment;
     if (!enrollment) return;
     const tokenHash = enrollment.tokenDigest;
+    // An operator holds a networked Home's code and re-issues it by starting
+    // the Host with a new one. A loopback Host's code is derived from the
+    // desktop's claim, so a different live one is stale configuration.
+    const operatorHeld = enrollment.renewable !== true;
     await this.#database.transaction().execute(async (transaction) => {
       await sqlAdvisoryLock(transaction, "initial-owner-enrollment");
-      const existingAdministrator = this.#options.team
-        ? await transaction
-            .selectFrom("teamMembers")
-            .select("userId as id")
-            .where("role", "=", "owner")
-            .where("state", "=", "active")
-            .executeTakeFirst()
-        : await transaction
-            .selectFrom("users")
-            .select("id")
-            .where("disabledAt", "is", null)
-            .executeTakeFirst();
+      const existingAdministrator = await transaction
+        .selectFrom("users")
+        .select("id")
+        .where("disabledAt", "is", null)
+        .executeTakeFirst();
       if (existingAdministrator) {
         // The durable administrator and consumed enrollment are authoritative. A stale deployment
         // secret must be removed by the operator, but it must never make an otherwise healthy Host
         // fail to restart. Exchange also checks both durable conditions before admitting signup.
         return;
       }
-      if (this.#options.team)
+      if (operatorHeld)
         await transaction
           .selectFrom("authAdmissions")
           .select("id")
@@ -743,11 +720,7 @@ export class IdentityService {
         // code moves its deadline forward, because a local Host that sat idle
         // past the original window must not become permanently unclaimable. An
         // operator-configured code keeps its fixed deadline.
-        if (
-          !this.#options.team &&
-          enrollment.renewable &&
-          existingEnrollment.expiresAt < enrollment.expiresAt
-        ) {
+        if (enrollment.renewable && existingEnrollment.expiresAt < enrollment.expiresAt) {
           await transaction
             .updateTable("ownerEnrollments")
             .set({ expiresAt: enrollment.expiresAt })
@@ -759,11 +732,12 @@ export class IdentityService {
       }
       if (
         existingEnrollment.consumedAt ||
-        (!this.#options.team && existingEnrollment.expiresAt > new Date())
+        (!operatorHeld && existingEnrollment.expiresAt > new Date())
       ) {
         throw new Error("Initial owner enrollment secret does not match durable Host state");
       }
-      if (this.#options.team)
+      // The old link stops admitting anyone, and so does every admission it issued.
+      if (operatorHeld)
         await transaction
           .updateTable("authAdmissions")
           .set({ expiresAt: new Date() })
@@ -798,13 +772,11 @@ export class IdentityService {
   }
 
   async configuration(): Promise<IdentityConfig> {
-    const administrator = this.#options.team
-      ? await this.#options.team.hasOwner()
-      : await this.#database
-          .selectFrom("users")
-          .select("id")
-          .where("disabledAt", "is", null)
-          .executeTakeFirst();
+    const administrator = await this.#database
+      .selectFrom("users")
+      .select("id")
+      .where("disabledAt", "is", null)
+      .executeTakeFirst();
     return IdentityConfigSchema.parse({
       deployment: this.#options.deployment,
       emailDeliveryAvailable: this.#options.emailDeliveryAvailable ?? false,
@@ -821,6 +793,7 @@ export class IdentityService {
       })),
       passkeysEnabled: false,
       exposure: this.#options.exposure,
+      ...(this.#options.homeKind ? { homeKind: this.#options.homeKind } : {}),
       portalOrigin: this.#options.portalOrigin?.origin ?? null,
       publicOrigin: this.#options.publicOrigin.origin,
       setupState: administrator ? "complete" : "required",
@@ -892,10 +865,7 @@ export class IdentityService {
     );
   }
 
-  async #authenticateSessionCookie(
-    headers: Headers,
-    pendingTeamAdmission = false,
-  ): Promise<AuthenticatedSession | null> {
+  async #authenticateSessionCookie(headers: Headers): Promise<AuthenticatedSession | null> {
     const raw = await this.#auth.api.getSession({ headers });
     if (!raw) return null;
     const sessionId = AuthSessionIdSchema.safeParse(raw.session.id);
@@ -928,12 +898,6 @@ export class IdentityService {
       }
       return null;
     }
-    if (
-      this.#options.team &&
-      !pendingTeamAdmission &&
-      !(await this.#options.team.sessionActive(row.userId, row.memberGeneration))
-    )
-      return null;
     if (now.getTime() - row.lastSeenAt.getTime() >= 5 * 60 * 1_000) {
       await this.#database
         .updateTable("authSessions")
@@ -1177,10 +1141,6 @@ export class IdentityService {
     });
   }
 
-  accountAdoptionCompletionEnabled(): boolean {
-    return this.#options.accountAdoption !== undefined;
-  }
-
   /**
    * Records an administrator's explicit approval and returns the raw
    * proof credential once, pinned to the Account identity the administrator
@@ -1291,11 +1251,6 @@ export class IdentityService {
     readonly proofCredential: string;
     readonly proofId: string;
   }): Promise<ConsumedAccountAdoptionProof> {
-    if (this.#options.team) {
-      const receipt = await this.#options.team.consumeAdoption(input);
-      if (receipt) return receipt;
-      throw invalidAccountAdoptionProof();
-    }
     const proofId = parseAccountAdoptionProofId(input.proofId);
     const proofCredential = parseAccountAdoptionCredential(input.proofCredential);
     const expectedAccount = parseAccountAdoptionAccount(input.expectedAccount);
@@ -1415,167 +1370,6 @@ export class IdentityService {
         proofId,
       };
     });
-  }
-
-  /**
-   * Binds the verified Account subject to the existing local administrator.
-   * The verifier must authenticate the control-plane grant before this method
-   * starts its database transaction.
-   */
-  async completeAccountAdoption(
-    grant: unknown,
-    session: AuthenticatedSession,
-  ): Promise<{
-    readonly account: AccountAdoptionAccount;
-    readonly proofId: string;
-    readonly providerId: string;
-    readonly userId: UserId;
-  }> {
-    const adoption = this.#options.accountAdoption;
-    if (!adoption) {
-      throw new OpensteerError({
-        code: "not_found",
-        message: "Account attachment completion is not configured",
-      });
-    }
-    const verified = parseVerifiedAccountAdoptionGrant(await adoption.grantVerifier.verify(grant));
-    if (!("userId" in verified.authorizedBy)) throw invalidAccountAdoptionGrant();
-    const authorizedBy = verified.authorizedBy;
-    const logicalProviderId = parseLogicalProviderId(adoption.logicalProviderId);
-    const providerId = oidcIdentityProviderIdForIssuer(logicalProviderId, verified.account.issuer);
-    const now = new Date();
-    await this.#database.transaction().execute(async (transaction) => {
-      await sqlAdvisoryLock(transaction, "account-adoption-completion");
-      const liveDeployment = await activeDeploymentAuthority(
-        transaction,
-        true,
-        requiredHostKeyFingerprint(this.#options.hostKeyFingerprint),
-      );
-      if (!sameAccountAdoptionAuthority(liveDeployment, verified.deployment)) {
-        throw invalidAccountAdoptionGrant();
-      }
-      await requireLiveAdministratorSession(transaction, session, now);
-      if (authorizedBy.userId !== session.user.id || authorizedBy.sessionId !== session.id) {
-        throw invalidAccountAdoptionGrant();
-      }
-      const proof = await transaction
-        .selectFrom("hostAccountAdoptionProofs")
-        .selectAll()
-        .where("id", "=", verified.proofId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (
-        !proof?.consumedAt ||
-        proof.consumedAt.getTime() !== verified.consumedAt.getTime() ||
-        proof.expectedIssuer !== verified.account.issuer ||
-        proof.expectedSubject !== verified.account.subject ||
-        proof.authorizedByUserId !== session.user.id ||
-        proof.authorizedBySessionId !== session.id ||
-        !sameAccountAdoptionAuthority(accountAdoptionAuthorityFromRow(proof), liveDeployment)
-      ) {
-        throw invalidAccountAdoptionGrant();
-      }
-
-      const configuredProvider = await transaction
-        .selectFrom("accountDirectoryProvider")
-        .select(["issuer", "providerId"])
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (
-        configuredProvider &&
-        (configuredProvider.issuer !== verified.account.issuer ||
-          configuredProvider.providerId !== providerId)
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "This Deployment is attached to a different Opensteer Account issuer",
-        });
-      }
-      const accountBindings = await transaction
-        .selectFrom("authAccounts")
-        .select(["accountId", "providerId", "userId"])
-        .where("providerId", "like", `oidc.${logicalProviderId}.%`)
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
-        .execute();
-      if (proof.completedAt) {
-        if (
-          configuredProvider?.issuer === verified.account.issuer &&
-          configuredProvider.providerId === providerId &&
-          accountBindings.length === 1 &&
-          accountBindings[0]?.accountId === verified.account.subject &&
-          accountBindings[0].providerId === providerId &&
-          accountBindings[0].userId === session.user.id
-        ) {
-          return;
-        }
-        throw invalidAccountAdoptionGrant();
-      }
-      if (accountBindings.length > 0) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "This Deployment already has an Opensteer Account binding",
-        });
-      }
-
-      if (!configuredProvider) {
-        await transaction
-          .insertInto("accountDirectoryProvider")
-          .values({
-            issuer: verified.account.issuer,
-            providerId,
-            singletonKey: "opensteer-account",
-          })
-          .executeTakeFirstOrThrow();
-      }
-      await transaction
-        .insertInto("authAccounts")
-        .values({
-          accessToken: null,
-          accessTokenExpiresAt: null,
-          accountId: verified.account.subject,
-          id: createId("authAccount"),
-          idToken: null,
-          password: null,
-          providerId,
-          refreshToken: null,
-          refreshTokenExpiresAt: null,
-          scope: null,
-          userId: session.user.id,
-        })
-        .executeTakeFirstOrThrow();
-      const completion = await transaction
-        .updateTable("hostAccountAdoptionProofs")
-        .set({ completedAt: now })
-        .where("id", "=", verified.proofId)
-        .where("completedAt", "is", null)
-        .executeTakeFirst();
-      if (completion.numUpdatedRows !== 1n) throw invalidAccountAdoptionGrant();
-      await transaction
-        .insertInto("securityAudit")
-        .values({
-          action: "instance.account-adopted",
-          actorSessionId: session.id,
-          actorUserId: session.user.id,
-          id: createId("securityAudit"),
-          metadata: sqlJson({
-            grantId: verified.grantId,
-            issuer: verified.account.issuer,
-            proofId: verified.proofId,
-            providerId,
-          }),
-          requestId: null,
-          targetId: liveDeployment.deploymentId,
-          targetType: "deployment",
-        })
-        .executeTakeFirstOrThrow();
-    });
-    return {
-      account: verified.account,
-      proofId: verified.proofId,
-      providerId,
-      userId: session.user.id,
-    };
   }
 
   async signInPassword(
@@ -1713,7 +1507,9 @@ export class IdentityService {
     input: PasswordSignup,
     headers: Headers,
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
-    if (!this.#options.localPasswordEnabled) {
+    // A Home has one owner and admits nobody else by sign-up: its owner is created
+    // only by the claim below. Open sign-up exists for development identities alone.
+    if (!this.#options.localPasswordEnabled || this.#options.signupPolicy !== "open") {
       throw new OpensteerError({ code: "not_found", message: "Password signup is disabled" });
     }
     return this.#signUpPassword(input, headers);
@@ -1730,9 +1526,6 @@ export class IdentityService {
       });
     }
     const email = normalizeIdentityEmail(input.email);
-    if (this.#options.signupPolicy !== "open") {
-      await this.#reserveSignupAdmission(headers, email);
-    }
     const displayName = personNameFromSignIn(input.displayName, email);
     const response = await this.#auth.handler(
       new Request(new URL(`${internalAuthPath}/sign-up/email`, this.#options.publicOrigin), {
@@ -1760,13 +1553,33 @@ export class IdentityService {
     credentials: PasswordCredentials,
     headers: Headers,
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
+    if (this.#options.managedOwner) throw managedOwnerSetupRefused();
     if (!this.#options.localPasswordEnabled) {
       throw new OpensteerError({ code: "not_found", message: "Password setup is disabled" });
     }
     return this.#claimInitialOwner(credentials, headers);
   }
 
-  async #claimInitialOwner(
+  #serializeOwnerSetup<Value>(step: () => Promise<Value>): Promise<Value> {
+    const result = this.#ownerSetup.then(step, step);
+    this.#ownerSetup = result.catch(() => undefined);
+    return result;
+  }
+
+  #claimInitialOwner(
+    credentials: PasswordSignup,
+    headers: Headers,
+  ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
+    return this.#serializeOwnerSetup(() => this.#claimInitialOwnerNow(credentials, headers));
+  }
+
+  /**
+   * Creates the owner, their password credential and spends both setup proofs
+   * (the enrollment and this browser's admission) in one transaction, and only
+   * then signs them in. A crash or refusal leaves either nothing or a finished
+   * claim; one admission can never yield a second user.
+   */
+  async #claimInitialOwnerNow(
     credentials: PasswordSignup,
     headers: Headers,
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
@@ -1774,34 +1587,146 @@ export class IdentityService {
     if (!admission || admission.purpose !== "setup") {
       throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
     }
+    if (!IdentityPasswordSchema.safeParse(credentials.password).success) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: `Password must contain between ${identityPasswordMinLength} and ${identityPasswordMaxLength} characters`,
+      });
+    }
     const email = normalizeIdentityEmail(credentials.email);
-    const existing = await this.#database
-      .selectFrom("users")
-      .select("id")
-      .where("email", "=", email)
-      .executeTakeFirst();
+    const passwords = (await this.#auth.$context).password;
+    const passwordHash = await passwords.hash(credentials.password);
+    await this.#database.transaction().execute(async (transaction) => {
+      await sqlAdvisoryLock(transaction, "initial-owner-setup");
+      const now = new Date();
+      const held = await transaction
+        .selectFrom("authAdmissions")
+        .select(["consumedBy", "expiresAt"])
+        .where("id", "=", admission.id)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      const enrollment = await transaction
+        .selectFrom("ownerEnrollments")
+        .selectAll()
+        .where("id", "=", admission.subjectSelector)
+        .where("kind", "=", "initial")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      const owner = await transaction
+        .selectFrom("users")
+        .select(["email", "id"])
+        .where("disabledAt", "is", null)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (owner) {
+        // The owner's own retry: their claim committed and only the answer was lost.
+        if (owner.email === email && enrollment?.consumedBy === owner.id) return;
+        // An owner an interrupted claim of an earlier release created: finished
+        // only by the person who knows that owner's password.
+        const credential =
+          owner.email === email && enrollment && !enrollment.consumedAt
+            ? await transaction
+                .selectFrom("authAccounts")
+                .select("password")
+                .where("userId", "=", owner.id)
+                .where("providerId", "=", "credential")
+                .executeTakeFirst()
+            : undefined;
+        if (
+          !credential?.password ||
+          !held ||
+          held.consumedBy ||
+          held.expiresAt <= now ||
+          enrollment!.expiresAt <= now ||
+          !(await passwords.verify({ hash: credential.password, password: credentials.password }))
+        )
+          throw new OpensteerError({ code: "conflict", message: "Setup is already complete" });
+        await this.#spendSetupProofs(transaction, enrollment!.id, admission.id, owner.id, now);
+        return;
+      }
+      if (
+        !enrollment ||
+        enrollment.consumedAt ||
+        enrollment.expiresAt <= now ||
+        !held ||
+        held.consumedBy ||
+        held.expiresAt <= now
+      )
+        throw new OpensteerError({ code: "forbidden", message: "Setup enrollment is invalid" });
+      const userId = createId("user");
+      await transaction
+        .insertInto("users")
+        .values({
+          createdAt: now,
+          disabledAt: null,
+          displayName: personNameFromSignIn(credentials.displayName, email),
+          email,
+          emailVerified: false,
+          id: userId,
+          image: null,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+      await transaction
+        .insertInto("authAccounts")
+        .values({
+          accountId: userId,
+          createdAt: now,
+          id: createId("authAccount"),
+          password: passwordHash,
+          providerId: "credential",
+          updatedAt: now,
+          userId,
+        })
+        .executeTakeFirstOrThrow();
+      await this.#spendSetupProofs(transaction, enrollment.id, admission.id, userId, now);
+    });
 
-    // Re-running setup against an account that already exists is the normal
-    // recovery path, not an error: an earlier attempt may have created the user
-    // before the Host was claimed.
-    const authenticated = existing
-      ? await this.#signInPassword({ email, password: credentials.password }, headers)
-      : await this.#signUpPassword(
-          {
-            email,
-            password: credentials.password,
-            ...(credentials.displayName ? { displayName: credentials.displayName } : {}),
-          },
-          headers,
-        );
-
-    const authenticatedHeaders = headersWithResponseCookies(headers, authenticated.headers);
-    const completion = await this.completeInitialOwnerSetup(authenticatedHeaders);
-    const session = await this.requireSession(authenticatedHeaders);
+    const authenticated = await this.#signInPassword(
+      { email, password: credentials.password },
+      headers,
+    );
     const merged = new Headers();
     for (const cookie of authenticated.headers.getSetCookie()) merged.append("set-cookie", cookie);
-    for (const cookie of completion.headers.getSetCookie()) merged.append("set-cookie", cookie);
-    return { data: { session }, headers: merged, status: 200 };
+    for (const cookie of clearAdmissionCookie(this.#options.publicOrigin).getSetCookie())
+      merged.append("set-cookie", cookie);
+    return { data: { session: authenticated.data.session }, headers: merged, status: 200 };
+  }
+
+  async #spendSetupProofs(
+    transaction: Transaction<DatabaseSchema>,
+    enrollmentId: string,
+    admissionId: AuthAdmissionId,
+    owner: UserId,
+    now: Date,
+  ): Promise<void> {
+    await transaction
+      .updateTable("ownerEnrollments")
+      .set({ consumedAt: now, consumedBy: owner })
+      .where("id", "=", enrollmentId)
+      .where("consumedAt", "is", null)
+      .executeTakeFirstOrThrow();
+    const admitted = await transaction
+      .updateTable("authAdmissions")
+      .set({ consumedAt: now, consumedBy: owner })
+      .where("id", "=", admissionId)
+      .where("consumedAt", "is", null)
+      .executeTakeFirst();
+    if (admitted.numUpdatedRows !== 1n)
+      throw new OpensteerError({ code: "conflict", message: "Admission was already consumed" });
+    await transaction
+      .insertInto("securityAudit")
+      .values({
+        action: "instance.initial-owner-claimed",
+        actorSessionId: null,
+        actorUserId: owner,
+        id: createId("securityAudit"),
+        metadata: sqlJson({}),
+        requestId: null,
+        targetId: owner,
+        targetType: "user",
+      })
+      .executeTakeFirstOrThrow();
   }
 
   /**
@@ -1815,13 +1740,13 @@ export class IdentityService {
     enrollmentToken: string,
     headers: Headers = new Headers(),
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
-    const configuredDigest = this.#options.initialOwnerEnrollment?.tokenDigest;
-    if (!configuredDigest || !equalSecretDigests(configuredDigest, digestSecret(enrollmentToken))) {
-      throw new OpensteerError({ code: "forbidden", message: "Local owner proof is invalid" });
-    }
     const owner = this.#options.localMachineOwner;
     if (!owner || this.#options.exposure !== "loopback") {
       throw new OpensteerError({ code: "not_found", message: "Local owner setup is unavailable" });
+    }
+    const configuredDigest = this.#options.initialOwnerEnrollment?.tokenDigest;
+    if (!configuredDigest || !equalSecretDigests(configuredDigest, digestSecret(enrollmentToken))) {
+      throw new OpensteerError({ code: "forbidden", message: "Local owner proof is invalid" });
     }
     const email = normalizeIdentityEmail(owner.email);
     const administrator = await this.#database
@@ -1865,6 +1790,155 @@ export class IdentityService {
     return claimed;
   }
 
+  /**
+   * Claims a managed Home for the Account subject a verified, Account-signed
+   * assertion names. The caller has already checked every binding of that
+   * assertion; this owns the setup code, the one owner and the receipt.
+   *
+   * Exactly one claim commits: the owner, its Account sign-in link, the spent
+   * setup code, whatever `commit` adds (the Account link) and the receipt in
+   * one transaction. The same claim again (same code, subject and `claimKey`)
+   * answers the first receipt; anything else against an owned Home is refused.
+   */
+  claimManagedOwner<Receipt>(input: {
+    readonly setupCode: string;
+    readonly subject: string;
+    readonly issuer: string;
+    readonly cloudComputerId: string;
+    readonly owner: {
+      readonly email: string;
+      readonly displayName: string;
+      readonly emailVerified: boolean;
+    };
+    readonly claimKey: string;
+    readonly receipt: Receipt;
+    readonly commit: (transaction: Transaction<DatabaseSchema>, existing: boolean) => Promise<void>;
+  }): Promise<{ readonly receipt: Receipt; readonly replayed: boolean }> {
+    const managed = this.#options.managedOwner;
+    if (!managed)
+      return Promise.reject(
+        new OpensteerError({
+          code: "not_found",
+          message: "This Home is claimed with its setup link, not by an Opensteer Account",
+        }),
+      );
+    const provider = this.#options.oidcProviders.find(
+      (candidate) => candidate.providerId === managed.providerId,
+    )!;
+    return this.#serializeOwnerSetup(async () => {
+      await this.#ensureInitialOwnerEnrollment();
+      const tokenHash = digestSecret(input.setupCode.trim());
+      return this.#database.transaction().execute(async (transaction) => {
+        await sqlAdvisoryLock(transaction, "initial-owner-setup");
+        const enrollment = await transaction
+          .selectFrom("ownerEnrollments")
+          .selectAll()
+          .where("kind", "=", "initial")
+          .where("tokenHash", "=", tokenHash)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        const link = await transaction
+          .selectFrom("personalRemoteAccountLink")
+          .select("singletonKey")
+          .where("singletonKey", "=", "opensteer-account")
+          .where("challengeId", "=", input.cloudComputerId)
+          .where("issuer", "=", input.issuer)
+          .where("subject", "=", input.subject)
+          .where("state", "=", "active")
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        const existing = await transaction
+          .selectFrom("users")
+          .select("id")
+          .where("disabledAt", "is", null)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        if (existing) {
+          const account = await transaction
+            .selectFrom("authAccounts")
+            .select("userId")
+            .where("userId", "=", existing.id)
+            .where("providerId", "=", oidcIdentityProviderId(provider))
+            .where("accountId", "=", input.subject)
+            .executeTakeFirst();
+          if (!account || !link)
+            throw new OpensteerError({
+              code: "conflict",
+              message: "This Home already has a different owner",
+              reason: "managed-home-owned",
+            });
+          const claimed = await transaction
+            .selectFrom("securityAudit")
+            .select("metadata")
+            .where("action", "=", "instance.managed-owner-claimed")
+            .where("targetId", "=", existing.id)
+            .where(sql<string>`metadata->>'claimKey'`, "=", input.claimKey)
+            .executeTakeFirst();
+          if (claimed) return { receipt: claimed.metadata["receipt"] as Receipt, replayed: true };
+        }
+        if (
+          !existing &&
+          (!enrollment || enrollment.consumedAt || enrollment.expiresAt <= new Date())
+        )
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "That setup code is incorrect or expired",
+            reason: "managed-home-setup-code-invalid",
+          });
+        const now = new Date();
+        const owner = existing?.id ?? createId("user");
+        if (!existing && enrollment) {
+          await transaction
+            .insertInto("users")
+            .values({
+              createdAt: now,
+              disabledAt: null,
+              displayName: personNameFromSignIn(input.owner.displayName, input.owner.email),
+              email: normalizeIdentityEmail(input.owner.email),
+              emailVerified: input.owner.emailVerified,
+              id: owner,
+              image: null,
+              updatedAt: now,
+            })
+            .executeTakeFirstOrThrow();
+          // The owner's Opensteer Account is their only way in: SSO finds this link by subject.
+          await transaction
+            .insertInto("authAccounts")
+            .values({
+              accountId: input.subject,
+              createdAt: now,
+              id: createId("authAccount"),
+              providerId: oidcIdentityProviderId(provider),
+              updatedAt: now,
+              userId: owner,
+            })
+            .executeTakeFirstOrThrow();
+          await transaction
+            .updateTable("ownerEnrollments")
+            .set({ consumedAt: now, consumedBy: owner })
+            .where("id", "=", enrollment.id)
+            .where("consumedAt", "is", null)
+            .executeTakeFirstOrThrow();
+        }
+        await input.commit(transaction, Boolean(existing));
+        await transaction
+          .insertInto("securityAudit")
+          .values({
+            action: "instance.managed-owner-claimed",
+            actorSessionId: null,
+            actorUserId: null,
+            id: createId("securityAudit"),
+            metadata: sqlJson({ claimKey: input.claimKey, receipt: input.receipt }),
+            requestId: null,
+            targetId: owner,
+            targetType: "user",
+          })
+          .executeTakeFirstOrThrow();
+        return { receipt: input.receipt, replayed: false };
+      });
+    });
+  }
+
   async signOut(headers: Headers): Promise<TokenFreeAuthResponse<{ readonly signedOut: true }>> {
     const session = await this.#authenticateSessionCookie(headers);
     const response = await this.#auth.api.signOut({ asResponse: true, headers });
@@ -1874,6 +1948,8 @@ export class IdentityService {
   }
 
   async beginOidcSignIn(input: {
+    /** Ask the provider who is signing in, even when it holds a session. */
+    readonly chooseAccount?: boolean;
     readonly headers: Headers;
     readonly oauthQuery?: string;
     readonly providerId: string;
@@ -1908,6 +1984,7 @@ export class IdentityService {
         body: JSON.stringify({
           callbackURL: callbackUrl.toString(),
           ...(input.oauthQuery ? { oauth_query: input.oauthQuery } : {}),
+          ...(input.chooseAccount ? { additionalParams: { max_age: "0", prompt: "login" } } : {}),
           providerId: oidcIdentityProviderId(provider),
           requestSignUp: true,
         }),
@@ -1923,70 +2000,86 @@ export class IdentityService {
     }
     return {
       data: {
-        redirectUrl: this.#options.team ? this.#versionedTeamOidcRedirect(body.url) : body.url,
+        redirectUrl: body.url,
       },
       headers: response.headers,
       status: response.status,
     };
   }
 
-  #versionedTeamOidcRedirect(value: string): string {
-    const url = new URL(value),
-      state = url.searchParams.get("state");
-    if (!state)
-      throw new OpensteerError({ code: "internal", message: "OIDC sign-in returned no state" });
-    url.searchParams.set("state", `${teamOidcStatePrefix}${teamApiVersion}.${state}`);
-    return url.toString();
-  }
   async handleOidcCallback(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    if (this.#options.team) {
-      const state = url.searchParams.get("state"),
-        version = state?.startsWith(teamOidcStatePrefix)
-          ? /^([0-9]+)\./u.exec(state.slice(teamOidcStatePrefix.length))?.[1]
-          : undefined;
-      if (!state || !version || !acceptsTeamApiVersion(version))
-        throw new OpensteerError({
-          code: "conflict",
-          reason: "api-version-mismatch",
-          message: teamApiVersionRefusal,
-        });
-      url.searchParams.set("state", state.slice(teamOidcStatePrefix.length + version.length + 1));
-    }
     url.pathname = `${internalAuthPath}/sso/callback`;
     const response = await this.#auth.handler(
       new Request(url, { headers: forwardedAuthHeaders(request.headers), method: "GET" }),
     );
     if (response.status < 300 || response.status >= 400) return response;
+    const refused = this.#anotherAccount(response);
+    if (refused) return refused;
+    const restart = await this.#restartLapsedSignIn(request, response);
+    if (restart) return restart;
     const admission = await this.#admissionFromHeaders(request.headers);
     const authenticatedHeaders = headersWithResponseCookies(request.headers, response.headers);
-    if (this.#options.team) {
-      // The SSO plugin commits its user/account/session transaction before returning this response.
-      const session = await this.#authenticateSessionCookie(authenticatedHeaders, true);
-      if (!session) return response;
-      try {
-        await this.#options.team.admit(session.user.id, admission, session.id);
-      } catch (error) {
-        await this.#database.deleteFrom("authSessions").where("id", "=", session.id).execute();
-        throw error;
-      }
-      const headers = new Headers(response.headers);
-      for (const cookie of clearAdmissionCookie(this.#options.publicOrigin).getSetCookie())
-        headers.append("set-cookie", cookie);
-      return new Response(response.body, { headers, status: response.status });
-    }
     if (!admission) return response;
     const completionHeaders =
       admission.purpose === "setup"
         ? (await this.completeInitialOwnerSetup(authenticatedHeaders)).headers
-        : admission.purpose === "invitation"
-          ? (await this.acceptInvitation(authenticatedHeaders)).headers
-          : undefined;
+        : undefined;
     if (!completionHeaders) return response;
     const headers = new Headers(response.headers);
     for (const cookie of completionHeaders.getSetCookie()) headers.append("set-cookie", cookie);
     headers.set("location", this.#options.publicOrigin.origin);
     return new Response(response.body, { headers, status: response.status });
+  }
+
+  /**
+   * A managed Home's one owner is its Opensteer account. An account the Home has
+   * no person for is refused where Better Auth would create one, and Better Auth
+   * sends that refusal to the Home's page under its own code; this names it as
+   * the one error that page explains, with the response's cookies unchanged.
+   */
+  #anotherAccount(response: Response): Response | null {
+    if (!this.#options.managedOwner) return null;
+    const location = new URL(response.headers.get("location") ?? "/", this.#options.publicOrigin);
+    if (location.origin !== this.#options.publicOrigin.origin) return null;
+    if (location.pathname !== homeSignInErrorPath) return null;
+    if (location.searchParams.get("error") !== signupAdmissionRequiredCode) return null;
+    const named = new URL(homeSignInErrorPath, this.#options.publicOrigin);
+    named.searchParams.set("error", anotherAccountSignInError);
+    const headers = new Headers(response.headers);
+    headers.set("location", named.toString());
+    headers.set("cache-control", "no-store");
+    return new Response(null, { headers, status: response.status });
+  }
+
+  /**
+   * A sign-in whose state this browser no longer holds (its five-minute cookie
+   * lapsed while the person signed in at their identity provider) starts again
+   * once, from the Home's one provider: that provider's live session passes it
+   * straight back with a fresh state. Anything else stays on the Home's page.
+   */
+  async #restartLapsedSignIn(request: Request, response: Response): Promise<Response | null> {
+    const location = new URL(response.headers.get("location") ?? "/", this.#options.publicOrigin);
+    if (location.origin !== this.#options.publicOrigin.origin) return null;
+    if (location.pathname !== homeSignInErrorPath) return null;
+    if (!lapsedStateErrors.has(location.searchParams.get("error") ?? "")) return null;
+    const [provider, ...others] = this.#options.oidcProviders;
+    const now = Date.now();
+    for (const [state, until] of this.#restartedSignIns)
+      if (until <= now) this.#restartedSignIns.delete(state);
+    const state = new URL(request.url).searchParams.get("state");
+    if (!provider || others.length > 0 || !state || this.#restartedSignIns.has(state)) return null;
+    if (this.#restartedSignIns.size >= maximumRestartedSignIns) return null;
+    const begun = await this.beginOidcSignIn({
+      headers: request.headers,
+      providerId: provider.providerId,
+      returnPath: "/",
+    });
+    const restartedState = new URL(begun.data.redirectUrl).searchParams.get("state");
+    if (restartedState) this.#restartedSignIns.set(restartedState, now + restartedSignInLifetimeMs);
+    const headers = new Headers({ "cache-control": "no-store", location: begun.data.redirectUrl });
+    for (const cookie of begun.headers.getSetCookie()) headers.append("set-cookie", cookie);
+    return new Response(null, { headers, status: 302 });
   }
 
   async listSessions(current: AuthenticatedSession): Promise<readonly AuthSessionSummary[]> {
@@ -2065,160 +2158,21 @@ export class IdentityService {
     this.announceSessionsEnded([parsedId], afterResponse);
   }
 
-  /**
-   * A team's native sign-in without a browser: an Account identity assertion, plus an invite for
-   * anyone not yet a member, becomes the token set the browser flow would have issued to the
-   * application the assertion names.
-   */
-  async exchangeTeamSession(input: {
-    readonly assertion: unknown;
-    readonly invite?: TeamInviteSecret;
-    readonly userAgent: string | null;
-  }): Promise<{
-    readonly admitted: boolean;
-    readonly userId: UserId;
-    readonly tokens: NativeTokenResponse;
-  }> {
-    const team = this.#options.team;
-    if (!team || !this.#options.nativeOAuth)
-      throw new OpensteerError({ code: "not_found", message: "Team sign-in is unavailable" });
-    const claims = await team.verifyIdentity(input.assertion);
-    const client = this.#options.nativeOAuth.clients.find(
-      (candidate) => candidate.application === claims.surface,
-    );
-    if (!client) refuseEntry("assertion-invalid");
-    const entry = await team.admitAccountIdentity(claims, input.invite);
-    return {
-      admitted: entry.admitted,
-      userId: entry.userId,
-      tokens: await this.#issueNativeTokens(entry, client, input.userAgent),
-    };
-  }
-
-  /**
-   * Runs the authorization server's own code flow for a fresh generation-fenced session, so the
-   * tokens are indistinguishable from a browser sign-in's: same consent, hashing and refresh.
-   */
-  async #issueNativeTokens(
-    entry: { readonly userId: UserId; readonly generation: string },
-    client: NativeOAuthClient,
-    userAgent: string | null,
-  ): Promise<NativeTokenResponse> {
-    const origin = this.#options.publicOrigin;
-    const now = new Date();
-    const sessionId = createId("authSession");
-    const token = randomBytes(32).toString("base64url");
-    await this.#database
-      .insertInto("authSessions")
-      .values({
-        absoluteExpiresAt: new Date(now.getTime() + absoluteSessionMilliseconds),
-        createdAt: now,
-        deviceLabel: describeSessionDevice(userAgent).label,
-        expiresAt: new Date(now.getTime() + idleSessionSeconds * 1_000),
-        id: sessionId,
-        ipAddress: null,
-        lastSeenAt: now,
-        memberGeneration: entry.generation,
-        token,
-        updatedAt: now,
-        userAgent,
-        userId: entry.userId,
-      })
-      .executeTakeFirstOrThrow();
-    try {
-      const signed = `${token}.${createHmac("sha256", this.#options.secret).update(token).digest("base64")}`;
-      const cookie = `${origin.protocol === "https:" ? "__Host-opensteer.session" : localSessionCookieName}=${encodeURIComponent(signed)}`;
-      const verifier = randomBytes(48).toString("base64url");
-      const state = randomBytes(24).toString("base64url");
-      const [redirectUri] = client.redirectUris as readonly [string, ...string[]];
-      const authorize = new URL(`${internalAuthPath}/oauth2/authorize`, origin);
-      for (const [name, value] of Object.entries({
-        client_id: client.clientId,
-        code_challenge: createHash("sha256").update(verifier).digest("base64url"),
-        code_challenge_method: "S256",
-        prompt: "consent",
-        redirect_uri: redirectUri,
-        response_type: "code",
-        scope: nativeOAuthScopes.join(" "),
-        state,
-      }))
-        authorize.searchParams.set(name, value);
-      const consentPage = await nativeFlowUrl(
-        await this.#auth.handler(
-          new Request(authorize, { headers: { accept: "application/json", cookie } }),
-        ),
-      );
-      const callback = await nativeFlowUrl(
-        await this.#auth.handler(
-          new Request(new URL(`${internalAuthPath}/oauth2/consent`, origin), {
-            body: JSON.stringify({ accept: true, oauth_query: consentPage.search.slice(1) }),
-            headers: { "content-type": "application/json", cookie, origin: origin.origin },
-            method: "POST",
-          }),
-        ),
-      );
-      const code = callback.searchParams.get("code");
-      if (callback.searchParams.get("state") !== state || !code)
-        throw new Error("Native authorization returned no code");
-      const response = await this.#auth.handler(
-        new Request(new URL(`${internalAuthPath}/oauth2/token`, origin), {
-          body: new URLSearchParams({
-            client_id: client.clientId,
-            code,
-            code_verifier: verifier,
-            grant_type: "authorization_code",
-            redirect_uri: redirectUri,
-            resource: origin.origin,
-          }),
-          headers: { "content-type": "application/x-www-form-urlencoded" },
-          method: "POST",
-        }),
-      );
-      if (!response.ok) throw new Error(`Native token request returned HTTP ${response.status}`);
-      return NativeTokenResponseSchema.parse(await response.json());
-    } catch (error) {
-      await this.#database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
-      throw new OpensteerError({
-        cause: error,
-        code: "internal",
-        message: "Team sign-in could not be completed",
-      });
-    }
-  }
-
-  async exchangeTeamInvitation(selector: string, verifier: string, headers: Headers) {
-    const team = this.#options.team;
-    if (!team)
-      throw new OpensteerError({ code: "not_found", message: "Team invitations are unavailable" });
-    const invite = await team.invites.verify(selector, verifier);
-    return this.#createOrReuseAdmission(
-      {
-        purpose: "invitation",
-        reservedEmail: null,
-        subjectSelector: invite.selector,
-        maxPending: invite.maxUses === 1 ? 1 : maxPendingAdmissionsPerInvite,
-      },
-      headers,
-    );
-  }
-  async acceptInvitation(headers: Headers, authenticated?: AuthenticatedSession) {
-    const team = this.#options.team;
-    if (!team)
-      throw new OpensteerError({ code: "not_found", message: "Team invitations are unavailable" });
-    const session = authenticated ?? (await this.requireSession(headers));
-    const proof = await this.#admissionFromHeaders(headers);
-    const generation = await team.admit(session.user.id, proof);
-    return {
-      headers: clearAdmissionCookie(this.#options.publicOrigin),
-      membership: { userId: session.user.id, generation },
-    };
-  }
-
-  async exchangeInitialOwnerEnrollment(
+  exchangeInitialOwnerEnrollment(
     token: string,
     headers: Headers = new Headers(),
   ): Promise<TokenFreeAuthResponse<{ readonly admitted: true }>> {
-    if (!this.#options.team) await this.#ensureInitialOwnerEnrollment();
+    // Queued behind a claim in flight, so a second browser's exchange cannot
+    // replace the admission a claim is completing with.
+    return this.#serializeOwnerSetup(() => this.#exchangeInitialOwnerEnrollment(token, headers));
+  }
+
+  async #exchangeInitialOwnerEnrollment(
+    token: string,
+    headers: Headers,
+  ): Promise<TokenFreeAuthResponse<{ readonly admitted: true }>> {
+    if (this.#options.managedOwner) throw managedOwnerSetupRefused();
+    await this.#ensureInitialOwnerEnrollment();
     const tokenHash = digestSecret(token.trim());
     const [enrollment, administrator] = await Promise.all([
       this.#database
@@ -2227,13 +2181,11 @@ export class IdentityService {
         .where("tokenHash", "=", tokenHash)
         .where("kind", "=", "initial")
         .executeTakeFirst(),
-      this.#options.team
-        ? this.#options.team.hasOwner()
-        : this.#database
-            .selectFrom("users")
-            .select("id")
-            .where("disabledAt", "is", null)
-            .executeTakeFirst(),
+      this.#database
+        .selectFrom("users")
+        .select("id")
+        .where("disabledAt", "is", null)
+        .executeTakeFirst(),
     ]);
     if (
       administrator ||
@@ -2263,11 +2215,6 @@ export class IdentityService {
     readonly userId: UserId;
   }> {
     const session = await this.requireSession(headers);
-    if (this.#options.team) {
-      if (!(await this.#options.team.hasOwner()))
-        throw new OpensteerError({ code: "forbidden", message: "Owner admission required" });
-      return { headers: clearAdmissionCookie(this.#options.publicOrigin), userId: session.user.id };
-    }
     const admission = await this.#admissionFromHeaders(headers);
     if (!admission || admission.purpose !== "setup") {
       throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
@@ -2467,65 +2414,13 @@ export class IdentityService {
     return row;
   }
 
-  async #reserveSignupAdmission(headers: Headers, email: string): Promise<void> {
-    const admission = await this.#admissionFromHeaders(headers);
-    if (!admission || admission.consumedBy) {
-      throw new OpensteerError({ code: "forbidden", message: "Signup admission required" });
-    }
-    const now = new Date();
-    let update = this.#database
-      .updateTable("authAdmissions")
-      .set({ reservedAt: now, reservedEmail: email })
-      .where("id", "=", admission.id)
-      .where("consumedAt", "is", null);
-    if (admission.purpose !== "setup") {
-      // An invitation names the address it was issued for, so its admission
-      // pins that address. A setup admission proves possession of the Host's
-      // own credential and says nothing about which address should own it, so
-      // correcting a mistyped email must not require waiting out the admission.
-      update = update.where((expression) =>
-        expression.or([
-          expression("reservedEmail", "is", null),
-          expression("reservedEmail", "=", email),
-        ]),
-      );
-    }
-    const result = await update.executeTakeFirst();
-    if (result.numUpdatedRows !== 1n) {
-      throw new OpensteerError({ code: "forbidden", message: "Signup admission is unavailable" });
-    }
-  }
-
-  async #requireSignupAdmission(request: Request | undefined, email: string): Promise<void> {
-    if (this.#options.team) {
-      const proof = request ? await this.#admissionFromHeaders(request.headers) : null;
-      if (!proof) throw new APIError("FORBIDDEN", { message: "Team admission required" });
-      await this.#options.team.validateAdmission(proof);
-      return;
-    }
+  async #requireSignupAdmission(_request: Request | undefined): Promise<void> {
     if (this.#options.signupPolicy === "open") return;
-    if (!request) throw new APIError("FORBIDDEN", { message: "Signup admission required" });
-    const admission = await this.#admissionFromHeaders(request.headers);
-    if (
-      !admission ||
-      admission.consumedBy ||
-      (admission.reservedEmail !== null && admission.reservedEmail !== email)
-    ) {
-      throw new APIError("FORBIDDEN", { message: "Signup admission required" });
-    }
-    if (admission.purpose === "invitation")
-      throw new APIError("FORBIDDEN", { message: "Team admission required" });
-    if (admission.purpose === "setup") {
-      const enrollment = await this.#database
-        .selectFrom("ownerEnrollments")
-        .select(["consumedAt", "expiresAt"])
-        .where("id", "=", admission.subjectSelector)
-        .where("kind", "=", "initial")
-        .executeTakeFirst();
-      if (!enrollment || enrollment.consumedAt || enrollment.expiresAt <= new Date()) {
-        throw new APIError("FORBIDDEN", { message: "Signup admission required" });
-      }
-    }
+    // A Home's one owner is created by its setup claim, never by a sign-up.
+    throw new APIError("FORBIDDEN", {
+      code: signupAdmissionRequiredCode,
+      message: "Signup admission required",
+    });
   }
 
   async #consumeAdmission(id: AuthAdmissionId, userId: UserId): Promise<void> {
@@ -2577,6 +2472,7 @@ function createOpensteerAuth(
       storeAccountCookie: false,
     },
     advanced: {
+      ipAddress: { ipAddressHeaders: [vettedClientAddressHeader] },
       cookies: {
         session_token: {
           attributes: { httpOnly: true, path: "/", sameSite: "lax", secure },
@@ -2599,44 +2495,13 @@ function createOpensteerAuth(
       useSecureCookies: false,
     },
     appName: "Opensteer",
+    // Every sign-in failure lands on the Home's own page, which says what
+    // happened and offers to start again. The default is an internal path.
+    onAPIError: { errorURL: new URL(homeSignInErrorPath, options.publicOrigin).toString() },
     basePath: internalAuthPath,
     baseURL: options.publicOrigin.origin,
     database: databaseOption,
     databaseHooks: {
-      ...(options.team
-        ? {
-            account: {
-              create: {
-                before: async (account) => ({
-                  data: {
-                    ...account,
-                    accessToken: null,
-                    refreshToken: null,
-                    idToken: null,
-                    accessTokenExpiresAt: null,
-                    refreshTokenExpiresAt: null,
-                    scope: null,
-                    password: null,
-                  },
-                }),
-              },
-              update: {
-                before: async (account) => ({
-                  data: {
-                    ...account,
-                    accessToken: null,
-                    refreshToken: null,
-                    idToken: null,
-                    accessTokenExpiresAt: null,
-                    refreshTokenExpiresAt: null,
-                    scope: null,
-                    password: null,
-                  },
-                }),
-              },
-            },
-          }
-        : {}),
       session: {
         create: {
           before: async (session, context) => {
@@ -2711,27 +2576,10 @@ function createOpensteerAuth(
                   issuer: provider.issuer,
                   pkce: true,
                   scopes: ["openid", "email", "profile"],
-                  ...(options.team
-                    ? { mapping: { extraFields: { profileReceipt: personProfileReceiptClaim } } }
-                    : {}),
                 },
                 providerId: oidcIdentityProviderId(provider),
               })),
               disableImplicitSignUp: options.signupPolicy !== "open",
-              ...(options.team
-                ? {
-                    // A team takes each member's Account name at every browser sign-in. Best
-                    // effort: a failure keeps the old name and never blocks signing in.
-                    provisionUserOnEveryLogin: true,
-                    provisionUser: async ({ user, userInfo }) => {
-                      const receipt = userInfo.profileReceipt;
-                      if (typeof receipt !== "string" || !options.team) return;
-                      await options.team
-                        .applyProfile(UserIdSchema.parse(user.id), receipt)
-                        .catch(() => false);
-                    },
-                  }
-                : {}),
               domainVerification: { enabled: false },
               modelName: "authSsoProviders",
               organizationProvisioning: { disabled: true },
@@ -2893,52 +2741,6 @@ function parseAccountAdoptionAuthority(input: AccountAdoptionAuthority): Account
   };
 }
 
-function parseVerifiedAccountAdoptionGrant(
-  input: VerifiedAccountAdoptionGrant,
-): VerifiedAccountAdoptionGrant {
-  const proofId = parseAccountAdoptionProofId(input?.proofId);
-  const account = parseAccountAdoptionAccount(input?.account);
-  const deployment = parseAccountAdoptionAuthority(input?.deployment);
-  const by = input?.authorizedBy;
-  const userId = UserIdSchema.safeParse(by && "userId" in by ? by.userId : null);
-  const sessionId = AuthSessionIdSchema.safeParse(by && "sessionId" in by ? by.sessionId : null);
-  const consumedAt = input?.consumedAt instanceof Date ? input.consumedAt : null;
-  const issuedAt = input?.issuedAt instanceof Date ? input.issuedAt : null;
-  const expiresAt = input?.expiresAt instanceof Date ? input.expiresAt : null;
-  const grantId =
-    typeof input?.grantId === "string" &&
-    /^hag_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
-      input.grantId,
-    )
-      ? input.grantId
-      : null;
-  if (
-    !userId.success ||
-    !sessionId.success ||
-    !consumedAt ||
-    !Number.isFinite(consumedAt.getTime()) ||
-    !issuedAt ||
-    !Number.isFinite(issuedAt.getTime()) ||
-    !expiresAt ||
-    !Number.isFinite(expiresAt.getTime()) ||
-    expiresAt <= issuedAt ||
-    expiresAt <= new Date() ||
-    !grantId
-  ) {
-    throw invalidAccountAdoptionGrant();
-  }
-  return {
-    account,
-    authorizedBy: { sessionId: sessionId.data, userId: userId.data },
-    consumedAt,
-    deployment,
-    expiresAt,
-    grantId,
-    issuedAt,
-    proofId,
-  };
-}
-
 function accountAdoptionAuthorityFromRow(input: {
   readonly canonicalOrigin: string;
   readonly deploymentId: string;
@@ -2991,25 +2793,12 @@ async function requireLiveAdministratorSession(
     .where("s.userId", "=", session.user.id)
     .forShare("s")
     .executeTakeFirst();
-  const deployment = await transaction
-    .selectFrom("deployments")
-    .select("deploymentShape")
-    .executeTakeFirstOrThrow();
-  const owner =
-    deployment.deploymentShape.kind === "team"
-      ? await transaction
-          .selectFrom("teamMembers")
-          .select("userId as id")
-          .where("userId", "=", session.user.id)
-          .where("role", "in", ["owner", "admin"])
-          .where("state", "=", "active")
-          .executeTakeFirst()
-      : await transaction
-          .selectFrom("users")
-          .select("id")
-          .orderBy("createdAt")
-          .orderBy("id")
-          .executeTakeFirst();
+  const owner = await transaction
+    .selectFrom("users")
+    .select("id")
+    .orderBy("createdAt")
+    .orderBy("id")
+    .executeTakeFirst();
   if (
     !row ||
     !owner ||
@@ -3057,13 +2846,6 @@ function invalidOperatorRecoveryLink(): OpensteerError {
   return new OpensteerError({
     code: "unauthorized",
     message: "This password recovery link is invalid, expired, or already used",
-  });
-}
-
-function invalidAccountAdoptionGrant(): OpensteerError {
-  return new OpensteerError({
-    code: "forbidden",
-    message: "Account attachment grant does not match this Deployment",
   });
 }
 
@@ -3191,12 +2973,6 @@ const NativeTokenResponseSchema = z.object({
 export type NativeTokenResponse = z.infer<typeof NativeTokenResponseSchema>;
 
 /** The next step of an in-process native authorization, from its JSON redirect answer. */
-async function nativeFlowUrl(response: Response): Promise<URL> {
-  if (!response.ok) throw new Error(`Native authorization returned HTTP ${response.status}`);
-  const body = z.object({ url: z.string().min(1) }).parse(await response.json());
-  return new URL(body.url, "http://native-flow.invalid");
-}
-
 function nativeOAuthError(status: number, error: string, description: string): Response {
   return new Response(JSON.stringify({ error, error_description: description }), {
     headers: { "content-type": "application/json" },
@@ -3283,9 +3059,16 @@ async function assertSuccessfulBetterAuthResponse(response: Response): Promise<v
   });
 }
 
+/**
+ * The one header the sign-in library reads a client's address from. The Host
+ * sets it at ingress to the address its own proxy policy vetted and overwrites
+ * any value a client sent; forwarding headers never reach the library.
+ */
+export const vettedClientAddressHeader = "x-opensteer-client-address";
+
 function forwardedAuthHeaders(headers: Headers, json = false): Headers {
   const forwarded = new Headers();
-  for (const name of ["cookie", "origin", "referer", "user-agent", "x-forwarded-for"]) {
+  for (const name of ["cookie", "origin", "referer", "user-agent", vettedClientAddressHeader]) {
     const value = headers.get(name);
     if (value) forwarded.set(name, value);
   }
@@ -3398,4 +3181,12 @@ function personalRemoteRouteIntact(
     Number(remote.routeGeneration) === Number(state.generation) &&
     remote.routeOrigin === state.routeOrigin
   );
+}
+
+function managedOwnerSetupRefused(): OpensteerError {
+  return new OpensteerError({
+    code: "not_found",
+    message: "This Home is set up by its Opensteer Account, not with a setup link",
+    reason: "managed-home-setup-link-refused",
+  });
 }

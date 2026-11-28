@@ -1,3 +1,4 @@
+import { redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import type { RunnerLogger } from "../host/host-connection.js";
 
 export class JsonRunnerLogger implements RunnerLogger {
@@ -18,7 +19,7 @@ function formatLog(
   return `${JSON.stringify({
     ...sanitizeDetails(details),
     level,
-    message: message.slice(0, 2_000),
+    message: redactNetworkCredentials(message).slice(0, 2_000),
     service: "opensteer-runner",
     timestamp: new Date().toISOString(),
   })}\n`;
@@ -34,7 +35,7 @@ function sanitizeDetails(details: Readonly<Record<string, unknown>>): Record<str
 
 function sanitizeValue(value: unknown): unknown {
   if (typeof value === "string") {
-    return value
+    return redactNetworkCredentials(value)
       .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]")
       .replace(/os_secret_[A-Za-z0-9_-]+/g, "os_secret_[redacted]")
       .slice(0, 2_000);

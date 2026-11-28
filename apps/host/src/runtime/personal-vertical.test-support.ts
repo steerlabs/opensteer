@@ -161,8 +161,27 @@ export async function startPersonalVertical(options: VerticalStackOptions): Prom
       ...(current.network instanceof RunnerWire ? { wire: current.network } : {}),
       agentHomePreparations: current.agentHomePreparations,
       settledRunEvent: (runId) => current.runner?.settledRunEvent(runId),
-      async crashRunner(beforeRestart) {
-        await current.crashRunner(beforeRestart);
+      stopRunLocally: (runId) => current.runner?.stopRunLocally(runId) ?? false,
+      runStarted: (runId) =>
+        new Promise<void>((resolve, reject) => {
+          const runtime = current.runner;
+          if (!runtime) {
+            reject(new Error("The Runner is not running"));
+            return;
+          }
+          const started = () => runtime.localActivity().some((run) => run.runId === runId);
+          if (started()) {
+            resolve();
+            return;
+          }
+          const stop = runtime.subscribeLocalActivity(() => {
+            if (!started()) return;
+            stop();
+            resolve();
+          });
+        }),
+      async crashRunner(beforeRestart, options) {
+        await current.crashRunner(beforeRestart, options);
       },
       async startAdditionalPersonal() {
         const { agentHome: _home, ...additional } = options;

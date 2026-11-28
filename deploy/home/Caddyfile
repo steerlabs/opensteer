@@ -1,0 +1,39 @@
+{
+	admin off
+	skip_install_trust
+	log {
+		format filter {
+			fields {
+				request>uri regexp "/v1/browser/connect/[^? ]+" /v1/browser/connect/REDACTED
+			}
+		}
+	}
+}
+
+https://{$OPENSTEER_HOME_HOSTNAME} {
+	import /etc/caddy/tls.caddy
+	reverse_proxy 127.0.0.1:4310 {
+		stream_close_delay 5m
+	}
+}
+
+http://127.0.0.1:8080 {
+	@direct_ready {
+		path /ready
+		not header X-Forwarded-For *
+		not header X-Forwarded-Host *
+		not header X-Forwarded-Proto *
+		not header Forwarded *
+	}
+	handle @direct_ready {
+		reverse_proxy 127.0.0.1:4310 {
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -Forwarded
+		}
+	}
+	handle {
+		respond 404
+	}
+}

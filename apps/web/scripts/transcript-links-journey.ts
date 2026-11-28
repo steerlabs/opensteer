@@ -71,7 +71,7 @@ try {
       url: request.url(),
     });
   });
-  // Nothing leaves the machine: anything outside the app answers here.
+  // Supply a local stand-in for pages outside the app.
   await context.route(
     (url) => url.origin !== origin,
     (route) =>
@@ -86,17 +86,15 @@ try {
   /** A fresh copy of the app on `route`, with the reply on screen and its document tagged. */
   const open = async (route: string, replyText: string) => {
     // Expand the task before reloading: restoration runs after the transcript
-    // appears. Use the chrome control because a live page can own the keyboard:
-    // a phone's sheet has Hide computer, and a docked task has Expand under its name.
+    // appears. Use the chrome control matching the target viewport width so a
+    // resize does not race the previous layout's control before it hides.
     if (
       page.url().startsWith(`${origin}/`) &&
       (await page.locator(".workspace--work").isVisible())
     ) {
-      const hide = page.getByRole("button", { name: "Hide computer" });
-      // A resize settles into the phone sheet or the docked task; wait for whichever it becomes.
-      await hide.or(page.locator(".workspace--work .conv-header__menu")).first().waitFor();
-      if (await hide.isVisible()) await hide.click();
-      else {
+      if ((page.viewportSize()?.width ?? 1280) < 768) {
+        await page.getByRole("button", { name: "Hide computer" }).click();
+      } else {
         await page.locator(".workspace--work .conv-header__menu").click();
         await page.getByRole("button", { name: "Expand", exact: true }).click();
       }
@@ -104,7 +102,7 @@ try {
     }
     await page.goto(`${origin}${route}`);
     await waitForHost(page);
-    const reply = page.locator(".md-prose").filter({ hasText: replyText });
+    const reply = page.locator(".md-prose:not(.md-prose--plain)").filter({ hasText: replyText });
     await reply.waitFor();
     await page.locator(".workspace--talk").waitFor();
     await page.evaluate(() =>
@@ -144,9 +142,14 @@ try {
 
   await check("a relative file link keeps the app on its page", async () => {
     const { document, reply } = await open(storageTaskPath, sourcesReplyText);
+    const label = reply.getByText("storage-contract.md", { exact: true });
+    // Bring the reply into view via the stable link text so the unavailable local image
+    // (`![Mount sequence]`) enters near-viewport loading and finishes replacing its
+    // `.asset-image` placeholder with fallback words before scrolling to it.
+    await label.scrollIntoViewIfNeeded();
+    await reply.locator(".asset-image").waitFor({ state: "detached" });
     await reply.getByText("Mount sequence", { exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(artifactDirectory, "sources-reply.png") });
-    const label = reply.getByText("storage-contract.md", { exact: true });
     const isLink = await label.evaluate((element) => element.closest("a") !== null);
     const before = requests.length;
     const opened = await clickWithoutOpening(page, label);
@@ -582,6 +585,16 @@ function frameOf(request: Request): Frame | null {
 }
 
 async function waitForHost(page: Page): Promise<void> {
+  // `main.tsx` loads `./app.js` and `@opensteer/client/mock` via dynamic import after `page.goto()`
+  // settles, so wait for the app bundle to mount under the navigation timeout before timing the
+  // mock Host connection itself.
+  await page.waitForFunction(
+    () =>
+      Boolean(Reflect.get(window, "opensteerMock")) &&
+      (document.getElementById("root")?.childElementCount ?? 0) > 0,
+    undefined,
+    { timeout: 10_000 },
+  );
   try {
     await page.waitForFunction(
       () =>

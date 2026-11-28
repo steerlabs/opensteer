@@ -27,7 +27,7 @@ export interface RemoteAccessController {
 }
 
 /**
- * "Use from anywhere" for one computer. The caller passes its own remote
+ * "Remote access" for one computer. The caller passes its own remote
  * access observation, so a screen reads that status once, and the platform
  * port that signs in and links on this device.
  */

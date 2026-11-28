@@ -148,10 +148,7 @@ export class PersonalResources {
           next: null,
         });
       // Revision-only kinds: a reader learns that something changed and rereads its own view.
-      if (
-        input.kind === "team-replies" ||
-        pluginChangeResources.some((kind) => kind === input.kind)
-      )
+      if (pluginChangeResources.some((kind) => kind === input.kind))
         return PersonalResourceDetailSchema.parse({
           revision,
           data: { kind: input.kind },
@@ -285,17 +282,22 @@ export class PersonalResources {
             kind,
             homes: selected.map(({ id }) => id),
           }));
-        const placements = this.#dependencies.browser.resourcePlacements(
-          rows.slice(0, maxRows).map(({ id }) => id),
-        );
+        const ids = rows.slice(0, maxRows).map(({ id }) => id);
+        const placements = this.#dependencies.browser.resourcePlacements(ids);
+        // Only a Home with a pooled browser reports one; every other Home sends nothing new.
+        const pools = await this.#dependencies.browser.resourcePools(ids);
         const byId = new Map(placements.map((placement) => [placement.runnerId, placement]));
-        return page(rows, (selected) => ({
-          kind,
-          placements: selected.flatMap(({ id }) => {
-            const placement = byId.get(id);
-            return placement ? [placement] : [];
-          }),
-        }));
+        return page(rows, (selected) => {
+          const shown = poolReportsForPage(pools, selected);
+          return {
+            kind,
+            placements: selected.flatMap(({ id }) => {
+              const placement = byId.get(id);
+              return placement ? [placement] : [];
+            }),
+            ...(shown.length ? { pools: shown } : {}),
+          };
+        });
       }
       if (kind === "harness-catalog") {
         const models = await readHarnessCatalogModelPage(tx, ownerId, {
@@ -368,6 +370,7 @@ export class PersonalResources {
             "profile.id",
             "profile.name",
             "profile.homeRunnerId",
+            "profile.purpose",
             "profile.archivedAt",
             "deletion.runnerId as computerId",
             "deletion.state as deletionState",
@@ -383,8 +386,17 @@ export class PersonalResources {
           query = query.where("profile.id", "=", BrowserProfileIdSchema.parse(input.id));
         return page(await query.execute(), (selected) => ({
           kind: "browser-profile",
-          profiles: selected.flatMap(({ archivedAt, id, name, homeRunnerId }) =>
-            archivedAt ? [] : [{ id, name, homeRunnerId }],
+          profiles: selected.flatMap(({ archivedAt, id, name, homeRunnerId, purpose }) =>
+            archivedAt
+              ? []
+              : [
+                  {
+                    id,
+                    name,
+                    homeRunnerId,
+                    ...(purpose === "engine-sign-in" ? { purpose } : {}),
+                  },
+                ],
           ),
           deletions: selected.flatMap(({ id, computerId, deletionState }) =>
             computerId &&
@@ -449,12 +461,16 @@ export class PersonalResources {
               }
             : driver,
         ),
-        providerStateModes: [...(runner?.modules.agents?.providerStateModes ?? [])],
         status: runner ? "connected" : "disconnected",
         can: {
           executeTasks:
             !!runner && !toolFailure && this.#dependencies.execution.canExecute(environment.id),
         },
+        ...(() => {
+          const runnerId = runner?.runnerId ?? environment.runnerId;
+          const stopped = runnerId ? this.#dependencies.runners.agentsStoppedSince(runnerId) : null;
+          return stopped ? { agentsStoppedSince: stopped.toISOString() } : {};
+        })(),
       };
     });
   }
@@ -484,4 +500,12 @@ export class PersonalResources {
         return { kind, available: await this.#browserAvailable(tx, ownerId) };
     }
   }
+}
+
+/** A pooled browser's report rides only the placement page that carries its Runner. */
+export function poolReportsForPage<Report extends { readonly runnerId: string }>(
+  pools: readonly Report[],
+  selected: readonly { readonly id: string }[],
+): Report[] {
+  return pools.filter((pool) => selected.some(({ id }) => id === pool.runnerId));
 }

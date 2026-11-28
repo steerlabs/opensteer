@@ -5,7 +5,8 @@ import {
 import { verify as verifySignature } from "node:crypto";
 import {
   BrowserAttachTicketClaimsSchema,
-  type BrowserAttachTicketClaims,
+  PooledBrowserAttachTicketClaimsSchema,
+  type RuntimeBrowserAttachTicketClaims,
 } from "@opensteer/protocol/browser";
 import { decodeBase64Url } from "@opensteer/shared/base64url";
 import { normalizeEd25519PublicKey, type Ed25519KeySource } from "@opensteer/shared/proof";
@@ -18,7 +19,11 @@ export interface AttachTicketExpectation {
 }
 
 export interface AttachTicketVerifier {
-  verify(token: string, expectation: AttachTicketExpectation): Promise<BrowserAttachTicketClaims>;
+  verify(
+    token: string,
+    expectation: AttachTicketExpectation,
+  ): Promise<RuntimeBrowserAttachTicketClaims>;
+  close?(): Promise<void>;
 }
 
 export type PublicKeySource = Ed25519KeySource;
@@ -34,6 +39,7 @@ export interface Ed25519AttachTicketVerifierOptions {
   maxTicketBytes?: number;
   maxTicketLifetimeMs?: number;
   replayLedgerPath: string;
+  pooled?: true;
   resolvePublicKey: PublicKeyResolver;
 }
 
@@ -43,6 +49,8 @@ export class Ed25519AttachTicketVerifier implements AttachTicketVerifier {
   private readonly maxTicketLifetimeMs: number;
   private readonly replayLedger: DurableAttachTicketReplayLedger;
   private readonly resolvePublicKey: PublicKeyResolver;
+  private readonly parseClaims: (value: unknown) => RuntimeBrowserAttachTicketClaims;
+  private closed = false;
 
   private constructor(
     options: Ed25519AttachTicketVerifierOptions,
@@ -53,6 +61,9 @@ export class Ed25519AttachTicketVerifier implements AttachTicketVerifier {
     this.maxTicketLifetimeMs = options.maxTicketLifetimeMs ?? 5 * 60_000;
     this.replayLedger = replayLedger;
     this.resolvePublicKey = options.resolvePublicKey;
+    this.parseClaims = options.pooled
+      ? (value) => PooledBrowserAttachTicketClaimsSchema.parse(value)
+      : (value) => BrowserAttachTicketClaimsSchema.parse(value);
   }
 
   static async create(
@@ -74,17 +85,25 @@ export class Ed25519AttachTicketVerifier implements AttachTicketVerifier {
     return new Ed25519AttachTicketVerifier(options, replayLedger);
   }
 
+  close(): Promise<void> {
+    this.closed = true;
+    return this.replayLedger.close();
+  }
+
   async verify(
     token: string,
     expectation: AttachTicketExpectation,
-  ): Promise<BrowserAttachTicketClaims> {
+  ): Promise<RuntimeBrowserAttachTicketClaims> {
+    if (this.closed) {
+      throw replayUnavailable(new Error("Attach ticket verifier is closed."));
+    }
     try {
       return await verifyAttachTicket(
         token,
         { runtimeId: expectation.runtimeId, now: (expectation.now ?? new Date()).getTime() },
         {
           decodeBase64Url,
-          parseClaims: (value) => BrowserAttachTicketClaimsSchema.parse(value),
+          parseClaims: this.parseClaims,
           verify: async (keyId, signed, signature) => {
             const source = await this.resolvePublicKey(keyId);
             if (!source) throw forbidden("The browser attach ticket key is not trusted.");

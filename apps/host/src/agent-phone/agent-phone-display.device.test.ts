@@ -1514,16 +1514,34 @@ it.each([
               );
             });
             await phase(`editing-${mode}-limited-command-refusals`, async () => {
-              await dispatch([{ kind: "command", command: "selectAll" }], "refused", "unsupported");
-              await dispatch([{ kind: "command", command: "undo" }], "refused", "unsupported");
               await dispatch(
-                [{ kind: "command", command: "moveBackward" }],
+                [{ kind: "command", command: "selectAll", contextId: (await context()).contextId }],
+                "refused",
+                "unsupported",
+              );
+              await dispatch(
+                [{ kind: "command", command: "undo", contextId: (await context()).contextId }],
+                "refused",
+                "unsupported",
+              );
+              await dispatch(
+                [
+                  {
+                    kind: "command",
+                    command: "moveBackward",
+                    contextId: (await context()).contextId,
+                  },
+                ],
                 "refused",
                 "unsupported",
               );
             });
             await phase(`editing-${mode}-limited-copy-refusal`, async () => {
-              await dispatch([{ kind: "copy" }], "refused", "unsupported");
+              await dispatch(
+                [{ kind: "copy", contextId: (await context()).contextId }],
+                "refused",
+                "unsupported",
+              );
               await dispatch(
                 [{ kind: "cut", contextId: (await context()).contextId }],
                 "refused",
@@ -1531,7 +1549,13 @@ it.each([
               );
             });
             await phase(`editing-${mode}-paste-30000-units`, async () => {
-              await dispatch([{ kind: "paste", text: "\n" + "漢".repeat(30000 - 1) }]);
+              await dispatch([
+                {
+                  kind: "paste",
+                  text: "\n" + "漢".repeat(30000 - 1),
+                  contextId: (await context()).contextId,
+                },
+              ]);
               await receipt("editing_text", before, typed + "\n" + "漢".repeat(30000 - 1));
             });
             return;
@@ -1566,10 +1590,12 @@ it.each([
             const previous = await context(start);
             const selectionCursor = editing.trace.events.length;
             const selectionAfter = await baseline();
-            await dispatch([{ kind: "command", command: "selectAll" }]);
+            await dispatch([
+              { kind: "command", command: "selectAll", contextId: previous.contextId },
+            ]);
             await receipt("editing_selection", selectionAfter, `0:${replaced.length}`);
             expect((await context(selectionCursor)).contextId).not.toBe(previous.contextId);
-            const copy = await dispatch([{ kind: "copy" }]);
+            const copy = await dispatch([{ kind: "copy", contextId: (await context()).contextId }]);
             await editing.wait("selected copy", () =>
               editing.trace.events.find(
                 (event) =>
@@ -1596,9 +1622,13 @@ it.each([
               ),
             );
             await dispatch([{ kind: "cut", contextId: selected.contextId }], "stale", "stale");
-            await dispatch([{ kind: "paste", text: replaced }]);
+            await dispatch([
+              { kind: "paste", text: replaced, contextId: (await context()).contextId },
+            ]);
             const selectionAfter = await baseline();
-            await dispatch([{ kind: "command", command: "selectAll" }]);
+            await dispatch([
+              { kind: "command", command: "selectAll", contextId: (await context()).contextId },
+            ]);
             await receipt("editing_selection", selectionAfter, `0:${replaced.length}`);
           });
           await phase(`editing-${mode}-backspace-twice-over-selection`, async () => {
@@ -1610,12 +1640,16 @@ it.each([
             await receipt("editing_text", after, "");
           });
           await phase(`editing-${mode}-paste-literal-text`, async () => {
-            await dispatch([{ kind: "paste", text: "abcd" }]);
+            await dispatch([
+              { kind: "paste", text: "abcd", contextId: (await context()).contextId },
+            ]);
             await receipt("editing_text", before, "abcd");
           });
           await phase(`editing-${mode}-arrows-and-middle-selection-copy`, async () => {
             const selectionAfter = await baseline();
-            await dispatch([{ kind: "command", command: "moveBackward" }]);
+            await dispatch([
+              { kind: "command", command: "moveBackward", contextId: (await context()).contextId },
+            ]);
             await dispatch([
               {
                 kind: "key",
@@ -1649,7 +1683,9 @@ it.each([
               },
             ]);
             await receipt("editing_selection", selectionAfter, mode === "webview" ? "1:3" : "3:1");
-            const selected = await dispatch([{ kind: "copy" }]);
+            const selected = await dispatch([
+              { kind: "copy", contextId: (await context()).contextId },
+            ]);
             await editing.wait("middle selection", () =>
               editing.trace.events.find(
                 (event) =>
@@ -1695,7 +1731,7 @@ it.each([
               ),
             ).toEqual([]);
             const pasteAfter = await baseline();
-            await dispatch([{ kind: "paste", text: "bc" }]);
+            await dispatch([{ kind: "paste", text: "bc", contextId: (await context()).contextId }]);
             await receipt("editing_text", pasteAfter, "abcd");
             const selectionAfter = await baseline();
             for (let index = 0; index < 2; index += 1)
@@ -1722,16 +1758,24 @@ it.each([
             await receipt("editing_text", before, "d");
           });
           await phase(`editing-${mode}-undo`, async () => {
-            await dispatch([{ kind: "command", command: "selectAll" }]);
-            await dispatch([{ kind: "paste", text: "abcd" }]);
+            await dispatch([
+              { kind: "command", command: "selectAll", contextId: (await context()).contextId },
+            ]);
+            await dispatch([
+              { kind: "paste", text: "abcd", contextId: (await context()).contextId },
+            ]);
             await receipt("editing_text", before, "abcd");
             const undoAfter = await baseline();
-            await dispatch([{ kind: "command", command: "undo" }]);
+            await dispatch([
+              { kind: "command", command: "undo", contextId: (await context()).contextId },
+            ]);
             await receipt("editing_text", undoAfter, "d");
           });
           await phase(`editing-${mode}-accent-replacement`, async () => {
-            await dispatch([{ kind: "command", command: "selectAll" }]);
-            await dispatch([{ kind: "paste", text: "e" }]);
+            await dispatch([
+              { kind: "command", command: "selectAll", contextId: (await context()).contextId },
+            ]);
+            await dispatch([{ kind: "paste", text: "e", contextId: (await context()).contextId }]);
             await receipt("editing_text", before, "e");
             const c = await context(start);
             await dispatch([
@@ -1740,8 +1784,12 @@ it.each([
             await receipt("editing_text", before, "é");
           });
           await phase(`editing-${mode}-paste-30000-units`, async () => {
-            await dispatch([{ kind: "command", command: "moveBackward" }]);
-            await dispatch([{ kind: "paste", text: "漢".repeat(30000) }]);
+            await dispatch([
+              { kind: "command", command: "moveBackward", contextId: (await context()).contextId },
+            ]);
+            await dispatch([
+              { kind: "paste", text: "漢".repeat(30000), contextId: (await context()).contextId },
+            ]);
             await receipt("editing_text", before, "漢".repeat(30000) + "é");
           });
         });
@@ -1767,7 +1815,9 @@ it.each([
         const sendPointer = await pointerSender(editing);
         sendPointer("down", initialPoint);
         sendPointer("up", initialPoint);
-        await dispatch([{ kind: "paste", text: "moved by IME" }]);
+        await dispatch([
+          { kind: "paste", text: "moved by IME", contextId: (await context()).contextId },
+        ]);
         await receipt("editing_text", moveBefore, "moved by IME");
         const moved = await eventually(
           "IME moved editor",
@@ -1793,14 +1843,20 @@ it.each([
         await phone.shell(`am start -W -n ${activity} --es mode sensitive`);
         expect((await context(secretCursor)).field?.sensitive).toBe(true);
         const secret = "fixture-secret";
-        await dispatch([{ kind: "paste", text: secret }]);
+        await dispatch([{ kind: "paste", text: secret, contextId: (await context()).contextId }]);
         await receipt("editing_text", secretAfter, secret);
         if (api >= 33) {
           const selectedAfter = await baseline();
-          await dispatch([{ kind: "command", command: "selectAll" }]);
+          await dispatch([
+            { kind: "command", command: "selectAll", contextId: (await context()).contextId },
+          ]);
           await receipt("editing_selection", selectedAfter, `0:${secret.length}`);
         }
-        await dispatch([{ kind: "copy" }], "refused", api < 33 ? "unsupported" : "sensitive");
+        await dispatch(
+          [{ kind: "copy", contextId: (await context()).contextId }],
+          "refused",
+          api < 33 ? "unsupported" : "sensitive",
+        );
         const cutAfter = await baseline();
         await dispatch(
           [{ kind: "cut", contextId: (await context()).contextId }],
@@ -2510,8 +2566,12 @@ it.each([
           } else
             await testRpcData(
               host.origin,
-              "integration.computer.session.stop",
-              { sessionId: current.id },
+              "commands.dispatch",
+              {
+                type: "integration.computer.session.stop",
+                idempotencyKey: randomUUID(),
+                sessionId: current.id,
+              } as never,
               owner,
             );
           await closed(taskView);
@@ -2557,8 +2617,12 @@ it.each([
                 revoke: async () => {
                   await testRpcData(
                     host.origin,
-                    "integration.computer.session.stop",
-                    { sessionId: current.id },
+                    "commands.dispatch",
+                    {
+                      type: "integration.computer.session.stop",
+                      idempotencyKey: randomUUID(),
+                      sessionId: current.id,
+                    } as never,
                     owner,
                   );
                   await current.finish();

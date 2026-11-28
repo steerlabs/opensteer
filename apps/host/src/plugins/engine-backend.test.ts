@@ -11,7 +11,12 @@ import {
   type ToolSearchInput,
   type PluginEngine,
 } from "@opensteer/plugin-engine-sdk/core";
-import { CurrentMcpExecution } from "@opensteer/plugin-engine-mcp";
+import {
+  CurrentMcpExecution,
+  canonical,
+  parseToolPath,
+  resolveCatalogTools,
+} from "@opensteer/plugin-engine-mcp";
 import { compositeBackend } from "./engine-backend.js";
 import type { engineAccounts } from "./engine-accounts.js";
 
@@ -172,4 +177,94 @@ test("a listing kept while a plugin was Off marks its writes once the plugin is 
   expect(blocked[0]).toEqual(["read", undefined]);
   expect(blocked[1]?.[0]).toBe("write");
   expect(blocked[1]?.[1]).toBeDefined();
+});
+
+test("resolves each path to the tool the engine's own escaping names, a blocked one with its reason", async () => {
+  // A write named "x%" (its path `x%25`) and a read named "x%25" (its path `x%2525`), each kept
+  // from running now for its own reason.
+  const write = { code: "unavailable", message: "The write cannot run now.", next: "Continue." };
+  const read = { code: "unavailable", message: "The read cannot run now.", next: "Continue." };
+  const backend = compositeBackend(
+    { apps: { list: () => Effect.succeed([]) } } as unknown as PluginEngine,
+    { accounts: () => Effect.succeed({ app: {}, user: {} }) } as unknown as ReturnType<
+      typeof engineAccounts
+    >,
+    OwnerId.make("owner"),
+    { caller: "fixture", mode: "automatic" },
+    {
+      authorize: () => Effect.succeed({ allowed: true, grants: {} }),
+      providers: () =>
+        Effect.succeed([
+          {
+            id: "app_server_fixture",
+            name: "Tools server",
+            slug: "tools-server",
+            version: "dpl_fixture",
+            tools: [
+              { name: "x%", description: "Write", inputSchema: { type: "object" } },
+              {
+                name: "x%25",
+                description: "Read",
+                inputSchema: { type: "object" },
+                readOnly: true,
+              },
+              {
+                name: "open",
+                description: "Open",
+                inputSchema: { type: "object" },
+                readOnly: true,
+              },
+            ],
+            toolBlockers: { "x%": write, "x%25": read },
+          },
+        ]),
+      call: () => Effect.succeed({ kind: "value", value: null }),
+    },
+  );
+  const [app] = await Effect.runPromise(backend.listApps());
+  const resolve = (paths: string[]) =>
+    Effect.runPromise(
+      resolveCatalogTools(backend, paths).pipe(
+        Effect.provideService(CurrentMcpExecution, "fixture"),
+      ),
+    );
+  const named = { plugin: "app_server_fixture", name: "Tools server", version: "dpl_fixture" };
+  const bracket = (segment: string) =>
+    `tools[${JSON.stringify(app!.slug)}][${JSON.stringify(segment)}]`;
+  expect(
+    await resolve([
+      `${app!.slug}.x%25`,
+      bracket("x%25"),
+      bracket("x%2525"),
+      `${app!.slug}.open`,
+      `${app!.slug}.missing`,
+    ]),
+  ).toEqual([
+    { ...named, readOnly: false, blocked: write },
+    { ...named, readOnly: false, blocked: write },
+    { ...named, readOnly: true, blocked: read },
+    { ...named, readOnly: true },
+    null,
+  ]);
+});
+
+test("canonical and parseToolPath never throw on invalid bracket strings and extract namespaces cleanly", () => {
+  const malformed = 'tools["fixture"]["line\nbreak"]';
+  expect(() => canonical(malformed)).not.toThrow();
+  expect(canonical(malformed)).toBe(malformed);
+  expect(parseToolPath(malformed)).toEqual({
+    canonical: malformed,
+    namespace: null,
+    malformed: true,
+  });
+  expect(parseToolPath('tools["my.plugin"]["line\\nbreak"]')).toEqual({
+    canonical: "my.plugin.line\nbreak",
+    namespace: "my.plugin",
+    malformed: false,
+  });
+  expect(parseToolPath('tools["fixture"]')).toEqual({
+    canonical: "fixture",
+    namespace: null,
+    malformed: false,
+  });
 });

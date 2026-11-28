@@ -1,8 +1,50 @@
 import CoreGraphics
+import ApplicationServices
 import XCTest
 @testable import ComputerUseCore
 
 final class OwnerInputStateTests: XCTestCase {
+  func testTimedOutFocusedFieldReadIsUnavailable() {
+    XCTAssertThrowsError(try MacOwnerInputWorker.focusedElement(.cannotComplete, value: nil, waitsForClick: true)) {
+      XCTAssertEqual(($0 as? MacOwnerInput.Refusal)?.reason, "unavailable")
+    }
+  }
+
+  func testOwnerAXReadsSpendTheRemainingBatchBudget() {
+    let time = Locked<TimeInterval>(10)
+    let budget = OwnerInputAXBudget(deadline: 13, now: { time.current }, check: {})
+    XCTAssertEqual(budget.timeout(), 2)
+    time.withLock { $0 = 12.625 }
+    XCTAssertEqual(budget.timeout(), 0.375)
+    time.withLock { $0 = 13 }
+    XCTAssertNil(budget.timeout())
+  }
+
+  func testUnansweredOwnerAXReadEndsFurtherReadsWithinTheBatch() {
+    let budget = OwnerInputAXBudget(deadline: 13, now: { 10 }, check: {})
+    OwnerInputAXBudget.$current.withValue(budget) {
+      XCTAssertEqual(budget.timeout(), 2)
+      _ = OwnerInputAXBudget.received(.cannotComplete)
+      XCTAssertNil(budget.timeout())
+    }
+  }
+
+  func testStopDuringPreWriteReadFencesSelectionWrite() throws {
+    let stopped = Locked(false)
+    let effects = Locked(false)
+    let gate: @Sendable () throws -> Void = {
+      if stopped.current { throw MacOwnerInput.Refusal("unavailable") }
+    }
+    let budget = OwnerInputAXBudget(deadline: 13, effects: effects, now: { 10 }, check: gate)
+    let field = AXUIElementCreateApplication(getpid())
+    try OwnerInputAXBudget.$current.withValue(budget) {
+      XCTAssertEqual(budget.timeout(), 2)
+      stopped.withLock { $0 = true }
+      XCTAssertThrowsError(try MacOwnerInputWorker.beginAXWrite(field, proceed: gate))
+      XCTAssertFalse(effects.current)
+    }
+  }
+
   func testAgentWaitsForPersonBatchAndIdleAttachmentDoesNotExclude() async throws {
     let lane = AppMutationCoordinator()
     await lane.beginPerson()
@@ -92,10 +134,10 @@ final class OwnerInputStateTests: XCTestCase {
       #"{"kind":"mouse","phase":"cancel","button":"none","x":0.5,"y":0.5}"#,
       #"{"kind":"scroll","x":0.5,"y":0.5,"dx":0,"dy":0.1}"#,
       #"{"kind":"key","action":"down","key":"a","code":"KeyA"}"#,
-      #"{"kind":"command","command":"selectAll"}"#,
+      #"{"kind":"command","command":"selectAll","contextId":"00000000-0000-4000-8000-000000000001"}"#,
       #"{"kind":"edit","edit":{"contextId":"00000000-0000-0000-0000-000000000001","text":"a","before":"","after":""}}"#,
-      #"{"kind":"paste","text":"a"}"#,
-      #"{"kind":"copy"}"#,
+      #"{"kind":"paste","text":"a","contextId":"00000000-0000-4000-8000-000000000001"}"#,
+      #"{"kind":"copy","contextId":"00000000-0000-4000-8000-000000000001"}"#,
     ]
     for json in inputs {
       let input = try event(json)
@@ -118,34 +160,6 @@ final class OwnerInputStateTests: XCTestCase {
     XCTAssertFalse(lane.isCurrent(second))
     XCTAssertEqual(lane.pendingBatches, 0)
     XCTAssertThrowsError(try lane.admit(sequence: 3, bytes: 1))
-  }
-
-  func testIndependentPersonInputHasVisibleStopPill() {
-    var model = OverlayModel()
-    let app = OverlayModel.App(key: "fixture", name: "Fixture", access: .readWrite, path: "/Fixture.app")
-    let now = Date()
-    model.update(sessions: [.init(id: "owner", threadTitle: nil, apps: [app], ownerInput: true)],
-      ending: .ended, at: now, pointerNear: false)
-    let pill = model.presentation(at: now).pill
-    XCTAssertEqual(pill?.controls, .session)
-    XCTAssertEqual(pill?.status, "Sharing Fixture")
-  }
-
-  func testConcurrentViewsOfOneAppKeepSharingUntilTheLastViewLeaves() {
-    var model = OverlayModel()
-    let app = OverlayModel.App(key: "fixture", name: "Fixture", access: .readWrite, path: "/Fixture.app")
-    let first = OverlayModel.Session(id: "phone", threadTitle: nil, apps: [app], ownerInput: true)
-    let second = OverlayModel.Session(id: "tablet", threadTitle: nil, apps: [app], ownerInput: true)
-    let now = Date()
-    model.update(sessions: [first, second], ending: .ended, at: now)
-    XCTAssertEqual(model.presentation(at: now).pill?.status, "Sharing Fixture")
-    XCTAssertEqual(model.presentation(at: now).pill?.icons.count, 1)
-    model.update(sessions: [second, first], ending: .ended, at: now)
-    XCTAssertEqual(model.presentation(at: now).pill?.controls, .session)
-    model.update(sessions: [second], ending: .ended, at: now)
-    XCTAssertEqual(model.presentation(at: now).pill?.status, "Sharing Fixture")
-    model.update(sessions: [], ending: .ended, at: now)
-    XCTAssertEqual(model.presentation(at: now).pill?.status, "Computer use ended")
   }
 
   func testCaptureIncarnationNeverAcceptsRetiredSamples() {

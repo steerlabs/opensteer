@@ -49,7 +49,7 @@ import type { DurableDeclarations } from "../contracts/declarations.ts";
 import { runtimeAdapter } from "./runtime.ts";
 
 import { connectedWorkerdApps, TransportClosed, workerdHostHandler } from "./workerd-client.ts";
-import { workerdHostModules } from "./workerd-bundle.ts";
+import { fileConfig, workerdHostArtifact } from "./workerd-artifact.ts";
 import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
 import { runtimeHops, type SocketRecord } from "./runtime-hop.ts";
 import { repeatingAtConnect, repeatUnopened, type Opening } from "./runtime-connect.ts";
@@ -113,6 +113,11 @@ const selfOriginBinding: BindingHook = Effect.succeed({
   name: "SELF",
   service: { name: SELF_ORIGIN_SERVICE },
 });
+
+const COMPILER_SERVICE = "pluginEngine:compiler-files";
+class CompilerFiles extends AlchemyPlugin.Service<CompilerFiles>()(
+  "cloudflare-runtime/plugin/pluginEngine-compiler-files",
+) {}
 
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
@@ -186,6 +191,7 @@ export const workerdApps = (options: {
         return yield* new WorkerdMigrationRequired({ directory });
     }
     const handler = yield* workerdHostHandler(options);
+    const artifact = yield* workerdHostArtifact;
     // The runtime reads extra V8 flags for the workerd it starts from this variable. `gc` lets each
     // app bridge collect its isolate's garbage after a call; see worker-bridge.ts. Without
     // `--no-flush-liftoff-code`, each new isolate drops and recompiles the build's WebAssembly code
@@ -199,6 +205,16 @@ export const workerdApps = (options: {
       layerLocalRuntime({ directory: options.directory }).pipe(
         // Registered as runtime plugins so their services reach the generated workerd config.
         Layer.provide(publicEgress),
+        Layer.provide(
+          Layer.succeed(CompilerFiles, {
+            services: [
+              {
+                name: COMPILER_SERVICE,
+                disk: { path: path.join(artifact.directory, "compiler"), writable: false },
+              },
+            ],
+          }),
+        ),
         Layer.provide(
           options.selfOrigin === undefined
             ? Layer.empty
@@ -245,7 +261,8 @@ export const workerdApps = (options: {
         compatibilityDate: "2026-07-30",
         // The trusted host worker keeps the default network. Only app isolates are restricted.
         compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
-        modules: yield* workerdHostModules,
+        modules: [],
+        textConfig: fileConfig(artifact.directory, artifact.runtime),
         durableObjectNamespaces: [
           { className: "AppDataSupervisor", sql: true, uniqueKey: "pluginEngine-app-data" },
         ],
@@ -272,6 +289,8 @@ export const workerdApps = (options: {
           publicEgressBinding,
           JsonBinding.local("SELF_ORIGIN", options.selfOrigin?.origin ?? ""),
           JsonBinding.local("NPM_REGISTRY", options.npmRegistry ?? ""),
+          JsonBinding.local("COMPILER_FILES", artifact.compiler),
+          Effect.succeed({ name: "COMPILER_ASSETS", service: { name: COMPILER_SERVICE } }),
           ...(options.selfOrigin === undefined ? [] : [selfOriginBinding]),
           Loopback.local({ binding: "HOST", name: "pluginEngine-workflow-host", handler }),
         ],

@@ -3,7 +3,8 @@ import type { AuthSessionId, MessageId } from "@opensteer/core";
 import { OpensteerError, SequenceSchema, ThreadIdSchema, type ThreadId } from "@opensteer/core";
 import {
   decorateQueueEntries,
-  findPersonalSettings,
+  externalWorkView,
+  personalShellSessionState,
   isEligibleBrowserRunner,
   readPersonalDetailSnapshot,
   readPersonalShellSnapshot,
@@ -18,6 +19,7 @@ import { personalScopeKey, withPersonalSyncRead } from "@opensteer/database/pers
 import {
   hostApi,
   rpcSuccess,
+  taskPageEntryView,
   type HostApiHandlers,
   type WaitingInputView,
 } from "@opensteer/protocol";
@@ -145,8 +147,13 @@ export function createPersonalReads(
         ...(selectedThreadId ? { selectedThreadId } : {}),
       });
       if (cut.kind !== "snapshot") return cut;
-      const opened = (await findPersonalSettings(tx)) !== null;
-      return { ...cut, snapshot: withSession(cut.snapshot, session, surface, opened), opened };
+      const { opened, role } = await personalShellSessionState(tx, session.user.id);
+      return {
+        ...cut,
+        snapshot: withSession(cut.snapshot, session, surface, opened, role),
+        opened,
+        role,
+      };
     });
   const detail = (
     session: Session,
@@ -309,7 +316,7 @@ export function createPersonalReads(
             throughSequence,
             snapshot:
               "opened" in cut
-                ? withSession(cut.snapshot, session, surface, cut.opened)
+                ? withSession(cut.snapshot, session, surface, cut.opened, cut.role)
                 : cut.snapshot,
           });
         break;
@@ -429,26 +436,45 @@ export function createPersonalReads(
     },
     "personal.readiness.get": async (input, context) => {
       const viewerId = requireSession(context).user.id;
-      const ready = await withPersonalSyncRead(database, async (tx) => {
-        await resources.authorize(tx, viewerId);
-        const environment = await tx
-          .selectFrom("executionEnvironments")
-          .select("runnerId")
-          .where("id", "=", input.environmentId)
-          .executeTakeFirst();
-        const runnerId = environment?.runnerId;
-        if (!runnerId) return false;
-        if (input.kind === "runner")
-          return (
-            input.runnerId === runnerId &&
-            dependencies.runners.identityForEnvironment(input.environmentId)?.runnerId === runnerId
-          );
-        return (
-          (await isEligibleBrowserRunner(tx, viewerId, runnerId)) &&
-          dependencies.browser.isPlacementReady(runnerId, input.runtimeId)
-        );
+      const answer = await withPersonalSyncRead(
+        database,
+        async (tx): Promise<{ ready: boolean; pending?: "agent-home" }> => {
+          await resources.authorize(tx, viewerId);
+          // A Home still waiting for its hosting computer's Agent home is not ready, never
+          // refused: the owner's reads need the Personal settings it has yet to create.
+          if (!dependencies.execution.initialized())
+            return dependencies.runners.identityForEnvironment(input.environmentId)
+              ? { ready: false, pending: "agent-home" }
+              : { ready: false };
+          const environment = await tx
+            .selectFrom("executionEnvironments")
+            .select("runnerId")
+            .where("id", "=", input.environmentId)
+            .executeTakeFirst();
+          const runnerId = environment?.runnerId;
+          if (!runnerId) return { ready: false };
+          if (input.kind === "runner")
+            return {
+              ready:
+                input.runnerId === runnerId &&
+                dependencies.runners.identityForEnvironment(input.environmentId)?.runnerId ===
+                  runnerId,
+            };
+          return {
+            ready:
+              (await isEligibleBrowserRunner(tx, viewerId, runnerId)) &&
+              dependencies.browser.isPlacementReady(runnerId, input.runtimeId),
+          };
+        },
+      );
+      const pluginAgentWorkStoppedSince =
+        answer.ready && input.kind === "runner"
+          ? dependencies.pluginAgentWorkStoppedSince?.(input.runnerId)
+          : undefined;
+      return rpcSuccess({
+        ...answer,
+        ...(pluginAgentWorkStoppedSince ? { pluginAgentWorkStoppedSince } : {}),
       });
-      return rpcSuccess({ ready });
     },
     "tasks.page": async (input, context) => {
       const viewerId = requireSession(context).user.id;
@@ -471,13 +497,15 @@ export function createPersonalReads(
         for (const task of page.tasks) {
           const thread = threads.get(task.id);
           if (!thread) return unavailable();
-          const entry = {
+          const entry = taskPageEntryView({
             thread,
-            failure: task.failurePreview?.slice(0, 280) ?? null,
-            lastReply: task.lastReplyPreview?.slice(0, 280) ?? null,
+            originConnectionId: task.originConnectionId,
+            externalWork: task.externalWork ? externalWorkView(task.externalWork) : null,
+            failure: task.failurePreview,
+            lastReply: task.lastReplyPreview,
             runQueued: task.runQueued,
             retry: task.retry ?? null,
-          };
+          });
           const bytes = Buffer.byteLength(JSON.stringify(entry)) + (tasks.length ? 1 : 0);
           if (byteCount + bytes > 63 * 1024) {
             if (!last) throw new Error("A single task exceeded the page budget");
@@ -636,6 +664,7 @@ function withSession<Snapshot extends object>(
   session: Session,
   surface: AuthenticatedHostSession["surface"],
   opened: boolean,
+  role: "owner" | "member",
 ) {
   return {
     ...snapshot,
@@ -643,6 +672,7 @@ function withSession<Snapshot extends object>(
       sessionId: session.id,
       sessionSurface: surface,
       user: session.user,
+      role,
       can: {
         createTasks: opened,
         useVoice: opened,

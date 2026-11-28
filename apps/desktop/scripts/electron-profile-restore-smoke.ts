@@ -21,7 +21,14 @@ import {
   nativeSmokeWorker,
   runNativeProfileSmokePhase,
 } from "./test-support/native-profile-smoke.js";
+import {
+  requireSmokeProtectedStorage,
+  smokeProtectedStorageUnavailablePrefix,
+} from "./test-support/require-smoke-protected-storage.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("profile-restore", 300000);
 const phase = process.env.PROFILE_VM_PHASE ?? "native-create";
 const state = realpathSync(
   process.env.PROFILE_VM_STATE ?? mkdtempSync(path.join(tmpdir(), "native-profile-")),
@@ -79,6 +86,7 @@ async function main() {
   let failed = false;
   try {
     await app.whenReady();
+    await requireSmokeProtectedStorage();
     await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
     launcher = new ElectronBrowserLauncher({
       downloads: smokeDesktopDownloads(),
@@ -115,6 +123,17 @@ async function driver() {
   // Inside Electron, require("electron") is the API object, not a path.
   const executable = process.execPath;
   let failed = false;
+  // Each phase as its process ended and as its own evidence reads, so a phase whose
+  // evidence passed but whose process did not end as expected names itself.
+  const phases: {
+    phase: string;
+    exit: { code: number | null; signal: NodeJS.Signals | null };
+    passed: boolean;
+    results: Record<string, Result> | null;
+  }[] = [];
+  const summary = path.join(out, "results.json");
+  const writeSummary = () =>
+    writeFileSync(summary, JSON.stringify({ passed: !failed, phases }, null, 2));
   try {
     for (const name of nativeProfileSmokePhases) {
       const code = await new Promise<number>((resolve, reject) => {
@@ -136,30 +155,48 @@ async function driver() {
           clearTimeout(timer);
           const crash = name === "native-crash";
           const evidence = path.join(out, `results-${name}.json`);
+          // A phase that died mid-write leaves no readable evidence: that phase failed.
+          let results: Record<string, Result> | null = null;
+          try {
+            if (existsSync(evidence))
+              results = (
+                JSON.parse(readFileSync(evidence, "utf8")) as { results: Record<string, Result> }
+              ).results;
+          } catch {
+            results = null;
+          }
           const passed =
-            existsSync(evidence) &&
-            Object.values(
-              (JSON.parse(readFileSync(evidence, "utf8")) as { results: Record<string, Result> })
-                .results,
-            ).every((result) => result.status === "pass");
-          resolve(crash ? (signal === "SIGKILL" && passed ? 0 : 1) : (code ?? 1));
+            results !== null &&
+            Object.values(results).length > 0 &&
+            Object.values(results).every((result) => result.status === "pass");
+          const ended = crash ? signal === "SIGKILL" : code === 0;
+          phases.push({ phase: name, exit: { code, signal }, passed: passed && ended, results });
+          if (!(passed && ended))
+            process.stderr.write(
+              `profile restore phase ${name} ${passed ? "passed its checks" : "failed its checks"} and ended with code ${code} signal ${signal}\n`,
+            );
+          resolve(passed && ended ? 0 : 1);
         });
       });
       failed ||= code !== 0;
-    }
-    const summary = path.join(out, "results.json");
-    if (existsSync(summary)) {
-      const result = JSON.parse(readFileSync(summary, "utf8")) as { nativePhases?: unknown[] };
-      result.nativePhases = nativeProfileSmokePhases.map(
-        (name) =>
-          JSON.parse(readFileSync(path.join(out, `results-${name}.json`), "utf8")) as unknown,
-      );
-      writeFileSync(summary, JSON.stringify(result, null, 2));
+      const evidence = path.join(out, `results-${name}.json`);
+      if (code !== 0 && existsSync(evidence)) {
+        const parsed = JSON.parse(readFileSync(evidence, "utf8")) as {
+          results?: Record<string, Result>;
+        };
+        if (
+          Object.values(parsed.results ?? {}).some((entry) =>
+            entry.error?.includes(smokeProtectedStorageUnavailablePrefix),
+          )
+        )
+          break;
+      }
     }
   } catch (error) {
     failed = true;
     process.stderr.write(`profile restore driver failed: ${String(error)}\n`);
   } finally {
+    writeSummary();
     rmSync(state, { recursive: true, force: true });
   }
   app.exit(failed ? 1 : 0);

@@ -45,35 +45,9 @@ export function needsYouPage(
       ...(cursor && cursorAt ? { before: { at: cursorAt, id: cursor.id } } : {}),
     });
     const requestIds = keys.flatMap((key) => (key.requestId ? [key.requestId] : []));
-    const asks = keys.filter((key) => key.kind !== "request");
-    const [rows, askRows] = await Promise.all([
-      requestIds.length
-        ? transaction.selectFrom("requests").selectAll().where("id", "in", requestIds).execute()
-        : [],
-      asks.length
-        ? transaction
-            .selectFrom("personalTeamRequests")
-            .selectAll()
-            .where(
-              sql<boolean>`(team_deployment_id,request_id) in (${sql.join(
-                asks.map(
-                  ({ teamDeploymentId, teamRequestId }) =>
-                    sql`(${teamDeploymentId},${teamRequestId})`,
-                ),
-              )})`,
-            )
-            .execute()
-        : [],
-    ]);
-    const askInputIds = askRows.flatMap((row) => (row.localInputId ? [row.localInputId] : []));
-    const askMessages = askInputIds.length
-      ? await transaction
-          .selectFrom("messages")
-          .select(["id", "revision"])
-          .where("id", "in", askInputIds)
-          .execute()
+    const rows = requestIds.length
+      ? await transaction.selectFrom("requests").selectAll().where("id", "in", requestIds).execute()
       : [];
-    const revisionById = new Map(askMessages.map((row) => [row.id, row.revision]));
     const selected = rows;
     const navigation = selected.length
       ? await sql<{
@@ -117,26 +91,6 @@ export function needsYouPage(
     const byId = new Map<string, NeedsYouEntry>(
       requests.map((entry) => [`request:${entry.request.id}`, entry]),
     );
-    for (const row of askRows) {
-      byId.set(`team:${row.teamDeploymentId}:${row.requestId}`, {
-        kind: "team-ask",
-        teamId: row.teamDeploymentId,
-        requestId: row.requestId,
-        presentation: row.presentation!,
-        ...(row.localTaskId && row.localInputId
-          ? {
-              task: {
-                threadId: row.localTaskId,
-                messageId: row.localInputId,
-                revision: revisionById.get(row.localInputId) ?? 0,
-              },
-            }
-          : {}),
-        createdAt: row.createdAt.toISOString(),
-        consentExpiresAt: row.consentExpiresAt!.toISOString(),
-        ...(!row.releasedAt && row.blockedReason ? { failureReason: row.blockedReason } : {}),
-      });
-    }
     const candidates = keys.map((key) => {
       const entry = byId.get(key.id);
       if (!entry) throw new Error("Attention lost its canonical source");

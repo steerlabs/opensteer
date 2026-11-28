@@ -1,11 +1,15 @@
 import { createId, ModelSelectionSchema, type Thread } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
-import type { ConnectionCaller } from "../mcp/agent-caller.js";
+import type { AgentCaller, ConnectionCaller } from "../mcp/agent-caller.js";
+import { commandSubject } from "@opensteer/database";
+import { dispatchCommand, type CommandAuthority } from "../commands/dispatch.js";
 import { ThreadService } from "./thread-service.js";
 describe("new Thread access ceilings", () => {
   it("permits narrower work and forwards the caller's live authority", async () => {
     const actor: ConnectionCaller = {
       kind: "connection",
+      grant: { scope: "everything" },
+      grantRevision: 1,
       key: "connection:test",
       connectionId: "test",
       userId: createId("user"),
@@ -43,7 +47,43 @@ describe("new Thread access ceilings", () => {
       idempotencyKey: "narrow",
       accessMode: "approval-required" as const,
     };
-    expect((await service.create(actor, command)).thread).toEqual(thread);
+    // An agent's task write is a command the door admitted (rule 2, A3): without the door's
+    // authority it is refused before the store is reached.
+    await expect(service.create(actor, command)).rejects.toMatchObject({
+      code: "internal",
+      message: "An agent's task write goes through the command door",
+    });
+    expect(createThread).not.toHaveBeenCalled();
+    // The door's authority, as the door hands it to the handler it runs.
+    let door: CommandAuthority | null = null;
+    await dispatchCommand(actor, command as never, {
+      registry: {
+        "thread.create": {
+          accepts: "any",
+          run: async (
+            _actor: unknown,
+            _command: unknown,
+            on: { authority: CommandAuthority | null },
+          ) => {
+            door = on.authority;
+            return { type: "thread.create" };
+          },
+        },
+      } as never,
+      admit: async (caller: AgentCaller) => ({
+        answer: "now",
+        face: 0,
+        execution: { subject: commandSubject(caller.key) } as never,
+      }),
+      scope: async () => ({
+        scope: "everything",
+        grant: { scope: "everything" },
+        mode: "auto",
+      }),
+      secretDigestKey: Buffer.alloc(32, 0x33),
+    });
+    expect(door).not.toBeNull();
+    expect((await service.create(actor, command, {}, door!)).thread).toEqual(thread);
     expect(createThread).toHaveBeenCalledWith(
       expect.objectContaining({
         accessMode: "approval-required",
@@ -55,10 +95,15 @@ describe("new Thread access ceilings", () => {
       }),
     );
     await expect(
-      service.create(actor, {
-        ...command,
-        accessMode: "full-access",
-      }),
+      service.create(
+        actor,
+        {
+          ...command,
+          accessMode: "full-access",
+        },
+        {},
+        door!,
+      ),
     ).rejects.toMatchObject({
       code: "forbidden",
     });

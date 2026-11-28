@@ -1,4 +1,5 @@
 import { runRetryMessageMaxLength, utf8Prefix, type RunRetry } from "@opensteer/core";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import type { HarnessDurableEvent, HarnessLog } from "./types.js";
 
 /**
@@ -41,6 +42,7 @@ export interface ProviderRetryTrackerOptions {
   readonly now?: (() => number) | undefined;
   readonly log?: HarnessLog | undefined;
   readonly logContext?: Readonly<Record<string, unknown>> | undefined;
+  readonly secrets?: readonly string[] | undefined;
 }
 
 export function formatRetryBudgetMessage(
@@ -87,6 +89,7 @@ export class ProviderRetryTracker {
   readonly #now: () => number;
   readonly #log: HarnessLog | undefined;
   readonly #logContext: Readonly<Record<string, unknown>> | undefined;
+  readonly #secrets: readonly string[] | undefined;
   readonly #episodes = new Map<string, ActiveRetryEpisode>();
   #disposed = false;
 
@@ -100,6 +103,7 @@ export class ProviderRetryTracker {
     this.#now = options.now ?? Date.now;
     this.#log = options.log;
     this.#logContext = options.logContext;
+    this.#secrets = options.secrets;
   }
 
   /** Most recently updated active retry episode across all sources, or null. */
@@ -136,10 +140,14 @@ export class ProviderRetryTracker {
       input.retryDelayMs >= 0
         ? Math.trunc(input.retryDelayMs)
         : null;
+    const secrets = this.#secrets ?? engineDiagnosticSecrets(process.env, 4);
     const rawCode = input.code?.trim();
-    const code = rawCode ? utf8Prefix(rawCode, 128) : null;
+    const code = rawCode ? utf8Prefix(redactNetworkCredentials(rawCode, secrets), 128) : null;
     const message =
-      utf8Prefix(input.message.trim(), runRetryMessageMaxLength) || "Provider is retrying";
+      utf8Prefix(
+        redactNetworkCredentials(input.message.trim(), secrets),
+        runRetryMessageMaxLength,
+      ) || "Provider is retrying";
     const record: ProviderRetryRecord = {
       source,
       attempt,
@@ -177,7 +185,10 @@ export class ProviderRetryTracker {
         } catch (error) {
           this.#log?.("warn", "Provider retry budget handler failed", {
             ...this.#logContext,
-            error: error instanceof Error ? error.message : String(error),
+            error: redactNetworkCredentials(
+              error instanceof Error ? error.message : String(error),
+              this.#secrets ?? engineDiagnosticSecrets(process.env, 4),
+            ),
           });
         }
       }, remainingMs);

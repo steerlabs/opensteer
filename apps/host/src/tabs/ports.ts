@@ -16,7 +16,7 @@ import type {
   UserId,
   WindowId,
 } from "@opensteer/core";
-import type { DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema, TabRecord } from "@opensteer/database";
 import type {
   ComputerView,
   TabBootstrap,
@@ -31,16 +31,40 @@ import type {
 import type { PageAgentBinding } from "@opensteer/protocol/browser-agent";
 import type { Transaction } from "kysely";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
+import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.js";
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
 export type { PageAgentBinding } from "@opensteer/protocol/browser-agent";
+import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
+export type BrowserBindingTabActor = {
+  kind: "browser-binding";
+  authority: CdpAuthority;
+  threadId: ThreadId;
+  signal?: AbortSignal;
+  browserSend?: PooledBrowserSend;
+};
 export type TabActor =
+  | BrowserBindingTabActor
   | { kind: "person"; ownerId: UserId }
   | { kind: "run"; claims: RunToolScope }
   | { kind: "connection"; caller: ConnectionCaller };
 export interface TabServicePort {
-  list(actor: TabActor, input: TabListInput): Promise<TabListResult>;
+  connectionTab(
+    actor: Extract<TabActor, { kind: "connection" | "browser-binding" }>,
+    tabId: TabId,
+  ): Promise<Pick<TabRecord, "kind" | "profileId" | "generation" | "openedBy">>;
+  list(
+    actor: TabActor,
+    input: TabListInput,
+    mayNameComputer?: (deviceId: DeviceId) => boolean,
+    select?: (tab: Tab) => boolean,
+  ): Promise<TabListResult>;
   open(actor: TabActor, target: TabTarget, key: string): Promise<{ tab: Tab }>;
-  close(actor: TabActor, tabIds: TabId[], key: string): Promise<TabCloseResult>;
+  close(
+    actor: TabActor,
+    tabIds: TabId[],
+    key: string,
+    expectedGeneration?: number,
+  ): Promise<TabCloseResult>;
   reopen(
     actor: TabActor,
     tabId: TabId | undefined,
@@ -54,6 +78,13 @@ export interface TabServicePort {
     key: string,
   ): Promise<{ group: TabGroup }>;
   deleteGroup(ownerId: UserId, groupId: TabGroupId, key: string): Promise<{ layout: TabLayout }>;
+  closeGroup(
+    actor: TabActor,
+    groupId: TabGroupId,
+    key: string,
+    readmit?: unknown,
+    only?: readonly TabId[],
+  ): Promise<TabCloseResult & { groupClosed: boolean; layout: TabLayout }>;
   get(ownerId: UserId, tabId: TabId): Promise<Tab>;
   bootstrap(ownerId: UserId, maxBytes: number): Promise<TabBootstrap>;
   requireOpenPage(claims: RunToolScope, tabId: TabId): Promise<PageAgentBinding>;
@@ -69,7 +100,7 @@ export interface AppTabPort {
 export type NativeTabTargetState = (
   | { state: "open" | "asleep" }
   | { state: "unavailable"; unavailableCode: TabUnavailableCode; unavailableReason: string }
-) & { usedBy: Array<{ taskId: ThreadId }> };
+) & { usedBy: Array<{ taskId: ThreadId; since?: string }> };
 export interface ResolvedTabWindow {
   windowId: WindowId;
   app: ComputerAppIdentity;

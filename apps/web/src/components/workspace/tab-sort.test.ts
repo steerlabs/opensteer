@@ -1,6 +1,14 @@
 import { expect, it } from "vitest";
 import type { TabGroupId, TabId, TabLayout } from "@opensteer/core";
-import { organizeInput, slotMove, sortSlots, type SortRow } from "./tab-sort.js";
+import { tabStrip, type TabStrip } from "@opensteer/client/host";
+import {
+  movedStrip,
+  organizeInput,
+  slotMove,
+  sortSlots,
+  type SortRow,
+  type TabMove,
+} from "./tab-sort.js";
 
 const id = (value: string) => value as TabId;
 const group = (groupId: string, tabIds: string[]) => ({
@@ -81,4 +89,60 @@ it("a drop before a group with no member left to name its place moves nothing", 
       empty,
     ),
   ).toBeNull();
+});
+
+/** A strip in short: tabs by ID, a group as `G[b c]`. */
+const words = (strip: TabStrip) =>
+  strip.entries
+    .map((entry) =>
+      entry.kind === "tab" ? entry.tabId : `${entry.group.groupId}[${entry.tabIds.join(" ")}]`,
+    )
+    .join(" ");
+const strip = tabStrip(layout, { has: () => true });
+/** The move a drop on the slot just before row `beforeKey` (or at the end) makes, in or out of a group. */
+function dropMove(lifted: string, beforeKey: string | null, inGroup: string | null): TabMove {
+  const from = at(lifted);
+  const slots = sortSlots(rows, from, null);
+  const rest = rows.filter((_, index) => index !== from);
+  const gap = beforeKey === null ? rest.length : rest.findIndex((row) => row.key === beforeKey);
+  const slot = slots.findIndex(
+    (candidate) => candidate.gap === gap && (candidate.group?.id ?? null) === inGroup,
+  );
+  return slotMove(rows, from, slots, slot)!;
+}
+
+it("the list shows a drop at once, as the Host will order it, and the Host's answer changes nothing", () => {
+  for (const [move, after] of [
+    // Down the top level, past a group.
+    [dropMove("a", "d", null), "G[b c] a d H[e]"],
+    // Into a group, between its members.
+    [dropMove("d", "c", "G"), "a G[b d c] H[e]"],
+    // Out of a group at its foot, right after it.
+    [dropMove("c", "d", null), "a G[b] c d H[e]"],
+    // A group's only member out: the Host keeps the emptied group, and no list draws it.
+    [dropMove("e", null, null), "a G[b c] d e"],
+    // A whole group, before another one and to the end.
+    [dropMove("G", "H", null), "a d G[b c] H[e]"],
+    [dropMove("G", null, null), "a d H[e] G[b c]"],
+    // Onto a collapsed group's header: its foot.
+    [{ item: { tabIds: ["a"] }, to: { groupId: "H", before: null } }, "G[b c] d H[e a]"],
+  ] as const) {
+    const shown = movedStrip(strip, move);
+    expect(words(shown)).toBe(after);
+    expect(shown.ordered).toEqual(after.match(/\b[a-z]\b/g));
+    // The Host's answer is that order: the move over it is the same order.
+    expect(words(movedStrip(shown, move))).toBe(after);
+  }
+});
+
+it("a move whose anchor or group is gone shows nothing moved, as the Host refuses it", () => {
+  expect(
+    movedStrip(strip, { item: { tabIds: ["a"] }, to: { groupId: null, before: { tabId: "x" } } }),
+  ).toBe(strip);
+  expect(movedStrip(strip, { item: { tabIds: ["a"] }, to: { groupId: "X", before: null } })).toBe(
+    strip,
+  );
+  expect(movedStrip(strip, { item: { groupId: "X" }, to: { groupId: null, before: null } })).toBe(
+    strip,
+  );
 });

@@ -1,14 +1,15 @@
-import type { TeamSource, ThreadDoneBy, ThreadId } from "@opensteer/core";
+import type { ThreadDoneBy, ThreadId } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
 import { publishedMessagePredicate } from "./message-visibility.js";
+import type { connectionRequests } from "./request-agent-response.js";
 import type { DatabaseSchema } from "./schema.js";
+import { keptMessageSql } from "./thread-row-mappers.js";
 
 export interface ChangedTaskSummary {
   readonly id: ThreadId;
   readonly title: string;
   readonly count: number;
   readonly first: Date | null;
-  readonly sources: readonly TeamSource[];
   readonly questionsAnswered: number;
   readonly questionsDismissed: number;
   readonly doneAt: Date | null;
@@ -28,7 +29,10 @@ export interface ChangedTaskSummary {
 export function changedTasksSubquery(
   transaction: Transaction<DatabaseSchema>,
   since: Date,
-  options: { readonly excludeSystemWorkers?: boolean } = {},
+  options: {
+    readonly excludeSystemWorkers?: boolean;
+    readonly visibleRequests?: Awaited<ReturnType<typeof connectionRequests>>;
+  } = {},
 ) {
   const excludeSystemWorkers = options.excludeSystemWorkers === true;
   const changedMessageAt = sql<Date>`coalesce(thread_inputs.updated_at, messages.created_at)`;
@@ -41,11 +45,6 @@ export function changedTasksSubquery(
       fn.countAll<string>().as("newMessages"),
       sql<Date>`min(messages.created_at)`.as("firstNewAt"),
       sql<Date>`max(${changedMessageAt})`.as("lastMessageAt"),
-      sql<
-        TeamSource[]
-      >`coalesce(jsonb_agg(distinct thread_inputs.team_source) filter (where thread_inputs.team_source is not null), '[]'::jsonb)`.as(
-        "sources",
-      ),
     ])
     .where(
       "messages.id",
@@ -63,6 +62,7 @@ export function changedTasksSubquery(
     )
     .where("messages.kind", "!=", "continuation")
     .where(publishedMessagePredicate("threadInputs"))
+    .where(keptMessageSql())
     .where(changedMessageAt, ">", since);
 
   if (excludeSystemWorkers) {
@@ -76,19 +76,41 @@ export function changedTasksSubquery(
 
   const msgSub = messageRows.groupBy("messages.threadId").as("changed_messages");
 
-  const questionSub = transaction
-    .selectFrom("requests")
-    .select([
-      "requests.originatingThreadId as threadId",
-      sql<string>`count(*) filter (where requests.status = 'fulfilled')`.as("questionsAnswered"),
-      sql<string>`count(*) filter (where requests.status = 'declined')`.as("questionsDismissed"),
-      sql<Date>`max(requests.resolved_at)`.as("lastQuestionAt"),
-    ])
-    .where("requests.kind", "=", "person.question")
-    .where("requests.status", "in", ["fulfilled", "declined"])
-    .where("requests.resolvedAt", ">", since)
-    .groupBy("requests.originatingThreadId")
-    .as("changed_questions");
+  const questionSub = (
+    options.visibleRequests
+      ? transaction
+          .selectFrom(options.visibleRequests.as("requests"))
+          .select([
+            "requests.originatingThreadId as threadId",
+            sql<string>`count(*) filter (where requests.status = 'fulfilled')`.as(
+              "questionsAnswered",
+            ),
+            sql<string>`count(*) filter (where requests.status = 'declined')`.as(
+              "questionsDismissed",
+            ),
+            sql<Date>`max(requests.resolved_at)`.as("lastQuestionAt"),
+          ])
+          .where("requests.kind", "=", "person.question")
+          .where("requests.status", "in", ["fulfilled", "declined"])
+          .where("requests.resolvedAt", ">", since)
+          .groupBy("requests.originatingThreadId")
+      : transaction
+          .selectFrom("requests")
+          .select([
+            "requests.originatingThreadId as threadId",
+            sql<string>`count(*) filter (where requests.status = 'fulfilled')`.as(
+              "questionsAnswered",
+            ),
+            sql<string>`count(*) filter (where requests.status = 'declined')`.as(
+              "questionsDismissed",
+            ),
+            sql<Date>`max(requests.resolved_at)`.as("lastQuestionAt"),
+          ])
+          .where("requests.kind", "=", "person.question")
+          .where("requests.status", "in", ["fulfilled", "declined"])
+          .where("requests.resolvedAt", ">", since)
+          .groupBy("requests.originatingThreadId")
+  ).as("changed_questions");
 
   const doneSince = sql<Date | null>`case when threads.done_at > ${since} and threads.done_reason is distinct from 'quiet' then threads.done_at end`;
   const newest = sql<Date>`greatest(changed_messages.last_message_at, changed_questions.last_question_at, ${doneSince})`;
@@ -102,7 +124,6 @@ export function changedTasksSubquery(
       "threads.title",
       sql<string>`coalesce(changed_messages.new_messages, 0)`.as("newMessages"),
       sql<Date | null>`changed_messages.first_new_at`.as("firstNewAt"),
-      sql<TeamSource[]>`coalesce(changed_messages.sources, '[]'::jsonb)`.as("sources"),
       sql<string>`coalesce(changed_questions.questions_answered, 0)`.as("questionsAnswered"),
       sql<string>`coalesce(changed_questions.questions_dismissed, 0)`.as("questionsDismissed"),
       doneSince.as("doneSinceAt"),

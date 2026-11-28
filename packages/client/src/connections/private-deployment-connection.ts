@@ -2,12 +2,11 @@ import {
   DesktopConnectPrivateDeploymentInputSchema,
   type DesktopConnectPrivateDeploymentInput,
 } from "@opensteer/protocol/desktop";
-import { isPersonalHost } from "@opensteer/deployment-authority";
 import { resolveConnection } from "./connection-resolver.js";
+import { verifyDeploymentAddress } from "./home-address.js";
 import {
   deploymentConnectionFromVerifiedEndpoints,
   deploymentConnectionFromVerifiedPersonalRoute,
-  verifyAccessEndpoint,
   verifyPersonalAccessEndpoint,
   type DeploymentCatalogStore,
 } from "./deployment-catalog.js";
@@ -16,9 +15,10 @@ import type { HostSessionExchange } from "../auth/host-session-exchange.js";
 /**
  * Establishes first trust in a private Host without sending a cookie, OAuth
  * token, or caller-provided identity metadata. The caller explicitly chooses
- * one of two non-interchangeable trust paths: a Personal Host's separately
- * signed HTTPS route and one-use pairing code, or a team Host's signed
- * canonical discovery followed by that Host's configured native sign-in.
+ * one of two non-interchangeable trust paths: a Mac Home's separately signed
+ * HTTPS route and one-use pairing code, or the address of a Home on its own
+ * server, whose signed canonical discovery is pinned and then signed in to
+ * with that Host's own native sign-in.
  */
 export class PrivateDeploymentConnectionService {
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
@@ -37,23 +37,14 @@ export class PrivateDeploymentConnectionService {
 
   async connect(input: DesktopConnectPrivateDeploymentInput | unknown): Promise<void> {
     const parsed = DesktopConnectPrivateDeploymentInputSchema.parse(input);
-    if (parsed.kind === "team") {
-      const verified = await verifyAccessEndpoint({
-        fetch: this.#fetch,
-        kind: "canonical",
-        origin: parsed.origin,
-      });
-      if (isPersonalHost(verified.discovery)) {
-        throw new Error(
-          "This address is a computer, not a server. Choose Another computer of yours and use a pairing code.",
-        );
-      }
+    if (parsed.kind === "address") {
+      const verified = await verifyDeploymentAddress({ fetch: this.#fetch, origin: parsed.origin });
       await this.#catalog.upsertAndSelect(
         deploymentConnectionFromVerifiedEndpoints({
           accountAccess: null,
           endpoints: [verified],
-          kind: "team",
-          name: teamDeploymentName(parsed.origin),
+          kind: verified.kind,
+          name: addressDeploymentName(parsed.origin),
           source: { kind: "manual" },
         }),
       );
@@ -91,7 +82,7 @@ function computerName(origin: string): string {
   return hostname.length <= 120 ? hostname : "Computer";
 }
 
-function teamDeploymentName(origin: string): string {
+function addressDeploymentName(origin: string): string {
   const hostname = new URL(origin).hostname;
-  return hostname.length <= 120 ? hostname : "Server";
+  return hostname.length <= 120 ? hostname : "Home";
 }

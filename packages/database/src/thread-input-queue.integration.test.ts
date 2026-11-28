@@ -307,7 +307,6 @@ integration.sequential("thread input queue promotion", () => {
             ],
 
             maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
           },
         },
       };
@@ -732,6 +731,49 @@ integration.sequential("thread input queue promotion", () => {
         .where("type", "=", "run.steer")
         .execute(),
     ).toHaveLength(1);
+  });
+  it("keeps an everything connection's input out of the owner's live voice Run", async ({
+    storeFixture,
+  }) => {
+    const { store, database } = storeFixture;
+    const { call, f } = await startedCall(storeFixture, "voice-connection-inbox");
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.ownerId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "https://test-host.invalid",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await connections.activate(connection.id, randomUUID());
+    const sent = await store.enqueueThreadInput({
+      threadId: call.threadId,
+      requestedBy: f.ownerId,
+      idempotencyKey: "connected-voice-followup",
+      source: { kind: "connection", connectionId: connection.id },
+      policy: "queue",
+      content: [{ type: "text", text: "Follow up from a connected agent" }],
+    });
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select(["state", "runId", "connectionId"])
+        .where("messageId", "=", sent.message.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      state: "pending",
+      runId: null,
+      connectionId: connection.id,
+    });
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("id")
+        .where("runId", "=", call.runId)
+        .where("type", "=", "run.steer")
+        .execute(),
+    ).toEqual([]);
   });
   it("keeps what arrives as a call ends for the next Run, and wakes it", async ({
     storeFixture,

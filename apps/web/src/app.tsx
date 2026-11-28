@@ -13,11 +13,6 @@ import { HomeRoute } from "./components/home/home-route.js";
 import { VoiceRoute } from "./components/voice-route.js";
 import { LiveRedirect } from "./components/workspace/live-redirect.js";
 import { ThreadRoute } from "./components/thread-view.js";
-import { TeamsProvider, type TeamAttachment } from "./team/team-attachments.js";
-import { mockAccountEmail, mockAccountSubject, type MockTeamWorld } from "@opensteer/client/team";
-import { TeamRoutes } from "./team/team-routes.js";
-import { JoinTeamRoute, TeamsRoute } from "./team/join-route.js";
-import { TeamDialogsProvider } from "./team/hosted-teams.js";
 import { AutomationDetailPage } from "./components/automations/automation-detail.js";
 import { AutomationEditorPage } from "./components/automations/automation-editor.js";
 import { AutomationsPage } from "./components/automations/automations-page.js";
@@ -26,7 +21,6 @@ import {
   SettingsShell,
   SettingsSectionRoute,
   SettingsNotFound,
-  SettingsTeamRoute,
 } from "./components/settings/settings-shell.js";
 import { SettingsRedirect } from "./components/settings/settings-redirect.js";
 import { settingsRedirects } from "@opensteer/client/settings";
@@ -45,7 +39,7 @@ import {
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { useConnectionGate, useConnectionInterrupted } from "./components/connection-shell.js";
-import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
+import { authorizationErrorScreen, consumeOAuthErrorQuery } from "./account/auth-error-query.js";
 import { NativeOAuthConsent, useNativeOAuthQuery } from "./account/native-oauth-consent.js";
 import { startHostOidcSignIn } from "./account/host-oidc.js";
 export { startHostOidcSignIn } from "./account/host-oidc.js";
@@ -55,12 +49,19 @@ import { SetupPage } from "./components/first-run/setup-page.js";
 import { ToastProvider } from "./components/toast.js";
 import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
 import { outcomeWords, runAction } from "./components/use-action.js";
-import { shouldAutoStartOidc } from "./account/auto-oidc.js";
+import { sessionEndedHere, shouldAutoStartOidc } from "./account/auto-oidc.js";
+import {
+  forgetSignedOutHere,
+  rememberSignedOutHere,
+  signedOutHere,
+} from "./account/signed-out-here.js";
 import { PluginSignInCompletion } from "./components/plugin-sign-in-completion.js";
 import {
   pluginAuthorizationCompletionPath,
   subscribePluginSignInReturns,
 } from "./integrations/plugin-sign-in-surface.js";
+import { hostsDeployment } from "@opensteer/client/computers";
+import { UnreachableHomeLine } from "./components/asleep-moment.js";
 import { DevicePage } from "./components/devices/device-page.js";
 import { OtherDevicePage } from "./components/devices/other-device-page.js";
 
@@ -91,7 +92,6 @@ export function App({
   notificationTarget = null,
   onSetupOpened,
   openSetup = false,
-  preview = null,
 }: {
   readonly connectionGateSecondary?: {
     readonly label: string;
@@ -115,11 +115,6 @@ export function App({
   readonly onSetupOpened?: (() => void) | undefined;
   /** This computer was set up in this window, so setup continues as the app opens. */
   readonly openSetup?: boolean;
-  /** The mock build's team sessions and hosted-teams world; never set against a real Host. */
-  readonly preview?: {
-    readonly teams: readonly TeamAttachment[];
-    readonly world: MockTeamWorld;
-  } | null;
 }) {
   const { snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
   useEffect(
@@ -163,6 +158,26 @@ export function App({
     scope: "app",
     ready: snapshot.session !== "checking" && !interrupted,
     secondary: connectionGateSecondary,
+    // The Home this window last reached, read only if the gate says it can't be reached.
+    unreachableAside: (
+      <UnreachableHomeLine
+        desktopBridge={desktopBridge}
+        home={() => {
+          const identity = snapshot.identityConfig;
+          const name =
+            snapshot.machines.find(hostsDeployment)?.name ?? identity?.deployment.name ?? null;
+          return identity && snapshot.deploymentId && name
+            ? {
+                exposure: identity.exposure,
+                deploymentId: snapshot.deploymentId,
+                hostedHere: false,
+                macName: name,
+                portalOrigin: identity.portalOrigin,
+              }
+            : null;
+        }}
+      />
+    ),
     onSignIn: () => void hostClient.refresh().catch(() => undefined),
     onUpdate: desktopBridge?.updates
       ? () => void desktopBridge.updates?.download().catch(() => undefined)
@@ -180,6 +195,13 @@ export function App({
   const [setupExchangeAttempt, setSetupExchangeAttempt] = useState(0);
   const [setupExchangeError, setSetupExchangeError] = useState<string | null>(null);
   const recoveryRoute = window.location.pathname === "/recover";
+  // Whether this page has been signed in: a session the Home ends under it stays signed out.
+  const wasSignedIn = useRef(false);
+  if (snapshot.session === "authenticated") wasSignedIn.current = true;
+  const endedHere = sessionEndedHere(wasSignedIn.current, snapshot.session);
+  useEffect(() => {
+    if (endedHere) rememberSignedOutHere();
+  }, [endedHere]);
   const autoOidcProvider =
     snapshot.session === "authentication-required" &&
     snapshot.identityConfig &&
@@ -189,6 +211,7 @@ export function App({
       hasNativeOAuthQuery: nativeOAuthQuery !== null,
       recentAttempt: autoOidcSuppressed,
       setupInProgress: setupAdmission !== "absent",
+      signedOut: endedHere || signedOutHere(),
     })
       ? snapshot.identityConfig.oidcProviders[0]
       : undefined;
@@ -221,6 +244,7 @@ export function App({
 
   useEffect(() => {
     if (snapshot.session !== "authenticated") return;
+    forgetSignedOutHere();
     autoOidcStarted.current = false;
     if (clearAutoOidcAttempt()) setAutoOidcSuppressed(false);
   }, [snapshot.session]);
@@ -292,7 +316,7 @@ export function App({
     setSetupAdmission("admitted");
   }
 
-  async function startOidc(providerId: string, automatic = false) {
+  async function startOidc(providerId: string, automatic = false, chooseAccount = false) {
     setOnboardingError(null);
     setOnboardingPending(true);
     const outcome = await runAction(null, {
@@ -301,6 +325,7 @@ export function App({
       happened: "you were signed in",
       execute: () =>
         startHostOidcSignIn({
+          ...(chooseAccount ? { chooseAccount: true } : {}),
           desktopBridge,
           deploymentId: desktopDeployment?.id ?? null,
           hostClient,
@@ -325,28 +350,43 @@ export function App({
   // itself ahead of every other screen, including the ones that wait on the
   // Host, because the reason only exists in the URL this render just consumed.
   if (authorizationError) {
+    const screen = authorizationErrorScreen(authorizationError);
+    const ownerProvider = snapshot.identityConfig?.oidcProviders[0];
     return (
       <OnboardingCard
-        description="Go back to the Opensteer app on this computer and start signing in again."
+        description={
+          screen.action === "sign-in-as-owner"
+            ? "The Opensteer account signed in to this browser doesn’t own this Home."
+            : "Go back to the Opensteer app you were signing in from and start again."
+        }
         eyebrow="Authorization"
         footnote={`Error code: ${authorizationError.error}`}
-        title="Sign-in couldn’t be completed"
+        title={screen.title}
         titleId="authorization-error-heading"
       >
-        <ErrorNotice
-          message={
-            authorizationError.description ??
-            "This deployment turned down the authorization request."
-          }
-        />
+        <ErrorNotice message={onboardingError ?? screen.message} />
         <div className="onboarding__actions">
-          <button
-            className="btn btn--primary onboarding__primary"
-            onClick={() => setAuthorizationError(null)}
-            type="button"
-          >
-            Continue
-          </button>
+          {screen.action === "sign-in-as-owner" ? (
+            // The same Account session would be refused again: ask the Account who signs in.
+            <button
+              className="btn btn--primary onboarding__primary"
+              disabled={!ownerProvider || onboardingPending}
+              onClick={() => {
+                if (ownerProvider) void startOidc(ownerProvider.id, false, true);
+              }}
+              type="button"
+            >
+              Sign in as its owner
+            </button>
+          ) : (
+            <button
+              className="btn btn--primary onboarding__primary"
+              onClick={() => setAuthorizationError(null)}
+              type="button"
+            >
+              Continue
+            </button>
+          )}
         </div>
       </OnboardingCard>
     );
@@ -464,135 +504,87 @@ export function App({
   return (
     <ToastProvider>
       <DesktopUpdateFeedback />
-      <TeamsProvider
-        account={
-          preview
-            ? { subject: mockAccountSubject, email: mockAccountEmail }
-            : deploymentAccess?.account.subject
-              ? {
-                  ...(deploymentAccess.account.issuer
-                    ? { issuer: deploymentAccess.account.issuer }
-                    : {}),
-                  subject: deploymentAccess.account.subject,
-                  email: deploymentAccess.account.email ?? null,
-                }
-              : null
-        }
-        accountTeams={
-          preview
-            ? preview.world.memberships()
-            : (deploymentAccess?.deployments ?? [])
-                .filter(
-                  (deployment) => deployment.kind === "team" && deployment.accountAccess !== null,
-                )
-                .map((deployment) => ({
-                  teamDeploymentId: deployment.id,
-                  origin: deployment.canonicalOrigin,
-                  name: deployment.name,
-                }))
-        }
-        surface={
-          preview
-            ? { kind: "preview", hostClient, teams: preview.teams, world: preview.world }
-            : desktopBridge
-              ? { kind: "desktop", hostClient, bridge: desktopBridge }
-              : { kind: "personal-web", hostClient }
-        }
-      >
-        <BrowserRouter>
-          <TeamDialogsProvider>
-            <Routes>
+      <BrowserRouter>
+        <Routes>
+          <Route
+            element={
+              <AppShell
+                deploymentAccess={deploymentAccess}
+                desktopBridge={desktopBridge}
+                desktopDeployment={desktopDeployment}
+                hostClient={hostClient}
+                onNotificationTargetOpened={onNotificationTargetOpened}
+                notificationTarget={notificationTarget}
+              />
+            }
+          >
+            <Route index element={<HomeRoute />} />
+            <Route path="tasks/:threadId" element={<ThreadRoute />} />
+            <Route path="voice" element={<VoiceRoute />} />
+            <Route path="live" element={<LiveRedirect />} />
+            <Route path="get-started" element={<SetupPage />} />
+            <Route
+              path="channels"
+              element={<SettingsRedirect from="/channels" to="/settings/messaging" />}
+            />
+            <Route
+              path="computers/*"
+              element={<SettingsRedirect from="/computers" to="/settings/devices" />}
+            />
+            <Route
+              path="triggers"
+              element={<SettingsRedirect from="/triggers" to="/automations" />}
+            />
+            <Route path="automations" element={<AutomationsPage />} />
+            <Route path="apps" element={<AppsPage />} />
+            <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
+            <Route path="automations/:triggerId/edit" element={<AutomationEditorPage />} />
+            <Route path="settings" element={<SettingsShell />}>
+              <Route index element={<SettingsRedirect from="/settings" to="/settings/general" />} />
+              {(
+                [
+                  "general",
+                  "account",
+                  "messaging",
+                  "external-agents",
+                  "ai",
+                  "plugins",
+                  "sign-ins",
+                ] as const
+              ).map((section) => (
+                <Route
+                  key={section}
+                  path={`${section}/*`}
+                  element={<SettingsSectionRoute section={section} />}
+                />
+              ))}
+              <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
+              <Route path="devices/:deviceId" element={<DevicePage />} />
+              <Route path="devices/other/:pluginId" element={<OtherDevicePage />} />
+              <Route path="sign-ins/chrome/*" element={<SettingsSectionRoute section="chrome" />} />
               <Route
-                element={
-                  <AppShell
-                    deploymentAccess={deploymentAccess}
-                    desktopBridge={desktopBridge}
-                    desktopDeployment={desktopDeployment}
-                    hostClient={hostClient}
-                    onNotificationTargetOpened={onNotificationTargetOpened}
-                    notificationTarget={notificationTarget}
-                  />
-                }
-              >
-                <Route index element={<HomeRoute />} />
-                <Route path="tasks/:threadId" element={<ThreadRoute />} />
-                <Route path="voice" element={<VoiceRoute />} />
-                <Route path="teams" element={<TeamsRoute />} />
-                <Route path="teams/:teamId/*" element={<TeamRoutes />} />
-                <Route path="join" element={<JoinTeamRoute />} />
-                <Route path="live" element={<LiveRedirect />} />
-                <Route path="get-started" element={<SetupPage />} />
-                <Route
-                  path="channels"
-                  element={<SettingsRedirect from="/channels" to="/settings/messaging" />}
-                />
-                <Route
-                  path="computers/*"
-                  element={<SettingsRedirect from="/computers" to="/settings/devices" />}
-                />
-                <Route
-                  path="triggers"
-                  element={<SettingsRedirect from="/triggers" to="/automations" />}
-                />
-                <Route path="automations" element={<AutomationsPage />} />
-                <Route path="apps" element={<AppsPage />} />
-                <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
-                <Route path="automations/:triggerId/edit" element={<AutomationEditorPage />} />
-                <Route path="settings" element={<SettingsShell />}>
+                path="sign-ins/browsers/*"
+                element={<SettingsSectionRoute section="browser-profiles" />}
+              />
+              <Route
+                path="sign-ins/passwords/*"
+                element={<SettingsSectionRoute section="passwords" />}
+              />
+              {settingsRedirects
+                .filter(([from]) => from.startsWith("/settings/"))
+                .map(([from, to]) => (
                   <Route
-                    index
-                    element={<SettingsRedirect from="/settings" to="/settings/general" />}
+                    key={from}
+                    path={`${from.slice(10)}/*`}
+                    element={<SettingsRedirect from={from} to={to} />}
                   />
-                  {(
-                    [
-                      "general",
-                      "account",
-                      "messaging",
-                      "external-agents",
-                      "ai",
-                      "plugins",
-                      "sign-ins",
-                    ] as const
-                  ).map((section) => (
-                    <Route
-                      key={section}
-                      path={`${section}/*`}
-                      element={<SettingsSectionRoute section={section} />}
-                    />
-                  ))}
-                  <Route path="teams/:teamId/:page" element={<SettingsTeamRoute />} />
-                  <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
-                  <Route path="devices/:deviceId" element={<DevicePage />} />
-                  <Route path="devices/other/:pluginId" element={<OtherDevicePage />} />
-                  <Route
-                    path="sign-ins/chrome/*"
-                    element={<SettingsSectionRoute section="chrome" />}
-                  />
-                  <Route
-                    path="sign-ins/browsers/*"
-                    element={<SettingsSectionRoute section="browser-profiles" />}
-                  />
-                  <Route
-                    path="sign-ins/passwords/*"
-                    element={<SettingsSectionRoute section="passwords" />}
-                  />
-                  {settingsRedirects
-                    .filter(([from]) => from.startsWith("/settings/"))
-                    .map(([from, to]) => (
-                      <Route
-                        key={from}
-                        path={`${from.slice(10)}/*`}
-                        element={<SettingsRedirect from={from} to={to} />}
-                      />
-                    ))}
-                  <Route path="*" element={<SettingsNotFound />} />
-                </Route>
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Route>
-            </Routes>
-          </TeamDialogsProvider>
-        </BrowserRouter>
-      </TeamsProvider>
+                ))}
+              <Route path="*" element={<SettingsNotFound />} />
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
     </ToastProvider>
   );
 }

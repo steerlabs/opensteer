@@ -66,7 +66,7 @@ bash scripts/test-support/build-apple-data-module.sh "$work"
 sources=()
 while IFS= read -r file; do sources+=("$file"); done < <(find native/computer-use/Sources/ComputerUseCore -name '*.swift' | sort)
 stage=compile-journeys
-xcrun swiftc -whole-module-optimization -parse-as-library -module-name ComputerUseCore -swift-version 5 -I "$work" -L "$work" -lOpensteerAppleData -o "$work/Probe" "${sources[@]}" native/computer-use/Tests/Fixtures/ChromeBackgroundJourney/Journey.swift native/computer-use/Tests/Fixtures/ChromeBackgroundJourney/R4.swift
+xcrun swiftc -whole-module-optimization -parse-as-library -module-name ComputerUseCore -swift-version 5 -I "$work" -L "$work" -lOpensteerAppleData -lMacOSSigning -o "$work/Probe" "${sources[@]}" native/computer-use/Tests/Fixtures/ChromeBackgroundJourney/Journey.swift native/computer-use/Tests/Fixtures/ChromeBackgroundJourney/R4.swift
 cp "$work/Probe" "$cover/Contents/MacOS/Probe"
 codesign --force --sign - "$cover"
 if [[ "${OPENSTEER_CHROME_JOURNEY:-all}" =~ ^(R4|sweep|all)$ ]]; then

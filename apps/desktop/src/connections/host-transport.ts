@@ -1,25 +1,16 @@
 import { expectedMutationSessionHeader } from "@opensteer/protocol";
-import { unwrapRpcResult } from "@opensteer/client/host";
-import {
-  forEachBoundedResponseChunk,
-  readBoundedResponse,
-  readBoundedText,
-} from "@opensteer/shared/boundedJson";
+import { forEachBoundedResponseChunk, readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { streamBoundedResponse } from "@opensteer/shared/responseStream";
 import { createHmac, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { attachmentMaxBytes, type DeploymentId } from "@opensteer/core";
 import {
   hostApi,
-  HostApiErrorSchema,
   hostApiCurrentHeader,
   hostApiVersionHeader,
-  teamApiVersionHeader,
   type HostApiCommandInput,
   type HostApiCommandOutput,
   fileTransferHeadersTimeoutMs,
-  teamPreviewMaxBytes,
-  teamUploadMaxBytes,
 } from "@opensteer/protocol";
 import type {
   HostAttachment,
@@ -43,7 +34,10 @@ import {
   DesktopCloseHostWebSocketInputSchema,
   DesktopDeploymentSelectionSchema,
   desktopHostRequestIdHeader,
+  desktopHostRouteOrigin,
   DesktopHostRequestIdSchema,
+  DesktopHostTransportErrorCodeSchema,
+  type DesktopHostTransportErrorCode,
   desktopHostTransportErrorHeader,
   DesktopHostWebSocketCommandSchema,
   isDesktopHostUploadPath,
@@ -85,8 +79,6 @@ export type DesktopBrowserControlObservation =
 const forwardedMethods = ["DELETE", "GET", "PATCH", "POST", "PUT"];
 // The Host's own body limits: Fastify's default for JSON, and its binary routes'.
 const maximumJsonRequestBytes = 1_024 * 1_024;
-const teamFilesPath = "/v1/team/files/";
-const teamUploadPath = "/v1/team/files/upload/";
 const requestBodyStallTimeoutMs = 20_000;
 const maximumEarlyCancellations = 64;
 const maximumCommandResponseBytes = 1_024 * 1_024;
@@ -95,7 +87,6 @@ const forwardedRequestHeaders = {
   "content-type": "contentType",
   "idempotency-key": "idempotencyKey",
   [hostApiVersionHeader]: "apiVersion",
-  [teamApiVersionHeader]: "apiVersion",
   [hostApiCurrentHeader]: "apiCurrent",
 } as const;
 // Only what the bundled UI reads; cookies and transfer framing stay in main.
@@ -162,9 +153,8 @@ export class DesktopHostTransport extends HostTransport {
   readonly #log:
     ((event: string, fields: Record<string, string | number | boolean>) => void) | undefined;
   readonly #catalog: Pick<DeploymentCatalogStore, "load" | "select" | "setPreferredEndpoint">;
-  readonly #teams = new Map<DeploymentId, HostTransport>();
   readonly #summaries = new Map<DeploymentId, HostTransport>();
-  readonly #teamOptions: ConstructorParameters<typeof HostTransport>[0];
+  readonly #summaryOptions: ConstructorParameters<typeof HostTransport>[0];
   readonly #unsubscribeCatalog: () => void;
   readonly #projection: Pick<DesktopAccessProjection, "read">;
   readonly #sockets = new Map<string, OwnedSocket>();
@@ -173,6 +163,9 @@ export class DesktopHostTransport extends HostTransport {
   readonly #ownerGenerations = new Map<number, number>();
   readonly #socketGenerations = new WeakMap<HostTransport, number>();
   readonly #forwarded = new Map<string, AbortController>();
+  readonly #inflightSettled = new Map<string, Promise<void>>();
+  /** Post-headers stream failures keyed by request id so the renderer recovers typed cancels. */
+  readonly #streamErrors = new Map<string, DesktopHostTransportErrorCode>();
   /** Bumped when a Deployment's session changes; a request admitted before it isn't sent. */
   readonly #sessionEpochs = new Map<DeploymentId, number>();
   /** A cancel can overtake its request on the way to main. */
@@ -214,7 +207,7 @@ export class DesktopHostTransport extends HostTransport {
     });
     this.#observeCommand = options.observeCommand;
     this.#withPreparedEnrollment = options.withPreparedEnrollment;
-    this.#teamOptions = {
+    this.#summaryOptions = {
       catalog: options.catalog,
       ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
       localRuntime: {
@@ -222,10 +215,8 @@ export class DesktopHostTransport extends HostTransport {
       },
       network: options.network,
       ...(options.pinnedSessions === undefined ? {} : { sessions: options.pinnedSessions }),
-      expectedKind: "team",
     };
     this.#unsubscribeCatalog = options.catalog.subscribe(() => {
-      for (const team of this.#teams.values()) void team.current().catch(() => undefined);
       for (const summary of this.#summaries.values()) void summary.current().catch(() => undefined);
     });
     this.#log = options.log;
@@ -248,6 +239,7 @@ export class DesktopHostTransport extends HostTransport {
         ({
           capabilities: _capabilities,
           accountAccess: _accountAccess,
+          accountOwner: _accountOwner,
           accountLivenessExpiresAt: _accountLivenessExpiresAt,
           hasAccountConnectRoute: _hasAccountConnectRoute,
           hasVerifiedAccountRoute: _hasVerifiedAccountRoute,
@@ -274,41 +266,24 @@ export class DesktopHostTransport extends HostTransport {
     return this.selection();
   }
 
-  async bootstrapTeam(deploymentId: DeploymentId) {
-    const transport = await this.#transport(deploymentId);
-    const body = await transport.exchange(
-      {
-        expectedDeploymentId: deploymentId,
-        path: "/v1/rpc/team.bootstrap.get",
-        method: "POST",
-        body: "{}",
-        headers: { contentType: "application/json" },
-      },
-      (response, progress) =>
-        readBoundedText(response, {
-          ...progress,
-          fatalUtf8: true,
-          maximumBytes: 16 * 1_024 * 1_024,
-          sizeError: () => new HostTransportError("response-too-large"),
-        }),
-    );
-    return unwrapRpcResult(
-      z
-        .discriminatedUnion("ok", [
-          z.object({ ok: z.literal(true), data: hostApi["team.bootstrap.get"].success }),
-          z.object({ ok: z.literal(false), error: HostApiErrorSchema }),
-        ])
-        .parse(JSON.parse(body)),
-    ).member;
-  }
-
   /**
    * One request from the bundled UI, pinned to the Deployment it names, answered
    * with the Host's own status, content headers and bytes as they stream. The
    * body is read here first so a session that lapsed can be recovered and the
    * request replayed. A transport failure is named in a header.
    */
-  forward(deploymentId: DeploymentId, path: string, request: Request): Promise<Response> {
+  forward(
+    deploymentId: DeploymentId,
+    path: string,
+    request: Request,
+    options: {
+      /**
+       * Main's own call to that Home, answered under that Home's own session
+       * whether or not it is the selected one, as summary reads are.
+       */
+      readonly anyHome?: boolean;
+    } = {},
+  ): Promise<Response> {
     const requestId = DesktopHostRequestIdSchema.safeParse(
       request.headers.get(desktopHostRequestIdHeader),
     );
@@ -326,6 +301,10 @@ export class DesktopHostTransport extends HostTransport {
     const controller = new AbortController();
     this.#forwarded.set(id, controller);
     if (this.#cancelledEarly.delete(id)) controller.abort(new HostTransportError("cancelled"));
+    // A caller in main, such as the menu bar's bounded reads, cancels through its own signal.
+    const cancelled = () => controller.abort(new HostTransportError("cancelled"));
+    if (request.signal.aborted) cancelled();
+    else request.signal.addEventListener("abort", cancelled, { once: true });
     // Taken before anything awaits: a sign-in again during the lookups below is another
     // session, and a personal selection that moves away and back is another attachment. A
     // request for a Deployment main hadn't yet resolved as selected is held from resolution.
@@ -338,6 +317,7 @@ export class DesktopHostTransport extends HostTransport {
     };
     let settled: Promise<void> = Promise.resolve();
     return this.#forward(
+      id,
       deploymentId,
       path,
       request,
@@ -346,17 +326,51 @@ export class DesktopHostTransport extends HostTransport {
       selection,
       (exchange) => {
         settled = exchange;
+        this.#inflightSettled.set(id, exchange);
       },
+      options.anyHome === true,
     )
       .catch((error: unknown) => this.#refused(path, error))
-      .finally(() => void settled.finally(() => this.#forwarded.delete(id)));
+      .finally(
+        () =>
+          void settled.finally(() => {
+            request.signal.removeEventListener("abort", cancelled);
+            this.#forwarded.delete(id);
+            if (this.#inflightSettled.get(id) === settled) this.#inflightSettled.delete(id);
+          }),
+      );
+  }
+
+  /** Consumes main's recorded transport failure for a response whose body aborted mid-stream. */
+  async takeStreamError(requestId: string): Promise<DesktopHostTransportErrorCode | null> {
+    const parsed = DesktopHostRequestIdSchema.safeParse(requestId);
+    if (!parsed.success) return null;
+    const id = parsed.data;
+    const existing = this.#streamErrors.get(id);
+    if (existing) {
+      this.#streamErrors.delete(id);
+      return existing;
+    }
+    const inflight = this.#inflightSettled.get(id);
+    if (inflight) {
+      await Promise.race([
+        inflight,
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 250);
+          timer.unref?.();
+        }),
+      ]);
+    }
+    const recorded = this.#streamErrors.get(id) ?? null;
+    if (recorded) this.#streamErrors.delete(id);
+    return recorded;
   }
 
   /**
    * Main's own refusal of a window request, recorded by route and code so the
    * log says why a window couldn't open. The window's own cancel is not one.
    */
-  #refused(path: string, error: unknown): Response {
+  #logRefusal(path: string, error: unknown): void {
     const failure = classifyClientFailure(error);
     if (failure.kind !== "cancelled" || failure.reason === "deployment-changed") {
       try {
@@ -368,10 +382,30 @@ export class DesktopHostTransport extends HostTransport {
         /* Diagnostics cannot change the answer. */
       }
     }
+  }
+
+  #refused(path: string, error: unknown): Response {
+    this.#logRefusal(path, error);
     return transportFailure(error);
   }
 
+  #recordStreamError(id: string, path: string, error: unknown, fromAppOrigin: boolean): void {
+    this.#logRefusal(path, error);
+    if (!fromAppOrigin) return;
+    const code =
+      error instanceof HostTransportError
+        ? DesktopHostTransportErrorCodeSchema.safeParse(error.code)
+        : error instanceof HostRouteUnavailableError
+          ? { success: true as const, data: "unreachable" as const }
+          : { success: false as const };
+    if (!code.success || code.data === "cancelled") return;
+    this.#streamErrors.set(id, code.data);
+    if (this.#streamErrors.size > 256)
+      this.#streamErrors.delete(this.#streamErrors.keys().next().value!);
+  }
+
   async #forward(
+    requestId: string,
     deploymentId: DeploymentId,
     path: string,
     request: Request,
@@ -379,6 +413,7 @@ export class DesktopHostTransport extends HostTransport {
     sameSession: () => void,
     sameSelection: () => void,
     relaying: (settled: Promise<void>) => void,
+    anyHome = false,
   ): Promise<Response> {
     const pathname = path.split("?", 1)[0]!;
     const headers: Partial<Record<ForwardedHeader, string>> = {};
@@ -386,13 +421,11 @@ export class DesktopHostTransport extends HostTransport {
       const value = request.headers.get(name);
       if (value !== null) headers[field] = value;
     }
-    const teamUpload = request.headers.get("x-opensteer-team-upload");
     const expectedSession = request.headers.get(expectedMutationSessionHeader);
-    const summary =
-      request.method === "POST" &&
-      (pathname === "/v1/rpc/attention.get" || pathname === "/v1/rpc/teams.links.list");
-    const transport = await this.#transport(deploymentId, summary);
-    // Only the personal selection's own requests answer to it; team and chooser reads don't.
+    const summary = anyHome || (request.method === "POST" && pathname === "/v1/rpc/attention.get");
+    // Every wait before the exchange ends with the caller's signal, too.
+    const transport = await untilAborted(this.#transport(deploymentId, summary), signal);
+    // Only the selection's own requests answer to it; chooser reads don't.
     const arrived =
       transport === this
         ? () => {
@@ -407,7 +440,7 @@ export class DesktopHostTransport extends HostTransport {
     if (request.body) {
       // The body can take a while; the Account, route and attachment it was sent under are
       // fixed first, and every send of it, a replay included, is checked against them.
-      attachment = await transport.current();
+      attachment = await untilAborted(transport.current(), signal);
       if (attachment.resolved.deploymentId !== deploymentId)
         throw new HostTransportError("deployment-changed");
       const retained = transport.retainAuthorization(attachment);
@@ -421,26 +454,23 @@ export class DesktopHostTransport extends HostTransport {
       body = read;
       admitted();
     }
-    // An upload's bytes go out before its answer, and a team Host fetches a partner's file
-    // before it answers: these wait longer for headers, but never without bound.
-    const timeoutMs =
-      isDesktopHostUploadPath(pathname) || pathname.startsWith(teamFilesPath)
-        ? fileTransferHeadersTimeoutMs
-        : body
-          ? bufferedHostResponseTimeoutMs(body.byteLength)
-          : undefined;
+    // An upload's bytes go out before its answer: it waits longer for headers, but never
+    // without bound.
+    const timeoutMs = isDesktopHostUploadPath(pathname)
+      ? fileTransferHeadersTimeoutMs
+      : body
+        ? bufferedHostResponseTimeoutMs(body.byteLength)
+        : undefined;
     const forwarded = {
       expectedDeploymentId: deploymentId,
       ...(attachment ? { expectedAttachmentKey: attachment.resolved.key } : {}),
       admitted,
       headers: {
         ...headers,
-        additional: {
-          ...(teamUpload ? { "x-opensteer-team-upload": teamUpload } : {}),
-          ...(expectedSession && pathname === "/v1/rpc/commands.dispatch"
+        additional:
+          expectedSession && pathname === "/v1/rpc/commands.dispatch"
             ? { [expectedMutationSessionHeader]: expectedSession }
-            : {}),
-        },
+            : {},
       },
       method: request.method,
       path,
@@ -451,7 +481,15 @@ export class DesktopHostTransport extends HostTransport {
     const command =
       pathname === "/v1/rpc/commands.dispatch" && body ? enrollmentCommand(body) : null;
     if (command) return this.#forwardEnrollment(transport, command, forwarded);
-    const relayed = relay(transport, forwarded, (error) => this.#refused(path, error));
+    const fromAppOrigin =
+      ("initiatorOrigin" in request ? request.initiatorOrigin : undefined) ===
+      desktopHostRouteOrigin;
+    const relayed = relay(
+      transport,
+      forwarded,
+      (error) => this.#refused(path, error),
+      (error) => this.#recordStreamError(requestId, path, error, fromAppOrigin),
+    );
     relaying(relayed.settled);
     return relayed.response;
   }
@@ -875,11 +913,6 @@ export class DesktopHostTransport extends HostTransport {
       this.#closeTransportSockets(summary);
       summary.invalidateSession();
     }
-    const team = this.#teams.get(deploymentId);
-    if (team) {
-      this.#closeTransportSockets(team);
-      team.invalidateSession();
-    }
   }
 
   #sessionEpoch(deploymentId: DeploymentId): number {
@@ -888,10 +921,6 @@ export class DesktopHostTransport extends HostTransport {
 
   closeAllConnections(): void {
     this.closeAllSockets();
-    for (const team of this.#teams.values()) {
-      this.#closeTransportSockets(team);
-      team.closeAllSockets();
-    }
     for (const summary of this.#summaries.values()) summary.closeAllSockets();
   }
 
@@ -901,46 +930,26 @@ export class DesktopHostTransport extends HostTransport {
     this.cancelForwardedRequests();
     this.#unsubscribeCatalog();
     this.closeAllConnections();
-    for (const team of this.#teams.values()) team.retire();
-    this.#teams.clear();
     this.#summaries.clear();
+    this.#streamErrors.clear();
   }
 
   async #transport(deploymentId?: DeploymentId, summary = false): Promise<HostTransport> {
     if (this.#disposed) throw new HostTransportError("cancelled");
     if (deploymentId === undefined) return this;
-    const owner = this.#teamOptions.credentials?.teamRuntime?.();
     const catalog = await this.#catalog.load();
     if (this.#disposed) throw new HostTransportError("cancelled");
     const connection = catalog.deployments.find(
       ({ authority }) => authority.document.deploymentId === deploymentId,
     );
     if (!connection) throw new HostTransportError("deployment-changed");
-    if (connection.authority.document.deploymentShape.kind !== "team") {
-      if (!summary || catalog.selectedDeploymentId === deploymentId) return this;
-      let transport = this.#summaries.get(deploymentId);
-      if (!transport) {
-        transport = new HostTransport({
-          ...this.#teamOptions,
-          expectedKind: "personal",
-          deploymentId,
-        });
-        this.#summaries.set(deploymentId, transport);
-      }
-      return transport;
+    if (!summary || catalog.selectedDeploymentId === deploymentId) return this;
+    let transport = this.#summaries.get(deploymentId);
+    if (!transport) {
+      transport = new HostTransport({ ...this.#summaryOptions, deploymentId });
+      this.#summaries.set(deploymentId, transport);
     }
-    if (owner?.signal.aborted) throw new HostTransportError("deployment-changed");
-    const existing = this.#teams.get(deploymentId);
-    if (existing) return existing;
-    const team = new HostTransport({ ...this.#teamOptions, deploymentId });
-    team.onAttachmentInvalidated(() => this.#closeTransportSockets(team));
-    this.#teams.set(deploymentId, team);
-    owner?.own(() => {
-      this.#closeTransportSockets(team);
-      team.retire();
-      this.#teams.delete(deploymentId);
-    });
-    return team;
+    return transport;
   }
 
   observeBrowserSockets(listener: (event: DesktopBrowserSocketObservation) => void): () => void {
@@ -1071,12 +1080,17 @@ function relay(
   transport: HostTransport,
   request: Parameters<HostTransport["exchange"]>[0],
   refused: (error: unknown) => Response,
+  streamFailed: (error: unknown) => void,
 ): { readonly response: Promise<Response>; readonly settled: Promise<void> } {
   const ready = Promise.withResolvers<Response>();
+  let headersSent = false;
+  let bodyEnded = false;
   const settled = transport
     .exchange(request, async (response, progress) => {
       const init = { status: response.status, headers: responseHeaders(response.headers) };
       if (!response.body || [204, 205, 304].includes(response.status)) {
+        headersSent = true;
+        bodyEnded = true;
         ready.resolve(new Response(null, init));
         return;
       }
@@ -1084,10 +1098,16 @@ function relay(
         ...progress,
         maximumBytes: Number.MAX_SAFE_INTEGER,
       });
+      headersSent = true;
       ready.resolve(new Response(body, init));
       await done;
+      bodyEnded = true;
     })
-    .catch((error: unknown) => ready.resolve(refused(error)));
+    .catch((error: unknown) => {
+      if (headersSent) {
+        if (!bodyEnded) streamFailed(error);
+      } else ready.resolve(refused(error));
+    });
   return { response: ready.promise, settled };
 }
 
@@ -1097,7 +1117,6 @@ function hostRouteLabel(path: string): string {
   const rpc = /^\/v1\/rpc\/([^/]+)$/u.exec(pathname)?.[1];
   if (rpc !== undefined && Object.hasOwn(hostApi, rpc)) return rpc;
   if (isDesktopHostUploadPath(pathname)) return "upload";
-  if (pathname.startsWith(teamFilesPath)) return "team-files";
   return "other";
 }
 
@@ -1155,7 +1174,6 @@ async function readRequestBody(
 }
 
 function requestByteLimit(pathname: string): number {
-  if (pathname.startsWith(teamUploadPath)) return teamUploadMaxBytes + teamPreviewMaxBytes;
   return isDesktopHostUploadPath(pathname) ? attachmentMaxBytes : maximumJsonRequestBytes;
 }
 
@@ -1219,4 +1237,29 @@ function parseJson(bytes: Uint8Array): unknown {
   } catch {
     return null;
   }
+}
+
+/** `work`, or the signal's reason as soon as it aborts; the work itself runs on. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void work.catch(() => undefined);
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    const abort = () => {
+      void work.catch(() => undefined);
+      rejectPromise(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolvePromise(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        rejectPromise(error);
+      },
+    );
+  });
 }

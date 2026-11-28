@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 import { gatherComputerAccess } from "./computer-access.js";
 import type { DeviceService } from "./device-service.js";
 import { describe, expect, it } from "vitest";
@@ -38,6 +39,8 @@ describe("computer access", () => {
           new Map([["display:android-phone", { runId: holdingRun, threadTitle: "Calendar" }]]),
       },
       store: {
+        requesterGrant: async () => null,
+        requesterShown: async () => null,
         listDeviceComputerAppSetupRequests: async () => [],
         integrationRequests: { listPendingIntegrationAccessRequests: async () => [] },
       },
@@ -49,6 +52,7 @@ describe("computer access", () => {
       ],
       computerToolEnabled: () => true,
       computerUseVersion: () => 2,
+      localDeviceAccessBlocked: async () => undefined,
     } as unknown as DeviceService;
     const input = { ownerUserId: "user" } as Parameters<DeviceService["computerAccess"]>[0];
     const runless = await gatherComputerAccess(platform, input);
@@ -79,6 +83,8 @@ describe("computer access", () => {
         computerAppHolders: () => new Map(),
       },
       store: {
+        requesterGrant: async () => null,
+        requesterShown: async () => null,
         listDeviceComputerAppSetupRequests: async () => [
           {
             kind: "app",
@@ -92,6 +98,7 @@ describe("computer access", () => {
       },
       listCallableTools: async () => [],
       computerUseVersion: () => version,
+      localDeviceAccessBlocked: async () => undefined,
     } as unknown as DeviceService;
     const input = { ownerUserId: "user", runId: "run_this" } as Parameters<
       DeviceService["computerAccess"]
@@ -125,6 +132,32 @@ describe("computer access", () => {
   ])("uses the most specific phone blocker", (overrides, code) => {
     expect(phoneDiscovery({ ...phone, ...overrides }).blocked?.code).toBe(code);
   });
+  it("tells the agent to wait for the screen-driving Mac without asking for access", () => {
+    expect(
+      phoneDiscovery({
+        ...phone,
+        phone: {
+          ...phone.phone,
+          name: "Work iPhone",
+          definitionId: "iphone-screen",
+          state: "offline",
+          availability: { state: "unavailable", reason: { kind: "driver-asleep" } },
+          setup: {
+            location: "driver-mac",
+            driverRunnerName: "Studio Mac",
+            driverRunnerId: createId("runner"),
+          },
+        },
+      }),
+    ).toEqual({
+      blocked: {
+        code: "computer_asleep",
+        message: "Studio Mac is asleep.",
+        next: "Resume when it wakes, or continue other work.",
+      },
+    });
+  });
+
   it("reports usable read access when the task cannot act", () => {
     expect(phoneDiscovery({ ...phone, callable: true, pendingPersonalGrant: true })).toEqual({
       access: "read",

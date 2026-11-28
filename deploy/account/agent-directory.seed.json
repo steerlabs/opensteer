@@ -1,0 +1,27 @@
+[
+  {
+    "id": "chatgpt",
+    "displayName": "ChatGPT",
+    "origins": ["https://chatgpt.com"]
+  },
+  {
+    "id": "claude",
+    "displayName": "Claude",
+    "origins": ["https://claude.ai"]
+  },
+  {
+    "id": "cursor",
+    "displayName": "Cursor",
+    "origins": ["https://www.cursor.com"]
+  },
+  {
+    "id": "gemini-enterprise",
+    "displayName": "Gemini Enterprise",
+    "origins": ["https://vertexaisearch.cloud.google.com"]
+  },
+  {
+    "id": "perplexity",
+    "displayName": "Perplexity",
+    "origins": ["https://www.perplexity.ai", "https://enterprise.perplexity.ai"]
+  }
+]

@@ -455,13 +455,14 @@ public final class VaultService: @unchecked Sendable {
   /// verifies it against the checkpoint under the vault lock, and this queue
   /// orders the read with every commit).
   public func lookUp(
-    withinSite site: String, grant key: GrantKey, permissionVersion: Int64
+    withinSite site: String, grant key: GrantKey, permissionVersion: Int64,
+    allowRemembered: Bool = true
   ) async throws -> SiteLookup {
     try await run {
       let unlocked = try self.unlockNow()
       defer { unlocked.close() }
       let items = try unlocked.items(withinSite: site).filter { $0.password != nil }
-      if let grant = try unlocked.grant(for: key),
+      if allowRemembered, let grant = try unlocked.grant(for: key),
         grant.authorizes(permissionVersion: permissionVersion),
         let item = items.first(where: { $0.id == grant.loginId && $0.revision == grant.revision })
       {

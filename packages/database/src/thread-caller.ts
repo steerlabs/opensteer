@@ -1,5 +1,8 @@
 import {
   OpensteerError,
+  agentGrantAllowsTasks,
+  minThreadAccessMode,
+  nonTerminalRunStatuses,
   threadAccessModeAtMost,
   type ThreadAccessMode,
   type UserId,
@@ -7,10 +10,21 @@ import {
   type RunId,
 } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
+import {
+  bindingAgentConnectionId,
+  connectionIsWaiting,
+  lineageEndedMessage,
+  liveAgentConnection,
+  chatTasksWithdrawnMessage,
+  tasksWithdrawnMessage,
+  type AgentConnectionAuthority,
+} from "./resource-access.js";
+import { admitBridgeSender, chatWaitingError } from "./bridge-admission.js";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
+import type { TaskReader } from "./task-reader.js";
 import { assertActiveGrant, admitThreadExecution } from "./execution-authority.js";
 import {
   assertActiveTriggerExecutionBinding,
@@ -21,6 +35,11 @@ import {
 export type ThreadCallerAuthority = {
   readonly userId: UserId;
   readonly accessMode: ThreadAccessMode;
+  /**
+   * The door's last admission of the command this write is (rule 2, A3): run in the write's own
+   * transaction, where its caller is checked, so a change since the door admitted it refuses.
+   */
+  readonly admit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
 } & (
   | {
       readonly kind: "run";
@@ -37,8 +56,57 @@ export type ThreadCallerAuthority = {
   | {
       readonly kind: "connection";
       readonly connectionId: string;
+      /**
+       * A chat's message: who wrote it and the bridge's revision it was admitted under. Every
+       * task tool it reaches asks again whether this sender may speak, at the moment it acts.
+       */
+      readonly chat?: {
+        readonly conversationId: string;
+        readonly externalUserId: string;
+        readonly revision: number;
+      };
     }
 );
+/** Who reads a task when this caller does: work reads as the task it runs in. */
+export function callerTaskReader(caller: ThreadCallerAuthority): TaskReader {
+  if (caller.kind === "connection") return { kind: "connection" };
+  return {
+    kind: "work",
+    threadId: caller.kind === "watch" ? caller.scope.anchorThreadId : caller.scope.threadId,
+  };
+}
+/** The connection a caller works for, read from its immutable binding; null for owner work. */
+export async function threadCallerLineageId(
+  tx: Kysely<DatabaseSchema>,
+  caller: ThreadCallerAuthority,
+): Promise<string | null> {
+  switch (caller.kind) {
+    case "connection":
+      return caller.connectionId;
+    case "run":
+      return bindingAgentConnectionId(tx, `run:${caller.scope.runId}`);
+    case "trigger":
+      return bindingAgentConnectionId(tx, `trigger:${caller.scope.occurrenceId}`);
+    case "watch":
+      return bindingAgentConnectionId(tx, `watch:${caller.scope.activationId}`);
+  }
+}
+/**
+ * Every admission in a connection's lineage holds that connection's row `FOR SHARE` before any
+ * Run, so Disconnect (`FOR NO KEY UPDATE`) serializes against all of them.
+ */
+export async function lockLineageConnection(
+  tx: Transaction<DatabaseSchema>,
+  connectionId: string | null,
+): Promise<void> {
+  if (connectionId)
+    await tx
+      .selectFrom("agentConnections")
+      .select("id")
+      .where("id", "=", connectionId)
+      .forShare()
+      .executeTakeFirst();
+}
 /**
  * Who asked for a command, as its `authority_source` records it: the person's own session when
  * no agent, automation, watch or connection acts for them. A person's `run.interrupt` is their
@@ -66,25 +134,33 @@ export function callerAuthoritySource(
       return { kind: "connection", connectionId: caller.connectionId, userId };
   }
 }
-
 export async function lockThreadCaller(
   tx: Transaction<DatabaseSchema>,
   caller: ThreadCallerAuthority | undefined,
   targetRunIds: readonly RunId[] = [],
   admitted = false,
+  /** Also lock this task's active Runs, in the same ordered statement as the caller's. */
+  activeRunsOf?: ThreadId,
 ): Promise<void> {
   if (!caller) return;
-  if (caller.kind === "connection")
-    await tx
-      .selectFrom("agentConnections")
-      .select("id")
-      .where("id", "=", caller.connectionId)
-      .forShare()
-      .executeTakeFirst();
+  await lockLineageConnection(tx, await threadCallerLineageId(tx, caller));
   const ids = [
     ...new Set([...targetRunIds, ...(caller.kind === "run" ? [caller.scope.runId] : [])]),
   ].sort();
-  if (ids.length)
+  if (activeRunsOf)
+    await tx
+      .selectFrom("runs")
+      .select("id")
+      .where((eb) =>
+        eb.or([
+          ...(ids.length ? [eb("id", "in", ids)] : []),
+          eb.and([eb("threadId", "=", activeRunsOf), eb("status", "in", nonTerminalRunStatuses)]),
+        ]),
+      )
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+  else if (ids.length)
     await tx
       .selectFrom("runs")
       .select("id")
@@ -96,11 +172,18 @@ export async function lockThreadCaller(
     admitted,
   });
 }
+/**
+ * Task tools, rechecked under the caller's locks: the execution is live, and the target task is
+ * one this caller may touch at the mode the caller now has. Work for a connection may change only
+ * its own lineage's tasks, or, with an `everything` grant, the person's own; a `selected` grant
+ * also reads only its own.
+ */
 export async function assertThreadCaller(
   tx: Transaction<DatabaseSchema>,
   caller: ThreadCallerAuthority | undefined,
   target?: {
     readonly activate?: boolean;
+    readonly enqueue?: boolean;
     readonly readOnly?: boolean;
     readonly threadId?: ThreadId;
     readonly accessMode?: ThreadAccessMode;
@@ -108,30 +191,69 @@ export async function assertThreadCaller(
   },
 ): Promise<void> {
   if (!caller) return;
+  // A write the door admitted is admitted again here, in the transaction that makes it (A3).
+  if (caller.admit && !target?.readOnly) await caller.admit(tx);
   await requirePersonalOwner(tx, caller.userId);
-  let accessMode = caller.accessMode;
   let sourceId: ThreadId | undefined;
-  if (caller.kind === "connection") {
-    const connection = await tx
-      .selectFrom("agentConnections")
-      .selectAll()
-      .where("id", "=", caller.connectionId)
-      .where("userId", "=", caller.userId)
-      .where("revokedAt", "is", null)
-      .where("expiresAt", ">", new Date())
-      .executeTakeFirst();
-    if (!connection?.tokenHash)
-      throw forbidden("The connected agent credential is invalid or expired.");
-    accessMode = connection.accessMode;
-  } else if (caller.kind === "run") {
+  const lineageId = await threadCallerLineageId(tx, caller);
+  let lineage: AgentConnectionAuthority | null = null;
+  if (lineageId) {
+    try {
+      lineage = await liveAgentConnection(tx, caller.userId, lineageId);
+    } catch (error) {
+      // A chat's message that finds its chat paused waits for it; it is not refused. The read
+      // that found it not live said so.
+      if (caller.kind === "connection" && caller.chat && connectionIsWaiting(error))
+        throw chatWaitingError();
+      throw forbidden(
+        caller.kind === "connection"
+          ? "The connected agent credential is invalid or expired."
+          : lineageEndedMessage,
+      );
+    }
+    if (!agentGrantAllowsTasks(lineage.grant)) throw forbidden(tasksWithdrawnMessage);
+    const sender =
+      caller.kind === "connection" && caller.chat
+        ? await admitBridgeSender(tx, {
+            ownerUserId: caller.userId,
+            bridgeId: caller.connectionId,
+            externalUserId: caller.chat.externalUserId,
+            expectedRevision: caller.chat.revision,
+          })
+        : null;
+    if (sender?.kind === "waiting") throw chatWaitingError();
+    if (
+      caller.kind === "connection" &&
+      caller.chat &&
+      (sender?.kind !== "admitted" ||
+        !(await tx
+          .selectFrom("bridgeConversations")
+          .select("id")
+          .where("id", "=", caller.chat.conversationId as never)
+          .where("bridgeId", "=", caller.connectionId)
+          .executeTakeFirst()))
+    )
+      throw forbidden(chatTasksWithdrawnMessage);
+  }
+  let runMode: ThreadAccessMode | null = null;
+  if (caller.kind === "run") {
     if (!target?.admitted) await assertActiveGrant(tx, caller.scope);
     else if (!(await admitThreadExecution(tx, caller.scope.threadId, caller.userId)))
       throw forbidden("Run tool authority has ended");
     sourceId = caller.scope.threadId;
+    if (lineage)
+      runMode =
+        (
+          await tx
+            .selectFrom("runs")
+            .select("accessMode")
+            .where("id", "=", caller.scope.runId)
+            .executeTakeFirst()
+        )?.accessMode ?? null;
   } else if (caller.kind === "trigger") {
     await assertActiveTriggerExecutionBinding(tx, caller.scope);
     sourceId = caller.scope.threadId;
-  } else {
+  } else if (caller.kind === "watch") {
     await assertActiveWatchBinding(tx, caller.scope);
     sourceId = caller.scope.anchorThreadId;
   }
@@ -142,7 +264,10 @@ export async function assertThreadCaller(
         .where("id", "=", sourceId)
         .executeTakeFirstOrThrow()
     : null;
-  accessMode = source?.accessMode ?? accessMode;
+  // The person's own work keeps its task's mode; lineaged work takes every mode in its lineage.
+  const accessMode = lineage
+    ? minThreadAccessMode(lineage.accessMode, source?.accessMode, runMode)
+    : (source?.accessMode ?? caller.accessMode);
   if (!threadAccessModeAtMost(caller.accessMode, accessMode))
     throw forbidden("Caller access mode was reduced");
   const thread = target?.threadId
@@ -152,13 +277,20 @@ export async function assertThreadCaller(
         .where("id", "=", target.threadId)
         .executeTakeFirstOrThrow()
     : null;
-  if (
-    !target?.readOnly &&
-    !threadAccessModeAtMost(
-      thread?.accessMode ?? target?.accessMode ?? caller.accessMode,
-      caller.accessMode,
-    )
-  )
+  if (thread && lineage) {
+    const own = thread.originConnectionId === lineage.agentConnectionId;
+    const persons = thread.originConnectionId === null && lineage.grant.scope === "everything";
+    if (lineage.grant.scope === "selected" ? !own : !target?.readOnly && !own && !persons)
+      throw forbidden("Task is unavailable");
+  }
+  // A task in this caller's lineage runs at most at the connection's mode, whatever its own says.
+  const targetMode =
+    thread && lineage && target?.enqueue
+      ? minThreadAccessMode(thread.accessMode, accessMode)
+      : thread && lineage && thread.originConnectionId === lineage.agentConnectionId
+        ? minThreadAccessMode(thread.accessMode, lineage.accessMode)
+        : (thread?.accessMode ?? target?.accessMode ?? accessMode);
+  if (!target?.readOnly && !threadAccessModeAtMost(targetMode, accessMode))
     throw forbidden("Target task has a stronger access mode than this caller");
 }
 function forbidden(message: string) {

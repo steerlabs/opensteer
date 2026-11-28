@@ -13,6 +13,7 @@ import {
   runFileMaxBytes,
   runFileMaxPerCall,
   runFileNameHeader,
+  runFileProofHeader,
   runFileTransferContentType,
   runFileTransferPath,
   type RunFileExecution,
@@ -52,21 +53,19 @@ const within = (root: string, path: string): boolean => {
   const rest = relative(root, path);
   return rest === "" || (rest !== ".." && !rest.startsWith(`..${sep}`) && !isAbsolute(rest));
 };
+interface RunFilesOptions {
+  readonly dataDirectory: string;
+  readonly helperBinary: string;
+  readonly transport: RunnerTransportPolicy;
+  readonly port?: RunFilePort;
+  readonly proof?: (id: string, method: "GET" | "PUT") => string | undefined;
+}
+
 export class RunFiles {
   readonly scratchRoot: string;
   readonly #native: NativeFsHelper;
-  readonly options: {
-    dataDirectory: string;
-    helperBinary: string;
-    transport: RunnerTransportPolicy;
-    port?: RunFilePort;
-  };
-  constructor(options: {
-    dataDirectory: string;
-    helperBinary: string;
-    transport: RunnerTransportPolicy;
-    port?: RunFilePort;
-  }) {
+  readonly options: RunFilesOptions;
+  constructor(options: RunFilesOptions) {
     this.options = options;
     this.scratchRoot = join(options.dataDirectory, "private", "app-files");
     this.#native = new NativeFsHelper({
@@ -119,11 +118,18 @@ export class RunFiles {
       name: attachmentFileName(basename(path)),
     };
   }
+  #authorization(transfer: RunFileTransfer, method: "GET" | "PUT") {
+    const proof = this.options.proof?.(transfer.id, method);
+    return {
+      authorization: `Bearer ${transfer.token}`,
+      ...(proof ? { [runFileProofHeader]: proof } : {}),
+    };
+  }
   async download(transfer: RunFileTransfer, signal: AbortSignal) {
     const response = await runnerFileRequest(
       this.options.transport,
       runFileTransferPath(transfer.id),
-      { authorization: `Bearer ${transfer.token}` },
+      this.#authorization(transfer, "GET"),
       signal,
     );
     try {
@@ -150,7 +156,7 @@ export class RunFiles {
       this.options.transport,
       runFileTransferPath(transfer.id),
       {
-        authorization: `Bearer ${transfer.token}`,
+        ...this.#authorization(transfer, "PUT"),
         "content-type": runFileTransferContentType,
         "content-length": String(file.size),
         [runFileNameHeader]: encodeURIComponent(file.name),

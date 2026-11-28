@@ -1,7 +1,6 @@
 import { OpensteerError, isLoopbackHostname, type UserId } from "@opensteer/core";
 import {
   BrowserSourcePairChallengeResultSchema,
-  BrowserSourcePairInputSchema,
   BrowserSourcePairResultSchema,
   type BrowserSourcePairing,
   hostApi,
@@ -256,10 +255,7 @@ export function registerBrowserSourceWire(
         return reply.status(403).send();
       void reply.header("cache-control", "no-store");
       return BrowserSourcePairResultSchema.parse(
-        await service.pair(
-          BrowserSourcePairInputSchema.parse(request.body),
-          browserSourceIngressOrigin(request, canonicalOrigin),
-        ),
+        await service.pair(request.body, browserSourceIngressOrigin(request, canonicalOrigin)),
       );
     },
   );

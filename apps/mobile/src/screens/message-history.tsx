@@ -8,14 +8,7 @@ import {
 import type { MessageRevisionView } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Markdown } from "../markdown/markdown.js";
 import { color, space, touchTarget } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -24,6 +17,7 @@ import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useGutter } from "../ui/screen.js";
+import { useFitSheetHeight } from "../ui/fit-sheet.js";
 
 export type MessageHistoryScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -32,9 +26,8 @@ export type MessageHistoryScreenProps = StaticScreenProps<{
 }>;
 
 /**
- * Every version of a message a person edited while it waited, newest first:
- * for a teammate's ask, their words, then each of the person's edits. The
- * version a Run took is final, so this is the whole record of what was asked.
+ * Every version of a message a person edited while it waited, newest first.
+ * The version a Run took is final, so this is the whole record of what was asked.
  */
 export function MessageHistoryScreen(props: MessageHistoryScreenProps): ReactNode {
   const { deploymentId, messageId, threadId } = props.route.params;
@@ -60,7 +53,7 @@ function History(props: {
   const { hostClient, messageId, threadId } = props;
   const insets = useContentInsets();
   const gutter = useGutter();
-  const { height } = useWindowDimensions();
+  const tallest = useFitSheetHeight();
   const [revisions, setRevisions] = useState<readonly MessageRevisionView[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -116,7 +109,7 @@ function History(props: {
       ]}
       // The sheet is as tall as this list, so a long history stops short of
       // the screen's top and scrolls inside it.
-      style={[styles.sheet, { maxHeight: height * 0.85 }]}
+      style={[styles.sheet, { maxHeight: tallest }]}
     >
       <View style={styles.head}>
         <AppText role="title">Edit history</AppText>

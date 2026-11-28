@@ -43,6 +43,7 @@ import {
   type PluginCaller,
   type PluginConsent,
   type PluginJson,
+  type PluginInput,
 } from "./engine-protocol.js";
 import type { PluginService, PluginServiceState } from "./plugin-service.js";
 import { keysetPage } from "./keyset-page.js";
@@ -57,6 +58,7 @@ type LocalTool = Omit<PluginLocalToolView, "access" | "toolCount" | "readOnlyToo
 type Service = Pick<
   PluginService,
   | "state"
+  | "installedInventoryEmpty"
   | "installed"
   | "detail"
   | "detailSection"
@@ -78,6 +80,13 @@ type Service = Pick<
 
 export interface PluginOwnerApiOptions {
   readonly service: Service;
+  /**
+   * Reads plugin source from a folder inside Agent home, as today's install tool does: an install
+   * your own agent proposed from its folder runs it once the person approves.
+   */
+  readonly folder?: (
+    directory: string,
+  ) => Promise<Extract<PluginInput<"install">, { readonly kind: "files" }>>;
   readonly pages?: import("./plugin-pages.js").PluginPages;
   readonly webhooks?: {
     service: Pick<PluginService, "webhook" | "readStream">;
@@ -308,6 +317,12 @@ export class PluginOwnerApi {
     return pluginEngineStateView(this.#options.service.state());
   }
   readonly #options: PluginOwnerApiOptions;
+  /** A folder install needs Agent home's files; a Home without them has no folder to read. */
+  #folder(directory: string) {
+    if (!this.#options.folder)
+      throw new OpensteerError({ code: "not_found", message: "Folder not found" });
+    return this.#options.folder(directory);
+  }
   readonly pages: PluginOwnerApiOptions["pages"];
   readonly webhooks: PluginOwnerApiOptions["webhooks"];
   #gateway: import("../apps/app-gateway.js").AppGateway | undefined;
@@ -374,11 +389,13 @@ export class PluginOwnerApi {
     const service = this.#options.service;
     const ready = service.state().status === "ready";
     const [plugins, settings, local] = await Promise.all([
-      ready ? this.#summaries(userId, signal) : null,
+      ready
+        ? this.#summaries(userId, signal)
+        : service.installedInventoryEmpty().then((empty) => (empty ? [] : null)),
       this.#settings(userId),
       this.#options.localTools?.(userId) ?? [],
     ]);
-    if (!ready || plugins === null) this.#warm(userId);
+    if (plugins === null) this.#warm(userId);
     const engine = pluginEngineStateView(service.state());
     const access = (id: string) => settings.find((row) => row.pluginId === id)?.access ?? "all";
     const page = plugins
@@ -685,6 +702,7 @@ export class PluginOwnerApi {
         const session = await this.#owner(context);
         if (!this.pages)
           throw new OpensteerError({ code: "not_found", message: "Plugin pages are unavailable" });
+        this.#gateway?.requireAppAddress();
         const view = await this.pages.view(session.user.id, input.pluginId, input.theme);
         const entryUrl = this.#gateway?.entryUrl(
           input.pluginId,
@@ -1048,11 +1066,30 @@ export class PluginOwnerApi {
           service.install(
             source.kind === "catalog"
               ? { kind: "catalog", id: source.catalogId, key: creationKey }
-              : { kind: source.kind, url: source.url, name: source.name, key: creationKey },
+              : source.kind === "folder"
+                ? {
+                    ...(await this.#folder(source.directory)),
+                    ...(source.pluginId ? { plugin: source.pluginId } : {}),
+                    ...(source.name ? { name: source.name } : {}),
+                    key: creationKey,
+                  }
+                : { kind: source.kind, url: source.url, name: source.name, key: creationKey },
             owner,
           ),
         );
         if (result.status === "build-error") {
+          const stage = z
+            .enum(["source", "dependencies", "compile", "declaration", "retain", "migrate"])
+            .safeParse(result.error.stage).data;
+          const imported = result.error.code === "invalid-openapi";
+          // The detailed diagnostic can quote source text. Keep it in the approved receipt,
+          // and log only the engine's known stage and a fixed sentence.
+          console.warn("Plugin install failed", {
+            stage: imported ? "openapi-import" : (stage ?? "build"),
+            message: imported
+              ? "The OpenAPI document did not compile."
+              : "The plugin did not build.",
+          });
           const message = z.object({ message: z.string() }).safeParse(result.error).data?.message;
           return {
             type: command.type,

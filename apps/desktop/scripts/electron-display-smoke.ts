@@ -17,8 +17,9 @@
  *    so here non-blank means the decoded pixels replaced a magenta fill
  *    everywhere. A delta that arrives before its keyframe is dropped and
  *    acknowledged; the others are acknowledged once the decoder takes them.
- * 2. The preview Host's phone decodes to its layout's colours, and control is
- *    granted and given back over the same socket.
+ * 2. The preview Host's phone decodes to its layout's colours, and shared input
+ *    goes over the same socket: a view joining the open stream asks for one
+ *    keyframe, and a view that leaves resets only input it still holds.
  * 3. Frames this Chromium encodes itself, Annex B, decode under the live
  *    credit window with none skipped and no acknowledgement ahead of the
  *    decoder; the picture survives an announced generation change until the
@@ -62,6 +63,9 @@ import type {
   DisplaySmokeResult,
   DisplaySmokeScenario,
 } from "./electron-display-renderer-smoke.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("display", 180000);
 
 const artifactDirectory =
   process.env.OPENSTEER_DISPLAY_E2E_ARTIFACT_DIR ?? path.join(tmpdir(), "opensteer-display-e2e");
@@ -155,7 +159,7 @@ function verify(outcome: DisplaySmokeResult): void {
     preview.timeline.filter(
       (entry) => entry.startsWith("display.") && !entry.startsWith("display.ack"),
     ),
-    ["display.input 0", "display.input-reset"],
+    ["display.keyframe", "display.input 0", "display.input 1", "display.input-reset"],
   );
 
   const owner = scenario(outcome, "owner-authority");

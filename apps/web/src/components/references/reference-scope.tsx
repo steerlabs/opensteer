@@ -8,42 +8,23 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router";
-import { ThreadIdSchema, teamPageUrl, type TeamPageLink, type ThreadId } from "@opensteer/core";
+import { ThreadIdSchema, type ThreadId } from "@opensteer/core";
 import { automationPath, type HostClient } from "@opensteer/client/host";
-import {
-  teamPageTarget,
-  type FileOpenInput,
-  type PersonalReferenceNavigationPorts,
-  type ReferenceDestination,
-  type ReferenceNavigationPorts,
-  type ReferenceRenderContext,
+import type {
+  FileOpenInput,
+  PersonalReferenceNavigationPorts,
+  ReferenceDestination,
+  ReferenceRenderContext,
 } from "@opensteer/client/references";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
-import { useTeams, type TeamAttachment } from "../../team/team-attachments.js";
-import { teamPagePath } from "../../team/team-paths.js";
 import { useAreaNavigate } from "../workspace/area-link.js";
 import { useOptionalWorkspace } from "../workspace/workspace-context.js";
 import { FileViewer } from "./file-viewer.js";
 
-/**
- * Whose words a chip sits in, and how it opens what it names. A personal
- * Opensteer's chips open its tasks, Runs and files; a team's open only team
- * pages, so a personal reference quoted there stays words.
- */
-export type ReferenceScope =
-  | {
-      readonly context: Extract<ReferenceRenderContext, { kind: "personal" }>;
-      readonly navigation: PersonalReferenceNavigationPorts;
-    }
-  | {
-      readonly context: Extract<ReferenceRenderContext, { kind: "team" }>;
-      readonly navigation: ReferenceNavigationPorts;
-    };
-
-export type PersonalReferenceScope = Extract<ReferenceScope, { context: { kind: "personal" } }>;
-
-export function isPersonalScope(scope: ReferenceScope | null): scope is PersonalReferenceScope {
-  return scope?.context.kind === "personal";
+/** Whose words a chip sits in, and how it opens what it names: the Home's tasks, Runs and files. */
+export interface ReferenceScope {
+  readonly context: ReferenceRenderContext;
+  readonly navigation: PersonalReferenceNavigationPorts;
 }
 
 const ReferenceScopeContext = createContext<ReferenceScope | null>(null);
@@ -60,36 +41,6 @@ export function ReferenceNavigationProvider({
   readonly value: ReferenceScope;
 }) {
   return <ReferenceScopeContext value={value}>{children}</ReferenceScopeContext>;
-}
-
-/** The attached team session for a page's origin, where this surface holds one. */
-export function attachedTeam(
-  teams: readonly TeamAttachment[],
-  page: TeamPageLink,
-): TeamAttachment | null {
-  return teams.find((team) => team.origin === page.origin && team.client !== null) ?? null;
-}
-
-/**
- * A team page opens in this app where it holds that team's session (desktop,
- * the team's own web app), and otherwise at the team's own address, never as
- * a browsing tab of the agent's.
- */
-export function useOpenTeamPage(): (page: TeamPageLink) => Promise<void> {
-  const { teams } = useTeams();
-  const navigate = useNavigate();
-  return useCallback(
-    async (page) => {
-      const team = attachedTeam(teams, page);
-      const target = teamPageTarget(page);
-      if (team && target) {
-        void navigate(teamPagePath(team.teamId, target));
-        return;
-      }
-      openOutside(teamPageUrl(page));
-    },
-    [navigate, teams],
-  );
 }
 
 export function openOutside(url: string): void {
@@ -191,13 +142,12 @@ export function PersonalReferences({
     [],
   );
   const openReference = useOpenPersonalDestination(openAttachment);
-  const openTeamPage = useOpenTeamPage();
   const value = useMemo<ReferenceScope>(
     () => ({
       context: { kind: "personal", client, deploymentId, threadId: ownThreadId },
-      navigation: { openFile, openReference, openTeamPage },
+      navigation: { openFile, openReference },
     }),
-    [client, deploymentId, ownThreadId, openFile, openReference, openTeamPage],
+    [client, deploymentId, ownThreadId, openFile, openReference],
   );
   return (
     <ReferenceScopeContext value={value}>
@@ -212,34 +162,4 @@ export function PersonalReferences({
       ) : null}
     </ReferenceScopeContext>
   );
-}
-
-/** Team reference context: chips to this team's pages open in it; personal ones stay words. */
-export function TeamReferences({
-  children,
-  team,
-}: {
-  readonly children: ReactNode;
-  readonly team: Pick<TeamAttachment, "client" | "origin" | "teamId"> | null;
-}) {
-  const openTeamPage = useOpenTeamPage();
-  const value = useMemo<ReferenceScope | null>(
-    () =>
-      team
-        ? {
-            context: {
-              kind: "team",
-              client: team.client,
-              origin: team.origin,
-              teamId: team.teamId,
-            },
-            navigation: {
-              openReference: async () => undefined,
-              openTeamPage,
-            },
-          }
-        : null,
-    [team?.client, team?.origin, team?.teamId, openTeamPage],
-  );
-  return <ReferenceScopeContext value={value}>{children}</ReferenceScopeContext>;
 }

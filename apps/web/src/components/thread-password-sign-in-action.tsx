@@ -88,6 +88,7 @@ export function PasswordSignInRequestBody({
   readonly request: RequestView;
 }) {
   const payload = request.payload.kind === "browser.password-sign-in" ? request.payload : null;
+  const oneTime = request.originatingAgentSessionId != null;
   const pending = request.status === "pending";
   const signIn = useHostSignIn(client, pending && !disabled ? request.id : null);
   const [busy, setBusy] = useState<Busy>(null);
@@ -210,7 +211,7 @@ export function PasswordSignInRequestBody({
   }
 
   const offer = !expired && state?.stage === "approval" && accounts.length > 0;
-  const forward = offer && chosen !== null ? () => approve(true) : null;
+  const forward = offer && chosen !== null ? () => approve(!oneTime) : null;
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
@@ -277,7 +278,9 @@ export function PasswordSignInRequestBody({
             ? passwordSignInConsent(payload.site, chosen.username)
             : passwordSignInPrivacy(payload.site)}
         </p>
-        {offer && chosen !== null ? <p>{passwordSignInAllowRemembers(chosen.username)}</p> : null}
+        {!oneTime && offer && chosen !== null ? (
+          <p>{passwordSignInAllowRemembers(chosen.username)}</p>
+        ) : null}
       </div>
       {confirming ? (
         <p className="sign-in-card__line" role="status">
@@ -308,27 +311,29 @@ export function PasswordSignInRequestBody({
         )}
         <div className="sign-in-card__answers">
           <button className="btn" disabled={locked} onClick={decline} type="button">
-            {busy === "decline" ? "Declining…" : "Don’t allow"}
+            {busy === "decline" ? "Declining…" : oneTime ? "Don't allow" : "Don’t allow"}
           </button>
           {offer ? (
             <>
-              <button
-                className="btn"
-                disabled={locked || chosen === null}
-                onClick={() => approve(false)}
-                type="button"
-              >
-                Only this time
-              </button>
+              {!oneTime ? (
+                <button
+                  className="btn"
+                  disabled={locked || chosen === null}
+                  onClick={() => approve(false)}
+                  type="button"
+                >
+                  Only this time
+                </button>
+              ) : null}
               <button
                 className="btn btn--primary"
                 disabled={locked || chosen === null}
-                onClick={() => approve(true)}
+                onClick={() => approve(!oneTime)}
                 ref={forwardRef}
                 type="button"
               >
                 <Icon name="key" />
-                Allow
+                {oneTime ? "Allow once" : "Allow"}
               </button>
             </>
           ) : null}

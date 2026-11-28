@@ -17,11 +17,7 @@ import {
   type RunnerId,
   type ThreadId,
 } from "@opensteer/core";
-import {
-  HarnessRegistry,
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessAdapter,
-} from "@opensteer/harness";
+import { HarnessRegistry, type HarnessAdapter } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import type { MachineAccessPolicy } from "@opensteer/protocol";
 import { harnessLaunchValidationHook, type MachineAccessValidationHook } from "@opensteer/runner";
@@ -411,7 +407,7 @@ integration("Warm engines with machine access", () => {
       const echo = await startEchoServer();
       active.closers.push(() => echo.close());
 
-      // A Run that completes: its engine is kept, and nothing of the Run is.
+      // A Run that completes: its SSH ends with it, and nothing of it is reachable after.
       const completed = await active.heldRun("Long work");
       const kept = required(completed.launch, "the launch directory");
       const completedWork = await openWork(active, kept, echo.port);
@@ -421,10 +417,33 @@ integration("Warm engines with machine access", () => {
       expect(await probeEcho(completedWork.port)).toBe("no-listener");
 
       const next = await active.heldRun("Next question");
-      expect(next.enginePid).toBe(completed.enginePid);
-      expect(next.launch?.launchDirectory).toBe(kept.launchDirectory);
+      // The engine is kept only on a clean proof that nothing of the Run lives on, and that proof
+      // reads /proc while the cut commands may still be exiting: a process caught between its
+      // reads makes it unverifiable, and the engine is retired. Both are the product's promise;
+      // which one this Run took is what the Runner recorded as the next attempt's start. (Codex
+      // serves every session from one shared process, so the engine's pid cannot tell them apart.)
+      await waitFor(
+        async () => (await engineStart(active.stack, next.runId)) !== null,
+        "the next attempt's recorded engine start",
+      );
+      const nextStart = await engineStart(active.stack, next.runId);
+      const current = required(next.launch, "the next Run's launch directory");
+      if (nextStart === "warm") {
+        // Kept: the same launch directory, and no second launch set up.
+        expect(active.probes).toHaveLength(1);
+        expect(current.launchDirectory).toBe(kept.launchDirectory);
+      } else {
+        // Not kept: a launch of its own, and the old one gone with everything it reached through.
+        expect(nextStart).toBe("cold");
+        expect(active.probes).toHaveLength(2);
+        expect(current.launchDirectory).not.toBe(kept.launchDirectory);
+        await expect(stat(kept.launchDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(
+          stat(required(completed.relaySocket, "the old relay socket")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      }
       expect(await probeEcho(completedWork.port)).toBe("no-listener");
-      expect(await runShim(kept, "ssh", ["example-mac", "echo clean"])).toMatchObject({
+      expect(await runShim(current, "ssh", ["example-mac", "echo clean"])).toMatchObject({
         code: 0,
         stdout: "clean\n",
       });
@@ -436,7 +455,7 @@ integration("Warm engines with machine access", () => {
 
       // Stop: the command and the forward end as the engine is told to stop,
       // not when it has.
-      const stopWork = await openWork(active, kept, echo.port);
+      const stopWork = await openWork(active, current, echo.port);
       const stopInterrupt = await active.armInterrupt();
       const stoppedAt = Date.now();
       await active.stack.interruptRun(active.threadId, next.runId);
@@ -456,7 +475,12 @@ integration("Warm engines with machine access", () => {
       expect(stopped.every((session) => session.state === "ended")).toBe(true);
       journeys.push(
         await active.record("SSH ends with its Run and at Stop", {
-          notes: { engineAliveAtStopCut, stopCutAfterInterruptMs, stopCutMs },
+          notes: {
+            engineAliveAtStopCut,
+            engineKeptForNextRun: nextStart === "warm",
+            stopCutAfterInterruptMs,
+            stopCutMs,
+          },
         }),
       );
     },
@@ -755,7 +779,6 @@ async function startRig(
         );
         return registry;
       },
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       machineAccess: {
         helperBinary: nativeFsHelperBinary,
         hostUrl: hop.url,
@@ -979,10 +1002,24 @@ class ColdCodexHarnessDriver extends CodexHarnessDriver {
     context: Parameters<CodexHarnessDriver["create"]>[0],
   ): Promise<HarnessAdapter> {
     const adapter = await super.create(context);
-    const capabilities = { ...adapter.capabilities, warmReuse: false };
+    const capabilities = { ...adapter.capabilities, sharedEngineProcess: false, warmReuse: false };
+    const withoutSharedEngine = (sessionContext: Parameters<HarnessAdapter["startSession"]>[0]) => {
+      const { sharedEngine: _ignored, ...dedicated } = sessionContext;
+      return dedicated;
+    };
     return new Proxy(adapter, {
       get: (target, property) => {
         if (property === "capabilities") return capabilities;
+        if (property === "startSession") {
+          return (sessionContext: Parameters<HarnessAdapter["startSession"]>[0]) =>
+            target.startSession(withoutSharedEngine(sessionContext));
+        }
+        if (property === "resumeSession") {
+          return (
+            providerSessionReference: string,
+            sessionContext: Parameters<HarnessAdapter["resumeSession"]>[1],
+          ) => target.resumeSession(providerSessionReference, withoutSharedEngine(sessionContext));
+        }
         const value: unknown = Reflect.get(target, property, target);
         if (typeof value !== "function") return value;
         return (...args: unknown[]): unknown => Reflect.apply(value, target, args);

@@ -11,8 +11,11 @@ A page tab is one entry in the Host's single tab list, beside window, phone and 
 its `tabId` is durable and its live page is a replaceable
 runtime binding. Trigger and watch browsers write no tabs. Only a page's latest session can close it,
 late updates never resurrect a closed tab, and Reopen restores the same `tabId` under a new
-generation. Closing removes the tab from the list and from person viewing, never stopping a Run that
-holds the page; that Run keeps it until ordinary release, and binding the closed tab anew fails.
+generation, in a page of its own that loads its address again, never the closed tab's page. Closing
+a tab ends its page, as a regular browser does, whoever opened it and whatever holds it: the tab
+leaves the list at once, its page is fenced and closed, retried until the browser confirms it gone,
+and a session's last page ends its session. An agent using the page gets an ordinary error on its
+next use, and binding the closed tab anew fails.
 Only committed navigation becomes a restore URL, except that failed navigation keeps its attempted
 address. Overlong addresses are never truncated; legacy Chromium error URLs cannot be reopened.
 
@@ -39,10 +42,67 @@ using its memory budget and idle policy; missing Host state keeps it awake. Harn
 do not release a Run's hold. Watch alone never marks a tab as used by a person. Selecting a sleeping
 tab or explicitly resuming it as an agent wakes the existing record within its admitted session.
 
-Restore state stays in runtime memory, never a database, stream or log. Electron can restore more
-in-page state than other engines; phones and Playwright promise only a descriptor and URL reload.
-Passwords, files and arbitrary app state are never promised. Ending a runtime loses that state,
-while the durable descriptor still permits reopening.
+Restore state stays in runtime memory or inside the running browser, never a database, stream or
+log. On macOS, Electron captures navigation history with Blink page state and `sessionStorage` in
+runtime memory across a tab sleep. On Linux (and Opensteer Cloud Computers), a sleeping tab is
+discarded through Chromium's own tab lifecycle (`chrome.tabs.discard`, after freezing to flush
+Blink page state and detaching CDP), so it wakes with its history, scroll, standard form fields and
+`sessionStorage` while the browser keeps running. A minimal bundled MV3 helper extension (`tabs`,
+`tabGroups` and `debugger` permissions only, hidden from tab lists, session CDP and connected
+agents) names a tab only while it sleeps: after Chromium discarded it (a discarded tab runs no
+script, so nothing it opens can share its name), it puts the tab in its own tab group whose title
+is that sleep's name, in the same call as the discard. A wake finds the one tab carrying the name,
+activates it, takes its page only if the name is still on that one tab and it is that page's, and
+then removes the name. A wake that cannot finish removes the tab before the tab is opened again by
+its address; one whose open was abandoned leaves the tab asleep. Opensteer reads Chromium's tabs only
+from a read that agrees with itself; otherwise the answer is "not known", never "absent". The
+helper marks each tab it sees as not discardable by Chromium itself, so Opensteer is the one that
+discards. `chrome.tabs.discard(tabId)` bypasses every refusal of Chromium's discard policy: it
+never calls `CanDiscard` (`chrome/browser/extensions/api/tabs/tabs_api.cc` `TabsDiscardFunction::Run`
+reaches `TabLifecycleUnit::Discard(EXTERNAL)` in
+`chrome/browser/resource_coordinator/tab_lifecycle_unit.cc`, which never reads
+`chrome/browser/performance_manager/policies/discard_eligibility_policy.cc`; read at Chromium
+`ef22aa0711`). So every protection Opensteer wants, Opensteer enforces. A tab that cannot be put to sleep under its name is closed and wakes by address; one whose
+end is not proven stays guarded until it is, and a discarded tab without a name, which only a sleep
+that failed can leave, is removed with it. Closing a sleeping tab or ending its session removes it
+from Chromium on evidence: when the session's end returns, the tab is out of every session's reach,
+and a removal that is not confirmed is retried in the background a bounded number of times and then
+reported as not removed, still guarded. A page whose tab carries no sleep name is an ordinary
+page, handed to sessions as any page is, also when the page that opened it has already closed. A
+sleeping tab is kept at the left end of the window, left of a private blank tab, with every live tab
+to its right; a tab that wakes moves to the right end first. Chromium activates the tab beside a
+closed one and puts a tab a page opens beside the active tab, in its group, so neither reaches a
+sleeping tab. No tab is discarded while it is the active tab, and a tab that something else made
+active loads by itself and is put back to sleep as any tab is: once it has loaded and
+restored its form fields and scroll, frozen first, so nothing typed in it is lost. A tab that still joins a sleeping tab's group
+carries its name without being that tab: its name is removed and it is an ordinary page. A connected
+agent granted one tab and what descends from it keeps that tab across its sleep: the runtime's own
+record of the sleep, never anything a page can set, puts the woken tab in the slept one's place. A
+wake that ends at the tab's address instead opens a new page, which is outside that grant. On Linux without an explicit `OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab
+sleeper reacts to container working set (`memory.current - inactive_file` against `memory.max`, or
+bare-Linux `MemTotal - MemAvailable` against `MemTotal`) — sleeping eligible tabs above 70% and
+stopping below 60%, evaluated on its timer and again before each new page is created: over the
+threshold an open waits, within a bound of about two seconds, while some tab can sleep for it or
+while the last sleeps' memory is still being released, and reads the memory again before it goes —
+while keeping renderer `Pss` for reporting only and falling back to its page estimate when memory
+state cannot be read. A page arriving that no open of Opensteer's made (a popup, a new-tab link)
+asks for a pass at once when memory is over the threshold. Sleeping makes it unlikely that a Home
+with many tabs on a small machine runs out of memory; it does not make it impossible. When every tab
+is in use, nothing can sleep, and a new tab still opens. A storm of pages that a page opens (many
+heavy popups in a few seconds) can outrun sleeping, and background tabs can then be lost to the
+system, which ends their renderers.
+
+When the browser itself restarts on a Linux Home or a Cloud Computer (a Home update, a crash, a cold
+start), each tab reopens at its address. What was typed into a page and not sent, its scroll
+position and its back history are not kept across that restart; sign-ins are kept, since they live
+in the profile, except that a sign-in made in the last half minute before the browser is killed may
+not be (Chromium writes its cookies to disk on its own timer). On a Cloud Computer the browser pool keeps the exact state through idle time, so a
+restart is the rare case there. Before each launch the launcher deletes the last session's records
+in the profile directory Opensteer owns, so Chromium has no tabs to bring back while it still keeps
+the profile's session cookies; a launch that finds a page anyway refuses to start.
+Passwords, `contenteditable` drafts, in-progress uploads, playing media position and arbitrary script
+memory are never promised; POST results and playing media stay awake during tab sleep. Phones and
+Guest sessions promise only a descriptor and URL reload.
 
 Each engine hands every native page to the runtime as soon as it has a handle. A page the runtime
 can attribute belongs to one session: its creator, its opener's, or the session that adopts a raw
@@ -216,8 +276,8 @@ Looking at a page never changes it. An agent screenshot may demand rendering and
 returned pixels, but leaves native bounds, layout, emulation, scroll, focus and selection alone.
 Chromium's `Page.captureScreenshot` cannot promise that: with a clip, or on a session holding
 emulation, it resizes the view for the capture and a person watches the page shrink. So each engine
-copies its surface through `captureViewport` instead, and full-page capture, which only that resize
-can make, does not exist.
+copies its surface through `captureViewport` for native harness screenshots. See
+[managed browser CDP connections](#managed-browser-cdp-connections) for full-page capture.
 
 Watch is passive: it may manage picture subscriptions and raster demand, but never navigate, select,
 resize, input, touch the clipboard or CDP, or move state. Profile owners can always view their
@@ -234,8 +294,7 @@ routing, and Watch never receives them ([Passwords](passwords.md#filling-for-peo
 
 Profile listing, opening, CDP and tab reach follow the Run resource authority
 rule; driving needs `read-write`. Only people create
-profiles; an agent asks with a browser-access Request. Private profile access is decided for the personal owner and current caller ceiling, never
-by team membership. Consent never limits whether the owner may watch their own profile.
+profiles; an agent asks with a browser-access Request. Private profile access is decided for the personal owner and current caller ceiling. Consent never limits whether the owner may watch their own profile.
 Guest state cannot be promoted, so choose the profile before signing in.
 
 Deletion revokes grants and schedules erasure on the owning computer (`pending-computer` while it is
@@ -273,13 +332,60 @@ ended before reuse; a settled close alone does not prove a Chromium process exit
 ## Chrome extensions
 
 A saved Electron profile keeps Chrome extensions as Chrome does: the person installs them from the
-Chrome Web Store page in any tab, and agents load unpacked folders with CDP's own
-`Extensions.loadUnpacked`, `getExtensions`, `uninstall` and `triggerAction`, sent from any page of
-the profile; only a backend that keeps extensions answers that domain. Driving the profile is the
-authority to change it, as it is for its cookies; the person sees every extension in the toolbar's
-Extensions menu (with a quiet "Not from Chrome Web Store" label for unpacked folders), opens its
-options there as an ordinary tab and removes any after a confirmation. Guest keeps none (Electron
-loads extensions only into persistent Sessions), and phone engines run none.
+Chrome Web Store page in any tab, and your own agents running in a Full access task with personal
+context on the person's own lineage can load unpacked folders or remove extensions with CDP's
+`Extensions.loadUnpacked` and `Extensions.uninstall` (and any of your own agents driving the profile
+can call `Extensions.getExtensions` and `Extensions.triggerAction`, sent from any page of the
+profile; only a backend that keeps extensions answers that domain). Tasks below Full access or under
+a connected agent's lineage are refused `Extensions.loadUnpacked` and `Extensions.uninstall`;
+connected agents are refused the entire `Extensions.*` domain, cannot open or navigate to
+`chrome-extension:` pages over CDP or `tab.open`, have page-initiated navigations, subframes,
+redirects, popups, and subresource requests to `chrome-extension:` URLs blocked or cancelled once a
+connected agent binds the page via CDP, and are isolated from extension targets and content-script
+execution worlds (with agent-chosen world names namespaced so they never match or probe extension
+worlds). Every other page of the profile (the person's, your own agents', a tab a connected agent
+opened before it binds it) reaches an extension's pages and files as a website can in Chrome: an
+extension's own pages move among its own pages, and any other page navigates, follows a redirect,
+opens a window or an iframe, or requests a file at a `chrome-extension:` address only when that
+extension lists it as web-accessible for the page. Anything else is refused the same way as an
+address of an extension that is not installed, and the page stays where it was. A server
+redirect into an extension is judged by the site whose response redirects, whoever started the
+navigation, so a sign-in provider listed by the extension can send the person back to it while a
+site that only bounces cannot, and a redirect Opensteer did not see (a service worker's) is
+refused. A window is judged by the frame that opens it: by the origin the browser reports for the
+opener, or, when it reports none, by the window's own first navigation. An extension's dynamic
+address (a resource it lists with `use_dynamic_url`, which `chrome.runtime.getURL()` gives under a
+random host that changes each session) is only another name for its own address: Chromium rewrites
+it to that address, and the navigation is judged there exactly as at that address, by the page that
+started it or the site whose redirect led there, with the `use_dynamic_url` resource counting as
+listed; a window opened onto one is judged by its own first navigation, and a guessed host reaches
+nothing. Opensteer's own opening
+of an extension's pages (its popup, its options page) is not a page's navigation and stays
+allowed. Two residuals remain: main-world DOM mutations written directly into a page by an
+extension's content script remain readable from the page's default world, and a tab opened via
+`tab.open` is not marked connection-controlled until a connected agent binds it via CDP (which is
+for ever for an agent that never binds it), so before binding that page can reach the extension
+pages and files that extensions list as web-accessible, just as any website can in Chrome. A
+connected agent cannot attach to or drive a tab that ended on an extension page, and once it
+binds a page, that page reaches no extension address at all.
+
+Observed on real Electron: `will-frame-navigate` fires for `data:` and `blob:` iframes and not for
+`srcdoc`, and a content-script execution world is reported over CDP with `auxData.isDefault: false`,
+`type: "isolated"`, the extension's name, and a `chrome-extension:` origin. Electron itself refuses
+nothing at the navigation level: without the checks above, a web page's `location.href`, link,
+server redirect, `window.open` or iframe to any `chrome-extension:` page commits there (Chromium
+then shows `ERR_BLOCKED_BY_CLIENT` there for a page that is not web-accessible or not installed); its extension loader
+does refuse a web page's `fetch`, image or script request for a file that is not web-accessible.
+
+The person's own actions in their own app (installing from the Web Store window or removing
+an extension from the toolbar's Extensions menu, each with a native confirmation dialog) stay on the
+desktop bridge as the person's hand in their own browser, just like installing or removing an
+extension in Chrome. The person sees every extension in the toolbar's Extensions menu (with a quiet
+"Not from Chrome Web Store" label for unpacked folders), opens its options there as an ordinary tab
+and removes any after a confirmation. Guest keeps none (Electron loads extensions only into
+persistent Sessions), and phone engines run none. Because content scripts run in the profile's
+pages, after Opensteer fills a saved password or card into a page, an installed extension running in
+that page can read it just as page scripts and an agent working in that page can.
 
 [Profile extensions](../apps/desktop/src/browser/profile-extensions.ts) and its in-repo
 [extensions runtime](../apps/desktop/src/browser/extensions) load each profile's Web Store installs
@@ -385,3 +491,87 @@ Host can satisfy both. Their stored pairings carry over after one update.
 Page uploads name only files staged in the session's private folder. Desktop downloads appear only
 when complete, under a non-replacing name, with macOS quarantine applied first because Electron does
 not. They never open themselves; renderer actions take IDs, and Cloud Chromium refuses them.
+
+## Managed browser CDP connections
+
+The Home's `/v1/browser/connect/<ticket>` WebSocket accepts a single-use attachment ticket.
+The reply that issues the ticket gives the mode. Use stock
+`chromium.connectOverCDP(endpoint)` for `whole-context` and
+`chromium.connectOverCDP(endpoint, { noDefaults: true })` for `session`. A lost exclusive grant
+requires a new ticket. Closing the client disconnects it. The Browser Session and adopted pages
+have their own lifetime.
+
+The browser profile is the isolation boundary for cookies, storage and permissions. Every Guest
+Browser Session gets a fresh Chromium context. A connected agent needs a saved profile and a
+device running an Opensteer version that supports page lineage. On older devices, use
+`browser_use`.
+
+For up to ten minutes, a connected agent can drive the tab its connection was issued for,
+pages it creates on that connection, and their popups and child frames. The Home records those
+pages as open tabs of the agent's task and closes any page it cannot record. Closing one of
+those tabs in Opensteer closes its browser page and ends its CDP channels. Whole-context mode
+gives the agent access to all cookies, storage, permissions and signed-in sites in the profile,
+including the state it shares with a person or another agent. Runs continue to use the pages
+owned by their attached Browser Session.
+
+The virtual root supports `Browser.getVersion`, `Target.getTargets`, `Target.getTargetInfo`,
+`Target.getBrowserContexts`, `Target.createTarget`, `Target.closeTarget`,
+`Target.activateTarget`, `Target.attachToTarget`, `Target.detachFromTarget`,
+`Target.setAutoAttach`, `Target.setDiscoverTargets`, and scoped nested sends through
+`Target.sendMessageToTarget`. Root auto-attach requires `flatten: true` when enabled, refuses
+a filter, and announces owned pages unpaused even if `waitForDebuggerOnStart` is set.
+Root target discovery accepts up to 64 ordered type filter entries for both the initial
+snapshot and live events. Context creation and disposal, browser shutdown, and browser-wide
+commands outside the supported context operations are refused.
+
+In both modes, `Target.attachToBrowserTarget` opens a browser-level CDP session that is an alias
+of the connection's virtual root. Playwright's `browser.newBrowserCDPSession()` uses this alias,
+and `context.newCDPSession(page)` opens a separate channel for an owned page through it.
+`Target.getTargets` on either channel uses the same filtered target list as the connection root.
+The alias keeps the connection's mode, lease and command restrictions. Discovery and auto-attach
+subscriptions deliver their events on the alias that enabled them. Calling
+`Target.detachFromTarget` from the connection root closes the alias and its channels. Nested
+browser aliases are refused.
+
+Page and child commands use the [reviewed method list](../packages/browser-core/src/standard-cdp-page-methods.ts).
+Whole-context leases add `Storage.getCookies`, `Storage.setCookies`, `Storage.clearCookies`,
+`Browser.setPermission`, `Browser.grantPermissions`, `Browser.resetPermissions`, and shared and
+service worker channels. Omit `browserContextId` or use the virtual context ID from the owned
+page's target info. The Runtime supplies the real profile context. At the root,
+`Browser.setDownloadBehavior` accepts Playwright's `behavior: "allowAndName"` with
+`eventsEnabled: true` and leaves the profile's download settings and path alone.
+Other download settings and `Browser.cancelDownload` are refused. Uploads naming paths
+require files staged on the Runtime.
+
+Saved login and card fills use `browser_use` on the personal hosting Mac's Opensteer browser.
+The standard CDP connection refuses both fill commands, including calls through Playwright's
+`context.newCDPSession(page)`. The managed Chromium Runtime has no Passwords broker, and the
+standard relay has no check for a Passwords reference bound to an agent session, tab, and site.
+
+After `saved_login_request` or `card_request` returns a reference for that tab, bind the approved
+tab in `browser_use` and focus the field before each call:
+
+```js
+const page = await openPage(tabId);
+// After focusing the password input:
+await page.cdp("Opensteer.fillLogin", { loginRef, field: "password" });
+// After focusing the card number input:
+await page.cdp("Opensteer.fillCard", { cardRef, field: "number" });
+```
+
+Login fields are `username`, `password`, and `code`. Card fields are `number`, `expiry`,
+`expiry-month`, `expiry-year`, `cvc`, `name`, and `billing-postal-code`. The call returns
+a fill status. If the hosting Mac's browser is unavailable, ask the person to complete the
+sign-in or fill the card in the tab.
+
+Screenshots capture the page surface. Full-page capture requires a clip. Each edge is capped at
+30,720 pixels before and after scaling, scale is capped at 4, and scaled area is capped at
+16,777,216 pixels. The Runtime uses the page's geometry channel so the viewing viewport keeps
+its size. An image that exceeds the message limit after encoding is refused.
+
+The limit is 8 MiB per JSON message including base64 and framing, with 16 MiB and 128 in-flight
+items at each endpoint. Each attachment can hold up to 128 live logical channels. Standard
+result and event JSON is limited to 32 levels and 16,384 entries. The relay uses
+192 KiB raw chunks, with up to four live attachments per binding and 16 per Runner. The Home
+and Runtime allow one second for the public close handshake. A busy client can compete for
+the same Runner stream, browser process, and machine resources.

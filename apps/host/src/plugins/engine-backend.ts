@@ -4,6 +4,8 @@ import {
   localToolPath,
   pluginNamespace,
 } from "./provider-names.js";
+import { createHash } from "node:crypto";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type { Blocked } from "@opensteer/core";
 import { Effect, Schema } from "effect";
 import {
@@ -24,13 +26,14 @@ import { UserFacingError } from "@opensteer/plugin-engine-utils/user-facing-erro
 import type { ElicitationHandler } from "apps/contracts";
 import { CurrentMcpExecution, type McpBackend, type McpTool } from "@opensteer/plugin-engine-mcp";
 import { GrantId, restrictMcpBackend, type Grant } from "@opensteer/plugin-engine-mcp-auth";
-import { pluginAccessBlocked } from "./target-blocked.js";
+import { pluginAccessBlocked, pluginToolReason } from "./target-blocked.js";
 import type { engineAccounts } from "./engine-accounts.js";
 import {
   JsonSchema,
   PluginServiceError,
   type PluginCaller,
   type PluginHostProvider,
+  type PluginExecutionTarget,
   type PluginAuthorizationResult,
   type PluginJson,
   type HostToolResult,
@@ -73,6 +76,8 @@ export interface EngineHostCallbacks {
     plugin?: string;
     tool?: string;
     execution?: string;
+    version?: string;
+    write?: boolean;
   }): Effect.Effect<PluginAuthorizationResult, Error>;
   providers(): Effect.Effect<PluginHostProvider[], Error>;
   call(
@@ -85,6 +90,13 @@ export interface EngineHostCallbacks {
     elicitation: ElicitationHandler | undefined,
   ): Effect.Effect<HostToolResult, Error>;
 }
+export const accountSelectionDigest = (accounts: unknown) =>
+  createHash("sha256").update(canonicalJson(accounts)).digest("hex");
+
+function sameBlocked(left: Blocked, right: Blocked) {
+  return left.code === right.code && left.message === right.message && left.next === right.next;
+}
+
 export function compositeBackend(
   engine: PluginEngine,
   accounts: ReturnType<typeof engineAccounts>,
@@ -92,6 +104,8 @@ export function compositeBackend(
   context: PluginCaller,
   host: EngineHostCallbacks,
   direct = false,
+  publishedOnly = false,
+  recordTarget?: (target: PluginExecutionTarget) => void,
 ) {
   const namespaces = new Map<string, string>();
   /** What keeps each app, as this backend last listed it. */
@@ -108,19 +122,38 @@ export function compositeBackend(
     tool: Tool,
     access: "all" | "read-only" | "off" | undefined,
     local?: PluginHostProvider,
+    /** Apps a connection's grant holds for reading only. */
+    readOnlyGrant?: readonly string[],
   ): McpTool => {
-    if (access === "off" || local?.blocked) return tool;
-    const blocked =
-      pluginAccessBlocked(access, tool.readOnly !== true) ?? local?.toolBlockers?.[tool.name];
-    return blocked ? { ...tool, blocked } : tool;
+    // The one order a call reads too (pluginToolReason). A write a connection's grant does not
+    // hold is marked so every listing leaves it out; what keeps the whole app (the person's Off,
+    // what keeps a local provider) is said once, on the app: a tool carries only a reason of its
+    // own, other than its app's.
+    const write = tool.readOnly !== true;
+    const blocked = pluginToolReason({
+      tool: tool.name,
+      write,
+      outsideGrant: write && readOnlyGrant?.includes(tool.app) === true,
+      setting: access,
+      ...(local ? { local } : {}),
+    });
+    const appLine = access === "off" ? pluginAccessBlocked(access, write) : local?.blocked;
+    return blocked && !(appLine && sameBlocked(blocked, appLine)) ? { ...tool, blocked } : tool;
   };
 
-  const permissionFor = (operation: string, plugin?: string, tool?: string) =>
+  const permissionFor = (
+    operation: string,
+    plugin?: string,
+    tool?: string,
+    facts?: { version?: string | undefined; write?: boolean },
+  ) =>
     Effect.flatMap(CurrentMcpExecution, (execution) =>
       host.authorize({
         operation,
         ...(plugin === undefined ? {} : { plugin }),
         ...(tool === undefined ? {} : { tool }),
+        ...(facts?.version === undefined ? {} : { version: facts.version }),
+        ...(facts?.write === undefined ? {} : { write: facts.write }),
         ...(execution === undefined ? {} : { execution }),
       }),
     );
@@ -217,7 +250,7 @@ export function compositeBackend(
   const raw: McpBackend<Error> = {
     listApps: (input) =>
       Effect.gen(function* () {
-        const { grants } = yield* checked("listApps");
+        const { grants, visible } = yield* checked("listApps");
         const installed = yield* engine.apps.list({
           owner,
           ...(input?.ids === undefined ? {} : { ids: input.ids }),
@@ -237,16 +270,19 @@ export function compositeBackend(
             activeVersion: version(entry),
           })),
         ];
-        return listing.map((app) => {
-          namespaces.set(app.id, app.slug);
-          // The person's setting first, then what keeps a local provider.
-          const blocked =
-            pluginAccessBlocked(grants?.[app.id], false) ??
-            providers.find((entry) => entry.id === app.id)?.blocked;
-          if (blocked) appBlockers.set(app.id, blocked);
-          else appBlockers.delete(app.id);
-          return blocked ? { ...app, blocked } : app;
-        });
+        // A selected grant is never told what else the person installed.
+        return listing
+          .filter((app) => !visible || visible.includes(app.id))
+          .map((app) => {
+            namespaces.set(app.id, app.slug);
+            // The person's setting first, then what keeps a local provider.
+            const blocked =
+              pluginAccessBlocked(grants?.[app.id], false) ??
+              providers.find((entry) => entry.id === app.id)?.blocked;
+            if (blocked) appBlockers.set(app.id, blocked);
+            else appBlockers.delete(app.id);
+            return blocked ? { ...app, blocked } : app;
+          });
       }),
     listAccounts: (input) =>
       Effect.gen(function* () {
@@ -257,20 +293,20 @@ export function compositeBackend(
       }),
     listTools: (input, options) =>
       Effect.gen(function* () {
-        const { grants } = yield* checked("listTools", input.app);
+        const { grants, readOnlyGrant } = yield* checked("listTools", input.app);
         const access = grants?.[input.app];
         const local = yield* provider(input.app);
         if (local)
           return {
             version: version(local),
             accounts: { app: {}, user: {} },
-            items: hostTools(local).map((tool) => projectTool(tool, access, local)),
+            items: hostTools(local).map((tool) => projectTool(tool, access, local, readOnlyGrant)),
             routers: [],
           };
-        const page = yield* listCloud(input, options, access === "off");
+        const page = yield* listCloud(input, options, publishedOnly || access === "off");
         return {
           ...page,
-          items: page.items.map((tool) => projectTool(tool, access)),
+          items: page.items.map((tool) => projectTool(tool, access, undefined, readOnlyGrant)),
         };
       }),
     searchableTools: (input, options) =>
@@ -284,7 +320,7 @@ export function compositeBackend(
             accounts: { app: {}, user: {} },
             routers: [],
           };
-        if (grants?.[input.app] === "off") {
+        if (publishedOnly || grants?.[input.app] === "off") {
           const page = yield* listCloud(input, { unboundedPages: true }, true);
           retained.set(input.app, page.items);
           return {
@@ -299,7 +335,7 @@ export function compositeBackend(
       }),
     searchTools: (input) =>
       Effect.gen(function* () {
-        const { grants } = yield* checked("searchTools");
+        const { grants, readOnlyGrant } = yield* checked("searchTools");
         const providers = input.targets.some(({ app }) => isLocalProviderId(app))
           ? yield* host.providers()
           : [];
@@ -321,7 +357,9 @@ export function compositeBackend(
             entry.id,
             {
               name: entry.name,
-              tools: hostTools(entry).map((tool) => projectTool(tool, grants?.[entry.id], entry)),
+              tools: hostTools(entry).map((tool) =>
+                projectTool(tool, grants?.[entry.id], entry, readOnlyGrant),
+              ),
             },
           ]),
         );
@@ -329,13 +367,13 @@ export function compositeBackend(
           hostCatalog.set(app, {
             name: namespaces.get(app) ?? app,
             // The person may have changed this plugin's access since the listing was kept.
-            tools: tools.map((tool) => projectTool(tool, grants?.[app])),
+            tools: tools.map((tool) => projectTool(tool, grants?.[app], undefined, readOnlyGrant)),
           });
         const local = searchHost(input, hostCatalog);
         const all = [
           ...remote.items.map((item) => ({
             ...item,
-            tool: projectTool(item.tool, grants?.[item.tool.app]),
+            tool: projectTool(item.tool, grants?.[item.tool.app], undefined, readOnlyGrant),
             target: remoteTargets[item.target]!.index,
             also: item.also.map((index) => remoteTargets[index]!.index),
           })),
@@ -349,16 +387,30 @@ export function compositeBackend(
       }),
     callTool: (input, options) =>
       Effect.gen(function* () {
-        const permission = yield* permissionFor("callTool", input.app, input.tool);
-        const blocked = pluginAccessBlocked(permission.grants?.[input.app], input.kind !== "query");
+        const permission = yield* permissionFor("callTool", input.app, input.tool, {
+          version: input.version,
+        });
+        const local = yield* provider(input.app);
+        const listed = local
+          ? hostTools(local).find((tool) => tool.name === input.tool)
+          : undefined;
+        const write = listed ? listed.readOnly !== true : input.kind !== "query";
+        // The order its listing said it in (pluginToolReason).
+        const blocked = pluginToolReason({
+          tool: input.tool,
+          write,
+          outsideGrant: write && permission.readOnlyGrant?.includes(input.app) === true,
+          setting: permission.grants?.[input.app],
+          ...(local ? { local } : {}),
+        });
         if (blocked) return yield* refused(blocked);
         if (!permission.allowed) return yield* Effect.fail(forbidden());
-        const local = yield* provider(input.app);
         if (local) {
           const current = hostTools(local).find((tool) => tool.name === input.tool);
           if (
             !current ||
-            (input.version !== undefined && input.version !== local.version) ||
+            ((permission.pinnedVersion ?? input.version) !== undefined &&
+              (permission.pinnedVersion ?? input.version) !== local.version) ||
             (input.kind !== undefined &&
               input.kind !== (current.readOnly === true ? "query" : "mutation"))
           )
@@ -373,6 +425,11 @@ export function compositeBackend(
             return yield* Effect.fail(
               new PluginServiceError("invalid", "Host tool call has no execution identity"),
             );
+          recordTarget?.({
+            plugin: input.app,
+            version: local.version,
+            write: current.readOnly !== true,
+          });
           const result = yield* host
             .call(
               {
@@ -397,13 +454,49 @@ export function compositeBackend(
               return { status: "completed", value: direct ? result : result.value };
           }
         }
+        const pinned = permission.pinnedVersion;
+        if (pinned && (yield* engine.apps.get({ app: input.app, owner })).activeVersion !== pinned)
+          return yield* Effect.fail(
+            new PluginServiceError("invalid", "The plugin changed after review"),
+          );
+        const version = pinned ? VersionId.make(pinned) : input.version;
+        const selectedVersion =
+          version ??
+          (recordTarget ? (yield* engine.apps.get({ app: input.app, owner })).activeVersion : null);
+        const selection = yield* accounts.accounts(input.app, selectedVersion ?? version);
+        if (selectedVersion)
+          recordTarget?.({
+            plugin: input.app,
+            version: selectedVersion,
+            write: input.kind !== "query",
+            accountSelection: accountSelectionDigest(selection),
+          });
         return yield* engine.tools
-          .call({ ...input, accounts: yield* accounts.accounts(input.app, input.version) }, options)
+          .call(
+            {
+              ...input,
+              ...(selectedVersion === null ? {} : { version: selectedVersion }),
+              accounts: selection,
+            },
+            options,
+          )
           .pipe(Effect.map(wrapDirectResult));
       }),
     resumeInvocation: (pending, response, options) =>
       Effect.gen(function* () {
-        yield* checked("resumeInvocation", pending.invocation.app, pending.invocation.tool);
+        const { app, tool, version } = pending.invocation;
+        const permission = yield* permissionFor("resumeInvocation", app, tool, {
+          version,
+          write: pending.invocation.kind !== "query",
+        });
+        if (!permission.allowed) return yield* Effect.fail(forbidden());
+        if (
+          permission.pinnedVersion &&
+          (yield* engine.apps.get({ app, owner })).activeVersion !== permission.pinnedVersion
+        )
+          return yield* Effect.fail(
+            new PluginServiceError("invalid", "The plugin changed after review"),
+          );
         // Revalidate the reviewed account selection through the current product adapter too.
         const current = yield* accounts.accounts(
           pending.invocation.app,
@@ -416,6 +509,12 @@ export function compositeBackend(
               "Linked accounts changed while approval was pending",
             ),
           );
+        recordTarget?.({
+          plugin: app,
+          version,
+          write: pending.invocation.kind !== "query",
+          accountSelection: accountSelectionDigest(current),
+        });
         return yield* engine.tools
           .resume({ requestId: pending.requestId, response }, options)
           .pipe(Effect.map(wrapDirectResult));
@@ -431,7 +530,7 @@ export function compositeBackend(
         const selection = yield* selected(input);
         const catalog = yield* engine.skills.list(
           { ...input, accounts: selection.accounts },
-          options,
+          publishedOnly ? { publishedOnly: true } : options,
         );
         return {
           ...catalog,
@@ -441,10 +540,10 @@ export function compositeBackend(
     readSkill: (input) =>
       Effect.gen(function* () {
         yield* checked("readSkill", input.app);
-        const document = yield* engine.skills.read({
-          ...input,
-          accounts: yield* accounts.accounts(input.app, input.version),
-        });
+        const document = yield* engine.skills.read(
+          { ...input, accounts: yield* accounts.accounts(input.app, input.version) },
+          publishedOnly ? { publishedOnly: true } : undefined,
+        );
         return {
           ...document,
           app: { ...document.app, slug: AppSlug.make(pluginNamespace(document.app.slug)) },
@@ -474,6 +573,7 @@ export function compositeBackend(
     Effect.gen(function* () {
       const allowed = yield* checked("grant");
       const grants = allowed.grants;
+      const visible = allowed.visible;
       const apps =
         grants === undefined
           ? []
@@ -491,6 +591,7 @@ export function compositeBackend(
                 kind: "tools",
                 approval: "client",
                 apps: apps
+                  .filter((app) => visible === undefined || visible.includes(app))
                   .map((app) => [app, grants[app] ?? "all"] as const)
                   .filter(([, access]) => access !== "off")
                   .map(([app, access]) => ({

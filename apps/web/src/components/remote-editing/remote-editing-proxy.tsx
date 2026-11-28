@@ -1,3 +1,4 @@
+import { DisplayEditingRefusal, DisplayEditingStopped } from "@opensteer/client/integrations";
 import { presentFailure } from "../use-action.js";
 import {
   useCallback,
@@ -29,7 +30,11 @@ import { ViewerClipboard } from "./viewer-clipboard.js";
 import "./remote-editing.css";
 
 export interface RemoteEditingWire {
+  /** The display receipt is shown by the surface that owns all of its input. */
+  readonly showsInputReceipts?: boolean;
   send(operation: EditingOperation): Promise<ViewerClipboardResult | undefined>;
+  /** P2: sends a dependent operation group in one atomic batch on display targets. */
+  sendBatch?(operations: readonly EditingOperation[]): Promise<ViewerClipboardResult | undefined>;
   subscribeClipboard?(
     onWritten: (items: readonly EditingClipboardPayloadItem[]) => void,
     onError?: (message: string) => void,
@@ -41,7 +46,7 @@ export interface RemoteEditingProxyHandle {
   pointerDown(): void;
   activate(): void;
   perform(operation: EditingOperation): void;
-  pasteFromMenu(): void;
+  pasteFromMenu(contextId?: string): void;
   copyText(text: string): void;
 }
 export interface RemoteCaretPosition {
@@ -117,6 +122,11 @@ export function RemoteEditingProxy({
   const touchFocus = useRef(false);
   const alive = useRef(true);
   const revision = useRef(0);
+  const nativePasteId = useRef(0);
+  const pendingNativePaste = useRef<{
+    readonly id: number;
+    readonly contextId: string | undefined;
+  } | null>(null);
   const clipboard = useRef<ViewerClipboard | null>(null);
   if (!clipboard.current) {
     const native = desktopBridge()?.writeViewerClipboard;
@@ -128,28 +138,77 @@ export function RemoteEditingProxy({
   const refuse = useCallback((words: string) => {
     if (alive.current) setError(words);
   }, []);
-  // Anything else is said by the shared presenter, never as the exception's text.
+  // What this view sent and the device has not answered, and the refusal of input that never
+  // left it is showing: that refusal ("still catching up") is true only until the device has
+  // answered everything it was waiting on, and goes then.
+  const sending = useRef(0);
+  const refusalShown = useRef<string | null>(null);
+  const tracked = useCallback(<T,>(sent: Promise<T>): Promise<T> => {
+    sending.current += 1;
+    const settled = (taken: boolean) => {
+      sending.current -= 1;
+      const shown = refusalShown.current;
+      if (!taken || sending.current > 0 || !shown) return;
+      refusalShown.current = null;
+      if (alive.current) setError((currentError) => (currentError === shown ? null : currentError));
+    };
+    return sent.then(
+      (result) => {
+        settled(true);
+        return result;
+      },
+      (reason: unknown) => {
+        settled(false);
+        throw reason;
+      },
+    );
+  }, []);
+  // A refusal of input that never left says what happened in its own words; anything else is
+  // said by the shared presenter, never as the exception's text.
   const failure = useCallback(
-    (reason: unknown) => refuse(presentFailure(reason, "edit remotely")),
+    (reason: unknown) => {
+      if (reason instanceof DisplayEditingRefusal || reason instanceof DisplayEditingStopped) {
+        if (current.current.wire.showsInputReceipts) return;
+        refusalShown.current = reason instanceof DisplayEditingRefusal ? reason.message : null;
+        refuse(reason.message);
+      } else refuse(presentFailure(reason, "edit remotely"));
+    },
     [refuse],
   );
+  /**
+   * CU5, CW9: an operation that never left (the input is off, or the wire refused it) is told back
+   * to the reducer, which sends a composition it carried again as a fresh start in the same field.
+   */
+  const refused = useCallback((operation: EditingOperation) => {
+    const step = reduceEditing(state.current, { type: "refused", operation });
+    state.current = step.state;
+    const set = step.instruction.set;
+    if (set && alive.current && !state.current.composition && element.current) {
+      element.current.value = set.value;
+      element.current.setSelectionRange(set.selectionStart, set.selectionEnd);
+    }
+  }, []);
   const perform = useCallback(
     (operation: EditingOperation) => {
       if (
         !current.current.enabled &&
         !(operation.kind === "key" && operation.keystroke.action === "up")
-      )
+      ) {
+        refused(operation);
         return;
+      }
       const arm =
         operation.kind === "copy" || operation.kind === "cut"
           ? clipboard.current!.arm(operation.kind)
           : null;
       setError(null);
       try {
-        void current.current.wire.send(operation).then(
+        void tracked(current.current.wire.send(operation)).then(
           (result) => {
             if (!arm) {
-              if (result && !["copied", "cut", "pasted", "empty"].includes(result.outcome))
+              if (result?.outcome === "unknown")
+                refuse("May have been pasted: check before pasting again.");
+              else if (result && !["copied", "cut", "pasted", "empty"].includes(result.outcome))
                 refuse(`The remote clipboard operation was ${result.outcome}.`);
               return;
             }
@@ -161,21 +220,25 @@ export function RemoteEditingProxy({
               arm.resolve(result.items);
             else {
               arm.reject();
-              if (result && result.outcome !== "empty")
+              if (result?.outcome === "unknown")
+                refuse("May have been cut: check before cutting again.");
+              else if (result && result.outcome !== "empty")
                 refuse(`The remote clipboard operation was ${result.outcome}.`);
             }
           },
           (reason) => {
             arm?.reject();
+            refused(operation);
             failure(reason);
           },
         );
       } catch (reason) {
         arm?.reject();
+        refused(operation);
         failure(reason);
       }
     },
-    [failure],
+    [failure, refused, tracked],
   );
   const feed = useCallback(
     (event: EditingProxyEvent, native?: Event) => {
@@ -194,7 +257,45 @@ export function RemoteEditingProxy({
         )
       )
         clipboard.current!.armActivation();
-      for (const operation of step.operations) perform(operation);
+      const sendBatch = current.current.wire.sendBatch;
+      if (sendBatch && step.operations.some((op) => "follows" in op && op.follows)) {
+        for (let i = 0; i < step.operations.length;) {
+          const group: EditingOperation[] = [step.operations[i]!];
+          i++;
+          while (i < step.operations.length) {
+            const next = step.operations[i]!;
+            if (!("follows" in next && next.follows)) break;
+            group.push(next);
+            i++;
+          }
+          if (group.length === 1) {
+            perform(group[0]!);
+          } else if (!current.current.enabled) {
+            for (const op of group) refused(op);
+          } else {
+            setError(null);
+            try {
+              void tracked(sendBatch(group)).then(
+                (result) => {
+                  if (result?.outcome === "unknown")
+                    refuse("May have been pasted: check before pasting again.");
+                  else if (result && !["copied", "cut", "pasted", "empty"].includes(result.outcome))
+                    refuse(`The remote clipboard operation was ${result.outcome}.`);
+                },
+                (reason) => {
+                  for (const op of group) refused(op);
+                  failure(reason);
+                },
+              );
+            } catch (reason) {
+              for (const op of group) refused(op);
+              failure(reason);
+            }
+          }
+        }
+      } else {
+        for (const operation of step.operations) perform(operation);
+      }
       setPreedit(
         step.state.composition?.detached ? "" : (step.state.composition?.nativeText ?? ""),
       );
@@ -251,7 +352,11 @@ export function RemoteEditingProxy({
         if (current.current.enabled) clipboard.current!.armActivation();
       },
       perform: (operation) => {
-        if (operation.kind === "copy" || operation.kind === "cut") feed({ type: operation.kind });
+        if (operation.kind === "copy" || operation.kind === "cut")
+          feed({
+            type: operation.kind,
+            ...(operation.contextId ? { contextId: operation.contextId } : {}),
+          });
         else {
           feed({ type: "pointerdown" });
           perform(operation);
@@ -261,11 +366,23 @@ export function RemoteEditingProxy({
         const arm = clipboard.current!.arm("copy");
         arm.resolve([{ type: "text/plain", bytes: new TextEncoder().encode(text) }]);
       },
-      pasteFromMenu: () => {
+      pasteFromMenu: (menuContext?: string) => {
+        const scope = menuContext ?? current.current.context?.contextId;
         focus();
         const nativePaste = desktopBridge()?.pasteViewerClipboard;
         if (nativePaste) {
-          void nativePaste().catch(failure);
+          const id = ++nativePasteId.current;
+          pendingNativePaste.current = { id, contextId: scope };
+          void nativePaste()
+            .then(() => {
+              setTimeout(() => {
+                if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
+              }, 250);
+            })
+            .catch((reason) => {
+              if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
+              failure(reason);
+            });
           return;
         }
         if (!navigator.clipboard?.read) {
@@ -274,7 +391,6 @@ export function RemoteEditingProxy({
           );
           return;
         }
-        const scope = current.current.context?.contextId;
         // A custom web menu has no native Paste command; Clipboard.read is gesture-gated.
         void navigator.clipboard
           .read()
@@ -285,11 +401,12 @@ export function RemoteEditingProxy({
                 const blob = await item.getType(type);
                 payload.push({ type, bytes: new Uint8Array(await blob.arrayBuffer()) });
               }
-            if (current.current.context?.contextId !== scope || !current.current.enabled) {
+            if (!alive.current || !current.current.enabled) return;
+            if (!scope) {
               refuse("The remote field changed before paste completed.");
               return;
             }
-            feed({ type: "paste", items: payload });
+            feed({ type: "paste", items: payload, contextId: scope });
           })
           .catch(failure);
       },
@@ -307,6 +424,7 @@ export function RemoteEditingProxy({
       if (enabled && focused) focus(touchFocus.current);
     }
     if (!enabled) {
+      pendingNativePaste.current = null;
       feed({ type: "blur" });
       element.current?.blur();
     } else if (touchFocus.current && context?.field) focus(true);
@@ -314,7 +432,14 @@ export function RemoteEditingProxy({
   useEffect(() => {
     if (!enabled || !wire.subscribeClipboard) return;
     return wire.subscribeClipboard((items) => {
-      void clipboard.current!.written(items).catch(failure);
+      void clipboard.current!.written(items).then(() => {
+        if (alive.current)
+          setError((currentError) =>
+            currentError === "May have been cut: check before cutting again."
+              ? "Cut finished and copied to your clipboard."
+              : currentError,
+          );
+      }, failure);
     }, failure);
   }, [enabled, wire, failure]);
   const assign = useCallback(
@@ -397,7 +522,22 @@ export function RemoteEditingProxy({
                 const nativePaste = desktopBridge()?.pasteViewerClipboard;
                 if (binding?.kind === "paste" && nativePaste) {
                   event.preventDefault();
-                  void nativePaste().catch(failure);
+                  const id = ++nativePasteId.current;
+                  pendingNativePaste.current = {
+                    id,
+                    contextId: current.current.context?.contextId,
+                  };
+                  void nativePaste()
+                    .then(() => {
+                      setTimeout(() => {
+                        if (pendingNativePaste.current?.id === id)
+                          pendingNativePaste.current = null;
+                      }, 250);
+                    })
+                    .catch((reason) => {
+                      if (pendingNativePaste.current?.id === id) pendingNativePaste.current = null;
+                      failure(reason);
+                    });
                   return;
                 }
               }
@@ -480,14 +620,20 @@ export function RemoteEditingProxy({
           paste.preventDefault();
           const data = paste.clipboardData;
           if (!data) return;
-          const scope = current.current.context?.contextId;
+          const pending = pendingNativePaste.current;
+          pendingNativePaste.current = null;
+          const scope = pending ? pending.contextId : current.current.context?.contextId;
           const items: EditingClipboardPayloadItem[] = [];
           for (const type of ["text/plain", "text/html"])
             if (data.types.includes(type))
               items.push({ type, bytes: new TextEncoder().encode(data.getData(type)) });
           const files = [...data.files];
           if (!files.length) {
-            feed({ type: "paste", items }, event);
+            if (pending && !scope) {
+              refuse("The remote field changed before paste completed.");
+              return;
+            }
+            feed({ type: "paste", items, ...(scope ? { contextId: scope } : {}) }, event);
             return;
           }
           void Promise.all(
@@ -498,15 +644,12 @@ export function RemoteEditingProxy({
             })),
           )
             .then((files) => {
-              if (
-                !alive.current ||
-                !current.current.enabled ||
-                current.current.context?.contextId !== scope
-              ) {
+              if (!alive.current || !current.current.enabled) return;
+              if (!scope) {
                 refuse("The remote field changed before paste completed.");
                 return;
               }
-              feed({ type: "paste", items: [...items, ...files] });
+              feed({ type: "paste", items: [...items, ...files], contextId: scope });
             })
             .catch(failure);
         },
@@ -545,6 +688,7 @@ export function RemoteEditingProxy({
   useEffect(() => {
     alive.current = true;
     return () => {
+      pendingNativePaste.current = null;
       feed({ type: "blur" });
       alive.current = false;
       clipboard.current!.dispose();

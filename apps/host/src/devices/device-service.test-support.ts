@@ -34,8 +34,13 @@ import type { ComputerUseGateway } from "../devices/device-service.js";
 import type { RunToolContext, ToolCaller } from "../agents/tool-caller.js";
 
 /** A call with no Run behind it, as a Trigger occurrence makes. */
-export const caller: ToolCaller = { run: null, threadId: createId("thread") };
+export const caller: ToolCaller = {
+  run: null,
+  threadId: createId("thread"),
+  agentBindingId: `trigger:${createId("triggerOccurrence")}`,
+};
 export const runCaller = (run: RunToolContext): ToolCaller => ({
+  agentBindingId: `run:${run.runId}`,
   run: {
     ...run,
     aud: "opensteer-run-tools",
@@ -100,7 +105,12 @@ export function usePlatformFixtures(): void {
   });
 }
 
-export type ApprovalHubMember = "reportsApp" | "machinesFor" | "compatibilityReason";
+export type ApprovalHubMember =
+  | "reportsApp"
+  | "machinesFor"
+  | "compatibilityReason"
+  | "agentSessionGuardsSupported"
+  | "refuseOutdatedForAgentSession";
 
 createId("user");
 export function platform(input: {
@@ -144,6 +154,9 @@ export function platform(input: {
       reportsApp: () => "offline",
       compatibilityReason: () => null,
       machinesFor: () => [],
+      // This release's Runner, unless a test stands in an older one.
+      agentSessionGuardsSupported: () => true,
+      refuseOutdatedForAgentSession: async () => "",
       openMcpSession: vi.fn(),
       ...(input.computerApps ??
         ({
@@ -201,6 +214,8 @@ export function platform(input: {
           requireDeviceSelfRunnerId: async (id) => RunnerIdSchema.parse(id),
           requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
           computerAppRunner: vi.fn(async () => null),
+          requesterGrant: async () => null,
+          requesterShown: async () => null,
           listDeviceComputerAppSetupRequests: async () => [],
           listGrants: vi.fn(async () => []),
           // A fake's Request methods serve both stores the platform reads them from.

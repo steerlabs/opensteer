@@ -6,7 +6,9 @@ import { mutationIdempotencyKey } from "@opensteer/client/host";
 import { act, failureWords } from "../use-action.js";
 import { useShell } from "../app-shell.js";
 import { SetupFooter, SetupFrame } from "../first-run/setup-frame.js";
-import { SetupList } from "../first-run/setup-list.js";
+import { SetupList, SetupRow } from "../first-run/setup-list.js";
+import { AddChrome } from "../chrome/add-chrome.js";
+import { Dialog } from "../dialog.js";
 import { ErrorNotice } from "../onboarding-card.js";
 import { capabilityDetailHere } from "./device-access.js";
 import { deviceNotificationsOn, setDeviceNotifications } from "./device-preferences.js";
@@ -37,6 +39,8 @@ export function HomeSetupStep({
   const [error, setError] = useState<string | null>(null);
   const { grants, reload } = useMacosGrants(bridge);
   const nameId = useId();
+  const chromeTitleId = useId();
+  const [connectingChrome, setConnectingChrome] = useState(false);
   const switchable = snapshot.devicesAvailable === true;
 
   async function save() {
@@ -155,7 +159,7 @@ export function HomeSetupStep({
         </label>
       ) : null}
       {switchable ? (
-        <SetupGroup title="Your agent can use">
+        <SetupGroup title="Your own agents can use">
           <SwitchRow
             checked={apps}
             detail={capabilityDetailHere.apps}
@@ -173,7 +177,36 @@ export function HomeSetupStep({
           label="Notifications"
           onChange={setNotifications}
         />
+        {/* Optional: nothing about Chrome runs unless the person opens it. */}
+        <SetupRow
+          detail="Share tabs from the Chrome you already use."
+          title="Connect your Chrome"
+          trailing={
+            <button
+              className="btn btn--small"
+              disabled={saving}
+              onClick={() => setConnectingChrome(true)}
+              type="button"
+            >
+              Connect
+            </button>
+          }
+        />
       </SetupGroup>
+      {connectingChrome ? (
+        <Dialog
+          footer={
+            <button className="btn" onClick={() => setConnectingChrome(false)} type="button">
+              Done
+            </button>
+          }
+          labelledBy={chromeTitleId}
+          onClose={() => setConnectingChrome(false)}
+          title={<span id={chromeTitleId}>Connect your Chrome</span>}
+        >
+          <AddChrome />
+        </Dialog>
+      ) : null}
       <ErrorNotice message={error} />
       <p className="setup-frame__note">Change any of these later in Devices.</p>
     </SetupFrame>

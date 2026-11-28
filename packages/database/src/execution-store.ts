@@ -1,17 +1,18 @@
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeTriggerSchedules, wakeWatches } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
-import { runDeliverySelection } from "./thread-row-mappers.js";
 import { freshContextBoundary } from "./fresh-context.js";
-import { runAllowsPersonalContext } from "./run-personal-context.js";
+import { runContextLineage } from "./run-personal-context.js";
 import { personalSettings } from "./personal-settings-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import "./connection.js";
 import { issueRunGrant, type RevokedRunGrant } from "./run-grants.js";
 import { pendingReplacementAttempt } from "./run-attempts.js";
+import { earlierBootProvenContained } from "./execution-recovery.js";
 import { type CommandRow, type ProviderSessionTable, type DatabaseSchema } from "./schema.js";
 import {
   isPlaceContentPart,
+  agentGrantAllowsTasks,
   placeContentLabel,
   surrogateSafeCut,
   threadTitleRequestMaxLength,
@@ -63,7 +64,7 @@ import {
 import { readRunThreadState } from "./run-thread-state.js";
 import { newestMessageWindow } from "./message-window.js";
 
-import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
+import { assertSendEligible } from "./resource-access.js";
 import { hasUncertainEarlierExecution } from "./personal-run-state.js";
 import {
   assertActiveExecutionBinding as assertActiveExecutionBindingInStore,
@@ -105,6 +106,15 @@ export interface RunDispatchContext {
   readonly run: Run;
   readonly thread: Thread;
   readonly agentHome: import("@opensteer/core").ComputerFolder;
+  /** The Run's own connection and its task's origin, from the rows read above. */
+  readonly lineage: {
+    /** A chat is somewhere in the task's context lineage, whoever speaks in it. */
+    readonly fromChat: boolean;
+    /** Only the person ever wrote into this Run's task and its ancestors (`runContextLineage`). */
+    readonly personLineage: boolean;
+    readonly runConnectionId: string | null;
+    readonly taskOriginConnectionId: string | null;
+  };
 }
 function executionBindingFromRow(row: {
   readonly bindingGeneration: ProviderSessionTable["bindingGeneration"];
@@ -354,7 +364,6 @@ export async function loadRunDispatchContext(
   const runRow = await database
     .selectFrom("runs")
     .selectAll()
-    .select(runDeliverySelection)
     .where("id", "=", command.runId)
     .executeTakeFirstOrThrow();
   if (runRow.reportContext === null) {
@@ -497,6 +506,7 @@ export async function loadRunDispatchContext(
       .limit(maxHistoryItems + 1)
       .execute(),
   ]);
+  const contextLineage = await runContextLineage(database, runRow.id);
   const historyWindow = newestMessageWindow(
     messagesFromRows(historyRowsDesc),
     maxHistoryItems,
@@ -512,7 +522,7 @@ export async function loadRunDispatchContext(
         ? executionBindingFromRow(bindingRow)
         : null,
     providerSessionStateLayout: bindingRow.stateLayout,
-    personalContext: await runAllowsPersonalContext(database, runRow.id),
+    personalContext: contextLineage.personalContext,
     history: historyWindow.items,
     initialContext: initialContext
       ? {
@@ -547,6 +557,12 @@ export async function loadRunDispatchContext(
         },
     firstOrdinal: runRow.nextRunnerOrdinal,
     run: runFromRow(runRow),
+    lineage: {
+      fromChat: contextLineage.fromChat,
+      personLineage: contextLineage.personLineage,
+      runConnectionId: runRow.connectionId,
+      taskOriginConnectionId: threadRow.originConnectionId,
+    },
     ...(runRow.voiceSessionId
       ? {
           voiceCall: {
@@ -564,9 +580,11 @@ export async function acquireExecutionBinding(
   input: {
     readonly bindingLeaseExpiresAt: Date;
     readonly personalContext?: boolean;
+    readonly personLineage?: boolean;
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly leaseTokenHash: string;
+    readonly machineBootId?: string | null;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly runId: RunId;
@@ -587,6 +605,7 @@ export async function acquireExecutionBinding(
       .innerJoin("threads", "threads.id", "runs.threadId")
       .select([
         "runs.maintenance",
+        "runs.connectionId",
         "runs.environmentId",
         "runs.harnessInstanceId",
         "runs.modelSelection",
@@ -597,6 +616,7 @@ export async function acquireExecutionBinding(
         "runs.assignmentId",
         "runs.threadId",
         "runs.runOrdinal",
+        "threads.originConnectionId",
       ])
       .where("runs.id", "=", input.runId)
       .forNoKeyUpdate("runs")
@@ -617,6 +637,19 @@ export async function acquireExecutionBinding(
         code: "conflict",
         message: "Run is not awaiting an execution binding",
       });
+    }
+    if (run.connectionId) {
+      const connection = await assertSendEligible(
+        transaction,
+        run.requestedBy,
+        run.originConnectionId,
+        run.connectionId,
+      );
+      if (!connection || !agentGrantAllowsTasks(connection.grant))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Run execution authority is no longer active",
+        });
     }
     if (
       (await assignmentWasCancelled(transaction, run.assignmentId)) ||
@@ -646,12 +679,6 @@ export async function acquireExecutionBinding(
         message: "AI engine is unavailable",
       });
     }
-    if (!(await channelRunAuthorityIsCurrent(transaction, input.runId))) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Messaging access changed before this Run could start",
-      });
-    }
     const thread = await transaction
       .selectFrom("threads")
       .innerJoin("executionEnvironments", "executionEnvironments.id", "threads.environmentId")
@@ -660,6 +687,7 @@ export async function acquireExecutionBinding(
         "threads.environmentId",
         "threads.id as threadId",
         "threads.harnessInstanceId",
+        "threads.unconfirmedStopRunId",
         "executionEnvironments.runnerId",
         "harnessInstances.driverKind",
       ])
@@ -669,7 +697,7 @@ export async function acquireExecutionBinding(
     if (!thread)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     if (thread.runnerId !== input.runnerId) {
       throw new OpensteerError({
@@ -722,19 +750,28 @@ export async function acquireExecutionBinding(
       ))
     )
       throw new OpensteerError({ code: "conflict", message: "Compaction is no longer eligible" });
-    const personalContext = await runAllowsPersonalContext(transaction, input.runId);
+    const lineage = await runContextLineage(transaction, input.runId);
     if (
-      (input.personalContext !== undefined && input.personalContext !== personalContext) ||
-      (session.personalContext !== personalContext && session.providerSessionReference !== null)
+      (input.personalContext !== undefined && input.personalContext !== lineage.personalContext) ||
+      (input.personLineage !== undefined && input.personLineage !== lineage.personLineage) ||
+      ((session.personalContext !== lineage.personalContext ||
+        (session.personLineage && !lineage.personLineage)) &&
+        session.providerSessionReference !== null)
     )
       throw new OpensteerError({
         code: "forbidden",
         message: "Messaging personal context changed before execution",
       });
-    if (session.personalContext !== personalContext)
+    if (
+      session.personalContext !== lineage.personalContext ||
+      session.personLineage !== lineage.personLineage
+    )
       await transaction
         .updateTable("providerSessions")
-        .set({ personalContext })
+        .set({
+          personalContext: lineage.personalContext,
+          personLineage: lineage.personLineage,
+        })
         .where("id", "=", session.id)
         .execute();
     if (
@@ -745,6 +782,62 @@ export async function acquireExecutionBinding(
         code: "conflict",
         message: "Provider session continuation identity does not match this execution",
       });
+    }
+    if (thread.unconfirmedStopRunId && thread.unconfirmedStopRunId !== input.runId) {
+      const priorAttempt = await transaction
+        .selectFrom("runAttempts")
+        .select(["runnerId", "runnerBootId", "machineBootId"])
+        .where("runId", "=", thread.unconfirmedStopRunId)
+        .where("bindingGeneration", "is not", null)
+        .orderBy("ordinal", "desc")
+        .limit(1)
+        .executeTakeFirst();
+      const sameBoot =
+        priorAttempt !== undefined &&
+        priorAttempt.runnerId === input.runnerId &&
+        priorAttempt.runnerBootId === input.runnerBootId;
+      if (!priorAttempt || sameBoot) {
+        throw new OpensteerError({
+          code: "conflict",
+          message:
+            "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+          reason: "previous-stop-unconfirmed",
+        });
+      }
+      const runner = await transaction
+        .selectFrom("runners")
+        .select(["capabilities", "machineBootId"])
+        .where("id", "=", input.runnerId)
+        .executeTakeFirstOrThrow();
+      const proven = earlierBootProvenContained({
+        attemptRunnerId: priorAttempt.runnerId,
+        attemptRunnerBootId: priorAttempt.runnerBootId,
+        attemptMachineBootId: priorAttempt.machineBootId,
+        currentRunnerId: input.runnerId,
+        currentRunnerBootId: input.runnerBootId,
+        currentMachineBootId:
+          input.machineBootId !== undefined ? input.machineBootId : runner.machineBootId,
+        earlierBootsContained: runner.capabilities.includes("earlier-boots-contained-v1"),
+      });
+      if (!proven) {
+        throw new OpensteerError({
+          code: "conflict",
+          message:
+            "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+          reason: "previous-stop-unconfirmed",
+        });
+      }
+      const clearedThread = await transaction
+        .updateTable("threads")
+        .set({ unconfirmedStopRunId: null })
+        .where("id", "=", input.threadId)
+        .where("unconfirmedStopRunId", "=", thread.unconfirmedStopRunId)
+        .returning("environmentId")
+        .executeTakeFirst();
+      if (clearedThread) {
+        await wakeTriggerSchedules(transaction);
+        await wakeWatches(transaction, clearedThread.environmentId);
+      }
     }
     // A reference only identifies native state; it does not prove that the
     // first input was accepted. Earlier unstarted attempts need an ordered
@@ -828,6 +921,8 @@ export async function acquireExecutionBinding(
     mutation.react({ type: "executionDeadlinesChanged" });
     const { grantId, revokedGrants } = await issueRunGrant(transaction, {
       bindingGeneration: row.bindingGeneration,
+      connectionId: run.connectionId,
+      ...(input.machineBootId !== undefined ? { machineBootId: input.machineBootId } : {}),
       modelSelection: run.modelSelection,
       runId: input.runId,
       runnerBootId: input.runnerBootId,
@@ -846,6 +941,7 @@ export async function renewExecutionBinding(
     readonly bindingGeneration: number;
     readonly leaseExpiresAt: Date;
     readonly leaseTokenHash: string;
+    readonly machineBootId?: string | null;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly runId: RunId;
@@ -917,10 +1013,8 @@ export async function assertActiveGrant(
     readonly grantId?: GrantId | undefined;
   },
   executionNow: () => number = Date.now,
-): Promise<void> {
-  await withPersonalReadTransaction(database, (transaction) =>
-    assertActiveGrantInStore(transaction, input, executionNow),
-  );
+): Promise<import("./execution-authority.js").RunLineage> {
+  return assertActiveGrantInStore(database, input, executionNow);
 }
 export async function bindProviderSession(
   database: Kysely<DatabaseSchema>,
@@ -1067,7 +1161,6 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
   const run = await database
     .selectFrom("runs")
     .selectAll()
-    .select(runDeliverySelection)
     .where("threadId", "=", threadId)
     .orderBy("runOrdinal", "asc")
     .limit(1)
@@ -1084,13 +1177,11 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
           .where((eb) =>
             eb.or([
               eb("threadInputs.state", "is", null),
-              eb("threadInputs.state", "not in", ["cancelled", "awaiting-approval"]),
+              eb("threadInputs.state", "not in", ["cancelled"]),
             ]),
           )
           .where("kind", "=", "input")
-          .where(
-            sql<boolean>`(author->>'kind' in ('human', 'agent', 'trigger', 'watch') or (author->>'kind' = 'team-member' and exists (select 1 from personal_team_requests p where p.local_input_id = messages.id and p.kind = 'ask' and p.released_at is not null)))`,
-          )
+          .where(sql<boolean>`author->>'kind' in ('human', 'agent', 'trigger', 'watch')`)
           .orderBy("messages.sequence", "asc")
           .limit(1)
           .executeTakeFirst()

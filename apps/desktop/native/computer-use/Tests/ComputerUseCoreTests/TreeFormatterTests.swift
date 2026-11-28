@@ -54,6 +54,29 @@ final class TreeFormatterTests: XCTestCase {
     XCTAssertEqual(render(root).text, #"[0] textfield "hello" (0,0 200×24)"#)
   }
 
+  func testAWindowWithASecureFieldDoesNotExposeItsContentsInTheTree() {
+    let secure = FakeElementNode(
+      ElementAttributes(
+        role: "AXTextField", subrole: "AXSecureTextField", title: "untrusted title",
+        value: "secure value", help: "untrusted help",
+        frame: CGRect(x: 100, y: 80, width: 200, height: 24)))
+    let root = FakeElementNode.node(
+      "AXWindow", title: "Sign in", frame: windowFrame,
+      children: [
+        FakeElementNode.node(
+          "AXTextField", title: "Username",
+          frame: CGRect(x: 100, y: 50, width: 200, height: 24)),
+        secure,
+      ])
+    let tree = render(root)
+    XCTAssertEqual(tree.elementCount, 3)
+    XCTAssertTrue(tree.text.contains("Username"))
+    XCTAssertTrue(tree.text.contains("Secure text field"))
+    for privateText in ["untrusted title", "secure value", "untrusted help"] {
+      XCTAssertFalse(tree.text.contains(privateText))
+    }
+  }
+
   func testDisabledAndFocusedAreSuffixes() {
     let root = FakeElementNode.node(
       "AXWindow",

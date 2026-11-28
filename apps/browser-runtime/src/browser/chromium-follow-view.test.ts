@@ -1729,6 +1729,24 @@ describe("real Chromium pages follow the person's view", () => {
     const session = await startFollowSession({ path: "/plain" });
     const messages = session.sink.messages;
     const tabA = session.rootSurfaceId;
+    // Tab A's casts as Chromium answered them, from before it is first streamed: each start it
+    // answered is running, and counted so, or was stopped. Once the person has left A, none runs.
+    const castsOnA = { started: 0, stopped: 0 };
+    {
+      const cdp = session.ledger.binding(tabA)?.cdp;
+      if (!cdp) throw new Error("The root tab has no page.");
+      const send = cdp.send.bind(cdp);
+      cdp.send = ((method: string, parameters?: Record<string, unknown>) => {
+        const sent = send(method, parameters);
+        if (method === "Page.startScreencast")
+          void sent.then(
+            () => (castsOnA.started += 1),
+            () => undefined,
+          );
+        else if (method === "Page.stopScreencast") castsOnA.stopped += 1;
+        return sent;
+      }) as typeof cdp.send;
+    }
     await session.controller.handle({ type: "stream.subscribe" });
     await session.controller.handle({
       type: "surface.open",
@@ -1874,6 +1892,9 @@ describe("real Chromium pages follow the person's view", () => {
     });
     expect(pictureB).not.toBeNull();
     expect(outcome.errors).toHaveLength(1);
+    // A, which the person left for B, pictures nothing: every start Chromium answered there stopped.
+    expect(castsOnA.started).toBeGreaterThan(0);
+    expect(castsOnA.stopped).toBe(castsOnA.started);
   }, 30_000);
 
   it("lands the person's click where an agent's phone layout pictures a button, zoomed out or not", async () => {
@@ -2075,6 +2096,57 @@ describe("real Chromium pages follow the person's view", () => {
       [handedOver[3]!.index],
       [handedOver[4]!.index],
     ]);
+  }, 30_000);
+
+  /*
+   * Re-check 10, R5 on Linux: the renderer of the page in view crashes and the page is loaded
+   * again at the same size. Whatever Chrome does with the session's cast, the person gets a
+   * picture: from the cast if Chrome kept it, else once the time the follow view gives a first
+   * picture is up (R10) and it starts the cast again.
+   */
+  it("pictures a still page again after its renderer crashed and it reloaded at the same size", async () => {
+    const session = await startFollowSession({ path: "/plain" });
+    const root = session.rootSurfaceId;
+    await session.controller.handle({ type: "stream.subscribe" });
+    const size = { width: 900, height: 650 };
+    await session.follow(root, size);
+    await session.frameAt(root, size);
+    const binding = session.ledger.binding(root);
+    if (!binding) throw new Error("Missing the root page");
+    let crashed = false;
+    binding.cdp.on("Inspector.targetCrashed", () => {
+      crashed = true;
+    });
+    await binding.cdp.send("Inspector.enable");
+    const startsBefore = session.screencastStarts(root).length;
+    const stopsBefore = session
+      .commands(root)
+      .filter((entry) => entry.method === "Page.stopScreencast").length;
+    // The renderer dies; Chromium answers nothing from it.
+    void binding.cdp.send("Page.crash").catch(() => undefined);
+    await waitFor(() => crashed);
+    const reloadedAt = performance.now();
+    await rootCdpNavigate(session.ledger, root, `${session.origin}/plain`);
+    await session.loaded(root);
+    const frame = await session.frameAt(root, size, reloadedAt);
+    const follow = (
+      session.controller as unknown as {
+        readonly screencast: { readonly diagnostics: ReadonlyArray<{ readonly stage: string }> };
+      }
+    ).screencast.diagnostics;
+    followReport.rendererCrash = {
+      // What Chrome did with the cast, as the follow view saw it.
+      castsStartedAfter: session.screencastStarts(root).length - startsBefore,
+      castsStoppedAfter:
+        session.commands(root).filter((entry) => entry.method === "Page.stopScreencast").length -
+        stopsBefore,
+      firstFrameTimeouts: follow.filter((entry) => entry.stage === "cast-first-frame-timeout")
+        .length,
+      pictureAfterMs: Math.round(frame.at - reloadedAt),
+      passed: true,
+    };
+    expect(frame.header).toMatchObject({ viewportHeight: 650, viewportWidth: 900 });
+    expect(session.errors()).toEqual([]);
   }, 30_000);
 
   it("pictures a tab whose dialog waits as soon as the list showing it again goes out", async () => {
@@ -3230,3 +3302,55 @@ console.log(JSON.stringify(await js("window.answers")));`);
     }
   }, 30_000);
 });
+
+it("shows a viewer no blank frame across the wake of the tab it follows: the last picture until the page is back (TS5)", async () => {
+  const session = await startFollowSession({ path: "/scrollbar" });
+  const root = session.rootSurfaceId;
+  // A second live tab decodes pictures while the followed one sleeps.
+  const decoder = (await session.ledger.openSurface()).id;
+  const pictured = (frame: TimedFrame) =>
+    redBoxInFrame((expression) => session.read(decoder, expression), frame);
+  // The person's view of this one tab, as the web's targeted stream subscribes.
+  await session.controller.handle({ type: "stream.subscribe", surfaceId: root });
+  await session.follow(root, defaultBrowserViewport);
+  const shown = await session.frameAt(root, defaultBrowserViewport);
+  expect(await pictured(shown)).not.toBeNull();
+  expect(await session.ledger.sleep(root, () => null)).toBe(true);
+  const since = performance.now();
+  const requestId = randomUUID();
+  await session.controller.handle({
+    type: "cdp.command",
+    requestId,
+    command: { method: "Opensteer.resumeTab", parameters: { surfaceId: root } },
+  });
+  await session.follow(root, defaultBrowserViewport);
+  await session.loaded(root);
+  // Every frame from the wake on, until the page is pictured again, shows the page: none is blank.
+  const after: { at: number; pictured: boolean }[] = [];
+  await waitForAsync(async () => {
+    for (const frame of session.frames.filter(
+      (candidate) => candidate.at >= since && candidate.header.surfaceId === root,
+    )) {
+      if (after.some((entry) => entry.at === frame.at)) continue;
+      after.push({ at: frame.at, pictured: (await pictured(frame)) !== null });
+    }
+    return after.some((entry) => entry.pictured);
+  }, 10_000).catch((error: unknown) => {
+    process.stdout.write(
+      `${JSON.stringify({
+        event: "ts5.no-picture",
+        after,
+        all: session.frames
+          .filter((candidate) => candidate.at >= since)
+          .map((candidate) => ({
+            at: Math.round(candidate.at - since),
+            surface: candidate.header.surfaceId,
+          })),
+      })}\n`,
+    );
+    throw error;
+  });
+  process.stdout.write(`${JSON.stringify({ event: "ts5.frames-across-wake", after })}\n`);
+  const first = after.findIndex((entry) => entry.pictured);
+  expect(after.slice(0, first)).toEqual([]);
+}, 60_000);

@@ -1,6 +1,5 @@
 import { iphoneHandlers } from "./methods/iphone.js";
 import { handleOldPersonalData, handleStartFresh } from "./methods/personal-data-reset.js";
-import { teamLinkDelivery } from "./methods/team-links.js";
 import {
   DesktopIntegrationAuthorizationSubscriptionSchema,
   DesktopFinishIntegrationAuthorizationInputSchema,
@@ -92,8 +91,7 @@ import {
   handleTestNotification,
 } from "./methods/notifications.js";
 import { handleTailscaleShare, handleTailscaleStatus } from "./methods/tailscale.js";
-import { handleAccountTeams } from "./methods/account-teams.js";
-import { handleTeamSessions } from "./methods/team-sessions.js";
+import { handleCloudComputerAct, handleCloudComputerRead } from "./methods/cloud-computers.js";
 import {
   handleCheckFullDiskAccess,
   handleCloseFullDiskAccessPanel,
@@ -110,7 +108,7 @@ import {
   handleBindDeviceSession,
 } from "./methods/local-execution.js";
 import { handleGetPasswordsStatus, handleOpenPasswords } from "./methods/passwords.js";
-import { handleOpenExternalUrl, handlePickFolder } from "./methods/window.js";
+import { handleOpenExternalUrl, handleOpenInChrome, handlePickFolder } from "./methods/window.js";
 
 /** Admits 120 records per ten seconds, answering how many it held back since the last. */
 function diagnosticBudget(): () => number | null {
@@ -353,10 +351,8 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     : null;
   register(desktopBridgeChannels.personalOldData, handleOldPersonalData(context));
   register(desktopBridgeChannels.personalStartFresh, handleStartFresh(context));
-  const teamLinkOwner = teamLinkDelivery(context);
-  register(desktopBridgeChannels.teamLinkDelivery, teamLinkOwner.handle);
-  register(desktopBridgeChannels.accountTeams, handleAccountTeams(context));
-  register(desktopBridgeChannels.teamSessions, handleTeamSessions(context));
+  register(desktopBridgeChannels.cloudComputerRead, handleCloudComputerRead(context));
+  register(desktopBridgeChannels.cloudComputerAct, handleCloudComputerAct(context));
   register(desktopBridgeChannels.webLinkDelivery, (event, envelope) => {
     assertAuthorizedRenderer(context, event, envelope);
     return (
@@ -364,6 +360,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     );
   });
   register(desktopBridgeChannels.openExternalUrl, handleOpenExternalUrl(context));
+  register(desktopBridgeChannels.openInChrome, handleOpenInChrome(context));
   register(desktopBridgeChannels.getNotificationSupport, handleGetNotificationSupport(context));
   register(desktopBridgeChannels.showNotification, handleShowNotification(context));
   register(desktopBridgeChannels.testNotification, handleTestNotification(context));
@@ -461,7 +458,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   return () => {
     detachIntegrationSubscription();
     webLinkOwner?.dispose();
-    teamLinkOwner.dispose();
     unsubscribeDownloads();
     context.downloadsSenders.clear();
     unsubscribeUpdates?.();

@@ -1,3 +1,4 @@
+import { personTaskReader } from "./task-reader.js";
 import { sql } from "kysely";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -7,17 +8,14 @@ import {
   createId,
   ModelSelectionSchema,
   HarnessIdSchema,
-  TeamMessageIdSchema,
   ProviderContinuationIdentitySchema,
   type ContentPart,
-  type TeamSource,
   type ThreadId,
   type RunId,
 } from "@opensteer/core";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDatabase } from "./connection.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
-import { readTranscriptItem } from "./personal-sync-store.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 
 // These tests exercise the personal scheduler without a browser, integration or Messaging bridge.
@@ -26,7 +24,6 @@ const adapters = vi.hoisted(() => ({
     throw new Error("This personal task fixture has no private-resource adapter");
   },
 }));
-vi.mock("./resource-access.js", () => ({ assertLineageCompatibleReuse: adapters.unexpected }));
 vi.mock("./computer-app-approvals.js", () => ({
   askForComputerAppApprovalInTransaction: adapters.unexpected,
   computerUsePolicyInTransaction: adapters.unexpected,
@@ -70,25 +67,14 @@ import { agentThreadPageForOwner, createThread, enqueueThreadInput } from "./thr
 import { claimCommand } from "./command-store.js";
 import { acquireExecutionBinding, bindProviderSession } from "./execution-store.js";
 import { commitRunnerEvent } from "./runner-event-store.js";
-import {
-  admitTeamTaskRequest,
-  cancelTeamTaskRequest,
-  removeAskTask,
-} from "./task-admission-store.js";
-import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishRunQueue } from "./thread-status.js";
 import { returnRunToQueue } from "./store-primitives.js";
 import { openVoiceThread } from "./voice-store.js";
 import { createMemoryPass } from "./memory-pass-store.js";
-import { messageTeamSources } from "./message-team-sources.js";
 import { TriggerStore } from "./trigger-store.js";
-import { AgentConnectionStore } from "./agent-connection-store.js";
 import { testRunnerDescriptor } from "./store.integration.test-support.js";
-import { personalTeamRunOutcome } from "./personal-team-run-store.js";
-import { PersonalTeamRequestsStore } from "./personal-team-requests-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
-import { readThreadInputQueue } from "./thread-inbox.js";
-import { runDeliverySelection } from "./thread-row-mappers.js";
 import { jsonValue, threadPathLinks } from "./store-primitives.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -126,39 +112,6 @@ async function fixture() {
     options: {},
   });
   const execution = { environmentId: personal.environmentId, harnessInstanceId, modelSelection };
-  const teamId = createId("deployment");
-  const origin = {
-    teamId,
-    channelId: createId("teamChannel"),
-    threadRootId: TeamMessageIdSchema.parse("1"),
-  };
-  const source: TeamSource = {
-    ...origin,
-    messageId: null,
-    audience: {
-      teamName: "Studio",
-      channelName: "Design",
-      channelKind: "private",
-      memberCount: 2,
-      peopleOnly: false,
-    },
-  };
-  await database
-    .insertInto("personalTeamLinks")
-    .values({
-      id: crypto.randomUUID(),
-      teamDeploymentId: teamId,
-      teamHostInstanceId: createId("hostInstance"),
-      hostKeyFingerprint: "fixture",
-      approvedOrigin: "https://team.example.invalid",
-      authorityEnvelope: {},
-      remoteLinkId: null,
-      remoteOwnerUserId: null,
-      state: "active",
-      credentialReference: null,
-      lastContactAt: null,
-    })
-    .execute();
   const task = async (title: string) =>
     (
       await createThread(database, {
@@ -168,26 +121,6 @@ async function fixture() {
         title,
       })
     ).thread;
-  let nextMessage = 1;
-  const ask = async (
-    bodyMarkdown = "Team ask",
-    attachments: readonly { id: string; filename: string }[] = [],
-  ) => {
-    const requestId = createId("teamAgentRequest");
-    return {
-      requestId,
-      ...(await admitTeamTaskRequest(database, {
-        bodyMarkdown,
-        attachments,
-        origin,
-        requestId,
-        triggerMessageId: TeamMessageIdSchema.parse(String(++nextMessage)),
-        source,
-        ownerId: personal.userId,
-        execution,
-      })),
-    };
-  };
   const start = async (runId: RunId) => {
     const command = await database
       .selectFrom("commands")
@@ -285,204 +218,8 @@ async function fixture() {
       },
     });
   };
-  return { ...personal, database, execution, origin, source, task, ask, start, finish, emit };
+  return { ...personal, database, execution, task, start, finish, emit };
 }
-
-it("admits readable owner-authored words and file-only asks with immutable reply targets", async () => {
-  const f = await fixture();
-  const ask = await f.ask("Please review the launch checklist.");
-  const read = (messageId: typeof ask.receipt.inputId) =>
-    f.database
-      .selectFrom("messages")
-      .innerJoin("threadInputs", "threadInputs.messageId", "messages.id")
-      .select([
-        "messages.content",
-        "messages.author",
-        "threadInputs.teamSource",
-        "threadInputs.replyTarget",
-      ])
-      .where("messages.id", "=", messageId)
-      .executeTakeFirstOrThrow();
-  const first = await read(ask.receipt.inputId);
-  expect(first).toMatchObject({
-    content: [{ type: "text", text: "Please review the launch checklist." }],
-    author: { kind: "human", userId: f.userId },
-    teamSource: f.source,
-    replyTarget: { kind: "team-thread", ...f.origin, requestId: ask.requestId },
-  });
-  const file = await f.ask("", [{ id: createId("teamBlob"), filename: "checklist.pdf" }]);
-  const attached = await read(file.receipt.inputId);
-  expect(attached.content).toEqual([
-    { type: "text", text: expect.stringContaining('Attached team file: "checklist.pdf"') },
-  ]);
-  expect(attached.replyTarget).toMatchObject({ kind: "team-thread", requestId: file.requestId });
-  expect(first.content).not.toEqual(attached.content);
-});
-
-it("freezes publication once and preserves canonical delivery state", async () => {
-  const f = await fixture();
-  const ask = await f.ask();
-  const ledger = new PersonalTeamRequestsStore(f.database);
-  const payload = { bodyMarkdown: "Frozen answer", attachmentIds: [] };
-  const run = await f.start(ask.receipt.runId!);
-  await f.emit(run.run.id, run.bindingGeneration, payload.bodyMarkdown);
-  await f.finish(run.run.id, run.bindingGeneration);
-  const answerMessageId = (
-    await personalTeamRunOutcome(f.database, (await ledger.get(f.origin.teamId, ask.requestId))!)
-  ).answerMessageId;
-  const clientMessageId = crypto.randomUUID();
-  await ledger.freeze(f.origin.teamId, ask.requestId, {
-    runId: ask.receipt.runId!,
-    via: "final",
-    answerMessageId,
-    clientMessageId,
-    payload,
-  });
-  await ledger.freeze(f.origin.teamId, ask.requestId, {
-    runId: ask.receipt.runId!,
-    via: "tool",
-    answerMessageId: null,
-    clientMessageId: crypto.randomUUID(),
-    payload: { bodyMarkdown: "Later private answer", attachmentIds: [] },
-  });
-  expect(await ledger.get(f.origin.teamId, ask.requestId)).toMatchObject({
-    answerPayload: payload,
-    clientMessageId,
-    answerMessageId,
-    deliveryVia: "final",
-  });
-  const teamMessageId = TeamMessageIdSchema.parse("42");
-  await ledger.publication(f.origin.teamId, ask.requestId, "accepted", teamMessageId);
-  await ledger.publication(f.origin.teamId, ask.requestId, "blocked", null, "late failure");
-  expect(
-    await f.database
-      .selectFrom("runs")
-      .select(runDeliverySelection)
-      .where("id", "=", ask.receipt.runId!)
-      .executeTakeFirstOrThrow(),
-  ).toEqual({
-    delivery: { state: "sent", via: "final", answerMessageId, teamMessageId, reason: null },
-  });
-  const readRunCard = (runId: RunId, threadId: ThreadId) =>
-    readTranscriptItem(f.database, {
-      viewerId: f.userId,
-      scope: { kind: "thread", threadId },
-      itemId: `run:${runId}`,
-    });
-  await expect(readRunCard(run.run.id, run.run.threadId)).resolves.toMatchObject({
-    kind: "item",
-    item: {
-      replyMessageId: answerMessageId,
-      endedAt: expect.any(String),
-      delivery: { state: "sent", via: "final", answerMessageId, teamMessageId, reason: null },
-    },
-  });
-  const cancelled = await f.ask();
-  await ledger.publication(
-    f.origin.teamId,
-    cancelled.requestId,
-    "blocked",
-    null,
-    "The team link was revoked.",
-  );
-  expect(await ledger.get(f.origin.teamId, cancelled.requestId)).toMatchObject({
-    publicationState: "blocked",
-    blockedReason: "The team link was revoked.",
-  });
-  await expect(
-    readRunCard(cancelled.receipt.runId!, cancelled.receipt.taskId),
-  ).resolves.toMatchObject({
-    kind: "item",
-    item: { delivery: { state: "blocked", reason: "The team link was revoked." } },
-  });
-});
-
-it("gives two team asks two Runs, while a private follow-up gets no request authority", async () => {
-  const f = await fixture();
-  const first = await f.ask();
-  const second = await f.ask();
-  expect(second.receipt).toMatchObject({ taskId: first.receipt.taskId, runId: null });
-  const privateInput = await enqueueThreadInput(f.database, {
-    threadId: first.receipt.taskId,
-    requestedBy: f.userId,
-    source: { kind: "human" },
-    policy: "queue",
-    content: [{ type: "text", text: "Keep this follow-up private" }],
-    idempotencyKey: "private-follow-up",
-  });
-  const started = await f.start(first.receipt.runId!);
-  await f.finish(started.run.id, started.bindingGeneration);
-  const next = await f.database
-    .selectFrom("runs")
-    .selectAll()
-    .where("seedInputId", "=", second.receipt.inputId)
-    .executeTakeFirstOrThrow();
-  expect(next.replyTarget?.kind === "team-thread" ? next.replyTarget.requestId : null).toBe(
-    second.requestId,
-  );
-  const startedSecond = await f.start(next.id);
-  await f.finish(next.id, startedSecond.bindingGeneration);
-  const privateRun = await f.database
-    .selectFrom("runs")
-    .selectAll()
-    .where("seedInputId", "=", privateInput.message.id)
-    .executeTakeFirstOrThrow();
-  expect(
-    privateRun.replyTarget?.kind === "team-thread" ? privateRun.replyTarget.requestId : null,
-  ).toBeNull();
-  expect(
-    (
-      await f.database
-        .selectFrom("runs")
-        .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
-        .where("threadId", "=", first.receipt.taskId)
-        .orderBy("runOrdinal")
-        .execute()
-    ).map((row) => row.teamRequestId),
-  ).toEqual([first.requestId, second.requestId, null]);
-});
-
-it("cancels a team input before start and reopens its Done bound task on a later ask", async () => {
-  const f = await fixture();
-  const first = await f.ask();
-  await new PersonalTeamRequestsStore(f.database).terminal(
-    f.origin.teamId,
-    first.requestId,
-    first.receipt.runId,
-    "cancelled",
-  );
-  await cancelTeamTaskRequest(f.database, { teamId: f.origin.teamId, requestId: first.requestId });
-  expect(
-    await f.database
-      .selectFrom("threadInputs")
-      .select("state")
-      .where("messageId", "=", first.receipt.inputId)
-      .executeTakeFirstOrThrow(),
-  ).toEqual({ state: "cancelled" });
-  expect(
-    await f.database
-      .selectFrom("runs")
-      .select("status")
-      .where("id", "=", first.receipt.runId!)
-      .executeTakeFirstOrThrow(),
-  ).toEqual({ status: "interrupted" });
-  await f.database
-    .updateTable("threads")
-    .set({ doneAt: new Date(), doneReason: null })
-    .where("id", "=", first.receipt.taskId)
-    .execute();
-  const second = await f.ask();
-  expect(second.receipt.taskId).toBe(first.receipt.taskId);
-  expect(
-    (
-      await f.database
-        .selectFrom("threads")
-        .select("doneAt")
-        .where("id", "=", second.receipt.taskId)
-        .executeTakeFirstOrThrow()
-    ).doneAt,
-  ).toBeNull();
-});
 
 it("keeps Voice in personal settings and uses real task anchors for Triggers", async () => {
   const f = await fixture();
@@ -541,10 +278,9 @@ it("keeps Voice in personal settings and uses real task anchors for Triggers", a
       kind: "schedule",
       schedule: { kind: "at", at: new Date(Date.now() + 60_000).toISOString() },
     },
-    program: {
-      language: "typescript",
-      toolContractVersion: 5,
-      source: "export default async function () {}",
+    script: {
+      interpreter: null,
+      text: "console.log('ok')",
     },
   });
   expect(created.trigger.anchorThreadId).toBe(anchor.id);
@@ -559,23 +295,21 @@ it("keeps Voice in personal settings and uses real task anchors for Triggers", a
         kind: "schedule",
         schedule: { kind: "at", at: new Date(Date.now() + 60_000).toISOString() },
       },
-      program: {
-        language: "typescript",
-        toolContractVersion: 5,
-        source: "export default async function () {}",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
     }),
   ).rejects.toThrow();
 });
 
-it("owns independent memory jobs that see ordinary and team tasks as changed", async () => {
+it("owns independent memory jobs that see ordinary tasks as changed", async () => {
   const f = await fixture();
   const {
     rows: [clock],
   } = await sql<{ since: Date }>`select clock_timestamp() as since`.execute(f.database);
   const since = clock!.since;
   const ordinary = await f.task("Ordinary source");
-  const team = await f.ask();
   await enqueueThreadInput(f.database, {
     threadId: ordinary.id,
     requestedBy: f.userId,
@@ -591,18 +325,15 @@ it("owns independent memory jobs that see ordinary and team tasks as changed", a
     .executeTakeFirstOrThrow();
   const started = await f.start(personalRun.id);
   await f.finish(personalRun.id, started.bindingGeneration);
-  const startedTeam = await f.start(team.receipt.runId!);
-  await f.finish(startedTeam.run.id, startedTeam.bindingGeneration);
   for (const systemRole of ["memory-light", "memory-nightly"] as const) {
     const created = await createMemoryPass(f.database, {
       ownerId: f.userId,
       execution: f.execution,
       systemRole,
       pauseReason: null,
-      program: {
-        language: "typescript",
-        toolContractVersion: 5,
-        source: "export default async function () {}",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -622,42 +353,13 @@ it("owns independent memory jobs that see ordinary and team tasks as changed", a
     });
   }
   const changed = await agentThreadPageForOwner(f.database, {
+    reader: personTaskReader,
     ownerId: f.userId,
     scope: { kind: "personal" },
     scopeId: f.userId,
     changedSince: since,
   });
-  expect(changed.threads.map(({ id }) => id).sort()).toEqual(
-    [ordinary.id, team.receipt.taskId].sort(),
-  );
-  // A pass that reads these tasks learns where team content came from and who could see it.
-  const teamMessages = await f.database
-    .selectFrom("messages")
-    .select("id")
-    .where("threadId", "=", team.receipt.taskId)
-    .execute();
-  const teamSources = await messageTeamSources(
-    f.database,
-    team.receipt.taskId,
-    teamMessages.map(({ id }) => id),
-  );
-  expect([...teamSources.values()]).toEqual([
-    expect.objectContaining({ teamId: f.origin.teamId, audience: expect.any(Object) }),
-  ]);
-  const ordinaryMessages = await f.database
-    .selectFrom("messages")
-    .select("id")
-    .where("threadId", "=", ordinary.id)
-    .execute();
-  expect(
-    (
-      await messageTeamSources(
-        f.database,
-        ordinary.id,
-        ordinaryMessages.map(({ id }) => id),
-      )
-    ).size,
-  ).toBe(0);
+  expect(changed.threads.map(({ id }) => id).sort()).toEqual([ordinary.id].sort());
   expect(
     (
       await f.database
@@ -671,148 +373,9 @@ it("owns independent memory jobs that see ordinary and team tasks as changed", a
   ).toEqual(["memory-light", "memory-nightly"]);
 });
 
-it("publishes only the consuming Run's completion answer after an offline interval", async () => {
+it("preserves a reply reported by the live attempt while its steer restart is pending", async () => {
   const f = await fixture();
-  const first = await f.ask();
-  const receipt = (await new PersonalTeamRequestsStore(f.database).get(
-    f.origin.teamId,
-    first.requestId,
-  ))!;
-  expect(await personalTeamRunOutcome(f.database, receipt)).toMatchObject({
-    state: "pending",
-    finalMessage: null,
-  });
-  const run = await f.start(first.receipt.runId!);
-  await f.emit(run.run.id, run.bindingGeneration, "An unfinished answer");
-  expect(await personalTeamRunOutcome(f.database, receipt)).toMatchObject({
-    state: "working",
-    finalMessage: null,
-  });
-  await f.emit(run.run.id, run.bindingGeneration, "The authoritative team answer");
-  await f.finish(run.run.id, run.bindingGeneration);
-  const privateInput = await enqueueThreadInput(f.database, {
-    threadId: first.receipt.taskId,
-    requestedBy: f.userId,
-    source: { kind: "human" },
-    policy: "queue",
-    content: [{ type: "text", text: "Private follow-up" }],
-    idempotencyKey: "outcome-private",
-  });
-  const privateRun = await f.start(privateInput.run!.id);
-  await f.emit(privateRun.run.id, privateRun.bindingGeneration, "A private later answer");
-  await f.finish(privateRun.run.id, privateRun.bindingGeneration);
-  expect(await personalTeamRunOutcome(f.database, receipt)).toMatchObject({
-    runId: run.run.id,
-    state: "done",
-    finalMessage: "The authoritative team answer",
-  });
-});
-
-it("records a teammate's withdrawal, not the owner, as what stopped a started team Run", async () => {
-  const f = await fixture();
-  const ask = await f.ask();
-  const started = await f.start(ask.receipt.runId!);
-  await cancelTeamTaskRequest(f.database, { teamId: f.origin.teamId, requestId: ask.requestId });
-  expect(
-    await f.database
-      .selectFrom("commands")
-      .select("authoritySource")
-      .where("runId", "=", started.run.id)
-      .where("type", "=", "run.interrupt")
-      .execute(),
-  ).toEqual([
-    {
-      authoritySource: { kind: "team-cancel", teamId: f.origin.teamId, requestId: ask.requestId },
-    },
-  ]);
-});
-
-it("removes only the pending team request and keeps another admitted ask", async () => {
-  const f = await fixture();
-  const first = await f.ask();
-  const second = await f.ask();
-  const third = await f.ask();
-  const started = await f.start(first.receipt.runId!);
-  await cancelTeamTaskRequest(f.database, { teamId: f.origin.teamId, requestId: second.requestId });
-  await f.finish(started.run.id, started.bindingGeneration);
-  expect(
-    await f.database
-      .selectFrom("runs")
-      .select("id")
-      .where("seedInputId", "=", second.receipt.inputId)
-      .executeTakeFirst(),
-  ).toBeUndefined();
-  expect(
-    await f.database
-      .selectFrom("runs")
-      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
-      .where("seedInputId", "=", third.receipt.inputId)
-      .executeTakeFirstOrThrow(),
-  ).toEqual({ teamRequestId: third.requestId });
-  expect(
-    await personalTeamRunOutcome(
-      f.database,
-      (await new PersonalTeamRequestsStore(f.database).get(f.origin.teamId, second.requestId))!,
-    ),
-  ).toMatchObject({ runId: null, state: "cancelled", finalMessage: null });
-});
-
-it("stops an active team Run without pausing later queued requests", async () => {
-  const f = await fixture();
-  const first = await f.ask();
-  const second = await f.ask();
-  const started = await f.start(first.receipt.runId!);
-  await new PersonalTeamRequestsStore(f.database).terminal(
-    f.origin.teamId,
-    first.requestId,
-    first.receipt.runId,
-    "cancelled",
-  );
-  const stopped = await cancelTeamTaskRequest(f.database, {
-    teamId: f.origin.teamId,
-    requestId: first.requestId,
-  });
-  expect(stopped.revokedGrants).toHaveLength(1);
-  expect(
-    await f.database
-      .selectFrom("threads")
-      .select("inputQueuePaused")
-      .where("id", "=", first.receipt.taskId)
-      .executeTakeFirstOrThrow(),
-  ).toEqual({ inputQueuePaused: false });
-  const run = await f.database
-    .selectFrom("runs")
-    .selectAll()
-    .where("id", "=", started.run.id)
-    .executeTakeFirstOrThrow();
-  await commitRunnerEvent(f.database, threadPathLinks, {
-    environmentId: f.environmentId,
-    runnerId: f.runnerId,
-    runnerBootId: "fixture",
-    event: {
-      type: "run.interrupted",
-      environmentId: f.environmentId,
-      emittedAt: new Date().toISOString(),
-      ordinal: run.nextRunnerOrdinal,
-      bindingGeneration: started.bindingGeneration,
-      runId: run.id,
-      threadId: run.threadId,
-      data: { status: "interrupted" },
-    },
-  });
-  expect(
-    await f.database
-      .selectFrom("runs")
-      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
-      .where("seedInputId", "=", second.receipt.inputId)
-      .executeTakeFirstOrThrow(),
-  ).toEqual({ teamRequestId: second.requestId });
-});
-
-it("joins an explicit private steer to the active team Run without assigning a request to that input", async () => {
-  const f = await fixture();
-  const first = await f.ask();
-  await f.start(first.receipt.runId!);
+  const task = await f.task("Waiting for the original reply");
   const descriptor = testRunnerDescriptor({
     runnerId: f.runnerId,
     environmentId: f.environmentId,
@@ -823,131 +386,45 @@ it("joins an explicit private steer to the active team Run without assigning a r
   await f.database
     .updateTable("runners")
     .set({
-      capabilities: jsonValue(descriptor.capabilities),
+      capabilities: jsonValue([...descriptor.capabilities, "attempts-v1"]),
       moduleDescriptors: {
         agents: {
           ...descriptor.modules.agents,
           harnessDrivers: descriptor.modules.agents.harnessDrivers.map((driver) => ({
             ...driver,
             driverKind: HarnessIdSchema.parse("codex"),
+            steering: false,
           })),
         },
       },
     })
     .where("id", "=", f.runnerId)
     .execute();
-  const queued = await enqueueThreadInput(f.database, {
-    threadId: first.receipt.taskId,
-    requestedBy: f.userId,
-    source: { kind: "human" },
-    policy: "queue",
-    content: [{ type: "text", text: "Queued private turn" }],
-    idempotencyKey: "queue-before-team-steer",
-  });
-  const queue = await withPersonalTransaction(f.database, (tx) =>
-    readThreadInputQueue(tx, {
-      threadId: first.receipt.taskId,
+  const send = (policy: "queue" | "steer") =>
+    enqueueThreadInput(f.database, {
+      threadId: task.id,
       requestedBy: f.userId,
-    }),
-  );
-  expect(queue.items.find((item) => item.message.id === queued.message.id)?.canSteer).toBe(true);
-  const steered = await enqueueThreadInput(f.database, {
-    threadId: first.receipt.taskId,
-    requestedBy: f.userId,
-    source: { kind: "human" },
-    policy: "steer",
-    content: [{ type: "text", text: "Private steering instructions" }],
-    idempotencyKey: "private-team-steer",
-  });
-  expect(steered).toMatchObject({
-    disposition: "steering",
-    input: { runId: first.receipt.runId, teamRequestId: null, teamSource: null },
-  });
+      source: { kind: "human" },
+      policy,
+      content: [
+        { type: "text", text: policy === "queue" ? "Draft the plan" : "Use the blue palette" },
+      ],
+      idempotencyKey: `pending-restart:${policy}`,
+    });
+  const initial = await send("queue");
+  const { run, bindingGeneration } = await f.start(initial.run!.id);
+  const steer = await send("steer");
+  expect(steer.command?.type).toBe("run.restart");
+  await f.emit(run.id, bindingGeneration, "Original answer");
+  await f.finish(run.id, bindingGeneration);
   expect(
     await f.database
-      .selectFrom("runs")
-      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
-      .where("id", "=", first.receipt.runId!)
-      .executeTakeFirstOrThrow(),
-  ).toEqual({ teamRequestId: first.requestId });
-});
-
-it("keeps external-agent and Trigger turns on a bound task free of team request authority", async () => {
-  const f = await fixture();
-  const first = await f.ask();
-  const started = await f.start(first.receipt.runId!);
-  const connections = new AgentConnectionStore(f.database);
-  const connection = await connections.create({
-    userId: f.userId,
-    label: "External agent",
-    clientName: "Fixture",
-    accessMode: "full-access",
-    resource: "http://127.0.0.1:4310/mcp",
-    expiresAt: new Date(Date.now() + 60_000),
-  });
-  await connections.activate(connection.id, "fixture-external-token-hash");
-  const external = await enqueueThreadInput(f.database, {
-    threadId: first.receipt.taskId,
-    requestedBy: f.userId,
-    source: { kind: "connection", connectionId: connection.id },
-    policy: "queue",
-    content: [{ type: "text", text: "An external agent turn" }],
-    idempotencyKey: "external-team-task",
-  });
-  const triggers = new TriggerStore(f.database);
-  const trigger = await triggers.create({
-    actorThreadId: null,
-    anchorThreadId: first.receipt.taskId,
-    createdBy: f.userId,
-    idempotencyKey: "team-task-trigger",
-    name: "Team task schedule",
-    source: {
-      kind: "schedule",
-      schedule: { kind: "at", at: new Date(Date.now() + 60_000).toISOString() },
-    },
-    program: {
-      language: "javascript",
-      toolContractVersion: 5,
-      source: "export default async () => null",
-    },
-  });
-  const occurrence = await triggers.enqueueManual({
-    actorThreadId: null,
-    ownerId: f.userId,
-    triggerId: trigger.trigger.id,
-  });
-  await claimCommand(f.database, occurrence.commandId, "fixture-trigger");
-  await triggers.startExecution({
-    commandId: occurrence.commandId,
-    runnerId: f.runnerId,
-    runnerBootId: "fixture",
-  });
-  const scheduled = await enqueueThreadInput(f.database, {
-    threadId: first.receipt.taskId,
-    requestedBy: f.userId,
-    source: { kind: "trigger", occurrenceId: occurrence.id },
-    policy: "queue",
-    content: [{ type: "text", text: "A scheduled turn" }],
-    idempotencyKey: "trigger-team-task",
-  });
-  await f.finish(started.run.id, started.bindingGeneration);
-  const externalRun = await f.database
-    .selectFrom("runs")
-    .selectAll()
-    .where("seedInputId", "=", external.message.id)
-    .executeTakeFirstOrThrow();
-  expect(
-    externalRun.replyTarget?.kind === "team-thread" ? externalRun.replyTarget.requestId : null,
-  ).toBeNull();
-  const next = await f.start(externalRun.id);
-  await f.finish(externalRun.id, next.bindingGeneration);
-  expect(
-    await f.database
-      .selectFrom("runs")
-      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
-      .where("seedInputId", "=", scheduled.message.id)
-      .executeTakeFirstOrThrow(),
-  ).toEqual({ teamRequestId: null });
+      .selectFrom("messages")
+      .select("content")
+      .where("runId", "=", run.id)
+      .where("kind", "=", "assistant")
+      .execute(),
+  ).toEqual([{ content: [{ type: "text", text: "Original answer" }] }]);
 });
 
 it("bounds Deployment-wide Needs you and rolls navigation up without changing Request origin", async () => {
@@ -1092,66 +569,6 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
     release.resolve();
     await Promise.allSettled([snapshot, writer]);
   }
-});
-
-async function twoTeamsWithOneRequestId() {
-  const f = await fixture();
-  const first = await f.ask();
-  const otherTeamId = createId("deployment");
-  const link = await f.database
-    .selectFrom("personalTeamLinks")
-    .selectAll()
-    .where("teamDeploymentId", "=", f.origin.teamId)
-    .executeTakeFirstOrThrow();
-  await f.database
-    .insertInto("personalTeamLinks")
-    .values({ ...link, id: crypto.randomUUID(), teamDeploymentId: otherTeamId })
-    .execute();
-  const origin = { ...f.origin, teamId: otherTeamId };
-  const second = await admitTeamTaskRequest(f.database, {
-    bodyMarkdown: "Team ask",
-    origin,
-    requestId: first.requestId,
-    triggerMessageId: TeamMessageIdSchema.parse("2"),
-    source: { ...f.source, teamId: otherTeamId },
-    ownerId: f.userId,
-    execution: f.execution,
-  });
-  return { f, first, second, otherTeamId };
-}
-
-it("cancels only the exact team input when two teams reuse a request ID", async () => {
-  const { f, first, second, otherTeamId } = await twoTeamsWithOneRequestId();
-  expect(second.receipt.taskId).not.toBe(first.receipt.taskId);
-  await cancelTeamTaskRequest(f.database, { teamId: otherTeamId, requestId: first.requestId });
-  await expect(
-    f.database
-      .selectFrom("runs")
-      .select("status")
-      .where("id", "=", first.receipt.runId!)
-      .executeTakeFirstOrThrow(),
-  ).resolves.toEqual({ status: "queued" });
-  await expect(
-    f.database
-      .selectFrom("threadInputs")
-      .select("state")
-      .where("messageId", "=", first.receipt.inputId)
-      .executeTakeFirstOrThrow(),
-  ).resolves.toEqual({ state: "pending" });
-  await expect(
-    f.database
-      .selectFrom("runs")
-      .select("status")
-      .where("id", "=", second.receipt.runId!)
-      .executeTakeFirstOrThrow(),
-  ).resolves.toEqual({ status: "interrupted" });
-  await expect(
-    f.database
-      .selectFrom("threadInputs")
-      .select("state")
-      .where("messageId", "=", second.receipt.inputId)
-      .executeTakeFirstOrThrow(),
-  ).resolves.toEqual({ state: "cancelled" });
 });
 
 it("navigates a reused worker's Request to the current assigning task without changing its origin", async () => {
@@ -1442,43 +859,6 @@ it("keeps a reply that says nothing out of the transcript, and a file-only reply
     ).map(({ id }) => id),
   ).toEqual([file.messageId]);
   expect(await sequence()).toBe(before + 1);
-});
-
-it("fences shell sends when it removes a never-run ask task", async () => {
-  const f = await fixture();
-  const removable = await f.task("Removable ask");
-  await f.database
-    .updateTable("threads")
-    .set({ teamAskOrigin: true, titleSource: "provisional" })
-    .where("id", "=", removable.id)
-    .execute();
-  const fenced: string[][] = [];
-  const disconnect = installPersonalMutationHooks(f.database, {
-    wake() {},
-    onFailure(error) {
-      throw error;
-    },
-    suspend(scopes) {
-      fenced.push([...scopes].sort());
-      return { committed() {}, rolledBack() {} };
-    },
-  });
-  try {
-    await removeAskTask(f.database, removable.id);
-  } finally {
-    disconnect();
-  }
-  // The never-run ask is removed and then purged.
-  expect(
-    await f.database
-      .selectFrom("threads")
-      .select("id")
-      .where("id", "=", removable.id)
-      .where("removedAt", "is", null)
-      .executeTakeFirst(),
-  ).toBeUndefined();
-  // A shell cut held before the removal lists the task; it must not dispatch afterwards.
-  expect(fenced[0]).toEqual(["shell", `thread:${removable.id}`]);
 });
 
 it("says on the shell task row whether a Run waits to start with none executing", async () => {

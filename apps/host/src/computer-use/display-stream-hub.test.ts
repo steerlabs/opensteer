@@ -1,5 +1,6 @@
 import { DeviceIdSchema } from "@opensteer/core";
-import { DisplayStreams } from "@opensteer/client/integrations";
+import { DisplayEditingSession, DisplayStreams } from "@opensteer/client/integrations";
+import { OrderedInputLane, inputBytes, releaseOnly } from "@opensteer/runner";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { on, once } from "node:events";
 import { createConnection } from "node:net";
@@ -21,6 +22,7 @@ import {
   type HostIntegrationsOperation,
   type HostIntegrationsDisplayStart,
   macDisplayProfileHysteresisMs,
+  macWindowVideoParams,
 } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -540,17 +542,70 @@ describe("phone display Host sockets", () => {
     send(129, "move");
     send(130, "up");
     await a.roundTrip();
+    // A full lane never sent it: the viewer says so ("unavailable"), never that it was too large.
     expect(a.json()).toContainEqual({
       type: "display.input.result",
       sequence: 129,
       outcome: "refused",
-      reason: "too-large",
+      reason: "unavailable",
     });
     expect(a.json().some((m) => m.sequence === 130 && m.outcome === "refused")).toBe(false);
     const relayed = f.sent.filter((m) => m.type === "host.integrations.display.input");
     expect(relayed.at(-1)?.events).toEqual([
       { kind: "pointer", phase: "up", x: 0.5, y: 0.5, t: 130 },
     ]);
+  });
+
+  it("gives the release room only to releases, bounded; past it the stream takes no input and lets go once", async () => {
+    // Review probe: a release bundled with anything took the release's room, without limit.
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    await f.state();
+    const pointer = (sequence: number, phase: string) => ({
+      kind: "pointer",
+      phase,
+      x: 0.5,
+      y: 0.5,
+      t: sequence,
+    });
+    const send = (sequence: number, events: unknown[]) =>
+      a.send({ type: "display.input", geometry: 1, sequence, events });
+    // Shift stays held throughout: the overflow's reset is what lets go of it.
+    send(1, [
+      {
+        kind: "key",
+        action: "down",
+        key: "Shift",
+        code: "ShiftLeft",
+        modifiers: [],
+        location: 1,
+        repeat: false,
+      },
+    ]);
+    for (let sequence = 2; sequence <= 128; sequence++) send(sequence, [pointer(sequence, "move")]);
+    send(129, [pointer(129, "move"), pointer(129, "up")]);
+    for (let sequence = 130; sequence <= 161; sequence++) send(sequence, [pointer(sequence, "up")]);
+    await a.roundTrip();
+    const refused = (sequence: number) =>
+      a.json().some((m) => m.sequence === sequence && m.outcome === "refused");
+    expect(refused(129), "a release bundled with a move is an ordinary batch").toBe(true);
+    expect([130, 161].map(refused)).toEqual([false, false]);
+    const resets = () =>
+      f.sent.filter((m) => m.type === "host.integrations.display.input-reset").length;
+    expect(resets()).toBe(0);
+    send(162, [pointer(162, "up")]);
+    await a.roundTrip();
+    expect(refused(162)).toBe(true);
+    expect(resets(), "one reset lets go of everything held").toBe(1);
+    send(163, [pointer(163, "down")]);
+    await a.roundTrip();
+    expect(a.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 163,
+      outcome: "refused",
+      reason: "unavailable",
+    });
+    expect(resets()).toBe(1);
   });
 
   it("frees the lane when the phone refuses the press holding it, never a later one", async () => {
@@ -663,7 +718,12 @@ describe("phone display Host sockets", () => {
       });
       await a.roundTrip();
     }
-    b.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy" }] });
+    b.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 0,
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
+    });
     await b.roundTrip();
     a.socket.close();
     await a.closed;
@@ -706,7 +766,12 @@ describe("phone display Host sockets", () => {
       ],
     });
     await a.roundTrip();
-    b.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy" }] });
+    b.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 0,
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
+    });
     await b.roundTrip();
     expect(b.json()).toContainEqual({
       type: "display.input.result",
@@ -732,14 +797,19 @@ describe("phone display Host sockets", () => {
     });
     await a.roundTrip();
     for (let sequence = 2; sequence <= 128; sequence++)
-      a.send({ type: "display.input", geometry: 1, sequence, events: [{ kind: "copy" }] });
+      a.send({
+        type: "display.input",
+        geometry: 1,
+        sequence,
+        events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
+      });
     await a.roundTrip();
     expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toHaveLength(128);
     expect(a.json()).toContainEqual({
       type: "display.input.result",
       sequence: 128,
       outcome: "refused",
-      reason: "too-large",
+      reason: "unavailable",
     });
   });
 
@@ -749,7 +819,12 @@ describe("phone display Host sockets", () => {
     const b = await f.viewer(true);
     const baseline = await f.connect(`/v1/computer-use/sessions/${f.sessionId}/display`, "owner");
     await f.state();
-    a.send({ type: "display.input", geometry: 1, sequence: 40, events: [{ kind: "copy" }] });
+    a.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 40,
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
+    });
     await a.roundTrip();
     const base = { ...f.fence, streamId: f.start().streamId, sessionId: f.sessionId, geometry: 1 };
     for (const event of [
@@ -796,7 +871,7 @@ describe("phone display Host sockets", () => {
       controlId: `dcl_${randomUUID()}`,
       geometry: 1,
       sequence: 50,
-      events: [{ kind: "copy" }],
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
     });
     await baseline.roundTrip();
     expect(baseline.json()).toContainEqual({
@@ -840,7 +915,9 @@ describe("phone display Host sockets", () => {
 
         geometry: 1,
         sequence: 1,
-        events: [{ kind: "paste", text: "hello" }],
+        events: [
+          { kind: "paste", text: "hello", contextId: "00000000-0000-4000-8000-000000000001" },
+        ],
       });
       await opted.roundTrip();
       expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toHaveLength(
@@ -901,7 +978,7 @@ describe("phone display Host sockets", () => {
     }));
     expect(lease.input(1, events)).toBe(true);
     await until(
-      () => f.sent.filter((m) => m.type === "host.integrations.display.input").length === 2,
+      () => f.sent.filter((m) => m.type === "host.integrations.display.input").length === 4,
     );
     const input = f.sent.filter((m) => m.type === "host.integrations.display.input");
     expect(input.flatMap((m) => m.events)).toEqual(events);
@@ -937,23 +1014,22 @@ describe("phone display Host sockets", () => {
 
       geometry: 1,
       sequence: 0,
-      events: [{ kind: "paste", text: "hello" }],
+      events: [{ kind: "paste", text: "hello", contextId: "00000000-0000-4000-8000-000000000001" }],
     });
     await viewer.roundTrip();
     await f.state("live", 2);
     await viewer.roundTrip();
-    expect(viewer.json()).toContainEqual({
-      type: "display.input.result",
-      sequence: 0,
-      outcome: "stale",
-      reason: "stale",
-    });
+    // The paste went to the phone and its receipt will not come: unknown, never stale (rule 4).
+    // The viewer ends it as unknown on the new generation.
+    expect(
+      viewer.json().filter((m) => m.type === "display.input.result" && m.sequence === 0),
+    ).toEqual([]);
     viewer.send({
       type: "display.input",
 
       geometry: 1,
       sequence: 1,
-      events: [{ kind: "copy" }],
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
     });
     await viewer.roundTrip();
     expect(viewer.json()).toContainEqual({
@@ -968,7 +1044,7 @@ describe("phone display Host sockets", () => {
 
       geometry: 2,
       sequence: 2,
-      events: [{ kind: "copy" }],
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
     });
     await viewer.roundTrip();
     await f.apps.handleMessage(f.peer, f.stream, {
@@ -2873,6 +2949,35 @@ describe("phone display Host sockets", () => {
 });
 
 describe("Mac owner input over authenticated display sockets", () => {
+  it("never answers a forwarded paste stale when the window hides before its receipt (rule 4)", async () => {
+    // Review finding 7: the paste reached the Mac; its receipt will not come. The viewer
+    // ends it as unknown on the state change, never as "The field changed. Try again."
+    const f = await fixture(true, { mac: true, macOwnerInput: true, macHelperInput: true });
+    const viewer = await f.macViewer(true);
+    const data = await f.phone();
+    data.socket.send(f.frame(1, true));
+    await viewer.received(() => viewer.media().length === 1);
+    viewer.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 4,
+      events: [{ kind: "paste", text: "hello", contextId: "00000000-0000-4000-8000-000000000001" }],
+    });
+    await viewer.roundTrip();
+    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.input")).toHaveLength(1);
+    await f.state("protected", 1, "target-unavailable");
+    await viewer.roundTrip();
+    expect(
+      viewer.json().filter((m) => m.type === "display.input.result" && m.sequence === 4),
+    ).toEqual([]);
+    expect(
+      viewer
+        .json()
+        .filter((m) => m.type === "display.state")
+        .at(-1),
+    ).toMatchObject({ state: "protected" });
+  });
+
   it("re-resolves the same binding after readiness loss and ignores a legacy Take over", async () => {
     const negotiation = { mac: true, macOwnerInput: true, macHelperInput: true };
     const f = await fixture(true, negotiation);
@@ -2965,6 +3070,171 @@ describe("Mac owner input over authenticated display sockets", () => {
     );
   });
 
+  it.each(["watcher", "legacy helper"] as const)(
+    "does not reset from a %s without input rights",
+    async (kind) => {
+      const f = await fixture(true, { mac: true, macHelperInput: kind !== "legacy helper" });
+      if (kind === "watcher") f.inputAuthorization(false);
+      const viewer = await f.macViewer(true);
+      await f.state();
+      await viewer.roundTrip();
+      expect(
+        viewer
+          .json()
+          .filter((m) => m.type === "display.state")
+          .at(-1)?.sharedInput,
+      ).toBeUndefined();
+      viewer.send({ type: "display.input-reset" });
+      await viewer.roundTrip();
+      expect(
+        f.sent.filter((m) => m.type === "host.integrations.mac-owner.input-reset"),
+      ).toHaveLength(0);
+    },
+  );
+
+  it("does not let a second Mac viewer reset a holder sharing its source", async () => {
+    const f = await fixture(true, { mac: true });
+    const a = await f.macViewer(true);
+    const b = await f.macViewer(true);
+    await f.state();
+    await Promise.all([a.roundTrip(), b.roundTrip()]);
+    const send = (viewer: typeof a, sequence: number, events: unknown[]) =>
+      viewer.send({ type: "display.input", geometry: 1, sequence, events });
+    const shift = { kind: "key", code: "ShiftLeft", key: "Shift" };
+    const hover = { kind: "mouse", phase: "move", button: "none", modifiers: [], x: 0.5, y: 0.5 };
+    send(a, 0, [{ ...shift, action: "down", modifiers: ["shift"] }]);
+    await a.roundTrip();
+    send(b, 0, [hover]);
+    await b.roundTrip();
+    expect(b.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 0,
+      outcome: "refused",
+      reason: "contended",
+    });
+    b.send({ type: "display.input-reset" });
+    await b.roundTrip();
+    send(b, 1, [hover]);
+    await b.roundTrip();
+    expect(b.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 1,
+      outcome: "refused",
+      reason: "contended",
+    });
+    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.input-reset")).toHaveLength(
+      0,
+    );
+  });
+
+  it("keeps the holder when Home refuses a release before forwarding", async () => {
+    const f = await fixture(true, { mac: true });
+    const viewer = await f.macViewer(true);
+    await f.state();
+    await viewer.roundTrip();
+    const shift = { kind: "key", code: "ShiftLeft", key: "Shift" };
+    viewer.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 0,
+      events: [{ ...shift, action: "down", modifiers: ["shift"] }],
+    });
+    await viewer.roundTrip();
+    viewer.send({
+      type: "display.input",
+      geometry: 2,
+      sequence: 1,
+      events: [{ ...shift, action: "up", modifiers: [] }],
+    });
+    await viewer.roundTrip();
+    expect(viewer.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 1,
+      outcome: "stale",
+      reason: "stale",
+    });
+    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.input")).toHaveLength(1);
+    viewer.send({ type: "display.input-reset" });
+    await viewer.roundTrip();
+    expect(
+      f.sent.filter((m) => m.type === "host.integrations.mac-owner.input-reset"),
+    ).toMatchObject([{ source: f.macSource }]);
+  });
+
+  it("forwards a relative input budget under clock skew and answers after a late clipboard", async () => {
+    let elapsed = 20;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    try {
+      const f = await fixture(true, { mac: true });
+      f.advance(9_000);
+      const viewer = await f.macViewer(true);
+      await f.state();
+      await viewer.roundTrip();
+      viewer.send({
+        type: "display.input",
+        geometry: 1,
+        sequence: 7,
+        timeoutMs: 10_000,
+        events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
+      });
+      await viewer.roundTrip();
+      expect
+        .soft(f.sent.find((m) => m.type === "host.integrations.mac-owner.input"))
+        .toMatchObject({ timeoutMs: 9_000, sequence: 0 });
+      elapsed += 10_001;
+      for (const message of [
+        { type: "display.clipboard", sequence: 0, outcome: "copied", text: "selection" },
+        { type: "display.input.result", sequence: 0, outcome: "dispatched" },
+      ] as const) {
+        await f.apps.handleMessage(f.peer, f.stream, {
+          ...f.fence,
+          type: "runner.integrations.mac-owner.event",
+          streamId: f.start().streamId,
+          source: f.macSource,
+          message,
+        });
+      }
+      await viewer.roundTrip();
+      expect(viewer.json().filter((m) => m.type === "display.clipboard")).toEqual([]);
+      expect(viewer.json().filter((m) => m.type === "display.input.result")).toEqual([
+        { type: "display.input.result", sequence: 7, outcome: "unknown" },
+      ]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each(["explicit reset", "socket close"] as const)(
+    "keeps the Home reset gate closed after forwarding a self-balanced batch on %s",
+    async (end) => {
+      const f = await fixture(true, { mac: true });
+      const viewer = await f.macViewer(true);
+      await f.state();
+      const shift = { kind: "key", code: "ShiftLeft", key: "Shift" };
+      viewer.send({
+        type: "display.input",
+        geometry: 1,
+        sequence: 7,
+        events: [
+          { ...shift, action: "down", modifiers: ["shift"] },
+          { ...shift, action: "up", modifiers: [] },
+        ],
+      });
+      await viewer.roundTrip();
+      const resets = () =>
+        f.sent.filter((m) => m.type === "host.integrations.mac-owner.input-reset");
+      expect(resets()).toHaveLength(0);
+      if (end === "socket close") {
+        viewer.socket.close();
+        await viewer.closed;
+      } else {
+        viewer.send({ type: "display.input-reset" });
+        await viewer.roundTrip();
+      }
+      expect(resets()).toHaveLength(0);
+    },
+  );
+
   it("tells an idle Mac viewer when its approval is granted or removed", async () => {
     const f = await fixture(true, { mac: true });
     f.inputAuthorization(false);
@@ -3015,7 +3285,7 @@ describe("Mac owner input over authenticated display sockets", () => {
 
       geometry: 1,
       sequence: 0,
-      events: [{ kind: "copy" }],
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
     });
     await viewer.roundTrip();
     expect(
@@ -3052,6 +3322,322 @@ describe("Mac owner input over authenticated display sockets", () => {
       );
     }
   });
+
+  it("delivers a 200-character burst through the Home against a slow device without hitting the 128-batch bound", async () => {
+    const f = await fixture(true, { mac: true });
+    const received: string[] = [];
+    let pendingAtDevice = 0;
+    let peakPendingAtDevice = 0;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const originalPeerSend = f.peer.send;
+    f.peer.send = async (message: HostIntegrationsOperation) => {
+      await originalPeerSend(message);
+      if (message.type !== "host.integrations.mac-owner.input") return;
+      pendingAtDevice += 1;
+      peakPendingAtDevice = Math.max(peakPendingAtDevice, pendingAtDevice);
+      const { sequence, events, streamId } = message;
+      timers.push(
+        setTimeout(() => {
+          for (const event of events) {
+            if (event.kind === "key" && event.action === "down" && event.text)
+              received.push(event.text);
+          }
+          pendingAtDevice -= 1;
+          void f.apps.handleMessage(f.peer, f.stream, {
+            ...f.fence,
+            type: "runner.integrations.mac-owner.event",
+            streamId,
+            source: f.macSource,
+            message: { type: "display.input.result", sequence, outcome: "dispatched" },
+          });
+        }, 5),
+      );
+    };
+    const sockets: WebSocket[] = [];
+    const streams = new DisplayStreams({
+      connect: () => {
+        const socket = new WebSocket(
+          `${f.base}/v1/computer-use/views/${f.macSource.viewId}/${f.macSource.generation}/display?sharedInput=1&editing=1`,
+          { headers: { authorization: "Bearer owner" } },
+        );
+        sockets.push(socket);
+        return socket as never;
+      },
+    });
+    const lease = streams.retain({ scope: "burst-home", source: f.macSource, editing: 1 });
+    const editing = new DisplayEditingSession(lease);
+    cleanups.push(async () => {
+      for (const timer of timers) clearTimeout(timer);
+      editing.dispose();
+      lease.release();
+      streams.dispose();
+      for (const socket of sockets) socket.terminate();
+    });
+    await until(() => f.sent.some((message) => message.type === "host.integrations.display.start"));
+    await f.state();
+    await until(() => lease.getSnapshot().input === "available");
+    editing.setGeometry(1);
+
+    const text = Array.from({ length: 200 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("");
+    const calls: Promise<unknown>[] = [];
+    for (const ch of text) {
+      const code = `Key${ch.toUpperCase()}`;
+      calls.push(
+        editing.send({
+          kind: "key",
+          keystroke: {
+            action: "down",
+            key: ch,
+            code,
+            modifiers: [],
+            location: 0,
+            repeat: false,
+            text: ch,
+          },
+        }),
+      );
+      calls.push(
+        editing.send({
+          kind: "key",
+          keystroke: { action: "up", key: ch, code, modifiers: [], location: 0, repeat: false },
+        }),
+      );
+    }
+    await Promise.all(calls);
+    expect(received.join("")).toBe(text);
+    expect(peakPendingAtDevice).toBe(1);
+    const inputBatches = f.sent.filter(
+      (message) => message.type === "host.integrations.mac-owner.input",
+    );
+    expect(inputBatches.length).toBeLessThanOrEqual(8);
+  });
+
+  // Covers the real client DisplayEditingSession + DisplayStreams, Home DisplayStreamHub,
+  // Runner OrderedInputLane, Bridge display.input Zod schema, and a local copy of the Mac
+  // helper's OwnerInputAdmission bounds (maxBatches = 4, maxBytes = 131_072 on serialized
+  // MacOwnerInput.InputParams). Does NOT cover the Runner's production MacWindowVideoRelay,
+  // the Desktop bridge process, or the Mac helper's Swift admission and dispatch.
+  async function fullHopMacFixture() {
+    const f = await fixture(true, { mac: true });
+    const receivedKeys: string[] = [];
+    const receivedPastes: string[] = [];
+    const batchKinds: string[][] = [];
+    const maxWireBytes = { value: 0 };
+    // Copied Mac helper OwnerInputAdmission bounds (OwnerInputState.swift:47-81,
+    // HelperRuntime.swift:1343-1358): maxBatches = 4, maxBytes = 131_072 on serialized
+    // MacOwnerInput.InputParams (streamId + source), 1..64 events, strictly increasing sequences.
+    const helperMaxBytes = 131_072;
+    let helperLastSequence = -1;
+    let helperPendingBatches = 0;
+    let helperPendingBytes = 0;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    type MacOwnerInputMsg = Extract<
+      HostIntegrationsOperation,
+      { type: "host.integrations.mac-owner.input" }
+    >;
+    const lane = new OrderedInputLane<MacOwnerInputMsg>({
+      maxBatches: 128,
+      maxBytes: 4 * 1_048_576,
+      maxReleaseBatches: 32,
+      maxReleaseBytes: 64 * 1_024,
+      maxAgeMs: 8_000,
+      send: async (message) => {
+        const wireParams = {
+          streamId: message.streamId,
+          source: message.source,
+          geometry: message.geometry,
+          sequence: message.sequence,
+          events: message.events,
+        };
+        // Real Desktop bridge Zod schema check.
+        const parsed = macWindowVideoParams["display.input"].safeParse(wireParams);
+        const paramBytes = Buffer.byteLength(JSON.stringify(wireParams), "utf8");
+        maxWireBytes.value = Math.max(maxWireBytes.value, paramBytes);
+        const admitted =
+          parsed.success &&
+          message.events.length >= 1 &&
+          message.events.length <= 64 &&
+          message.sequence > helperLastSequence &&
+          helperPendingBatches < 4 &&
+          paramBytes > 0 &&
+          paramBytes <= helperMaxBytes - helperPendingBytes;
+        if (!admitted) {
+          void f.apps.handleMessage(f.peer, f.stream, {
+            ...f.fence,
+            type: "runner.integrations.mac-owner.event",
+            streamId: message.streamId,
+            source: f.macSource,
+            message: {
+              type: "display.input.result",
+              sequence: message.sequence,
+              outcome: "refused",
+              reason: "unavailable",
+            },
+          });
+          return;
+        }
+        helperLastSequence = message.sequence;
+        helperPendingBatches += 1;
+        helperPendingBytes += paramBytes;
+        await new Promise<void>((resolve) => {
+          timers.push(
+            setTimeout(() => {
+              batchKinds.push(
+                message.events.map((event) =>
+                  event.kind === "mouse"
+                    ? `mouse:${event.phase}`
+                    : event.kind === "key"
+                      ? `key:${event.action}`
+                      : event.kind,
+                ),
+              );
+              for (const event of message.events) {
+                if (event.kind === "key" && event.action === "down" && event.text)
+                  receivedKeys.push(event.text);
+                else if (event.kind === "paste" && "text" in event) receivedPastes.push(event.text);
+              }
+              helperPendingBatches -= 1;
+              helperPendingBytes -= paramBytes;
+              void f.apps.handleMessage(f.peer, f.stream, {
+                ...f.fence,
+                type: "runner.integrations.mac-owner.event",
+                streamId: message.streamId,
+                source: f.macSource,
+                message: {
+                  type: "display.input.result",
+                  sequence: message.sequence,
+                  outcome: "dispatched",
+                },
+              });
+              resolve();
+            }, 3),
+          );
+        });
+      },
+      reset: async () => undefined,
+      notSent: (message) => {
+        void f.apps.handleMessage(f.peer, f.stream, {
+          ...f.fence,
+          type: "runner.integrations.mac-owner.event",
+          streamId: message.streamId,
+          source: f.macSource,
+          message: {
+            type: "display.input.result",
+            sequence: message.sequence,
+            outcome: "refused",
+            reason: "unavailable",
+          },
+        });
+      },
+    });
+
+    const originalPeerSend = f.peer.send;
+    f.peer.send = async (message: HostIntegrationsOperation) => {
+      await originalPeerSend(message);
+      if (message.type === "host.integrations.mac-owner.input") {
+        lane.input({
+          source: `owner:${message.source.viewId}:${message.source.generation}`,
+          bytes: inputBytes(message.events),
+          value: message,
+          release: releaseOnly(message.events),
+        });
+      } else if (message.type === "host.integrations.mac-owner.input-reset") {
+        lane.reset(`owner:${message.source.viewId}:${message.source.generation}`);
+      }
+    };
+
+    const sockets: WebSocket[] = [];
+    const streams = new DisplayStreams({
+      connect: () => {
+        const socket = new WebSocket(
+          `${f.base}/v1/computer-use/views/${f.macSource.viewId}/${f.macSource.generation}/display?sharedInput=1&editing=1`,
+          { headers: { authorization: "Bearer owner" } },
+        );
+        sockets.push(socket);
+        return socket as never;
+      },
+    });
+    const lease = streams.retain({ scope: "burst-full-hop", source: f.macSource, editing: 1 });
+    const editing = new DisplayEditingSession(lease);
+    cleanups.push(async () => {
+      lane.end();
+      for (const timer of timers) clearTimeout(timer);
+      editing.dispose();
+      lease.release();
+      streams.dispose();
+      for (const socket of sockets) socket.terminate();
+    });
+    await until(() => f.sent.some((message) => message.type === "host.integrations.display.start"));
+    await f.state();
+    await until(() => lease.getSnapshot().input === "available");
+    editing.setGeometry(1);
+    return { editing, receivedKeys, receivedPastes, batchKinds, maxWireBytes };
+  }
+
+  it("delivers click + 200-key burst with mouse release isolated from keys through client, Home hub, Runner lane, Bridge schema and copied helper bounds (excludes relay, bridge process and Swift helper)", async () => {
+    const { editing, receivedKeys, batchKinds } = await fullHopMacFixture();
+    const first200 = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(6).slice(0, 200);
+    const clickDown = editing.input(1, [
+      { kind: "mouse", phase: "move", button: "none", modifiers: [], x: 0.2, y: 0.2 },
+      {
+        kind: "mouse",
+        phase: "down",
+        button: "left",
+        clickCount: 1,
+        modifiers: [],
+        x: 0.2,
+        y: 0.2,
+      },
+    ]);
+    const clickUp = editing.input(1, [
+      { kind: "mouse", phase: "up", button: "left", clickCount: 1, modifiers: [], x: 0.2, y: 0.2 },
+    ]);
+    const keyCalls: Promise<unknown>[] = [];
+    for (const ch of first200) {
+      const code = ch >= "0" && ch <= "9" ? `Digit${ch}` : `Key${ch.toUpperCase()}`;
+      keyCalls.push(
+        editing.send({
+          kind: "key",
+          keystroke: {
+            action: "down",
+            key: ch,
+            code,
+            modifiers: [],
+            location: 0,
+            repeat: false,
+            text: ch,
+          },
+        }),
+        editing.send({
+          kind: "key",
+          keystroke: { action: "up", key: ch, code, modifiers: [], location: 0, repeat: false },
+        }),
+      );
+    }
+    await Promise.all([clickDown, clickUp, ...keyCalls]);
+    expect(receivedKeys.join("")).toBe(first200);
+    expect(editing.getSnapshot().receipt).toBeNull();
+    // Click release settles in its own batch before the key burst begins so an older Mac helper
+    // does not run per-key AX queries in the same batch as mouseup.
+    expect(batchKinds[0]).toEqual(["mouse:move", "mouse:down"]);
+    expect(batchKinds[1]).toEqual(["mouse:up"]);
+    expect(batchKinds[2]?.every((kind) => kind.startsWith("key:"))).toBe(true);
+  });
+
+  it("keeps near-128 KiB escaped pastes within copied Mac helper OwnerInputAdmission bounds through client, Home hub and Runner lane (excludes relay, bridge process and Swift helper)", async () => {
+    const { editing, receivedPastes, maxWireBytes } = await fullHopMacFixture();
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    const escapedPaste = "\u0001".repeat(30_000);
+    await editing.send({
+      kind: "paste",
+      items: [{ type: "text/plain", bytes: new TextEncoder().encode(escapedPaste) }],
+      contextId,
+    });
+    expect(receivedPastes.join("")).toBe(escapedPaste);
+    expect(maxWireBytes.value).toBeLessThanOrEqual(131_072);
+    expect(editing.getSnapshot().receipt).toBeNull();
+  });
 });
 
 describe("phone owner input and power", () => {
@@ -3064,7 +3650,12 @@ describe("phone owner input and power", () => {
     await owner.received(() => owner.json().some((m) => m.state === "live"));
     const task = await h.viewer(true);
     await task.received(() => task.json().some((m) => m.state === "live"));
-    owner.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy" }] });
+    owner.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 0,
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
+    });
     await owner.roundTrip();
     const command = h.sent.findLast((m) => m.type === "host.integrations.display.input")!;
     expect(command).toMatchObject({ source: h.macSource });
@@ -3173,6 +3764,21 @@ describe("phone owner input and power", () => {
     expect(legacy.json().at(-1)).not.toHaveProperty("phoneOwnerControl");
     expect(legacy.json().at(-1)).not.toHaveProperty("sharedInput");
   });
+});
+
+it("ends an owner view with a typed reason for a planned device restart", async () => {
+  const h = await fixture(true, { phoneOwnerControl: true });
+  const owner = await h.macViewer(false, true);
+  await owner.received(() => owner.json().some((m) => m.phoneOwnerControl === 1));
+  h.apps.detach(h.peer, "device-restarting");
+  await owner.closed;
+  expect(owner.json()).toContainEqual(
+    expect.objectContaining({
+      type: "display.state",
+      state: "stopped",
+      reason: "device-restarting",
+    }),
+  );
 });
 
 it("starts the producer before demand when concurrent owner authorization finishes out of order", async () => {

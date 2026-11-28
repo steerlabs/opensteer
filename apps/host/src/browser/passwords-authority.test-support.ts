@@ -27,7 +27,11 @@ export const passwordFixture = {
 } as const;
 
 /** Scripted vault desktop, authenticated by the real Runner handshake. No browser module. */
-export async function startPasswordsAuthority(hostPort: number, primary: PrimaryConnection) {
+export async function startPasswordsAuthority(
+  hostPort: number,
+  primary: PrimaryConnection,
+  beforeAuthorize?: (operationId: string) => Promise<void>,
+) {
   const stream = await openAuxiliaryStream(hostPort, primary, "integrations");
   const commands: PasswordSignInAuthorityCommand[] = [];
   const protocolErrors: string[] = [];
@@ -39,6 +43,8 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
     string,
     Extract<PasswordSignInAuthorityCommand, { type: "login.authorize"; credential: "card" }>
   >();
+  const approved = new Set<string>();
+  const committed = new Set<string>();
   const cardChoice = {
     id: "00000000-0000-4000-8000-000000000001",
     revision: 1,
@@ -141,6 +147,7 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
         });
         break;
       case "login.approve":
+        approved.add(command.operationId);
         if ("credential" in command) {
           const card = cards.get(command.operationId);
           if (!card) throw new Error("Unknown card operation");
@@ -162,25 +169,39 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
         reply({ type: "login.approve.result", result: { ok: true } });
         break;
       case "login.commit":
+        if (approved.has(command.operationId)) committed.add(command.operationId);
         reply({
           type: "login.committed",
           committed: !policy.revoked && !policy.expired && !policy.revisionChanged,
         });
         break;
-      case "login.authorize":
-        if ("cardRef" in command) {
-          cards.set(command.operationId, command);
+      case "login.authorize": {
+        const start = () => {
+          if ("cardRef" in command) {
+            cards.set(command.operationId, command);
+            reply({ type: "login.authorize.started" });
+            event({ type: "login.needs", operationId: command.operationId, need: "approval" });
+            return;
+          }
+          operations.set(command.operationId, command);
           reply({ type: "login.authorize.started" });
-          event({ type: "login.needs", operationId: command.operationId, need: "approval" });
-          break;
-        }
-        operations.set(command.operationId, command);
-        reply({ type: "login.authorize.started" });
-        if (policy.approval)
-          event({ type: "login.needs", operationId: command.operationId, need: "approval" });
-        else authorize(command.operationId);
+          if (policy.approval || command.alwaysAsk)
+            event({ type: "login.needs", operationId: command.operationId, need: "approval" });
+          else authorize(command.operationId);
+        };
+        if (beforeAuthorize)
+          void beforeAuthorize(command.operationId)
+            .then(start)
+            .catch((error) => {
+              protocolErrors.push(String(error));
+              stream.socket.close(1011, "Expected durable authorization");
+            });
+        else start();
         break;
+      }
       case "login.cancel":
+        approved.delete(command.operationId);
+        committed.delete(command.operationId);
         cards.delete(command.operationId);
         operations.delete(command.operationId);
         reply({ type: "login.cancelled" });
@@ -224,6 +245,11 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
     policy,
     values,
     authorize,
+    releasedLogin(reference: string, field: keyof typeof values) {
+      for (const [id, operation] of operations)
+        if (operation.loginRef === reference && committed.has(id)) return values[field];
+      return undefined;
+    },
     status,
     runnerId: primary.fence.runnerId,
     end: async (operationId: string) => {

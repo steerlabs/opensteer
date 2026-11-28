@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer as createUnixServer, type Socket } from "node:net";
-import type { IphoneRunnerPort } from "@opensteer/protocol/iphone-bridge";
 import { createId } from "@opensteer/core";
+import type { DesktopIphoneRunnerPort } from "../iphone/iphone-service.js";
 import { fixture as iphoneFixture, ownerA, ownerB } from "../iphone/test-support.js";
 import {
   MacOwnerSourceSchema,
@@ -121,7 +121,11 @@ describe("ComputerUseBridgeServer", () => {
         },
         ...(method === "display.input-reset"
           ? {}
-          : { sequence: 0, geometry: 1, events: [{ kind: "copy" }] }),
+          : {
+              sequence: 0,
+              geometry: 1,
+              events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
+            }),
       });
       expect(response).toMatchObject({ error: { code: "unsupported" } });
       expect(h.calls).toEqual([]);
@@ -182,6 +186,68 @@ describe("ComputerUseBridgeServer", () => {
       expect(socket.events).toEqual(offer === 2 ? [{ ...event, kind: "event" }] : []);
     },
   );
+
+  it("passes through the remaining owner input budget and reports an overdue helper answer as unknown", async () => {
+    const h = await bridgeHarness({ ownerInputVersion: 2 });
+    const socket = await h.connect(h.token, 2);
+    const source = MacOwnerSourceSchema.parse({
+      kind: "owner-view",
+      viewId: "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      generation: 1,
+    });
+    const streamId = DisplayStreamIdSchema.parse("dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    h.reply("view.open", () => ({
+      viewId: source.viewId,
+      generation: 1,
+      state: "ready",
+      captureTargetId: source.viewId,
+    }));
+    h.reply("display.start", () => ({ attachmentToken: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }));
+    await socket.call(1, "view.open", {
+      viewId: source.viewId,
+      generation: 1,
+      leaseDurationMs: 30_000,
+      target: {
+        kind: "app",
+        app: notes.identity,
+        windowId: "win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      },
+    });
+    await socket.call(2, "display.start", {
+      streamId,
+      target: { kind: "mac-window", bindingId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      sources: [source],
+      maxLongSide: 1280,
+      maxFps: 30,
+    });
+    h.reply("display.input", () => ({ sequence: 0, outcome: "dispatched" }));
+    const release = h.hold("display.input");
+    const receivedAt = 20;
+    const clock = vi.spyOn(performance, "now").mockReturnValue(receivedAt);
+    const result = socket.call(
+      3,
+      "display.input",
+      {
+        streamId,
+        source,
+        sequence: 0,
+        geometry: 1,
+        events: [{ kind: "key", action: "down", key: "a", code: "KeyA", modifiers: [], text: "a" }],
+      },
+      5_000,
+    );
+    try {
+      await expect
+        .poll(() => h.options("display.input")?.ownerInputDeadline)
+        .toBe(receivedAt + 5_000);
+      h.clock.at -= 9_000;
+      clock.mockReturnValue(receivedAt + 5_001);
+      release();
+      await expect(result).resolves.toMatchObject({ error: { code: "outcome-unknown" } });
+    } finally {
+      clock.mockRestore();
+    }
+  });
 
   it("does not let a late old stream start tear down a reconnect's reused ID", async () => {
     const h = await bridgeHarness();
@@ -694,7 +760,7 @@ describe("ComputerUseBridgeServer", () => {
         {
           event: "session.stopped",
           kind: "event",
-          params: { reason: "app-quit", sessionId: sessionA },
+          params: { reason: "app-quit", sessionId: sessionA, unconfirmed: true },
         },
       ]),
     );
@@ -789,13 +855,13 @@ describe("ComputerUseBridgeServer", () => {
       expect(second.events).toContainEqual({
         event: "session.stopped",
         kind: "event",
-        params: { reason: "app-quit", sessionId: sessionB },
+        params: { reason: "app-quit", sessionId: sessionB, unconfirmed: true },
       }),
     );
     expect(first.events).toContainEqual({
       event: "session.stopped",
       kind: "event",
-      params: { reason: "app-quit", sessionId: sessionA },
+      params: { reason: "app-quit", sessionId: sessionA, unconfirmed: true },
     });
   });
 
@@ -1059,7 +1125,7 @@ function openAnswer(params: unknown): unknown {
 
 async function bridgeHarness(
   options: {
-    readonly iphone?: IphoneRunnerPort;
+    readonly iphone?: DesktopIphoneRunnerPort;
     readonly graceMs?: number;
     readonly ownerInputVersion?: 2 | undefined;
     readonly passwords?: PasswordsAuthorityPort;
@@ -1257,6 +1323,45 @@ async function bridgeHarness(
   };
 }
 
+it("waits for the worker's agent sessions to close before confirming its disconnect", async () => {
+  const h = await bridgeHarness();
+  const runner = await h.connect(h.token);
+  const sessionId = sessionA;
+  h.reply("session.open", openAnswer);
+  await expect(
+    runner.call(1, "session.open", { sessionId, threadTitle: null }),
+  ).resolves.toMatchObject({
+    result: { sessionId },
+  });
+  const confirmed = h.server.workerDisconnected();
+  runner.close();
+  await expect(confirmed).resolves.toBe(true);
+  expect(h.calls).toContainEqual(["session.close", { sessionId }]);
+});
+
+it.each([true, false])(
+  "includes the iPhone close result (%s) in worker disconnect proof",
+  async (success) => {
+    const nativeClosed = Promise.withResolvers<boolean>();
+    const close = vi.fn(() => nativeClosed.promise);
+    const h = await bridgeHarness({
+      iphone: {
+        connect: () => ({ request: vi.fn(), close }),
+      },
+    });
+    const runner = await h.connect(h.token, undefined, undefined, true);
+    const confirmed = vi.fn();
+    const drained = h.server.workerDisconnected().then(confirmed);
+    runner.close();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(confirmed).not.toHaveBeenCalled();
+    nativeClosed.resolve(success);
+    await drained;
+    expect(confirmed).toHaveBeenCalledWith(success);
+    await expect(h.server.workerDisconnected()).resolves.toBe(success);
+  },
+);
+
 it("requires iPhone opt-in and fences slot and generation on the shared bridge", async () => {
   const phone = await iphoneFixture();
   cleanups.push(phone.cleanup);
@@ -1336,6 +1441,34 @@ it.each(["deadline", "disconnect"])("aborts an iPhone observation on %s", async 
     socket.close();
   }
   await vi.waitFor(() => expect(signal.aborted).toBe(true));
+});
+
+it("reports a late iPhone close as unknown without sending another close", async () => {
+  const methods: string[] = [];
+  const harness = await bridgeHarness({
+    graceMs: 20,
+    iphone: {
+      connect: () => ({
+        async request(method, _params, { signal }) {
+          methods.push(method);
+          return new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        },
+        close() {},
+      }),
+    },
+  });
+  const socket = await harness.connect(harness.token, undefined, undefined, true);
+  await expect(
+    socket.call(
+      1,
+      "iphone.session.close",
+      { deviceId: createId("device"), driverGeneration: 1, sessionId: "session", runId: "run" },
+      100,
+    ),
+  ).resolves.toMatchObject({ error: { code: "outcome-unknown" } });
+  expect(methods).toEqual(["iphone.session.close"]);
 });
 
 it.skipIf(process.platform === "win32")(

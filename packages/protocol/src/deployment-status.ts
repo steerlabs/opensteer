@@ -68,9 +68,8 @@ export function deploymentStatusSelectable(status: DeploymentStatus): boolean {
  * panel, Settings, and the Account portal. Every display kind is covered
  * here, so no surface has to invent a label for the one it did not expect.
  */
-export function deploymentKindLabel(kind: DeploymentDisplayKind): string {
-  if (kind === "personal") return "Personal";
-  return "Team";
+export function deploymentKindLabel(_kind: DeploymentDisplayKind): string {
+  return "Personal";
 }
 
 /**
@@ -83,11 +82,11 @@ export function deploymentUnavailableReasonExplanation(
 ): string {
   if (reason === "client-too-old") return "Update this app to connect to this Opensteer.";
   if (reason === "host-too-old") return "This Opensteer needs updating to work with this app.";
-  if (reason === "host-unavailable") return "This deployment did not answer.";
+  if (reason === "host-unavailable") return "This Opensteer did not answer.";
   if (reason === "identity-mismatch") {
-    return "This deployment did not match the identity your Account has on file. The deployment refreshes that record the next time it starts.";
+    return "This Opensteer did not match the identity your account has on file. It refreshes that record the next time it starts.";
   }
-  return "This deployment is no longer active.";
+  return "This Opensteer is no longer active.";
 }
 
 export const hostNeedsUpdateLabel = "Needs update";
@@ -130,7 +129,7 @@ export const placeStatus = {
   /** Listed, but the computer that runs it does not let other devices in. */
   remoteAccessOff: (name: string): DeploymentStatusInfo => ({
     label: "Can’t be opened from here",
-    reason: `${name} can only be used on that computer. Turn on Use from anywhere there, in Settings › Account.`,
+    reason: `${name} can only be used on that computer. Turn on Remote access there, in Settings › Account.`,
     status: "offline",
   }),
   /** The sign-in it waits on is open in the browser. */
@@ -221,7 +220,7 @@ export function deploymentStatusFromPersonalConnect(
 ): DeploymentStatusInfo {
   if (!reachability.hasConnectRoute) {
     return {
-      reason: "Remote access is off on the computer that runs this deployment.",
+      reason: "Remote access is off on the computer that runs this Opensteer.",
       status: "offline",
     };
   }
@@ -256,13 +255,13 @@ export function deploymentStatusFromAccountDirectory(
 ): DeploymentStatusInfo | null {
   if (!deployment.present) {
     return {
-      reason: "You no longer have access to this deployment.",
+      reason: "You no longer have access to this Opensteer.",
       status: "offline",
     };
   }
   if (!deployment.compatible) {
     return {
-      reason: "Update Opensteer to use this deployment’s published connection details.",
+      reason: "Update Opensteer to reach this Opensteer at its published address.",
       status: "attention",
     };
   }

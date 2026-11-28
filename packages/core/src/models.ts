@@ -1,14 +1,6 @@
 import { DeviceIdSchema } from "./devices.js";
 import { CompactionReturnHintSchema } from "./idle-compaction.js";
 import { RunMaintenanceSchema, RunMaintenanceViewSchema } from "./idle-compaction.js";
-import {
-  TeamTaskOriginSchema,
-  TeamSourceSchema,
-  TeamAudienceViewSchema,
-  TeamRunDeliverySchema,
-  TeamRunDeliveryViewSchema,
-} from "./team.js";
-import { TeamAgentRequestIdSchema, TeamChannelIdSchema, TeamMessageIdSchema } from "./ids.js";
 import { z } from "zod";
 import { ComputerAppIdentityViewSchema } from "./computer-app.js";
 import { IdentityEmailSchema } from "./identity.js";
@@ -92,7 +84,8 @@ export type DeploymentLifecycle = z.infer<typeof DeploymentLifecycleSchema>;
 export const RuntimeModeSchema = z.enum(["development", "production"]);
 export type RuntimeMode = z.infer<typeof RuntimeModeSchema>;
 
-export const DeploymentKindSchema = z.enum(["personal", "team"]);
+/** Every Home is personal; the signed documents keep the word. */
+export const DeploymentKindSchema = z.enum(["personal"]);
 export type DeploymentKind = z.infer<typeof DeploymentKindSchema>;
 export const DeploymentShapeSchema = z.strictObject({ kind: DeploymentKindSchema });
 export const DeploymentShapeViewSchema = z.object(DeploymentShapeSchema.shape);
@@ -148,6 +141,14 @@ export const RunnerCapabilitySchema = z.enum([
   "background-text-v1",
   // Reports settings.json in the Agent home its welcome names, before it attaches.
   "agent-home-settings-v1",
+  // Creates/canonicalizes Agent home and serves rooted Agent-home file operations over the primary connection.
+  "agent-home-files-v1",
+  // Reports computer power transitions (such as going to sleep) on the primary connection.
+  "runner-power-state-v1",
+  "trigger-stop-generation-v1",
+  "attempt-stop-state-v1",
+  // Tells the Home when the person stopped agents on its computer, and when they resume.
+  "runner-agent-stop-v1",
   "settings-plugin-policy-v1",
   "assignments-v1",
   // Runs a successor attempt of a Run from the Host's next ordinal, and stops
@@ -163,6 +164,8 @@ export const RunnerCapabilitySchema = z.enum([
   "environment-list-v1",
   // Can parse and execute v3 Trigger and Watch programs; independent of tool discovery.
   "trigger-program-v5",
+  // Runs wrapperless automation scripts with the shipped opensteer CLI and raw webhook body files.
+  "automation-script-v1",
   "native-place-input-v1",
   "execution-plane-v2",
   "filesystem",
@@ -186,6 +189,10 @@ export const RunnerCapabilitySchema = z.enum([
   // Accepts `host.shell.probe-full-disk-access`; an older Runner's strict
   // frame parser drops its connection on an unknown Host frame.
   "full-disk-access-probe-v1",
+  // Parses what a connected agent's session adds to an integrations frame: `alwaysAsk` on
+  // `login.authorize` and `noLaunch` on computer-use windows and bind. An older Runner's
+  // strict schemas refuse those frames, so the Home never sends them to one.
+  "agent-session-guards-v1",
   // Emits durable `run.retry` events when the Host acknowledges `runRetryEvents: true` on welcome.
   "run-retry-v1",
 ]);
@@ -366,9 +373,10 @@ export const ThreadSchema = z.object({
   parentThreadId: ThreadIdSchema.nullable(),
   pendingRequests: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   purpose: TaskPurposeSchema,
-  teamOrigin: TeamTaskOriginSchema.nullable(),
   // Older durable Thread events did not record which native session was selected.
   providerSessionId: ProviderSessionIdSchema.nullable().default(null),
+  /** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
+  startedByOther: z.boolean().optional(),
   status: ThreadStatusSchema,
   title: z.string().trim().min(1).max(240),
   icon: IconNameSchema.nullable().default(null),
@@ -380,7 +388,6 @@ export const ThreadSchema = z.object({
 });
 export const ThreadViewSchema = z.object({
   ...ThreadSchema.shape,
-  teamOrigin: z.object(TeamTaskOriginSchema.shape).nullable(),
   // A colour a newer Host added reads as none rather than failing the view.
   color: MarkColorSchema.optional().catch(undefined),
   doneReason: ThreadDoneReasonSchema.nullable().default(null).catch(null),
@@ -557,13 +564,6 @@ const messageAuthorVariants = [
     kind: z.literal("connection"),
     connectionId: z.string().min(1).max(255),
   }),
-  z.strictObject({
-    kind: z.literal("team-member"),
-    actor: z.enum(["human", "agent"]),
-    teamId: DeploymentIdSchema,
-    teamUserId: UserIdSchema,
-    displayName: z.string().trim().min(1).max(160),
-  }),
 ] as const;
 export const MessageAuthorSchema = z.discriminatedUnion("kind", messageAuthorVariants);
 export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
@@ -573,7 +573,6 @@ export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
   z.object(messageAuthorVariants[3].shape),
   z.object(messageAuthorVariants[4].shape),
   z.object(messageAuthorVariants[5].shape),
-  z.object(messageAuthorVariants[6].shape),
 ]);
 export type MessageAuthor = z.infer<typeof MessageAuthorSchema>;
 
@@ -606,25 +605,11 @@ const replyTargetShape = {
   conversationId: z.string().trim().min(1).max(255),
   kind: z.literal("channel"),
 } as const;
-const teamReplyTargetShape = {
-  kind: z.literal("team-thread"),
-  teamId: DeploymentIdSchema,
-  channelId: TeamChannelIdSchema,
-  threadRootId: TeamMessageIdSchema,
-  requestId: TeamAgentRequestIdSchema,
-} as const;
-export const ReplyTargetSchema = z.discriminatedUnion("kind", [
-  z.strictObject(replyTargetShape),
-  z.strictObject(teamReplyTargetShape),
-]);
-export const ReplyTargetViewSchema = z.discriminatedUnion("kind", [
-  z.object(replyTargetShape),
-  z.object(teamReplyTargetShape),
-]);
+export const ReplyTargetSchema = z.discriminatedUnion("kind", [z.strictObject(replyTargetShape)]);
+export const ReplyTargetViewSchema = z.discriminatedUnion("kind", [z.object(replyTargetShape)]);
 export type ReplyTarget = z.infer<typeof ReplyTargetSchema>;
 
 const messageShape = {
-  ownerEdited: z.literal(true).optional(),
   author: MessageAuthorSchema,
   content: MessageContentSchema,
   createdAt: IsoDateTimeSchema,
@@ -677,21 +662,13 @@ export const MessageViewSchema = z
 export const MessageEditSchema = z.strictObject({
   revision: z.number().int().positive(),
   editedAt: IsoDateTimeSchema,
-  /** The owner edited a teammate's ask, so its words are no longer only the teammate's. */
-  ownerEdited: z.literal(true).optional(),
 });
 export const MessageEditViewSchema = z.object(MessageEditSchema.shape);
 export type MessageEdit = z.infer<typeof MessageEditSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageView = z.infer<typeof MessageViewSchema>;
 
-/**
- * `awaiting-approval` is a teammate's ask waiting for its owner's decision. It
- * sits in the task but not in line: no Run can take it until approval makes it
- * `pending` at the back of the queue.
- */
 export const ThreadInputStateSchema = z.enum([
-  "awaiting-approval",
   "pending",
   "claimed",
   "delivered",
@@ -709,8 +686,6 @@ const threadInputShape = {
   deliveredAt: IsoDateTimeSchema.nullable(),
   messageId: MessageIdSchema,
   policy: ThreadInputPolicySchema,
-  teamRequestId: TeamAgentRequestIdSchema.nullable(),
-  teamSource: TeamSourceSchema.nullable(),
   replyTarget: ReplyTargetSchema.nullable(),
   runId: RunIdSchema.nullable(),
   state: ThreadInputStateSchema,
@@ -720,7 +695,6 @@ const threadInputShape = {
 export const ThreadInputSchema = z.strictObject(threadInputShape);
 export const ThreadInputViewSchema = z.object({
   ...threadInputShape,
-  teamSource: z.object({ ...TeamSourceSchema.shape, audience: TeamAudienceViewSchema }).nullable(),
   replyTarget: ReplyTargetViewSchema.nullable(),
 });
 export type ThreadInput = z.infer<typeof ThreadInputSchema>;
@@ -745,8 +719,7 @@ export const threadInputEditLeaseMs = 2 * 60_000;
 
 /**
  * The messages waiting behind a Thread's current work: queued inputs that no
- * Run has picked up yet, in the order the next Run takes them, followed by
- * teammates' asks awaiting the owner's decision. A message that already seeds
+ * Run has picked up yet, in the order the next Run takes them. A message that already seeds
  * a Run, or that a promotion has handed to one, belongs to the transcript, not
  * here. Every action acts on the same durable message; the Host says per item
  * which it will accept from the reader.
@@ -845,7 +818,23 @@ export const ActiveRunStatusSchema = z.enum(nonTerminalRunStatuses);
  * switch to a compatible account on it, so the code is shared rather than
  * spelled out at each end.
  */
+export const runTerminationUnprovenCode = "execution_termination_unproven";
 export const harnessUsageLimitFailureCode = "harness_usage_limit";
+/** A Run whose engine the kernel killed for lack of memory (the Runner saw its cgroup count it). */
+export const runOutOfMemoryCode = "run_out_of_memory";
+
+/** Why a Run was interrupted without a person asking to stop it. */
+export const RunInterruptedCauseSchema = z.enum(["lease-lost", "engine-retired"]);
+export type RunInterruptedCause = z.infer<typeof RunInterruptedCauseSchema>;
+
+/** Why a queued Run is being held back from starting on its device. */
+/**
+ * Why a queued Run has not started: the previous Run's stop is unconfirmed (held until it is
+ * proven), or its computer's Runner is running as many Runs as it may (the Run starts when one
+ * of them ends; the Home keeps offering it).
+ */
+export const RunStartHoldReasonSchema = z.enum(["previous-stop-unconfirmed", "waiting-for-run"]);
+export type RunStartHoldReason = z.infer<typeof RunStartHoldReasonSchema>;
 
 /**
  * The Run failure code a harness reports when the provider's native session
@@ -862,6 +851,12 @@ export const runFailureMessageMaxLength = 20_000;
 const runFailureShape = {
   code: z.string().min(1).max(255),
   message: z.string().max(runFailureMessageMaxLength),
+  /**
+   * Optional detail shown only to the person on their own screens (task view,
+   * task list preview, notifications). Never sent to a connected agent, a chat
+   * reply, a delegation result, or a follow-up Run's context.
+   */
+  ownerMessage: z.string().max(runFailureMessageMaxLength).optional(),
   retryable: z.boolean(),
   status: z.literal("failed"),
 } as const;
@@ -914,7 +909,6 @@ export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 const runShape = {
   maintenance: RunMaintenanceSchema.nullable().optional(),
-  delivery: TeamRunDeliverySchema.nullable().default(null),
   accessMode: ThreadAccessModeSchema,
   activationInputId: MessageIdSchema,
   assignmentId: AssignmentIdSchema.nullable(),
@@ -925,6 +919,7 @@ const runShape = {
   failure: RunFailureSchema.nullable(),
   harnessInstanceId: HarnessInstanceIdSchema,
   id: RunIdSchema,
+  interruptedCause: RunInterruptedCauseSchema.nullable().optional(),
   modelSelection: ModelSelectionSchema,
   replyTarget: ReplyTargetSchema.nullable(),
   providerSessionId: ProviderSessionIdSchema.nullable(),
@@ -933,6 +928,7 @@ const runShape = {
   runOrdinal: z.number().int().nonnegative(),
   startedAt: IsoDateTimeSchema.nullable(),
   status: RunStatusSchema,
+  stopConfirmedAt: IsoDateTimeSchema.nullable().optional(),
   threadId: ThreadIdSchema,
   seedInputId: MessageIdSchema,
   usage: RunUsageSchema.optional(),
@@ -941,7 +937,6 @@ export const RunSchema = z.strictObject(runShape);
 export const RunViewSchema = z.object({
   ...runShape,
   maintenance: RunMaintenanceViewSchema.nullable().optional(),
-  delivery: TeamRunDeliveryViewSchema.nullable().default(null),
   failure: RunFailureViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
   retry: RunRetryViewSchema.nullable().optional(),
@@ -1254,6 +1249,13 @@ export const ThreadExecutionBindingSchema = z.object({
 });
 export type ThreadExecutionBinding = z.infer<typeof ThreadExecutionBindingSchema>;
 
+/**
+ * Work a teammate asked this Home for that had not started when teams ended with this update:
+ * cancelled once by the update, kept in its task with this sentence.
+ */
+export const teamWorkEndedCancelReason = "team-work-ended";
+const teamWorkEndedSentence = "Not run: work asked for by a team ended with this update.";
+
 export function threadInputDelivery(input: {
   readonly cancelReason: string | null;
   readonly policy: ThreadInputPolicy;
@@ -1278,6 +1280,7 @@ function cancellationReason(input: {
   readonly policy: ThreadInputPolicy;
 }): string {
   if (input.cancelReason === "stopped") return "Not sent: you stopped the reply.";
+  if (input.cancelReason === teamWorkEndedCancelReason) return teamWorkEndedSentence;
   const detail = input.cancelReason?.replaceAll("-", " ");
   const wasSteer = input.policy === "steer" || input.cancelReason === "run-ended-delivery-unknown";
   if (wasSteer) return detail ? `Steer was not delivered: ${detail}.` : "Steer was not delivered.";

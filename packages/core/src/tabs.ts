@@ -6,6 +6,7 @@ import {
   BrowserProfileIdSchema,
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
+  BrowserSourceIdSchema,
   TabIdSchema,
   TabGroupIdSchema,
   ThreadIdSchema,
@@ -46,6 +47,31 @@ export const TabOpenedBySchema = z.union([
   z.strictObject({ taskId: ThreadIdSchema }),
 ]);
 export type TabOpenedBy = z.infer<typeof TabOpenedBySchema>;
+/** The one test for an extension's address (see `@opensteer/shared/extensionUrl`). */
+export { isExtensionUrl } from "@opensteer/shared/extensionUrl";
+
+/**
+ * Whether a page-open URL is allowed for a connected agent (`about:blank` or credential-free
+ * HTTP(S)), judged strictly by the parsed WHATWG URL protocol.
+ */
+export function isAllowedConnectionPageUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  if (value === "about:blank") return true;
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Canonical WHATWG serialization of a page-open URL, preserving `about:blank`. */
+export function normalizePageOpenUrl(value: string): string {
+  return value === "about:blank" ? value : new URL(value).href;
+}
+
 export const PageOpenUrlSchema = z
   .string()
   .min(1)
@@ -148,12 +174,22 @@ export const TabSchema = z
     kind: TabKindSchema,
     title: z.string().max(1024),
     computer: z.strictObject({ computerId: DeviceIdSchema, name: z.string().max(200) }),
+    sharedByPerson: z
+      .object({ sourceId: BrowserSourceIdSchema, computerName: z.string().max(200) })
+      .optional(),
     groupId: TabGroupIdSchema.nullable(),
     state: TabStateSchema,
     unavailableCode: TabUnavailableCodeSchema.optional(),
     unavailableReason: z.string().min(1).max(1000).optional(),
     openedBy: TabOpenedBySchema,
-    usedBy: z.array(z.strictObject({ taskId: ThreadIdSchema })).max(128),
+    /**
+     * The tasks that hold the tab, each with when its work last took the tab up (`since`): a
+     * script's bind of it, a Run's last action in it. Where several hold it, or a task holds
+     * several tabs, the latest is where that work is now.
+     */
+    usedBy: z
+      .array(z.strictObject({ taskId: ThreadIdSchema, since: IsoDateTimeSchema.optional() }))
+      .max(128),
     createdAt: IsoDateTimeSchema,
     updatedAt: IsoDateTimeSchema,
     url: z.string().max(16384).optional(),
@@ -200,7 +236,9 @@ export const TabViewSchema = z
       .object({ profileId: BrowserProfileIdSchema, name: z.string().max(200) })
       .nullable()
       .optional(),
-    usedBy: z.array(z.object({ taskId: ThreadIdSchema })).max(128),
+    usedBy: z
+      .array(z.object({ taskId: ThreadIdSchema, since: IsoDateTimeSchema.optional() }))
+      .max(128),
     openedBy: z.union([z.literal("person"), z.object({ taskId: ThreadIdSchema })]),
   })
   .superRefine((tab, ctx) => {

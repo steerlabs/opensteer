@@ -1,6 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { OpensteerError } from "@opensteer/core";
+import { OpensteerError } from "@opensteer/core/opensteer-error";
 
 export interface ResolvedPublicAddress {
   readonly address: string;
@@ -14,6 +14,20 @@ export function tlsServerName(hostname: string): string | undefined {
 }
 
 export async function resolvePublicAddress(hostname: string): Promise<ResolvedPublicAddress> {
+  const [selected] = await resolvePublicAddresses(hostname);
+  if (!selected) throw denied("Egress destination did not resolve");
+  return selected;
+}
+
+/**
+ * Every address a name resolves to, in the resolver's order, once each has passed the public
+ * check: one non-public answer refuses the name. A caller connects to them in order with
+ * `connectInOrder`, so a name whose first address is unreachable (an IPv6 one on an IPv4-only
+ * host) is still reached, and one whose first address connects is reached exactly as before.
+ */
+export async function resolvePublicAddresses(
+  hostname: string,
+): Promise<readonly ResolvedPublicAddress[]> {
   const normalizedHostname =
     hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   const literalFamily = isIP(normalizedHostname);
@@ -32,9 +46,31 @@ export async function resolvePublicAddress(hostname: string): Promise<ResolvedPu
   if (addresses.length === 0 || addresses.some((address) => !isPublicIp(address.address))) {
     throw denied("Egress destination resolved to a non-public address");
   }
-  const selected = addresses[0];
-  if (!selected) throw denied("Egress destination did not resolve");
-  return { address: selected.address, family: selected.family as 4 | 6 };
+  return addresses.map((address) => ({
+    address: address.address,
+    family: address.family as 4 | 6,
+  }));
+}
+
+/**
+ * Tries each address in order and returns the first connection made; the next address is tried
+ * only after the previous one failed. If none connects, the last failure is thrown.
+ */
+export async function connectInOrder<T>(
+  addresses: readonly ResolvedPublicAddress[],
+  attempt: (address: ResolvedPublicAddress) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  let failure: unknown = denied("Egress destination did not resolve");
+  for (const address of addresses) {
+    signal?.throwIfAborted();
+    try {
+      return await attempt(address);
+    } catch (error) {
+      failure = error;
+    }
+  }
+  throw failure;
 }
 
 export function isPublicIp(address: string): boolean {

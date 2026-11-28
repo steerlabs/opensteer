@@ -651,6 +651,9 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
     routes: [],
   } as unknown as NonNullable<Parameters<typeof AppShell>[0]["desktopDeployment"]>;
   const deploymentAccess = {
+    // As main's snapshot always carries them: signed in, this Mac's Opensteer in the account.
+    account: { available: true, status: "signed-in" },
+    personalAccountLink: { status: "linked" },
     deployments: [],
     selectedDeploymentId: deploymentId,
     personalSetup: {
@@ -669,10 +672,6 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
     await mount("/?panel=browser", {
       shell: { deploymentAccess, desktopBridge, desktopDeployment },
     });
-    expect(
-      document.querySelector(".web-tab-notice"),
-      "the Mac app's Start page called itself a web browser",
-    ).toBeNull();
     await click(element(".start-tile[aria-label^='Notes on']"));
     await until("Notes was never shown as an owner view", () =>
       expect(element(".owner-view__view-only").textContent).toBe("View only"),
@@ -704,7 +703,6 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
 
   it("never offers it without the desktop's bridge, whatever the computer", async () => {
     await mount("/?panel=browser", { shell: { deploymentAccess, desktopDeployment } });
-    expect(element(".web-tab-notice").textContent).toContain("You’re in a web browser");
     await click(element(".start-tile[aria-label^='Notes on']"));
     await until("Notes was never shown as an owner view", () =>
       expect(element(".owner-view__view-only").textContent).toBe("View only"),
@@ -918,12 +916,19 @@ describe("the v7 web review's findings", () => {
     const activate = vi.spyOn(client, "activateTab");
     await act(async () => goTo!({ pathname: "/", search: `?panel=browser&tab=${held.key}` }));
     await until("The phone's own view never took the middle", () => element(".place .owner-view"));
-    expect(activate).toHaveBeenCalledExactlyOnceWith(held.key, { wake: true });
+    expect(activate).toHaveBeenCalledExactlyOnceWith(held.key, {
+      wake: true,
+      answered: expect.any(Function),
+    });
     const address = history.at(-1);
     const shown = client.tabViewer(held.key);
 
     await act(async () => {
-      await client.rpc["integration.computer.session.stop"]({ sessionId: session.sessionId });
+      await client.dispatch({
+        idempotencyKey: "stop-held-session",
+        sessionId: session.sessionId,
+        type: "integration.computer.session.stop",
+      });
     });
     // The client has seen the agent's session end: that is when it could have moved the tab.
     await until("The agent's session never ended", () =>

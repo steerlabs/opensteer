@@ -1,4 +1,6 @@
+import type { ReactElement } from "react";
 import type { RowMark } from "../ui/integration-icon.js";
+import type { SentencePart } from "../ui/sentence-parts.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 
 /** Meaning colours only: green working, red broken, amber needs you, grey off. */
@@ -17,18 +19,48 @@ export interface NativeSettingsAction {
 
 export type NativeSettingsRow =
   | {
+      readonly kind: "content";
+      readonly key: string;
+      readonly label: string;
+      readonly content: ReactElement;
+    }
+  | {
       readonly key: string;
       readonly kind: "chips";
       readonly label: string;
       readonly value: string;
       readonly choices: readonly { readonly value: string; readonly label: string }[];
       readonly onChange: (value: string) => void;
+      /** Open as a menu from a row naming the choice, so the label stays beside it. */
+      readonly menu?: boolean;
+    }
+  | {
+      /** One of several choices that each need a line of their own, such as a mode. */
+      readonly key: string;
+      readonly kind: "choice";
+      readonly label: string;
+      readonly detail?: string;
+      readonly selected: boolean;
+      /** Several may be chosen at once: a checkbox where the platform draws one. */
+      readonly multiple?: boolean;
+      readonly disabled?: boolean;
+      readonly onPress: () => void;
     }
   | {
       readonly key: string;
       readonly kind: "text";
       readonly label: string;
+      /**
+       * The label as words and addresses, where it is a sentence holding addresses among its
+       * words (`sentenceWith`): each address drawn as one, the sentence read as `label`.
+       */
+      readonly labelParts?: readonly SentencePart[];
       readonly detail?: string;
+      /**
+       * Which of its words is an email address, a host or a URL (`isAddress`): the row draws it as
+       * one, whole and wrapping only at its joints, and reads it aloud and copies it as it is.
+       */
+      readonly addressIn?: "label" | "detail";
       /** A person's round initial, leading an identity row. */
       readonly initial?: string;
     }
@@ -39,6 +71,11 @@ export type NativeSettingsRow =
       readonly label: string;
       /** Something to read or copy under the status, such as an address. */
       readonly detail?: string;
+      /**
+       * Which of its words is an email address, a host or a URL (`isAddress`): the row draws it as
+       * one, whole and wrapping only at its joints, and reads it aloud and copies it as it is.
+       */
+      readonly addressIn?: "label" | "detail";
       readonly steps?: readonly NativeSettingsStep[];
     }
   | {
@@ -56,14 +93,23 @@ export type NativeSettingsRow =
       readonly kind: "button";
       readonly label: string;
       readonly detail?: string;
+      /**
+       * Which of its words is an email address, a host or a URL (`isAddress`): the row draws it as
+       * one, whole and wrapping only at its joints, and reads it aloud and copies it as it is.
+       */
+      readonly addressIn?: "label" | "detail";
       /** The row opens a page about this thing rather than acting at once. */
       readonly opens?: boolean;
       /** The integration or plugin whose mark leads the row. */
       readonly mark?: RowMark;
       /** The system symbol on a quiet tile that leads the row, where the platform draws one. */
       readonly symbol?: SFSymbolName;
+      /** A React Native view that leads the row, such as an agent's mark. */
+      readonly lead?: ReactElement;
       readonly disabled?: boolean;
       readonly destructive?: boolean;
+      /** Amber detail for a thing that needs the person, such as a Device that is asleep. */
+      readonly tone?: "attention";
       readonly onPress: () => void;
       readonly actions?: readonly NativeSettingsAction[];
     }

@@ -39,13 +39,11 @@ const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   markdownSourceTree: "packages/shared/src/markdownParser.ts",
   hideIncompleteLinkTail: "packages/shared/src/markdown.ts",
   personMarkdownTree: "packages/shared/src/personMarkdown.ts",
-  teamMentionHandles: "packages/shared/src/teamMentions.ts",
-  teamMentionHandleRanges: "packages/shared/src/teamMentions.ts",
+  mentionHandles: "packages/shared/src/mentionHandles.ts",
+  mentionHandleRanges: "packages/shared/src/mentionHandles.ts",
   collectComposerTokens: "packages/client/src/references/composer.ts",
   snapComposerSelection: "packages/client/src/references/composer.ts",
   replaceComposerRange: "packages/client/src/references/composer.ts",
-  teamMessage: "packages/shared/src/teamMentions.ts",
-  teamMentions: "packages/shared/src/teamMentions.ts",
   copyText: "packages/shared/src/clipboard.ts",
   freePort: "packages/shared/src/loopbackPort.test-support.ts",
   CoalescedWake: "packages/shared/src/coalescedWake.ts",
@@ -148,14 +146,12 @@ const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   /**
    * What waits for the agent at a task's foot, and who may approve an ask
    * from chat. Web and mobile each grew their own queue rules before; these
-   * are the one reading of a queue, a revision history and an ask's owner.
+   * are the one reading of a queue and a revision history.
    */
   waitingInputs: "packages/client/src/host/waiting-inputs.ts",
-  waitingAskConsent: "packages/client/src/host/waiting-inputs.ts",
   messageRevisionRows: "packages/client/src/host/waiting-inputs.ts",
   isWaitingInputState: "packages/client/src/host/transcript.ts",
   openWaitingMessageEditor: "packages/client/src/host/waiting-message-editor.ts",
-  teamAskOwnerControl: "packages/client/src/team/ask-status.ts",
   HarnessSessionRegistry: "packages/harness/src/session-registry.ts",
   MutationQueue: "packages/shared/src/mutationQueue.ts",
   digestSecret: "packages/shared/src/secretDigest.ts",

@@ -1,7 +1,10 @@
 import {
   SessionCdpRouterError,
+  cdpProfileRefusal,
   contextScopedCdpMethods,
   CdpProductIsolation,
+  isExtensionUrl,
+  type CdpProfileRefusal,
   ExecutionContextInventory,
   type BrowserCdpBackend,
   type CdpChannel,
@@ -11,9 +14,11 @@ import { type BrowserCookie } from "@opensteer/browser-profile";
 import {
   BrowserPaintTimeoutError,
   BrowserRuntimeError,
+  screencastEndedEvent,
   pageViewport,
   pageWithTarget,
   normalizeElectronCursor,
+  screenshotImageLimit,
   siteCookieReplacementBatch,
   viewportCapturePlan,
   viewportImageScript,
@@ -33,6 +38,7 @@ import {
   type LocalProfileEngine,
   type PageCapture,
   type PageGeometry,
+  type PageNavigationPort,
   type Viewport,
   type ViewportCapture,
   type ViewportCaptureRequest,
@@ -42,6 +48,7 @@ import {
   browserPagePolicyScriptFor,
 } from "@opensteer/browser-runtime-core/page-policy";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
 import {
   app,
   ipcMain,
@@ -55,6 +62,7 @@ import {
   type NativeImage,
   type Session,
   type WebContents,
+  type WebFrameMain,
   type WebPreferences,
 } from "electron";
 import { createHash } from "node:crypto";
@@ -64,9 +72,22 @@ import path from "node:path";
 import { z } from "zod";
 import { desktopBrowserAppShortcut } from "../app/application-menu.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
+import {
+  extensionNavigationEnded,
+  extensionNavigationStarted,
+  extensionRedirectedIntoDynamic,
+  forgetExtensionNavigations,
+  isDynamicExtensionUrl,
+  takeExtensionRedirect,
+  type ExtensionRedirect,
+} from "./extensions/extension-redirects.js";
+import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { boundPageRestore, ElectronPageRestoreSchema, WakeSeeds } from "./page-restore.js";
 import {
   applyBrowserSessionPolicy,
+  forgetHomeSessionCookies,
+  homeElsewhereText,
+  takeHomeRefusal,
   bindBrowserSessionRequestGate,
   browserAcceptLanguages,
   browserIdentity,
@@ -96,6 +117,7 @@ import {
   PasskeyBridge,
 } from "@opensteer/browser-runtime-core/passkey-bridge";
 import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passkeys";
+import { DebuggerSessionState } from "./electron-debugger-session.js";
 
 export interface ElectronLocalProfileOpenTiming {
   readonly stage:
@@ -124,8 +146,12 @@ const pageCloseGraceMs = 1_000;
 const targetLookupMs = 5_000;
 const pageDestroyMs = 500;
 
+/** Why an agent's CPU profile was refused, for the Home's own log and never the agent. */
+export type ElectronProfileRefusal = CdpProfileRefusal | "page-changed";
+
 interface ElectronBrowserLauncherOptions {
   readonly onPageCleanupFailure?: (() => void) | undefined;
+  readonly onProfileRefused?: ((reason: ElectronProfileRefusal) => void) | undefined;
   readonly onLocalProfileOpenTiming?: (timing: ElectronLocalProfileOpenTiming) => void;
   readonly onLocalProfileDiagnostic?: (diagnostic: ElectronLocalProfileDiagnostic) => void;
   readonly authenticator?: PasskeyAuthenticator;
@@ -152,14 +178,18 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #wakeSeeds: WakeSeeds;
   readonly #methods = new Map<number, string>();
   readonly #uploads = new Map<number, number>();
+  readonly #connectionWebContents = new Set<number>();
   readonly #authenticator: PasskeyAuthenticator | undefined;
   readonly #clipboard: EngineClipboard | undefined;
   readonly #downloads: ElectronBrowserLauncherOptions["downloads"];
   readonly #configuredSessions = new WeakSet<Session>();
+  /** This Home's addresses: no page of any browser profile here loads one (G1). */
+  #home = new ThisHomeAddressSet(noHomeAddresses);
   readonly #pagePolicyPreloadPath: string;
   readonly #views: ElectronBrowserViewPool;
   readonly #localProfileRoot: string | undefined;
   readonly #onPageCleanupFailure: ElectronBrowserLauncherOptions["onPageCleanupFailure"];
+  readonly #onProfileRefused: ElectronBrowserLauncherOptions["onProfileRefused"];
   readonly #onLocalProfileOpenTiming: ElectronBrowserLauncherOptions["onLocalProfileOpenTiming"];
   readonly #onLocalProfileDiagnostic: ElectronBrowserLauncherOptions["onLocalProfileDiagnostic"];
   readonly localProfiles: LocalProfileEngine = {
@@ -230,6 +260,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     electronSession.defaultSession.setUserAgent(brandedFallback);
     this.#localProfileRoot = options.localProfileRoot;
     this.#onPageCleanupFailure = options.onPageCleanupFailure;
+    this.#onProfileRefused = options.onProfileRefused;
     this.#onLocalProfileOpenTiming = options.onLocalProfileOpenTiming;
     this.#onLocalProfileDiagnostic = options.onLocalProfileDiagnostic;
     this.#authenticator = options.authenticator;
@@ -342,9 +373,17 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     const context = new ElectronBrowserContext({
       wakeSeeds: this.#wakeSeeds,
       onPageCleanupFailure: this.#onPageCleanupFailure,
+      onProfileRefused: this.#onProfileRefused,
       protection: (contents) => this.#protection(contents),
       createView: (options, opener) => this.#views.create(options, opener, request.initialViewport),
       createHelper: (options) => this.#views.createHelper(options),
+      onConnectionWebContents: (id, controlled) => {
+        if (controlled) this.#connectionWebContents.add(id);
+        else this.#connectionWebContents.delete(id);
+      },
+      setHomeAddresses: (home) => {
+        this.#home = home;
+      },
       profileSession,
       ...(authenticator ? { authenticator } : {}),
     });
@@ -370,10 +409,18 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     return new ElectronBrowserContext({
       wakeSeeds: this.#wakeSeeds,
       onPageCleanupFailure: this.#onPageCleanupFailure,
+      onProfileRefused: this.#onProfileRefused,
       protection: (contents) => this.#protection(contents),
       createView: (options, opener, timing, startRenderer) =>
         this.#views.create(options, opener, viewport, timing, startRenderer),
       createHelper: (options) => this.#views.createHelper(options),
+      onConnectionWebContents: (id, controlled) => {
+        if (controlled) this.#connectionWebContents.add(id);
+        else this.#connectionWebContents.delete(id);
+      },
+      setHomeAddresses: (home) => {
+        this.#home = home;
+      },
       profileSession,
       ...(authenticator ? { authenticator } : {}),
       ...(localProfile ? { localProfile } : {}),
@@ -393,6 +440,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     }
     applyBrowserSessionPolicy(profileSession, {
       acceptLanguages: browserAcceptLanguages(app.getPreferredSystemLanguages()),
+      isConnectionWebContents: (id) => this.#connectionWebContents.has(id),
+      homeAddresses: () => this.#home,
       onMainFrameRequest: (id, method) => {
         if (this.#methods.has(id)) this.#methods.set(id, method);
       },
@@ -406,14 +455,17 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       ...(requestGate ? { requestGate } : {}),
     });
     this.#configuredSessions.add(profileSession);
+    // A profile from before G1 may hold this Home's session cookie: it goes, once (G1).
+    void forgetHomeSessionCookies(profileSession).catch(() => undefined);
   }
 
   #protection(contents: WebContents) {
-    this.#methods.set(contents.id, "GET");
+    const contentsId = contents.id;
+    this.#methods.set(contentsId, "GET");
     contents.once("destroyed", () => {
-      this.#methods.delete(contents.id);
+      this.#methods.delete(contentsId);
       for (const [requestId, id] of this.#uploads)
-        if (id === contents.id) this.#uploads.delete(requestId);
+        if (id === contentsId) this.#uploads.delete(requestId);
     });
     return {
       method: () => this.#methods.get(contents.id) ?? "GET",
@@ -463,6 +515,12 @@ export interface ElectronPagePresentation {
   ): void;
   invalidateSurface(): Promise<void>;
   setStage(stage: WindowRect, personFollows?: boolean): void;
+  /**
+   * The window this page is mounted in went out of sight. A parked page rests
+   * in its own host so it still composites for a phone's Watch and an agent's
+   * screencast; unparking puts it back where the window shows it.
+   */
+  setParked(parked: boolean): void;
   unmount(): void;
   inputOutstanding(): boolean;
   takeContextMenuTrigger(): "person" | "agent" | null;
@@ -756,6 +814,7 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
 
 interface ElectronBrowserContextOptions {
   readonly onPageCleanupFailure?: (() => void) | undefined;
+  readonly onProfileRefused?: ElectronBrowserLauncherOptions["onProfileRefused"];
   readonly wakeSeeds: WakeSeeds;
   readonly protection: (contents: WebContents) => {
     method(): string;
@@ -770,6 +829,13 @@ interface ElectronBrowserContextOptions {
     startRenderer?: boolean,
   ) => ElectronBrowserView;
   readonly createHelper: (options: ElectronBrowserViewOptions) => WebContentsView;
+  readonly onConnectionWebContents?: (webContentsId: number, controlled: boolean) => void;
+  /**
+   * This Home's addresses, as the Home last told this browser: kept by the launcher for every
+   * profile session it configures (G1). Required: no context of a browser the Home owns exists
+   * without it, a Guest's or a saved profile's.
+   */
+  readonly setHomeAddresses: (home: ThisHomeAddressSet) => void;
   readonly profileSession: Session;
   readonly localProfile?: ElectronLocalProfile;
   readonly onPageTiming?: PageOpenTiming;
@@ -788,6 +854,8 @@ class ElectronBrowserContext implements BrowserContext {
   readonly #createHelper: ElectronBrowserContextOptions["createHelper"];
   readonly #events = new EventEmitter();
   readonly #pages = new Set<ElectronBrowserPage>();
+  readonly #pagesByTargetId = new Map<string, ElectronBrowserPage>();
+  readonly #connectionControlledTargets = new Set<string>();
   readonly #handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
   readonly #profileSession: Session;
   readonly #localProfile: ElectronLocalProfile | undefined;
@@ -813,6 +881,10 @@ class ElectronBrowserContext implements BrowserContext {
     screen.on("display-metrics-changed", this.#displayChanged);
     screen.on("display-added", this.#displayChanged);
     screen.on("display-removed", this.#displayChanged);
+  }
+  /** This Home's addresses, from its ticket or a route change (G1). */
+  setHomeAddresses(home: ThisHomeAddressSet): void {
+    this.#options.setHomeAddresses(home);
   }
 
   pages(): BrowserPage[] {
@@ -934,7 +1006,8 @@ class ElectronBrowserContext implements BrowserContext {
       this.#events.removeAllListeners();
     }
     for (const view of this.#storageViews) {
-      if (!view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
+      const contents = view.webContents;
+      if (contents && !contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
     }
     for (const page of this.#pages) page.endWithContext();
     const results = await Promise.allSettled([...this.#pages].map((page) => page.close()));
@@ -956,6 +1029,28 @@ class ElectronBrowserContext implements BrowserContext {
     );
   }
 
+  /**
+   * Authoritative target-level connection control driven solely by the router's retain/release
+   * counts (S-e). Syncs immediately when the page is indexed, or applies the current authoritative
+   * state once `pageByTargetId` resolves so concurrent flips never land out of order.
+   */
+  setTargetConnectionControlled(targetId: string, controlled: boolean): void {
+    if (controlled) this.#connectionControlledTargets.add(targetId);
+    else this.#connectionControlledTargets.delete(targetId);
+    const known = this.#pagesByTargetId.get(targetId);
+    if (known) {
+      known.setConnectionControlled(controlled);
+      return;
+    }
+    void this.pageByTargetId(targetId)
+      .then((page) => {
+        if (!page) return;
+        this.#pagesByTargetId.set(targetId, page);
+        page.setConnectionControlled(this.#connectionControlledTargets.has(targetId));
+      })
+      .catch(() => undefined);
+  }
+
   async targetInfos(): Promise<Record<string, unknown>[]> {
     return Promise.all(
       [...this.#pages].filter((page) => !page.isClosed()).map((page) => page.targetInfo()),
@@ -967,6 +1062,7 @@ class ElectronBrowserContext implements BrowserContext {
     options: ElectronBrowserViewOptions,
     timing?: PageOpenTiming,
     startRenderer = false,
+    handOffOpener: ElectronBrowserPage | null = opener,
   ): ElectronBrowserPage {
     this.#assertOpen();
     const page = new ElectronBrowserPage(
@@ -987,6 +1083,7 @@ class ElectronBrowserContext implements BrowserContext {
       }),
       browserAcceptLanguages(app.getPreferredSystemLanguages()),
       this.#options.onPageCleanupFailure,
+      this.#options.onProfileRefused,
       (options) => {
         if (this.#closed) return;
         try {
@@ -995,15 +1092,16 @@ class ElectronBrowserContext implements BrowserContext {
           /* A session closing concurrently owns its own teardown. */
         }
       },
+      this.#options.onConnectionWebContents,
     );
     this.#pages.add(page);
-    for (const listener of this.#handOffs) listener(page, opener);
+    for (const listener of this.#handOffs) listener(page, handOffOpener);
     const extensions = this.#localProfile?.extensions;
     const contents = page.view.webContents;
     const removeTab = extensions?.addTab({
       contents,
       open: (url, active) =>
-        this.#openChildPage(page, { url, background: !active }).view.webContents,
+        this.#openExtensionPage(page, { url, background: !active }).view.webContents,
       close: () => void page.close().catch(() => undefined),
       presentedWindow: () => page.presentedWindow(),
     });
@@ -1014,9 +1112,17 @@ class ElectronBrowserContext implements BrowserContext {
       removeTab?.();
       removePresented?.();
       this.#pages.delete(page);
+      for (const [id, entry] of this.#pagesByTargetId) {
+        if (entry === page) {
+          this.#pagesByTargetId.delete(id);
+          this.#connectionControlledTargets.delete(id);
+        }
+      }
       void page
         .targetId()
         .then((targetId) => {
+          this.#pagesByTargetId.delete(targetId);
+          this.#connectionControlledTargets.delete(targetId);
           this.#events.emit("target", "Target.targetDestroyed", { targetId });
         })
         .catch(() => undefined);
@@ -1032,6 +1138,36 @@ class ElectronBrowserContext implements BrowserContext {
       return popup.view.webContents;
     });
     return page;
+  }
+
+  /**
+   * Opens a tab for a Chrome extension (`chrome.tabs.create`, Web Store external link) with NO
+   * opener (`opener = null`), so it is always the person's tab and never joins a connected agent's
+   * lineage even when a connected agent's page was active. `sessionAnchor` only attributes the
+   * page to this profile's session handoff.
+   */
+  #openExtensionPage(
+    sessionAnchor: ElectronBrowserPage,
+    options: {
+      readonly url: string;
+      readonly background: boolean;
+    },
+  ): ElectronBrowserPage {
+    const child = this.#newPage(
+      null,
+      { webPreferences: this.#securePreferences() },
+      undefined,
+      false,
+      sessionAnchor,
+    );
+    child.openedInBackground = options.background;
+    if (options.url && options.url !== "about:blank") {
+      void child.loadInitialUrl(options.url).catch(() => child.close());
+    }
+    setImmediate(() => {
+      void this.#announcePage(child).catch(() => child.close());
+    });
+    return child;
   }
 
   #openChildPage(
@@ -1077,8 +1213,22 @@ class ElectronBrowserContext implements BrowserContext {
 
   async #announcePage(page: ElectronBrowserPage): Promise<void> {
     const targetInfo = await page.targetInfo();
+    const targetId = typeof targetInfo.targetId === "string" ? targetInfo.targetId : undefined;
+    if (targetId) {
+      this.#pagesByTargetId.set(targetId, page);
+      if (this.#connectionControlledTargets.has(targetId)) page.setConnectionControlled(true);
+    }
     this.#events.emit("target", "Target.targetCreated", { targetInfo });
     this.#events.emit("page", page);
+    // S5: if a popup inherited connection control from its opener at creation, but no connected
+    // agent retained it when announced (for example after Disconnect), release the inherited flag.
+    if (
+      targetId &&
+      page.isConnectionControlled() &&
+      !this.#connectionControlledTargets.has(targetId)
+    ) {
+      page.setConnectionControlled(false);
+    }
   }
 
   #securePreferences(wake = false): WebPreferences {
@@ -1244,13 +1394,62 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       return () => this.#captureListeners.delete(listener);
     },
   };
+  #navigation: ReturnType<PageNavigationPort["read"]> = {
+    blankDocument: true,
+    finished: 0,
+    pending: false,
+  };
+  readonly #navigationListeners = new Set<() => void>();
+  /**
+   * The page's navigations as Electron's browser side reports them. A main-frame navigation to
+   * another document is pending from `did-start-navigation` until it ends: `did-navigate` and
+   * `did-fail-load` come from the browser side's end of it, when the committed document is the
+   * frame's active one and takes commands (the page's own session hears of the commit,
+   * Page.frameNavigated, before that); `did-stop-loading` ends one that committed nothing.
+   */
+  readonly navigations = {
+    read: () => this.#navigation,
+    subscribe: (listener: () => void): (() => void) => {
+      this.#navigationListeners.add(listener);
+      return () => this.#navigationListeners.delete(listener);
+    },
+  };
+  #navigationChanged(next: Partial<ReturnType<PageNavigationPort["read"]>>): void {
+    this.#navigation = { ...this.#navigation, ...next };
+    for (const listener of this.#navigationListeners) listener();
+  }
   #frameSubscriptionRevision: number | null = null;
+  /** For paintEvidence(): frames a paint wait saw at another size than the placement. */
+  #paintFramesOtherSize = 0;
+  #paintLastOtherSize: { readonly raster: string; readonly bounds: string } | null = null;
+  /**
+   * For paintEvidence(): when the last paint wait began and when a frame subscription last began
+   * (ms on this process's clock), with the revisions at each moment. A wait that timed out with no
+   * subscription begun since it started never asked for a frame.
+   */
+  #paintWaitBegan: Record<string, number | boolean> | null = null;
+  #paintSubscriptionBegan: Record<string, number | boolean> | null = null;
+  #paintRevisions(): Record<string, number | boolean> {
+    return {
+      at: Math.round(performance.now()),
+      surfaceRevision: this.#surfaceRevision,
+      appliedSurfaceRevision: this.#appliedSurfaceRevision,
+      metricsSurfaceRevision: this.#metricsSurfaceRevision,
+      paintedSurfaceRevision: this.#paintedSurfaceRevision,
+      serializesGeometry: this.#serializeGeometry !== null,
+      attached: this.#mount?.attached ?? false,
+    };
+  }
   #paintedSurfaceRevision = -1;
   #metricsSurfaceRevision = 0;
   #renderingDemand = false;
+  #parked = false;
   #activeSurfaceCopies = 0;
   #stalledSurfaceCopies = 0;
   #controlDown = false;
+  #connectionControlled = false;
+  readonly #onConnectionWebContents:
+    ((webContentsId: number, controlled: boolean) => void) | undefined;
   #contextMenuTrigger: "person" | "agent" | null = null;
   #contextMenuCandidate: "person" | "agent" | null = null;
   #fullscreen = false;
@@ -1289,11 +1488,13 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     identity?: BrowserIdentity,
     acceptLanguage?: string,
     onPageCleanupFailure?: () => void,
+    onProfileRefused?: ElectronBrowserLauncherOptions["onProfileRefused"],
     openChild?: (options: {
       readonly url: string;
       readonly background: boolean;
       readonly referrer?: string;
     }) => void,
+    onConnectionWebContents?: (webContentsId: number, controlled: boolean) => void,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
@@ -1301,7 +1502,13 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#webContents = view.webContents;
     this.#onPageCleanupFailure = onPageCleanupFailure;
     this.#openChild = openChild;
+    this.#onConnectionWebContents = onConnectionWebContents;
     this.#protection = protection(view.webContents);
+    if (opener?.isConnectionControlled()) this.setConnectionControlled(true);
+    const webContentsId = view.webContents.id;
+    view.webContents.once("destroyed", () => {
+      this.#onConnectionWebContents?.(webContentsId, false);
+    });
     // Electron installs a native message-box listener even with Page enabled.
     // The debugger and ledger own these dialogs for the page's entire lifetime.
     view.webContents.removeAllListeners("-run-dialog");
@@ -1369,6 +1576,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       () => this.#displayScale(),
       authenticator ? ["Network", "Security"] : [],
       () => timing?.("renderer-ready"),
+      onProfileRefused,
     );
     const installBridge = (channel: ElectronCdpChannel) => {
       if (!authenticator || !providerConfig) return;
@@ -1406,8 +1614,87 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     void pageEnabled?.catch(() => this.close()).catch(() => undefined);
     void pagePolicy?.catch(() => this.close()).catch(() => undefined);
     void this.#cdpPromise.catch(() => this.close()).catch(() => undefined);
+    // A page reaches an extension address only as Chrome lets a web page: an extension's own
+    // pages always, any other page only a resource the extension lists as web-accessible for it.
+    // A connection-controlled page reaches no extension address at all (M1a).
+    const pageContents = view.webContents;
     view.webContents.on("will-navigate", (event, url) => {
-      if (!isAllowedBrowserNavigation(url)) event.preventDefault();
+      if (
+        !isAllowedBrowserNavigation(url, false, !this.#connectionControlled) ||
+        !mayPageReachExtension(pageContents, url, [event.initiator])
+      )
+        event.preventDefault();
+    });
+    view.webContents.on("will-frame-navigate", (details) => {
+      if (!isExtensionUrl(details.url)) return;
+      if (
+        this.#connectionControlled ||
+        !mayPageReachExtension(pageContents, details.url, [details.initiator])
+      )
+        details.preventDefault();
+    });
+    // The records a redirect into an extension is judged by (extension-redirects.ts): how each
+    // of the page's navigations started, kept until the frame starts or ends another, and dropped
+    // with the page.
+    const pageId = pageContents.id;
+    let pageSession: Session | undefined;
+    const navigationSession = (): Session | undefined => {
+      if (!pageSession && !pageContents.isDestroyed()) pageSession = pageContents.session;
+      return pageSession;
+    };
+    const frameEnded = (frame: WebFrameMain | undefined) => {
+      const session = navigationSession();
+      if (!session) return;
+      const frameTreeNodeId = frameTreeNodeIdOf(frame);
+      if (frameTreeNodeId === undefined) forgetExtensionNavigations(session, pageId);
+      else extensionNavigationEnded(session, pageId, frameTreeNodeId);
+    };
+    view.webContents.on("did-start-navigation", (details) => {
+      if (details.isSameDocument) return;
+      const session = navigationSession();
+      const frameTreeNodeId = frameTreeNodeIdOf(details.frame);
+      if (!session || frameTreeNodeId === undefined) return;
+      // No initiator: the browser started it. A null one: the frame that started it is gone.
+      extensionNavigationStarted(
+        session,
+        pageId,
+        frameTreeNodeId,
+        details.url,
+        details.initiator === undefined
+          ? { browserStarted: true }
+          : { initiatorOrigin: frameOrigin(details.initiator) },
+      );
+    });
+    // A main frame's commit ends its navigation; a subframe's records go at its next start.
+    view.webContents.on("did-navigate", () =>
+      frameEnded(pageContents.isDestroyed() ? undefined : pageContents.mainFrame),
+    );
+    view.webContents.on(
+      "did-fail-load",
+      (_event, _code, _text, _url, _isMainFrame, processId, routingId) =>
+        frameEnded(frameById(pageContents, processId, routingId)),
+    );
+    view.webContents.once("destroyed", () => {
+      if (pageSession) forgetExtensionNavigations(pageSession, pageId);
+    });
+    view.webContents.on("will-redirect", (event, url) => {
+      if (!isExtensionUrl(url)) return;
+      const session = navigationSession();
+      const frameTreeNodeId = frameTreeNodeIdOf(event.frame);
+      // Taken on every exit, so no record outlives the redirect it was made for.
+      const redirect = session
+        ? takeExtensionRedirect(session, pageId, frameTreeNodeId, url)
+        : undefined;
+      if (this.#connectionControlled) {
+        event.preventDefault();
+        return;
+      }
+      if (
+        !session ||
+        frameTreeNodeId === undefined ||
+        !mayRedirectIntoExtension(pageContents, session, frameTreeNodeId, url, redirect)
+      )
+        event.preventDefault();
     });
     view.webContents.on("cursor-changed", (_event, type) => {
       this.#cursor = normalizeElectronCursor(type);
@@ -1480,6 +1767,40 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#invalidateCursor();
       void this.invalidateSurface().catch(() => undefined);
     });
+    view.webContents.on("did-start-navigation", (details) => {
+      if (details.isMainFrame && !details.isSameDocument)
+        this.#navigationChanged({ pending: true });
+    });
+    view.webContents.on("did-navigate", (_event, url) => {
+      this.#navigationChanged({
+        blankDocument: url === "" || url === "about:blank",
+        finished: this.#navigation.finished + 1,
+        pending: false,
+      });
+    });
+    view.webContents.on("did-fail-load", (_event, code, _text, _url, mainFrame) => {
+      // A page refused this Home's address says where the Home opens instead (G1).
+      if (mainFrame && takeHomeRefusal(view.webContents.id))
+        void view.webContents
+          .loadURL("about:blank")
+          .then(() =>
+            view.webContents.executeJavaScript(
+              `document.title = "Opensteer Home"; document.body.textContent = ${JSON.stringify(homeElsewhereText)};`,
+            ),
+          )
+          .catch(() => undefined);
+      // An aborted navigation (ERR_ABORTED) gave way to another, whose own end follows, or to a
+      // stop, which did-stop-loading ends. Any other failure committed an error page.
+      if (mainFrame && code !== -3)
+        this.#navigationChanged({
+          blankDocument: false,
+          finished: this.#navigation.finished + 1,
+          pending: false,
+        });
+    });
+    view.webContents.on("did-stop-loading", () => {
+      if (this.#navigation.pending) this.#navigationChanged({ pending: false });
+    });
     view.webContents.on("media-started-playing", () => {
       this.#mediaPlaying = true;
     });
@@ -1490,6 +1811,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#invalidateCursor();
       // The hub rejects placement while crashed; navigation can recover it.
       this.#cancelPaint("crash");
+      // No navigation is under way in a renderer that is gone: a reload is the next one.
+      if (this.#navigation.pending) this.#navigationChanged({ pending: false });
       this.#fullscreen = false;
       this.#mediaPlaying = false;
       this.#contextMenuTrigger = null;
@@ -1564,12 +1887,12 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#endPaintSubscription();
   }
 
+  /** The same placement and parent the apply path would choose, already in place. */
   #placementCurrent(): boolean {
     return (
-      (!this.#mount || this.#mount.attached) &&
+      (!this.#mount || this.#parked || this.#mount.attached) &&
       this.#appliedSurfaceRevision === this.#surfaceRevision &&
-      JSON.stringify(this.#desiredPlacement) ===
-        JSON.stringify(nativePlacement(this.#mount, this.#geometry))
+      JSON.stringify(this.#desiredPlacement) === JSON.stringify(this.#placement())
     );
   }
 
@@ -1663,6 +1986,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     if (this.#frameSubscriptionRevision === revision) return;
     this.#endPaintSubscription();
     this.#frameSubscriptionRevision = revision;
+    this.#paintSubscriptionBegan = this.#paintRevisions();
     const scale = this.#displayScale();
     this.#webContents.beginFrameSubscription((image) => {
       if (
@@ -1683,8 +2007,14 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       if (
         Math.abs(raster.width - pixels(bounds.width)) > 1 ||
         Math.abs(raster.height - pixels(bounds.height)) > 1
-      )
+      ) {
+        this.#paintFramesOtherSize++;
+        this.#paintLastOtherSize = {
+          raster: `${raster.width}x${raster.height}`,
+          bounds: `${pixels(bounds.width)}x${pixels(bounds.height)}`,
+        };
         return;
+      }
       this.#paintedSurfaceRevision = revision;
       for (const waiter of this.#paintWaiters) waiter.resolve();
     });
@@ -1738,6 +2068,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         remaining,
       );
       timer.unref();
+      this.#paintWaitBegan = this.#paintRevisions();
       this.#paintWaiters.add(waiter);
       this.#syncRenderingDemand();
       signal.addEventListener("abort", abort, { once: true });
@@ -1747,6 +2078,37 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         settle(error instanceof Error ? error : new Error(String(error)));
       }
     });
+  }
+
+  /**
+   * What a paint wait depends on, as plain facts: read by a check that saw no picture, so its
+   * record says which condition held the paint back. Reading it changes nothing.
+   */
+  paintEvidence(): Record<string, unknown> {
+    return {
+      surfaceRevision: this.#surfaceRevision,
+      appliedSurfaceRevision: this.#appliedSurfaceRevision,
+      metricsSurfaceRevision: this.#metricsSurfaceRevision,
+      paintedSurfaceRevision: this.#paintedSurfaceRevision,
+      frameSubscriptionRevision: this.#frameSubscriptionRevision,
+      serializesGeometry: this.#serializeGeometry !== null,
+      paintWaiters: this.#paintWaiters.size,
+      framesAtOtherSize: this.#paintFramesOtherSize,
+      lastOtherSize: this.#paintLastOtherSize,
+      waitBegan: this.#paintWaitBegan,
+      subscriptionBegan: this.#paintSubscriptionBegan,
+      renderingDemand: this.#renderingDemand,
+      parked: this.#parked,
+      mounted: this.#mount !== null,
+      attached: this.#mount?.attached ?? false,
+      desiredBounds: this.#desiredPlacement.bounds,
+      surfaceAborted: this.#surfaceAbort.signal.aborted,
+      closed: this.isClosed(),
+      crashed: this.#hub.isCrashed(),
+      capturing: !this.isClosed() && this.#webContents.isBeingCaptured(),
+      loading: !this.isClosed() && this.#webContents.isLoading(),
+      dialog: this.#dialog !== null && this.#dialog !== undefined,
+    };
   }
 
   settleRendering(signal?: AbortSignal): Promise<void> {
@@ -1807,6 +2169,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     window.on("focus", presented);
     // The view stays in its resting host until placement moves it here: it
     // keeps resting bounds until then, and placement can wait on agent work.
+    this.#parked = false;
     this.#mount = {
       window,
       stage: { ...stage },
@@ -1845,8 +2208,33 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     void this.#reconcile().catch(() => undefined);
   }
 
+  setParked(parked: boolean): void {
+    if (this.isClosed() || this.#parked === parked) return;
+    this.#parked = parked;
+    const mount = this.#mount;
+    if (!mount) return;
+    if (parked && mount.attached && !this.#restingHost.isDestroyed()) {
+      mount.attached = false;
+      this.#cancelPaint("reparent");
+      const { width, height } = this.view.getBounds();
+      this.#resizeRestingHost({ width, height });
+      this.view.setBorderRadius(0);
+      this.#restingHost.contentView.addChildView(this.view);
+      this.view.setBounds({ ...this.#placement().bounds, width, height });
+      this.#syncRenderingDemand();
+    }
+    // Unparking returns the view to the window through the one apply path.
+    void this.#reconcile().catch(() => undefined);
+  }
+
+  #placement(): NativePlacement {
+    const placement = nativePlacement(this.#mount, this.#geometry);
+    return this.#parked ? { ...placement, bounds: { ...placement.bounds, x: 0, y: 0 } } : placement;
+  }
+
   unmount(): void {
     if (!this.#mount) return;
+    this.#parked = false;
     this.#mount.dispose();
     this.#mount = null;
     // Reparenting cancels paint waits but keeps the geometry owner live.
@@ -2036,7 +2424,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       do {
         this.#assertPlacementLive(owner);
         if (this.#dialog) return;
-        let placement = nativePlacement(this.#mount, this.#geometry);
+        let placement = this.#placement();
         const previous = this.view.getBounds();
         if (
           previous.width !== placement.bounds.width ||
@@ -2053,7 +2441,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
           this.#assertPlacementLive(owner);
           if (epoch !== this.#surfaceAbort.signal) continue;
           if (this.#dialog) return;
-          placement = nativePlacement(this.#mount, this.#geometry);
+          placement = this.#placement();
         }
         const bounds = placement.bounds;
         if (JSON.stringify(placement) !== JSON.stringify(this.#desiredPlacement)) {
@@ -2064,11 +2452,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
           this.#desiredPlacement = placement;
           if (resized) this.#boundsRevision += 1;
           if (resized || metricsChanged) this.#invalidateAppliedSurface();
-          if (!this.#mount) this.#resizeRestingHost(bounds);
-          if (previous.x !== bounds.x || previous.y !== bounds.y || resized)
-            this.view.setBounds(bounds);
         }
-        if (this.#mount && !this.#mount.attached) {
+        if (!this.#mount || this.#parked) this.#resizeRestingHost(bounds);
+        // Reparenting moves the view without this pass: what it has is read, not assumed.
+        const actual = this.view.getBounds();
+        if (
+          actual.x !== bounds.x ||
+          actual.y !== bounds.y ||
+          actual.width !== bounds.width ||
+          actual.height !== bounds.height
+        )
+          this.view.setBounds(bounds);
+        if (this.#mount && !this.#mount.attached && !this.#parked) {
           this.view.setBorderRadius(15);
           this.#mount.window.contentView.addChildView(this.view);
           this.#mount.attached = true;
@@ -2157,7 +2552,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
    * top left when the view is smaller than the page.
    */
   async captureViewport(
-    { clip, format, layout, pageScale, quality }: ViewportCaptureRequest,
+    { clip, format, layout, pageScale, quality, maxImageBytes }: ViewportCaptureRequest,
     signal?: AbortSignal,
   ): Promise<ViewportCapture> {
     signal?.throwIfAborted();
@@ -2186,7 +2581,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         })
         .resize({ ...plan.output, quality: "better" });
       return {
-        data: await this.#encode(cdp, picture, format, quality, signal),
+        data: await this.#encode(cdp, picture, format, quality, maxImageBytes, signal),
         ...(crop.right || crop.bottom
           ? {
               cropped: {
@@ -2303,25 +2698,34 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     image: NativeImage,
     format: ViewportCaptureRequest["format"],
     quality: number | undefined,
+    maxImageBytes?: number,
     signal?: AbortSignal,
   ): Promise<string> {
     signal?.throwIfAborted();
-    if (format === "jpeg") return image.toJPEG(quality ?? 80).toString("base64");
-    const data = image.toPNG().toString("base64");
-    if (format === "png") return data;
+    const bytes = format === "jpeg" ? image.toJPEG(quality ?? 80) : image.toPNG();
+    if (format !== "webp" && maxImageBytes !== undefined && bytes.length > maxImageBytes)
+      throw screenshotImageLimit(bytes.length, maxImageBytes);
+    const data = bytes.toString("base64");
+    if (format !== "webp") return data;
     const size = image.getSize();
     const plan = { output: size, source: { x: 0, y: 0, ...size } };
     // nativeImage has no WebP encoder; the page's own does.
-    return z.string().parse(
+    const encoded = z.union([z.string(), z.number().int().positive()]).parse(
       await this.#inFrameWorld(
         cdp,
         viewportImageScript(data, plan, {
           format,
+          ...(maxImageBytes === undefined ? {} : { maxImageBytes }),
           ...(quality === undefined ? {} : { quality }),
         }),
         signal,
       ),
     );
+    if (typeof encoded === "number") {
+      if (maxImageBytes === undefined) throw new Error("The page returned no screenshot.");
+      throw screenshotImageLimit(encoded, maxImageBytes);
+    }
+    return encoded;
   }
 
   loadInitialUrl(url: string, options?: Electron.LoadURLOptions): Promise<void> {
@@ -2487,15 +2891,38 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     return this.#webContents.getURL() || "about:blank";
   }
 
+  isConnectionControlled(): boolean {
+    return this.#connectionControlled;
+  }
+
+  setConnectionControlled(controlled: boolean): void {
+    this.#connectionControlled = controlled;
+    if (!this.#webContents.isDestroyed())
+      this.#onConnectionWebContents?.(this.#webContents.id, controlled);
+  }
+
   installPopupHandler(
     securePreferences: WebPreferences,
     create: (options: ElectronPopupWindowOptions, details: ElectronPopupDetails) => WebContents,
   ): void {
+    const contents = this.#webContents;
     this.#webContents.setWindowOpenHandler((details) => {
-      if (!isAllowedBrowserNavigation(details.url, true)) return { action: "deny" };
+      if (!isAllowedBrowserNavigation(details.url, true, !this.#connectionControlled))
+        return { action: "deny" };
+      const opener = isExtensionUrl(details.url) ? windowOpenerVerdict(contents, details) : "allow";
+      if (opener === "deny") return { action: "deny" };
       return {
         action: "allow",
-        createWindow: (options) => create(options as ElectronPopupWindowOptions, details),
+        // A window Electron navigates itself (window.open, a target=_blank link) is judged again
+        // by its own first navigation, which names the frame that opened it. One Opensteer would
+        // load itself (OpenURLFromTab) starts blank instead when that frame is unknown.
+        createWindow: (options) =>
+          create(
+            options as ElectronPopupWindowOptions,
+            opener === "popup-judges" && !(options as ElectronPopupWindowOptions).webContents
+              ? { ...details, url: "about:blank" }
+              : details,
+          ),
         outlivesOpener: true,
         overrideBrowserWindowOptions: {
           show: false,
@@ -2513,6 +2940,16 @@ interface ElectronPopupDetails {
 }
 
 type ChannelRole = "agent" | "platform";
+
+interface ProfileInventory {
+  /** The agent channel whose Profiler.start opened it. */
+  readonly channel: ElectronCdpChannel;
+  readonly sessionId: string;
+  readonly scripts: CdpProductIsolation;
+  readonly isolate: string;
+  readonly renderer: number;
+  readonly context: number;
+}
 
 /**
  * Shares one `webContents.debugger` among logical channels. Each channel must
@@ -2549,6 +2986,20 @@ class ElectronDebuggerHub {
   readonly #channels = new Set<ElectronCdpChannel>();
   readonly #contexts = new ExecutionContextInventory();
   readonly #agentWorlds = new CdpProductIsolation();
+  readonly #profileInspections = new Map<
+    string,
+    (method: string, parameters: CdpParameters) => void
+  >();
+  #profileContextGeneration = 0;
+  /**
+   * The page's scripts as they are parsed, from an agent's Profiler.start to
+   * its stop, so a script the page ran and dropped meanwhile is still known.
+   */
+  #profileInventory: ProfileInventory | null = null;
+  #profileInventoryOpening: Promise<unknown> | null = null;
+  /** Each agent channel's Profiler.start under way; its later Profiler commands follow it. */
+  readonly #profileStarts = new Map<ElectronCdpChannel, Promise<unknown>>();
+  readonly #onProfileRefused: ElectronBrowserLauncherOptions["onProfileRefused"];
   readonly #debugger: Debugger;
   readonly #destroyed: Promise<void>;
   readonly #domainOwners = new Map<string, Set<ElectronCdpChannel>>();
@@ -2563,9 +3014,34 @@ class ElectronDebuggerHub {
   readonly #pending = new Set<(error: Error) => void>();
   #rendererGeneration = 0;
   #crashed = false;
-  /** Each channel screencasting, with the parameters it asked for, in the order they started. */
   readonly #renderingOwners = new Map<ElectronCdpChannel, number>();
-  readonly #screencastOwners = new Map<ElectronCdpChannel, Record<string, unknown> | undefined>();
+  /**
+   * The page's screencasts, one for each set of settings someone asked for (`castKey`): an owner
+   * gets frames in the format and size it asked for, always, and owners who asked for the same
+   * share one. At most `maxCastsPerPage` at once.
+   */
+  readonly #casts = new Set<Screencast>();
+  /** Each screencasting channel's cast. */
+  readonly #castOf = new Map<ElectronCdpChannel, Screencast>();
+  /**
+   * What each owner was handed, in order: which run's frame, by Chromium's frame `sessionId`. An
+   * ack names only that id, and two runs in two sessions can share one, so this is what tells
+   * which run an ack belongs to.
+   */
+  readonly #handed = new Map<
+    ElectronCdpChannel,
+    { readonly run: CastRun; readonly frame: number }[]
+  >();
+  #castStarts = 0;
+  /** Per-channel cast generation, bumped when `#ownSessionGone` ends that channel's cast (U2). */
+  readonly #castGenerations = new WeakMap<ElectronCdpChannel, number>();
+  /** Per-channel pending cast commands, failed when `#ownSessionGone` ends that channel's cast (U2). */
+  readonly #castPending = new Map<ElectronCdpChannel, Set<(error: Error) => void>>();
+  /**
+   * What belongs to the debugger session now attached, and dies with it: made when the hub attaches
+   * the debugger, discarded at every detach, the hub's own and Electron's (`#debuggerSessionEnded`).
+   */
+  #session = new DebuggerSessionState();
   readonly #webContents: WebContents;
   readonly #setRenderingDemand: (demanded: boolean) => void;
   readonly #prepareInput: () => Promise<void>;
@@ -2596,7 +3072,9 @@ class ElectronDebuggerHub {
     displayScale: () => number,
     persistentPlatformDomains: readonly string[] = [],
     onRendererReady?: () => void,
+    onProfileRefused?: ElectronBrowserLauncherOptions["onProfileRefused"],
   ) {
+    this.#onProfileRefused = onProfileRefused;
     this.#persistentPlatformDomains = new Set(persistentPlatformDomains);
     this.#onRendererReady = onRendererReady;
     this.#webContents = webContents;
@@ -2609,6 +3087,24 @@ class ElectronDebuggerHub {
     });
     this.#debugger.on("message", (_event, method, parameters, sessionId) => {
       if (sessionId) {
+        // A cast's private session runs only its cast: its frames are for that cast's owners alone.
+        if (
+          this.#session.ownSessionsSeen.has(sessionId) &&
+          !this.#profileInspections.has(sessionId)
+        ) {
+          if (method === "Page.screencastFrame") this.#laneFrame(sessionId, asRecord(parameters));
+          return;
+        }
+        const inspectProfile = this.#profileInspections.get(sessionId);
+        if (inspectProfile) {
+          // It skips every pause; should one arrive anyway, the page never waits on it.
+          if (method === "Debugger.paused")
+            void this.#debugger
+              .sendCommand("Debugger.resume", {}, sessionId)
+              .catch(() => undefined);
+          inspectProfile(method, asRecord(parameters));
+          return;
+        }
         if (!this.#agentWorlds.observe(method, asRecord(parameters))) {
           if (method === "Debugger.paused")
             void this.#debugger
@@ -2621,30 +3117,31 @@ class ElectronDebuggerHub {
         return;
       }
       const record = asRecord(parameters);
-      this.#contexts.observe(method, record);
-      const pageEvent = this.#agentWorlds.observe(method, record);
-      if (method.startsWith("Runtime.executionContext"))
-        for (const channel of this.#channels) channel.observeContextEvent(method, record);
-      const recipients =
-        method === "Page.screencastFrame"
-          ? [...this.#screencastOwners.keys()]
-          : this.#domainOwners.get(method.split(".", 1)[0] ?? "");
-      for (const channel of recipients ?? []) {
-        if (channel.role === "agent" && !pageEvent) {
-          if (method === "Debugger.paused")
-            void this.#command("Debugger.resume").catch(() => undefined);
-          continue;
-        }
-        channel.emit(method, record);
+      if (method === "Runtime.executionContextsCleared") {
+        this.#profileContextGeneration++;
+        // Its scripts belonged to documents that are gone; a stop reads what is alive then.
+        if (this.#profileInventory) void this.#closeProfileInventory(this.#profileInventory);
       }
+      // The hub's own sessions are no channel's: none hears of them, by their identity. While an
+      // attach of the hub's own is unanswered, any Target event may be about it: every one waits,
+      // in order, until the answer says which session is the hub's.
+      if (method.startsWith("Target.") && this.#session.ownAttaching > 0) {
+        this.#session.held.push({ method, record });
+        return;
+      }
+      this.#targetOrPageEvent(method, record);
     });
     this.#debugger.on("detach", (_event, reason) => {
+      // Every session it held is gone with it, the hub's own among them, and every cast.
+      this.#castsEnded("detached");
+      this.#debuggerSessionEnded();
       this.#interrupt(new Error(`Electron CDP debugger detached: ${reason}.`));
       this.#forgetContexts();
       this.#events.emit("detach", reason);
     });
     webContents.on("render-process-gone", (_event, details) => {
       this.#crashed = true;
+      this.#castsEnded("crashed");
       this.#interrupt(
         new Error(
           `Electron browser page crashed (${details.reason}); reload the page to continue.`,
@@ -2660,6 +3157,8 @@ class ElectronDebuggerHub {
     // hidden in the transparent resting window: until throttling is set again
     // it draws nothing, takes no clicks and gives a screencast no frame.
     webContents.on("did-navigate", () => {
+      // The latest frame was the last document's: no one is handed it now.
+      this.#forgetLatestFrames();
       this.#crashed = false;
       this.#inputReady = null;
       this.#updateThrottling();
@@ -2685,7 +3184,7 @@ class ElectronDebuggerHub {
   }
 
   isScreencasting(): boolean {
-    return this.#screencastOwners.size > 0;
+    return this.#castOf.size > 0 || this.#castStarts > 0;
   }
 
   /** Only the fresh page's provider bootstrap may dispatch this initial batch. */
@@ -2700,7 +3199,7 @@ class ElectronDebuggerHub {
       channel.enabledDomains.add(domain);
     }
     install(channel);
-    if (!this.#debugger.isAttached()) this.#debugger.attach("1.3");
+    this.#attachDebugger();
     // All owners and listeners exist before the first command can emit. This
     // fresh-session exception dispatches independent initial enables together;
     // their accounting and every later ownership change remain serialized.
@@ -2776,6 +3275,9 @@ class ElectronDebuggerHub {
     parameters?: Record<string, unknown>,
     cleanup = false,
   ): Promise<unknown> {
+    // A new size makes the latest frame the wrong shape for anyone who joins after it.
+    if (method.startsWith("Emulation.set") || method === "Emulation.clearDeviceMetricsOverride")
+      this.#forgetLatestFrames();
     const command = Promise.withResolvers<unknown>();
     this.#pending.add(command.reject);
     try {
@@ -2792,6 +3294,30 @@ class ElectronDebuggerHub {
     channel: ElectronCdpChannel,
     method: string,
     parameters?: Record<string, unknown>,
+    cleanup = false,
+  ): Promise<unknown> {
+    if (channel.role === "agent" && method.startsWith("Profiler.") && method !== "Profiler.start") {
+      // A command sent behind a Profiler.start reaches Chromium after it, as it was sent.
+      const starting = this.#profileStarts.get(channel);
+      if (starting)
+        return starting.then(
+          () => this.#send(channel, method, parameters, cleanup),
+          () => this.#send(channel, method, parameters, cleanup),
+        );
+    }
+    const sent = this.#route(channel, method, parameters, cleanup);
+    if (channel.role !== "agent" || method !== "Profiler.disable") return sent;
+    // Disabling the profiler ends its profile with no stop to classify.
+    return sent.finally(() => {
+      const live = this.#profileInventory;
+      if (live?.channel === channel) void this.#closeProfileInventory(live);
+    });
+  }
+
+  #route(
+    channel: ElectronCdpChannel,
+    method: string,
+    parameters?: Record<string, unknown>,
     _cleanup = false,
   ): Promise<unknown> {
     const generation = this.#rendererGeneration;
@@ -2804,7 +3330,11 @@ class ElectronDebuggerHub {
     )
       this.#agentWorlds.assertCommand(method, parameters);
     const send = (method: string, parameters?: Record<string, unknown>) =>
-      this.#command(method, parameters);
+      channel.role === "agent" && method === "Profiler.stop"
+        ? this.#stopAgentProfile(channel, parameters)
+        : channel.role === "agent" && method === "Profiler.start"
+          ? this.#startAgentProfile(channel, parameters)
+          : this.#command(method, parameters);
     if (channel.role === "agent" && method.startsWith("Target."))
       return this.#agentTargets(channel, method, parameters);
     if (this.#closed || !this.#channels.has(channel))
@@ -2898,40 +3428,17 @@ class ElectronDebuggerHub {
       return send(method, parameters).finally(release);
     }
     if (method === "Page.startScreencast") {
-      return this.#serializeOwnership(async () => {
-        const generation = this.#rendererGeneration;
-        const casting = this.#screencastOwners.size > 0;
-        const restarted = this.#screencastOwners.has(channel);
-        const previous = this.#screencastOwners.get(channel);
-        this.#screencastOwners.delete(channel);
-        this.#screencastOwners.set(channel, parameters);
-        this.#updateThrottling();
-        try {
-          if (casting) await send("Page.stopScreencast");
-          this.#assertCurrent(generation);
-          await send(method, this.#deciding()?.[1]);
-          return {};
-        } catch (error) {
-          this.#screencastOwners.delete(channel);
-          // A released channel's cast is not restored for anyone to inherit.
-          if (restarted && this.#channels.has(channel))
-            this.#screencastOwners.set(channel, previous);
-          this.#updateThrottling();
-          throw error;
-        }
-      });
+      return this.#castCommand(channel, (castGeneration) =>
+        this.#startCast(channel, parameters, send, castGeneration),
+      );
     }
     if (method === "Page.stopScreencast") {
-      return this.#serializeOwnership(async () => {
-        if (!this.#screencastOwners.delete(channel)) return {};
-        this.#updateThrottling();
-        if (this.#screencastOwners.size === 0) await send(method, parameters);
+      return this.#castCommand(channel, async () => {
+        await this.#leaveCast(channel, this.#rendererGeneration, parameters);
         return {};
       });
     }
-    if (method === "Page.screencastFrameAck" && this.#deciding()?.[0] !== channel) {
-      return Promise.resolve({});
-    }
+    if (method === "Page.screencastFrameAck") return this.#ackCast(channel, parameters);
     if (method === "Target.setAutoAttach" || method === "Target.sendMessageToTarget") {
       // Out-of-process frames' sessions are the platform's, as the agent
       // router already keeps them.
@@ -2940,10 +3447,11 @@ class ElectronDebuggerHub {
       if (method === "Target.setAutoAttach") return this.#autoAttach(channel, parameters);
     }
     if (method === "Runtime.enable") {
-      return this.#changeDomain(channel, "Runtime", () => this.#subscribe(channel));
+      return this.#subscribe(channel);
     }
     if (method === "Runtime.disable") {
       return this.#changeDomain(channel, "Runtime", async () => {
+        channel.runtimeEpoch += 1;
         const owners = this.#domainOwners.get("Runtime");
         owners?.delete(channel);
         channel.enabledDomains.delete("Runtime");
@@ -3003,6 +3511,148 @@ class ElectronDebuggerHub {
     });
   }
 
+  #startAgentProfile(
+    channel: ElectronCdpChannel,
+    parameters: CdpParameters | undefined,
+  ): Promise<unknown> {
+    const start = (async () => {
+      const opened = await this.#openProfileInventory(channel).catch(() => null);
+      try {
+        // A channel that left while its inventory opened starts nothing.
+        if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
+        return await this.#command("Profiler.start", parameters);
+      } catch (error) {
+        if (opened) await this.#closeProfileInventory(opened);
+        throw error;
+      }
+    })();
+    this.#profileStarts.set(channel, start);
+    const settle = () => {
+      if (this.#profileStarts.get(channel) === start) this.#profileStarts.delete(channel);
+    };
+    void start.then(settle, settle);
+    return start;
+  }
+
+  /**
+   * A private session that reports each script of the page with its world
+   * from now on, and every script alive now. Without it, stop falls back to
+   * the scripts still alive then.
+   */
+  async #openProfileInventory(channel: ElectronCdpChannel): Promise<ProfileInventory | null> {
+    if (this.#profileInventory || this.#profileInventoryOpening) return null;
+    const opening = Promise.withResolvers<void>();
+    this.#profileInventoryOpening = opening.promise;
+    let inventory: ProfileInventory | null = null;
+    try {
+      const renderer = this.#rendererGeneration;
+      const context = this.#profileContextGeneration;
+      const isolate = asRecord(await this.#dispatch("Runtime.getIsolateId")).id;
+      if (typeof isolate !== "string") return null;
+      // A session of the hub's own: attached and let go through its one register.
+      const sessionId = await this.#attachOwn();
+      const scripts = new CdpProductIsolation();
+      inventory = { channel, sessionId, scripts, isolate, renderer, context };
+      this.#profileInspections.set(sessionId, (method, parameters) => {
+        scripts.observe(method, parameters);
+      });
+      const inspected = asRecord(await this.#dispatch("Runtime.getIsolateId", {}, sessionId));
+      if (inspected.id !== isolate) throw new Error("The profile inventory reached another page.");
+      await this.#dispatch("Runtime.enable", {}, sessionId);
+      await this.#dispatch("Debugger.setSkipAllPauses", { skip: true }, sessionId);
+      await this.#dispatch("Debugger.setBreakpointsActive", { active: false }, sessionId);
+      await this.#dispatch("Debugger.enable", { maxScriptsCacheSize: 0 }, sessionId);
+      // Again once Debugger is on, which is when a pause could first reach it.
+      await this.#dispatch("Debugger.setSkipAllPauses", { skip: true }, sessionId);
+      // Only a complete inventory, for a profile still wanted on the same documents, is used.
+      if (
+        this.#closed ||
+        !this.#channels.has(channel) ||
+        !channel.enabledDomains.has("Profiler") ||
+        renderer !== this.#rendererGeneration ||
+        context !== this.#profileContextGeneration
+      ) {
+        await this.#closeProfileInventory(inventory);
+        return null;
+      }
+      this.#profileInventory = inventory;
+      return inventory;
+    } catch (error) {
+      if (inventory) await this.#closeProfileInventory(inventory);
+      throw error;
+    } finally {
+      this.#profileInventoryOpening = null;
+      opening.resolve();
+    }
+  }
+
+  async #closeProfileInventory(inventory: ProfileInventory): Promise<void> {
+    if (this.#profileInventory === inventory) this.#profileInventory = null;
+    try {
+      await this.#detachOwn(inventory.sessionId);
+    } finally {
+      this.#profileInspections.delete(inventory.sessionId);
+    }
+  }
+
+  async #stopAgentProfile(
+    channel: ElectronCdpChannel,
+    parameters: CdpParameters | undefined,
+  ): Promise<unknown> {
+    // Only the channel that started a profile reads, or ends, its inventory.
+    const live = this.#profileInventory?.channel === channel ? this.#profileInventory : null;
+    const renderer = this.#rendererGeneration;
+    const context = this.#profileContextGeneration;
+    const isolate = this.#dispatch("Runtime.getIsolateId").catch(() => undefined);
+    try {
+      const result = await this.#dispatch("Profiler.stop", parameters);
+      // Script ids name scripts only within one isolate and its documents'
+      // lifetimes; anything else is judged on what is alive now, as before.
+      if (
+        live &&
+        live.renderer === renderer &&
+        live.context === context &&
+        renderer === this.#rendererGeneration &&
+        context === this.#profileContextGeneration &&
+        asRecord(await isolate).id === live.isolate
+      ) {
+        await this.#agentWorlds.observeProfileResult(result, live.scripts);
+        return result;
+      }
+      await this.#agentWorlds.observeProfileResult(result, async (observe) => {
+        const isolateId = asRecord(await isolate).id;
+        if (typeof isolateId !== "string") return;
+        const sessionId = await this.#attachOwn().catch(() => null);
+        if (sessionId === null) return;
+
+        this.#profileInspections.set(sessionId, observe);
+        try {
+          const inspected = asRecord(await this.#dispatch("Runtime.getIsolateId", {}, sessionId));
+          if (inspected.id !== isolateId) return;
+          await this.#dispatch("Runtime.enable", {}, sessionId);
+          await this.#dispatch("Debugger.setSkipAllPauses", { skip: true }, sessionId);
+          await this.#dispatch("Debugger.setBreakpointsActive", { active: false }, sessionId);
+          await this.#dispatch("Debugger.enable", { maxScriptsCacheSize: 0 }, sessionId);
+          if (renderer !== this.#rendererGeneration || context !== this.#profileContextGeneration)
+            throw new SessionCdpRouterError(
+              "forbidden",
+              "The page changed while reading its profile.",
+            );
+        } finally {
+          await this.#detachOwn(sessionId);
+          this.#profileInspections.delete(sessionId);
+        }
+      });
+      return result;
+    } catch (error) {
+      if (error instanceof SessionCdpRouterError && error.code === "forbidden")
+        this.#onProfileRefused?.(cdpProfileRefusal(error) ?? "page-changed");
+      throw error;
+    } finally {
+      if (live) await this.#closeProfileInventory(live);
+    }
+  }
+
   async #agentTargets(
     channel: ElectronCdpChannel,
     method: string,
@@ -3031,6 +3681,9 @@ class ElectronDebuggerHub {
 
   async release(channel: ElectronCdpChannel): Promise<void> {
     if (!this.#channels.delete(channel)) return;
+    channel.markReleased();
+    if (this.#profileInventory?.channel === channel)
+      void this.#closeProfileInventory(this.#profileInventory);
     if (channel.targetSessionId)
       void this.#command("Target.detachFromTarget", { sessionId: channel.targetSessionId }).catch(
         () => undefined,
@@ -3049,8 +3702,8 @@ class ElectronDebuggerHub {
     const generation = this.#rendererGeneration;
     const current = () => generation === this.#rendererGeneration;
     await this.#serializeOwnership(async () => {
-      if (this.#screencastOwners.delete(channel) && this.#screencastOwners.size === 0 && current())
-        await this.#command("Page.stopScreencast").catch(() => undefined);
+      await this.#leaveCast(channel, generation).catch(() => undefined);
+      this.#handed.delete(channel);
       for (const domain of channel.enabledDomains) {
         const owners = this.#domainOwners.get(domain);
         owners?.delete(channel);
@@ -3083,7 +3736,10 @@ class ElectronDebuggerHub {
     this.#closed = true;
     const channels = [...this.#channels];
     this.#channels.clear();
-    for (const channel of channels) channel.clearListeners();
+    for (const channel of channels) {
+      channel.markReleased();
+      channel.clearListeners();
+    }
     try {
       await withTimeout(this.#terminate(new Error("Electron CDP target is closing.")), 2_000, {
         timeoutError: () => new Error("Electron CDP target teardown timed out."),
@@ -3093,7 +3749,7 @@ class ElectronDebuggerHub {
       this.#forcedDisposal.resolve();
       throw error;
     } finally {
-      if (this.#isAttached()) this.#debugger.detach();
+      this.#detachDebugger();
       this.#forgetContexts();
       this.#events.removeAllListeners();
     }
@@ -3110,7 +3766,11 @@ class ElectronDebuggerHub {
     if (this.#teardown) return this.#teardown;
     this.#interrupt(error);
     this.#domainOwners.clear();
-    this.#screencastOwners.clear();
+    // No cast is left; a private session one ran in is let go now, whether or not the
+    // debugger itself is detached after (a channel opened meanwhile keeps it attached).
+    this.#castsEnded("crashed");
+    this.#castOf.clear();
+    this.#casts.clear();
     this.#renderingOwners.clear();
     this.#updateThrottling();
     const teardown = (async () => {
@@ -3121,7 +3781,7 @@ class ElectronDebuggerHub {
           this.#destroyed,
           this.#forcedDisposal.promise,
         ]);
-      if (!this.#closed && this.#channels.size === 0 && this.#isAttached()) this.#debugger.detach();
+      if (!this.#closed && this.#channels.size === 0) this.#detachDebugger();
       this.#forgetContexts();
     })().finally(() => {
       if (this.#teardown === teardown) this.#teardown = null;
@@ -3132,7 +3792,7 @@ class ElectronDebuggerHub {
 
   #attach(): Promise<void> {
     if (this.#attachment) return this.#attachment;
-    if (!this.#debugger.isAttached()) this.#debugger.attach("1.3");
+    this.#attachDebugger();
     this.#contexts.clear();
     // Runtime commands wait until every context has been inventoried.
     const attachment = this.#dispatch("Runtime.enable").then(() => {
@@ -3151,22 +3811,45 @@ class ElectronDebuggerHub {
     return attachment;
   }
 
-  /** Reports the contexts that exist to a channel that enables Runtime, then each change. */
-  async #subscribe(channel: ElectronCdpChannel): Promise<Record<string, never>> {
-    if (this.#domainOwners.get("Runtime")?.has(channel)) return {};
-    const attachment = this.#attachment ?? this.#attach();
-    await attachment;
-    if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
-    const owners = this.#domainOwners.get("Runtime") ?? new Set<ElectronCdpChannel>();
-    owners.add(channel);
-    channel.enabledDomains.add("Runtime");
-    this.#domainOwners.set("Runtime", owners);
-    for (const context of this.#contexts.entries()) {
-      channel.emit("Runtime.executionContextCreated", {
-        context: context.description,
+  /**
+   * Reports the contexts that exist to a channel that enables Runtime, then each change.
+   * Waits for `#attachment` BEFORE entering `#serializeOwnership` (P1) so a held Chromium
+   * `Runtime.enable` never blocks `release()` or other channels' domain/screencast work.
+   */
+  #subscribe(channel: ElectronCdpChannel): Promise<Record<string, never>> {
+    if (this.#domainOwners.get("Runtime")?.has(channel)) return Promise.resolve({});
+    const epoch = channel.runtimeEpoch;
+    const subscription = (async (): Promise<Record<string, never>> => {
+      const attachment = this.#attachment ?? this.#attach();
+      await Promise.race([attachment, channel.released]);
+      if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
+      return this.#serializeOwnership(async () => {
+        if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
+        if (channel.runtimeEpoch !== epoch || this.#domainOwners.get("Runtime")?.has(channel)) {
+          return {};
+        }
+        const owners = this.#domainOwners.get("Runtime") ?? new Set<ElectronCdpChannel>();
+        owners.add(channel);
+        channel.enabledDomains.add("Runtime");
+        this.#domainOwners.set("Runtime", owners);
+        for (const context of this.#contexts.entries()) {
+          channel.emit("Runtime.executionContextCreated", {
+            context: context.description,
+          });
+        }
+        return {};
       });
-    }
-    return {};
+    })();
+    const completed = subscription.then(
+      () => undefined,
+      () => undefined,
+    );
+    channel.domainChanges.set("Runtime", completed);
+    void completed.then(() => {
+      if (channel.domainChanges.get("Runtime") === completed)
+        channel.domainChanges.delete("Runtime");
+    });
+    return subscription;
   }
 
   /**
@@ -3221,17 +3904,545 @@ class ElectronDebuggerHub {
     }
   }
 
-  /** The screencasting channel whose parameters Chromium's cast uses, with them. */
-  #deciding(): readonly [ElectronCdpChannel, Record<string, unknown> | undefined] | undefined {
-    const owners = [...this.#screencastOwners];
-    return owners.findLast(([owner]) => owner.role === "platform") ?? owners.at(-1);
+  /**
+   * A channel's start: it joins the running cast of the settings it asked for, or that cast
+   * starts. A run's identity is fixed at its start: the session it runs in, and Chromium's frame
+   * `sessionId` (`#laneFrame`); nothing is delivered or kept before the start has resolved. An
+   * owner alone in its cast hands that cast's session to the new one, so the start replaces its
+   * settings with no stop between; otherwise it keeps its old cast's frames until the new one has
+   * started, and joins a cast only once it has left its old one. A start that fails leaves the
+   * channel in the cast it had.
+   */
+  async #startCast(
+    channel: ElectronCdpChannel,
+    parameters: Record<string, unknown> | undefined,
+    send: (method: string, parameters?: Record<string, unknown>) => Promise<unknown>,
+    castGeneration: number,
+  ): Promise<unknown> {
+    const generation = this.#rendererGeneration;
+    const key = castKey(parameters);
+    // A channel closed while its start was queued does nothing: it joins nothing, resolves
+    // nothing and sends Chromium nothing, on every branch below.
+    this.#assertOpen(channel);
+    this.#assertCastCurrent(channel, castGeneration);
+    // Nothing read before an await is used after it unless read again.
+    const running = () =>
+      [...this.#casts].find(
+        (cast) => cast.key === key && cast.run?.started === true && cast.run.lane !== null,
+      );
+    if (running() !== undefined) {
+      // Out of its old cast first, then into the running one, as both are after the leaving.
+      if (this.#castOf.get(channel) !== running()) {
+        await this.#leaveCast(channel, generation);
+        this.#assertCurrent(generation);
+        this.#assertCastCurrent(channel, castGeneration);
+        this.#assertOpen(channel);
+      }
+      const joined = running();
+      if (joined?.run) {
+        this.#joinCast(channel, joined);
+        // One that asks again has reset what it shows: it is handed the latest frame too.
+        this.#replay(channel, joined.run);
+        return {};
+      }
+      // It ended while the channel left its old cast: it starts afresh, below.
+    }
+    const previous = this.#castOf.get(channel);
+    const same = [...this.#casts].find((cast) => cast.key === key);
+    const leavingAlone = previous !== undefined && previous !== same && previous.owners.size === 1;
+    // Casts that run or are starting: one whose renderer died runs nothing and holds no place.
+    const live = [...this.#casts].filter((cast) => cast.run !== null);
+    if (
+      same === undefined &&
+      channel.role !== "platform" &&
+      live.length - (leavingAlone && previous.run !== null ? 1 : 0) >= maxCastsPerPage
+    )
+      throw new Error(
+        `This page is already pictured in ${maxCastsPerPage} formats or sizes at once, the most it gives. Ask for one of those, or ask again when one of them ends.`,
+      );
+    const cast: Screencast = same ?? { key, owners: new Set(), run: null };
+    const left = previous !== undefined && previous !== cast ? previous : undefined;
+    const handed = leavingAlone && left?.run?.lane ? left.run : null;
+    const run: CastRun = {
+      awaitingAck: 0,
+      cast,
+      floor: 0,
+      frameSession: null,
+      lane: null,
+      lastFrame: null,
+      started: false,
+      unhanded: false,
+    };
+    if (handed && left) {
+      run.lane = handed.lane;
+      handed.lane = null;
+      left.run = null;
+      left.owners.delete(channel);
+      this.#castOf.delete(channel);
+      this.#casts.delete(left);
+    }
+    this.#casts.add(cast);
+    cast.run = run;
+    this.#castStarts += 1;
+    this.#updateThrottling();
+    let ending: Screencast | null = null;
+    let released = false;
+    let sentToChromium = false;
+    try {
+      this.#assertCurrent(generation);
+      this.#assertCastCurrent(channel, castGeneration);
+      if (run.lane === null) {
+        run.lane = this.#pageSessionFree(run)
+          ? { id: undefined }
+          : { id: await this.#attachOwn(generation) };
+        // A crash or the debugger's detach while it attached ended this run.
+        if (cast.run !== run)
+          throw new Error("Electron CDP renderer changed before command dispatch.");
+        this.#assertCastCurrent(channel, castGeneration);
+        this.#assertOpen(channel);
+      }
+      const lane = run.lane;
+      const laneKey = lane.id ?? "";
+      // Chromium numbers a session's casts upward, one more for each start it answers: every
+      // earlier run's frames carry at most the higher of what it sent and what it answered.
+      // The count is the debugger session's: one that lets go and attaches again counts afresh.
+      const session = this.#session;
+      const starts = session.laneStarts;
+      run.floor = Math.max(session.laneFrames.get(laneKey) ?? 0, starts.get(laneKey) ?? 0);
+      await (lane.id === undefined
+        ? send("Page.startScreencast", parameters)
+        : this.#command("Page.startScreencast", parameters, lane.id));
+      sentToChromium = true;
+      // Counted while its session lives: one let go meanwhile keeps no count.
+      if (lane.id === undefined || session.ownSessions.has(lane.id))
+        starts.set(laneKey, (starts.get(laneKey) ?? 0) + 1);
+      this.#assertCurrent(generation);
+      this.#assertCastCurrent(channel, castGeneration);
+      if (cast.run !== run || run.lane !== lane)
+        throw new Error("Electron CDP renderer changed before command dispatch.");
+      run.started = true;
+      if (this.#closed || !this.#channels.has(channel)) {
+        // A channel released while it waited joins nothing (its release leaves its old cast);
+        // the cast Chromium now runs for it ends unless someone else is in it.
+        released = true;
+        if (cast.owners.size === 0) ending = cast;
+      } else {
+        // The channel moves in one step, out of its old cast and into this one, so no frame of
+        // this run reaches no one; the old cast, if no one is left in it, ends after.
+        if (left && !handed) ending = this.#leaveMembership(channel);
+        this.#joinCast(channel, cast);
+      }
+      // A frame of this run that came before its start resolved is handed now, to each owner.
+      for (const owner of cast.owners) this.#replay(owner, run);
+    } catch (error) {
+      if (cast.run === run) cast.run = null;
+      const lane = run.lane;
+      // A frame of this run that came before its start failed was handed to no one: Chromium
+      // waits for its ack, which it gets before the run is forgotten.
+      if (run.unhanded && lane && run.frameSession !== null && run.awaitingAck > 0)
+        void this.#command(
+          "Page.screencastFrameAck",
+          { sessionId: run.frameSession },
+          lane.id,
+        ).catch(() => undefined);
+      run.lane = null;
+      // A renderer change, debugger detach, or private-session detach has ended the cast already.
+      const interrupted =
+        generation !== this.#rendererGeneration ||
+        (this.#castGenerations.get(channel) ?? 0) !== castGeneration;
+      if (handed && left && !interrupted && lane !== null) {
+        handed.lane = lane;
+        left.run = handed;
+        this.#casts.add(left);
+        // A released channel's cast is not restored for anyone to inherit.
+        if (this.#channels.has(channel)) this.#joinCast(channel, left);
+        else await this.#endCast(left, generation).catch(() => undefined);
+      } else if (lane?.id !== undefined) {
+        // A session attached for this start is let go, whoever else is in the cast.
+        await this.#detachOwn(lane.id);
+      } else if (
+        sentToChromium &&
+        lane !== null &&
+        generation === this.#rendererGeneration &&
+        this.#pageSessionFree(run)
+      ) {
+        // W3: a start the hub sent on the page's own session and then failed still took effect in
+        // Chromium; stop it when no other run owns that session.
+        await this.#command("Page.stopScreencast", undefined, undefined).catch(() => undefined);
+      }
+      if (cast.owners.size === 0) this.#casts.delete(cast);
+      throw error;
+    } finally {
+      this.#castStarts -= 1;
+      this.#updateThrottling();
+    }
+    // The start is done whatever ending the old cast comes to.
+    if (ending) await this.#endCast(ending, generation).catch(() => undefined);
+    if (released) throw new Error("CDP channel is closed.");
+    return {};
+  }
+
+  #joinCast(channel: ElectronCdpChannel, cast: Screencast): void {
+    cast.owners.add(channel);
+    this.#castOf.set(channel, cast);
+    this.#updateThrottling();
+  }
+
+  /** The channel leaves its cast, and a cast no one is left in ends. */
+  async #leaveCast(
+    channel: ElectronCdpChannel,
+    generation: number,
+    parameters?: Record<string, unknown>,
+  ): Promise<void> {
+    const empty = this.#leaveMembership(channel);
+    if (empty) await this.#endCast(empty, generation, parameters);
+  }
+
+  /**
+   * The channel is no longer one of its cast's owners, at once; the cast, if no one is left in it,
+   * is returned to be ended. What it was handed stays: its late acks go to that run, or nowhere.
+   */
+  #leaveMembership(channel: ElectronCdpChannel): Screencast | null {
+    const cast = this.#castOf.get(channel);
+    if (!cast) return null;
+    cast.owners.delete(channel);
+    this.#castOf.delete(channel);
+    this.#updateThrottling();
+    return cast.owners.size === 0 ? cast : null;
+  }
+
+  /** Whether the page's own session runs no cast but `run`. */
+  #pageSessionFree(run: CastRun): boolean {
+    for (const cast of this.#casts)
+      if (cast.run && cast.run !== run && cast.run.lane && cast.run.lane.id === undefined)
+        return false;
+    return true;
+  }
+
+  /** The run cast in `lane` (undefined: the page's own session), if one is. */
+  #runIn(lane: string | undefined): CastRun | null {
+    for (const cast of this.#casts)
+      if (cast.run?.lane && cast.run.lane.id === lane) return cast.run;
+    return null;
+  }
+
+  /**
+   * A frame Chromium sent in `lane`. It belongs to the run cast there only once that run's start
+   * has resolved and it carries the run's frame `sessionId`: Chromium numbers a session's casts
+   * upward, so a run's first frame names it, and anything at or below the highest id the session
+   * had sent before the run started is an earlier run's, late. A frame that is not the run's is
+   * not delivered, kept or counted.
+   */
+  #laneFrame(lane: string | undefined, frame: Record<string, unknown>): void {
+    const id = Number(frame.sessionId);
+    if (!Number.isFinite(id)) return;
+    const key = lane ?? "";
+    // A session of the hub's own it has let go keeps no count: no cast runs in it again.
+    if (lane !== undefined && !this.#session.ownSessions.has(lane)) return;
+    if (id > (this.#session.laneFrames.get(key) ?? 0)) this.#session.laneFrames.set(key, id);
+    const run = this.#runIn(lane);
+    if (!run) return;
+    if (run.frameSession === null) {
+      if (id <= run.floor) return;
+      run.frameSession = id;
+    } else if (id !== run.frameSession) return;
+    if (!run.started) {
+      // This run's, though its start has not resolved: it is kept, to be handed once it has, and
+      // reaches no one before. Chromium waits for an ack of each frame it sends, and stops for
+      // good at two: one this one replaces is acked here.
+      if (run.unhanded && run.lastFrame !== null && run.lane)
+        void this.#command("Page.screencastFrameAck", { sessionId: id }, run.lane.id).catch(
+          () => undefined,
+        );
+      else run.awaitingAck += 1;
+      run.lastFrame = frame;
+      run.unhanded = true;
+      return;
+    }
+    run.lastFrame = frame;
+    run.unhanded = false;
+    run.awaitingAck += 1;
+    for (const owner of run.cast.owners) this.#hand(owner, run, id, frame);
+  }
+
+  #hand(
+    owner: ElectronCdpChannel,
+    run: CastRun,
+    frame: number,
+    parameters: Record<string, unknown>,
+  ): void {
+    const handed = this.#handed.get(owner) ?? [];
+    handed.push({ frame, run });
+    // An owner that never acks keeps no more than this.
+    if (handed.length > 16) handed.shift();
+    this.#handed.set(owner, handed);
+    owner.emit("Page.screencastFrame", parameters);
+  }
+
+  #replay(channel: ElectronCdpChannel, run: CastRun): void {
+    if (run.lastFrame !== null && run.frameSession !== null) run.unhanded = false;
+    if (run.lastFrame !== null && run.frameSession !== null)
+      this.#hand(channel, run, run.frameSession, run.lastFrame);
+  }
+
+  /**
+   * An owner's ack goes to the run that handed it that frame, in that run's session, once for each
+   * frame Chromium sent there, from whichever of its owners acks first (a slow one holds no one
+   * up). An ack of a run that has ended, or of a frame the owner was never handed, goes nowhere.
+   */
+  #ackCast(channel: ElectronCdpChannel, parameters: CdpParameters | undefined): Promise<unknown> {
+    const frame = Number(asRecord(parameters).sessionId);
+    const handed = this.#handed.get(channel) ?? [];
+    const at = handed.findIndex((entry) => entry.frame === frame);
+    if (at < 0) return Promise.resolve({});
+    const run = handed.splice(0, at + 1).at(-1)!.run;
+    if (run.cast.run !== run || !run.started || !run.lane || run.awaitingAck === 0)
+      return Promise.resolve({});
+    run.awaitingAck -= 1;
+    return this.#command("Page.screencastFrameAck", parameters, run.lane.id);
+  }
+
+  /**
+   * No one is left in `cast`: it ends. Its private session is let go on every path; the page's own
+   * session is asked to stop only while the generation it was asked in lasts (a renderer change
+   * or the debugger's detach has ended that cast already).
+   */
+  async #endCast(
+    cast: Screencast,
+    generation: number,
+    parameters?: Record<string, unknown>,
+  ): Promise<void> {
+    this.#casts.delete(cast);
+    const run = cast.run;
+    cast.run = null;
+    const lane = run?.lane ?? null;
+    if (run) run.lane = null;
+    if (lane === null) return;
+    if (lane.id !== undefined) return this.#detachOwn(lane.id);
+    if (generation !== this.#rendererGeneration) return;
+    await this.#command("Page.stopScreencast", parameters);
+  }
+
+  /**
+   * Chromium casts no more: no cast is left, and no channel owns one until it asks again (its
+   * start is then sent anew); no old frame is handed to anyone. A private session a cast ran in is let go (`crashed`, and on the last channel's
+   * release), or is already gone with the debugger (`detached`).
+   */
+  #castsEnded(how: "crashed" | "detached"): void {
+    // Each channel a cast of which ended is told so on it: Chromium says nothing of it.
+    const told = new Set<ElectronCdpChannel>();
+    for (const cast of this.#casts) for (const owner of cast.owners) told.add(owner);
+    for (const cast of this.#casts) {
+      const lane = cast.run?.lane ?? null;
+      if (cast.run) cast.run.lane = null;
+      cast.run = null;
+      if (how === "crashed" && lane?.id !== undefined) void this.#detachOwn(lane.id);
+      // Ownership ends with the run: a channel owns a cast again only by asking after this.
+      cast.owners.clear();
+    }
+    this.#casts.clear();
+    this.#castOf.clear();
+    this.#handed.clear();
+    this.#updateThrottling();
+    for (const channel of told) channel.castsEnded();
+  }
+
+  /** The hub attaches the debugger, if it is not: a new session, counted afresh. */
+  #attachDebugger(): void {
+    if (this.#debugger.isAttached()) return;
+    this.#debugger.attach("1.3");
+    this.#session = new DebuggerSessionState();
+  }
+
+  /**
+   * The hub lets the debugger go. Electron says nothing of a detach it was asked for (no "detach"
+   * event), so what the session counted ends here too.
+   */
+  #detachDebugger(): void {
+    try {
+      if (this.#isAttached()) this.#debugger.detach();
+    } finally {
+      this.#debuggerSessionEnded();
+    }
+  }
+
+  /**
+   * The debugger session is gone, however it went: its frame and start counts, the hub's own
+   * sessions and every event held for them go with it, and the next session starts from nothing.
+   * A start or attach still answering counts in the session it was asked in, never the next.
+   */
+  #debuggerSessionEnded(): void {
+    this.#session = new DebuggerSessionState();
+  }
+
+  /**
+   * No one is handed a cast's latest frame any more. One kept for a start not yet answered was
+   * never handed to anyone, and Chromium waits for its ack: it is acked here, not forgotten.
+   */
+  #forgetLatestFrames(): void {
+    for (const cast of this.#casts) {
+      const run = cast.run;
+      if (!run || run.lastFrame === null) continue;
+      if (run.unhanded && run.lane && run.frameSession !== null && run.awaitingAck > 0) {
+        run.awaitingAck -= 1;
+        void this.#command(
+          "Page.screencastFrameAck",
+          { sessionId: run.frameSession },
+          run.lane.id,
+        ).catch(() => undefined);
+      }
+      run.lastFrame = null;
+      run.unhanded = false;
+    }
+  }
+
+  /**
+   * A session of the hub's own on this page. Its attach event reaches no channel, even one that
+   * arrives before the attach answers. The attach goes straight to the debugger: a session it
+   * opens is the hub's whatever happens to its caller meanwhile, and one that answers after its
+   * caller was interrupted is let go at once, never left attached.
+   */
+  async #attachOwn(generation = this.#rendererGeneration): Promise<string> {
+    const info = asRecord(await this.#command("Target.getTargetInfo"));
+    const targetId = asRecord(info.targetInfo).targetId;
+    if (typeof targetId !== "string") throw new Error("Browser page target is unavailable");
+    const session = this.#session;
+    return new Promise<string>((resolve, reject) => {
+      {
+        let interrupted = false;
+        const interrupt = (error: Error) => {
+          interrupted = true;
+          reject(error);
+        };
+        this.#pending.add(interrupt);
+        const answered = (sessionId: unknown) => {
+          this.#pending.delete(interrupt);
+          if (typeof sessionId !== "string") {
+            reject(new Error("Page debugger did not return a session"));
+            return;
+          }
+          session.ownSessions.add(sessionId);
+          session.ownSessionsSeen.add(sessionId);
+          if (interrupted || generation !== this.#rendererGeneration || session !== this.#session) {
+            void this.#detachOwn(sessionId);
+            reject(new Error("Electron CDP renderer changed before command dispatch."));
+            return;
+          }
+          resolve(sessionId);
+        };
+        if (this.#webContents.isDestroyed() || !this.#debugger.isAttached()) {
+          this.#pending.delete(interrupt);
+          reject(new Error("Electron CDP target is closed."));
+          return;
+        }
+        // Counted until Chromium answers, not until the caller stops waiting: an interrupted
+        // caller's session is still announced, and is still the hub's.
+        session.ownAttaching += 1;
+        const settled = () => {
+          session.ownAttaching -= 1;
+          if (session.ownAttaching === 0 && session === this.#session) this.#releaseHeldEvents();
+        };
+        const failed = (error: unknown) => {
+          this.#pending.delete(interrupt);
+          reject(error instanceof Error ? error : new Error(String(error)));
+          settled();
+        };
+        // Released on every exit: an answer, a refusal, or a throw before anything was sent.
+        let sent: Promise<unknown>;
+        try {
+          sent = this.#debugger.sendCommand("Target.attachToTarget", { targetId, flatten: true });
+        } catch (error) {
+          failed(error);
+          return;
+        }
+        void sent.then((result) => {
+          answered(asRecord(result).sessionId);
+          settled();
+        }, failed);
+      }
+    });
+  }
+
+  /** An event of the page's own session, to the channels that hear it. */
+  #pageEvent(method: string, record: Record<string, unknown>): void {
+    this.#contexts.observe(method, record);
+    const pageEvent = this.#agentWorlds.observe(method, record);
+    if (method.startsWith("Runtime.executionContext"))
+      for (const channel of this.#channels) channel.observeContextEvent(method, record);
+    if (method === "Page.screencastFrame") {
+      this.#laneFrame(undefined, record);
+      return;
+    }
+    const recipients = this.#domainOwners.get(method.split(".", 1)[0] ?? "");
+    for (const channel of recipients ?? []) {
+      if (channel.role === "agent" && !pageEvent) {
+        if (method === "Debugger.paused")
+          void this.#command("Debugger.resume").catch(() => undefined);
+        continue;
+      }
+      channel.emit(method, record);
+    }
+  }
+
+  /** The Target events held while the hub's own attach was unanswered, in the order they came. */
+  #releaseHeldEvents(): void {
+    const held = this.#session.held;
+    this.#session.held = [];
+    for (const { method, record } of held) this.#targetOrPageEvent(method, record);
+  }
+
+  /** A Target event about one of the hub's own sessions reaches no channel; any other does. */
+  #targetOrPageEvent(method: string, record: Record<string, unknown>): void {
+    const own = typeof record.sessionId === "string" ? record.sessionId : null;
+    if (
+      (method === "Target.attachedToTarget" || method === "Target.detachedFromTarget") &&
+      own !== null &&
+      this.#session.ownSessionsSeen.has(own)
+    ) {
+      if (method === "Target.detachedFromTarget") this.#ownSessionGone(own);
+      return;
+    }
+    this.#pageEvent(method, record);
+  }
+
+  /**
+   * One of the hub's own sessions is let go: once, whatever path asks, and straight to the
+   * debugger, since a crashed page or a teardown refuses every other command.
+   */
+  async #detachOwn(sessionId: string): Promise<void> {
+    if (!this.#session.ownSessions.has(sessionId)) return;
+    this.#session.letGo(sessionId);
+    if (this.#webContents.isDestroyed() || !this.#debugger.isAttached()) return;
+    await this.#debugger
+      .sendCommand("Target.detachFromTarget", { sessionId })
+      .then(() => undefined)
+      .catch(() => undefined);
+  }
+
+  /** Chromium detached one of the hub's own sessions itself: nothing is left to let go. */
+  #ownSessionGone(sessionId: string): void {
+    this.#session.gone(sessionId);
+    const run = this.#runIn(sessionId);
+    if (run) {
+      run.lane = null;
+      if (run.cast.run === run) run.cast.run = null;
+      // Ownership ends with the run, as when a crash ends the casts: a channel owns a cast again
+      // only by asking after this, and each owner is told so on it, as `#castsEnded` tells them.
+      const told = [...run.cast.owners];
+      for (const owner of told) this.#castOf.delete(owner);
+      run.cast.owners.clear();
+      this.#casts.delete(run.cast);
+      this.#updateThrottling();
+      this.#failChannelCasts(told, new Error("Electron screencast session detached."));
+    }
   }
 
   #updateThrottling(): void {
     if (this.#closed || this.#webContents.isDestroyed()) return;
     // Demand hidden compositing only for active visual operations (screencasts,
     // screenshots, paint waits, or in-flight input), never for an idle agent CDP channel.
-    const demanded = this.#screencastOwners.size > 0 || this.#renderingOwners.size > 0;
+    const demanded =
+      this.#castOf.size > 0 || this.#castStarts > 0 || this.#renderingOwners.size > 0;
     this.#setRenderingDemand(demanded);
   }
 
@@ -3322,15 +4533,70 @@ class ElectronDebuggerHub {
 
   #interrupt(error: Error): void {
     this.#rendererGeneration += 1;
+    if (this.#profileInventory) void this.#closeProfileInventory(this.#profileInventory);
     this.#inputReady = null;
     this.#gate = null;
     for (const reject of this.#pending) reject(error);
     this.#pending.clear();
   }
 
+  #assertOpen(channel: ElectronCdpChannel): void {
+    if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
+  }
+
   #assertCurrent(generation: number): void {
     if (generation !== this.#rendererGeneration)
       throw new Error("Electron CDP renderer changed before command dispatch.");
+  }
+
+  #assertCastCurrent(channel: ElectronCdpChannel, castGeneration: number): void {
+    if ((this.#castGenerations.get(channel) ?? 0) !== castGeneration)
+      throw new Error("Electron screencast session ended before command dispatch.");
+  }
+
+  /**
+   * Serializes one channel's cast start or stop on `#ownershipTail` under that channel's own cast
+   * generation, so ending that channel's cast fails its queued cast commands before they take
+   * effect without touching any other channel's commands (U2).
+   */
+  #castCommand<T>(
+    channel: ElectronCdpChannel,
+    operation: (castGeneration: number) => Promise<T>,
+  ): Promise<T> {
+    const castGeneration = this.#castGenerations.get(channel) ?? 0;
+    const command = Promise.withResolvers<T>();
+    let pending = this.#castPending.get(channel);
+    if (!pending) {
+      pending = new Set();
+      this.#castPending.set(channel, pending);
+    }
+    pending.add(command.reject);
+    const settle = () => {
+      const set = this.#castPending.get(channel);
+      set?.delete(command.reject);
+      if (set?.size === 0) this.#castPending.delete(channel);
+    };
+    void command.promise.then(settle, settle);
+    void this.#serializeOwnership(() => {
+      this.#assertCastCurrent(channel, castGeneration);
+      return operation(castGeneration);
+    }).then(command.resolve, command.reject);
+    return command.promise;
+  }
+
+  /** Ends cast commands held for `channels` alone, after telling each channel its cast ended (U2). */
+  #failChannelCasts(channels: readonly ElectronCdpChannel[], error: Error): void {
+    const pending: Array<(error: Error) => void> = [];
+    for (const channel of channels) {
+      this.#castGenerations.set(channel, (this.#castGenerations.get(channel) ?? 0) + 1);
+      const set = this.#castPending.get(channel);
+      if (set) {
+        for (const reject of set) pending.push(reject);
+        this.#castPending.delete(channel);
+      }
+    }
+    for (const channel of channels) channel.castsEnded();
+    for (const reject of pending) reject(error);
   }
 
   /**
@@ -3386,9 +4652,11 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
   /** This channel's domain enables and disables that have not completed. */
   readonly domainChanges = new Map<string, Promise<void>>();
   readonly enabledDomains = new Set<string>();
+  runtimeEpoch = 0;
   readonly role: ChannelRole;
   targetSessionId: string | undefined;
   targetConnection: Promise<string> | undefined;
+  readonly #released = Promise.withResolvers<never>();
   readonly #worlds = new CdpProductIsolation();
   readonly #events = new EventEmitter();
   readonly #hub: ElectronDebuggerHub;
@@ -3397,6 +4665,15 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
   constructor(hub: ElectronDebuggerHub, role: ChannelRole) {
     this.#hub = hub;
     this.role = role;
+    void this.#released.promise.catch(() => undefined);
+  }
+
+  get released(): Promise<never> {
+    return this.#released.promise;
+  }
+
+  markReleased(): void {
+    this.#released.reject(new Error("CDP channel is closed."));
   }
 
   close(): Promise<void> {
@@ -3430,7 +4707,8 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
         parameters = { ...parameters, executionContextName: "" };
     }
     return this.#hub.send(this, method, parameters).then((result) => {
-      if (this.role === "agent") this.#worlds.observeResult(method, parameters ?? {}, result);
+      if (this.role === "agent" && method !== "Profiler.stop")
+        this.#worlds.observeResult(method, parameters ?? {}, result);
       return result as Result;
     });
   }
@@ -3466,6 +4744,11 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
     this.#events.emit(method, parameters);
   }
 
+  /** The hub ended this channel's casts itself: said on it, to whoever listens for exactly that. */
+  castsEnded(): void {
+    if (!this.#closed) this.#events.emit(screencastEndedEvent, {});
+  }
+
   clearListeners(): void {
     this.#events.removeAllListeners();
   }
@@ -3486,11 +4769,20 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     });
   }
 
+  setHomeAddresses(home: ThisHomeAddressSet): void {
+    this.#context.setHomeAddresses(home);
+  }
+
   async attach(targetId: string): Promise<CdpChannel> {
     this.#assertOpen();
     const page = await this.#context.pageByTargetId(targetId);
     if (!page) throw new Error("CDP target is not an attachable page in this Profile Host.");
     return page.agentCdp();
+  }
+
+  setConnectionControlled(targetId: string, controlled: boolean): void {
+    if (this.#closed) return;
+    this.#context.setTargetConnectionControlled(targetId, controlled);
   }
 
   assertScope(method: string, parameters: CdpParameters): void {
@@ -3587,6 +4879,21 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     const channel = await page.agentCdp();
     try {
       return await channel.send(method, routed);
+    } catch (error) {
+      // Electron discards the CDP error code and rejects with only its message.
+      if (
+        (method === "Browser.setDownloadBehavior" || method === "Browser.cancelDownload") &&
+        error instanceof Error &&
+        (error.message === `'${method}' wasn't found` ||
+          error.message === "Not allowed" ||
+          error.message === "Browser context management is not supported.")
+      )
+        throw new SessionCdpRouterError(
+          "forbidden",
+          `${method} cannot be scoped to this browser profile by this Electron version.`,
+          { cause: error },
+        );
+      throw error;
     } finally {
       await channel.close();
     }
@@ -3625,8 +4932,14 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
             throw new Error("Extensions.triggerAction targetId must be a non-empty string.");
           }
           const targetPage = await this.#context.pageByTargetId(parameters.targetId);
-          if (!targetPage) throw new Error("CDP target does not exist in this Profile Host.");
-          targetContents = targetPage.view.webContents;
+          if (!targetPage || targetPage.isClosed()) {
+            throw new Error("CDP target does not exist in this Profile Host.");
+          }
+          const contents = targetPage.view.webContents;
+          if (!contents || contents.isDestroyed()) {
+            throw new Error("CDP target does not exist in this Profile Host.");
+          }
+          targetContents = contents;
         }
         await extensions.triggerAction(parameters.id, targetContents);
         return {};
@@ -3641,15 +4954,155 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
   }
 }
 
-function isAllowedBrowserNavigation(value: string, popup = false): boolean {
+/**
+ * Whether the page in `contents` may reach `url` when the navigation or window was started by a
+ * frame of one of `initiators` (all of them must be allowed; none known is a refusal). Anything
+ * that is not an extension address is not this rule's to decide.
+ */
+function mayPageReachExtension(
+  contents: WebContents,
+  url: string,
+  initiators: readonly (WebFrameMain | null | undefined)[],
+): boolean {
+  if (!isExtensionUrl(url)) return true;
+  const manifestOf = profileManifests(contents);
+  return (
+    initiators.length > 0 &&
+    initiators.every((frame) => mayReachExtensionResource(url, frameOrigin(frame), manifestOf))
+  );
+}
+
+/**
+ * Whether a redirect of the page's navigation to the extension address `url` may go on.
+ * A web response's redirect is judged by its origin (W1); into a dynamic address, that origin is
+ * carried to the hop that follows. Chromium's own dynamic-to-static hop is judged as the static
+ * address by how the navigation came to the dynamic one: the frame that started it, the web
+ * origin whose redirect led there (a `use_dynamic_url` entry counts as listed for this hop), or
+ * the browser itself (Opensteer's own load, let through as at a static address). A redirect the
+ * session did not see is refused.
+ */
+function mayRedirectIntoExtension(
+  contents: WebContents,
+  session: Session,
+  frameTreeNodeId: number,
+  url: string,
+  redirect: ExtensionRedirect | undefined,
+): boolean {
+  const manifests = profileManifests(contents);
+  if (redirect?.dynamicHop) {
+    const judge = redirect.judge;
+    if (!judge) return false;
+    if (judge.kind === "browser") return true;
+    return mayReachExtensionResource(url, judge.origin, manifests, {
+      dynamicAlias: true,
+      ...(judge.kind === "redirect" ? { redirect: true } : {}),
+    });
+  }
+  const from = redirect?.from;
+  if (from === undefined || !mayReachExtensionResource(url, from, manifests, { redirect: true }))
+    return false;
+  if (isDynamicExtensionUrl(url))
+    extensionRedirectedIntoDynamic(session, contents.id, frameTreeNodeId, url, from);
+  return true;
+}
+
+/** A frame's tree node id, or undefined when there is no frame or it is gone. */
+function frameTreeNodeIdOf(frame: WebFrameMain | null | undefined): number | undefined {
+  try {
+    return frame?.frameTreeNodeId;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The page's frame with this process and routing id, if it is still there. */
+function frameById(
+  contents: WebContents,
+  processId: number,
+  routingId: number,
+): WebFrameMain | undefined {
+  try {
+    if (contents.isDestroyed()) return undefined;
+    return contents.mainFrame.framesInSubtree.find(
+      (frame) => frame.processId === processId && frame.routingId === routingId,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** The manifests of the extensions loaded in the page's own profile. */
+function profileManifests(contents: WebContents): (extensionId: string) => unknown {
+  return (extensionId) =>
+    contents.isDestroyed()
+      ? undefined
+      : contents.session.extensions.getExtension(extensionId)?.manifest;
+}
+
+/** A frame's origin, or undefined when there is no frame or it is gone. */
+function frameOrigin(frame: WebFrameMain | null | undefined): string | undefined {
+  try {
+    return frame?.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether a window the page opens at the extension address `details.url` may open (Electron does
+ * not say which frame opened it). The referrer the browser reports names the opener's origin
+ * when present; it must be the origin of a live frame of the page, and is judged as that frame.
+ * Without one (no-referrer, a sandboxed or extension opener), every frame of the page must be
+ * allowed; when one is not, the window's own first navigation decides ("popup-judges").
+ */
+function windowOpenerVerdict(
+  contents: WebContents,
+  details: { readonly url: string; readonly referrer?: Electron.Referrer },
+): "allow" | "deny" | "popup-judges" {
+  // A dynamic address is an alias whose static address only its first navigation's hop shows:
+  // never loaded by Opensteer, judged there (R1).
+  if (isDynamicExtensionUrl(details.url)) return "popup-judges";
+  const frames = openerFrames(contents);
+  const manifests = profileManifests(contents);
+  const referrer = details.referrer?.url;
+  if (referrer) {
+    let origin: string;
+    try {
+      origin = new URL(referrer).origin;
+    } catch {
+      return "deny";
+    }
+    if (!frames.some((frame) => frameOrigin(frame) === origin)) return "deny";
+    return mayReachExtensionResource(details.url, origin, manifests) ? "allow" : "deny";
+  }
+  const allowed = frames.filter((frame) =>
+    mayReachExtensionResource(details.url, frameOrigin(frame), manifests),
+  );
+  if (allowed.length === 0) return "deny";
+  return allowed.length === frames.length ? "allow" : "popup-judges";
+}
+
+/** Every frame of the page that may have opened a window. */
+function openerFrames(contents: WebContents): readonly WebFrameMain[] {
+  try {
+    return contents.isDestroyed() ? [] : contents.mainFrame.framesInSubtree;
+  } catch {
+    return [];
+  }
+}
+
+function isAllowedBrowserNavigation(value: string, popup = false, allowExtensions = true): boolean {
   if (value === "about:blank") return true;
+  if (!allowExtensions && isExtensionUrl(value)) return false;
   try {
     const protocol = new URL(value).protocol;
-    // Chromium itself keeps web pages from extension pages they may not reach.
+    // Electron does not keep web pages from extension pages (its Chromium has no extension
+    // navigation throttle): the page's own navigations also pass mayPageReachExtension.
+    // Connection-controlled pages never navigate to extension pages at all (M1a).
     return (
       protocol === "http:" ||
       protocol === "https:" ||
-      protocol === "chrome-extension:" ||
+      (allowExtensions && protocol === "chrome-extension:") ||
       (popup && protocol === "blob:")
     );
   } catch {
@@ -3661,6 +5114,56 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/**
+ * The most casts one page runs at once, each its own capture and encode on every frame the page
+ * draws: the person's view here, the same page on their phone at another size, and one agent's
+ * picture. A request for a fourth is refused and takes nothing from the casts that run; the
+ * person's own view (a platform channel) is never the one refused.
+ */
+const maxCastsPerPage = 3;
+
+/** One of a page's screencasts: the settings it was asked for, its owners, and its current run. */
+interface Screencast {
+  readonly key: string;
+  readonly owners: Set<ElectronCdpChannel>;
+  run: CastRun | null;
+}
+
+/** A cast as Chromium runs it, from one start: its identity is fixed there. */
+interface CastRun {
+  readonly cast: Screencast;
+  /** Where it runs: the page's own session (`id` undefined) or a private one; null once ended. */
+  lane: { readonly id: string | undefined } | null;
+  /** Whether its start has resolved: nothing is delivered or kept before. */
+  started: boolean;
+  /** Chromium's frame `sessionId` for it, from its first frame above `floor`. */
+  frameSession: number | null;
+  /** The highest frame id its session had sent when it started: anything at or below is earlier runs'. */
+  floor: number;
+  /** Its latest frame, for an owner that joins it: a still page sends no other. */
+  lastFrame: Record<string, unknown> | null;
+  /** Whether `lastFrame` reached no one yet: kept before its start resolved. */
+  unhanded: boolean;
+  /**
+   * Frames Chromium sent in it and has had no ack for. Chromium sends no more while two wait:
+   * every one it sent is acked once.
+   */
+  awaitingAck: number;
+}
+
+/** A cast's settings with Chromium's defaults filled in, so equal settings compare equal. */
+function castKey(parameters: Record<string, unknown> | undefined): string {
+  const value = parameters ?? {};
+  const format = value.format === "jpeg" ? "jpeg" : "png";
+  return JSON.stringify({
+    everyNthFrame: value.everyNthFrame ?? 1,
+    format,
+    maxHeight: value.maxHeight ?? null,
+    maxWidth: value.maxWidth ?? null,
+    quality: format === "jpeg" ? (value.quality ?? 80) : null,
+  });
 }
 
 function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {

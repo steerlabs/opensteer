@@ -1,3 +1,12 @@
+import {
+  BrowserSourcePairV6InputSchema,
+  browserSourceTabWire,
+  browserSourceTabDetachWire,
+  browserSourceTabDetachReplayWire,
+  browserSourceTabFrameBytes,
+  browserSourceTabBufferedBytes,
+} from "@opensteer/browser-source-wire/frames";
+import type { ChromeSharedTabs } from "./chrome-shared-tabs.js";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
@@ -5,6 +14,7 @@ import {
   OpensteerError,
   browserSessionClosedReason,
   type BrowserSourceId,
+  type DeviceId,
   type Request,
   type RequestId,
   type RunId,
@@ -20,7 +30,6 @@ import type { BrowserSessionId } from "@opensteer/protocol";
 import {
   BrowserSignInRequestResponseSchema,
   BrowserSourceClientMessageSchema,
-  BrowserSourcePairInputSchema,
   browserSourceWireCurrent,
   browserSourceWireFloor,
   maxBrowserSourceFrameBytes,
@@ -60,6 +69,7 @@ import {
   type PersonalHostAccessRouteEnvelope,
 } from "@opensteer/deployment-authority";
 import type { BrowserService, BrowserSignInTarget } from "./browser-service.js";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import {
   admitSignIn,
   admitWithin,
@@ -95,6 +105,8 @@ type AgentCopyInput = {
 type ClientMessage = BrowserSourceClientMessage | BrowserSourceClientFrame;
 type SourceReply = Extract<ClientMessage, { operationId: string }>;
 type SourceSocket = {
+  tabRelay?: ReturnType<ChromeSharedTabs["connectSource"]>;
+  readonly liveTabsOnly: boolean;
   readonly sourceId: BrowserSourceId;
   readonly ownerId: UserId;
   readonly generation: number;
@@ -162,6 +174,7 @@ type SignInRequests = Pick<
  * checks the site scope, re-checks authority, and sends `state.import` itself.
  */
 export class BrowserSourceService {
+  readonly liveTabs: ChromeSharedTabs | undefined;
   readonly #deploymentId: DeploymentId;
   readonly #store: BrowserSourceStore;
   readonly #requests: SignInRequests;
@@ -180,14 +193,22 @@ export class BrowserSourceService {
   readonly #authenticating = new Set<SourceSocket>();
   readonly #pendingByAddress = new Map<string, number>();
   readonly #turns = new Map<string, Promise<unknown>>();
+  /** Invocations whose `state.import` crossed the submit edge and lost their reply (rule 4). */
+  readonly #uncertainInvocations = new Set<string>();
   readonly #pairChallenges = new Map<string, number[]>();
   readonly #drains = new Map<UserId, Promise<void>>();
   readonly #calls = new Map<string, number[]>();
   readonly #heartbeat: ReturnType<typeof setInterval>;
+  readonly #computerName:
+    ((ownerId: UserId, deviceId: DeviceId) => Promise<string | null>) | undefined;
+  readonly #pairingDevice: ((ownerId: UserId) => Promise<DeviceId | undefined>) | undefined;
   readonly #refusesSite: (site: string) => Promise<boolean>;
   #closed = false;
 
   constructor(options: {
+    readonly liveTabs?: ChromeSharedTabs;
+    readonly computerName?: (ownerId: UserId, deviceId: DeviceId) => Promise<string | null>;
+    readonly pairingDevice?: (ownerId: UserId) => Promise<DeviceId | undefined>;
     readonly deploymentId: DeploymentId;
     readonly store: BrowserSourceStore;
     readonly requests: SignInRequests;
@@ -200,6 +221,9 @@ export class BrowserSourceService {
     readonly onError?: (error: unknown) => void;
     readonly now?: () => number;
   }) {
+    this.liveTabs = options.liveTabs;
+    this.#pairingDevice = options.pairingDevice;
+    this.#computerName = options.computerName;
     this.#deploymentId = options.deploymentId;
     this.#store = options.store;
     this.#requests = options.requests;
@@ -227,7 +251,9 @@ export class BrowserSourceService {
   }): Promise<{ readonly code: string; readonly expiresAt: string }> {
     const code = randomBytes(32).toString("base64url");
     const expiresAt = new Date(this.#now() + pairingLifetimeMs);
+    const deviceId = await this.#pairingDevice?.(input.ownerId);
     await this.#store.createPairing({
+      ...(deviceId ? { deviceId } : {}),
       codeHash: digest(code),
       ownerId: input.ownerId,
       expiresAt,
@@ -242,8 +268,13 @@ export class BrowserSourceService {
     input: unknown,
     ingressOrigin: string,
   ): Promise<{ readonly sourceId: BrowserSourceId; readonly token: string }> {
-    const parsed = BrowserSourcePairInputSchema.parse(input);
-    if (parsed.version < browserSourceWireFloor || parsed.version > browserSourceWireCurrent) {
+    const parsed = BrowserSourcePairV6InputSchema.parse(input);
+    if (
+      parsed.version < browserSourceWireFloor ||
+      parsed.version > browserSourceWireCurrent ||
+      (parsed.capability === "live-tabs" &&
+        (parsed.version < browserSourceTabWire || !this.liveTabs))
+    ) {
       throw new OpensteerError({
         code: "bad_request",
         reason: "unsupported-version",
@@ -255,6 +286,7 @@ export class BrowserSourceService {
     const source = await this.#store.consumePairing({
       codeHash: digest(parsed.code),
       tokenHash: digest(token),
+      liveTabsOnly: parsed.capability === "live-tabs",
       name: parsed.name,
       origin: parsed.origin,
       routeGeneration: parsed.routeGeneration,
@@ -262,7 +294,13 @@ export class BrowserSourceService {
         ? { sourceId: parsed.replaces.sourceId, tokenHash: digest(parsed.replaces.token) }
         : null,
     });
-    if (parsed.replaces) this.#endConnections(parsed.replaces.sourceId, source.ownerId);
+    if (
+      parsed.replaces &&
+      (await this.#store.get(parsed.replaces.sourceId, source.ownerId)) === null
+    ) {
+      await this.liveTabs?.stopSource(parsed.replaces.sourceId);
+      this.#endConnections(parsed.replaces.sourceId, source.ownerId);
+    }
     return { sourceId: source.id, token };
   }
 
@@ -342,7 +380,10 @@ export class BrowserSourceService {
         socket.close(1009, "Frame too large");
         return;
       }
-      const message = readSourceMessage(bytes.toString("utf8"), tolerant);
+      const message = readSourceMessage(
+        bytes.toString("utf8"),
+        tolerant && wire.kind === "negotiated" ? wire.wire : 4,
+      );
       if (!message) {
         socket.close(1007, "Invalid source frame");
         return;
@@ -424,6 +465,44 @@ export class BrowserSourceService {
           .finally(() => socket.close(1000, "Disconnected in Chrome"));
         return;
       }
+      if (
+        message.type === "tab.shared" ||
+        message.type === "tab.unshared" ||
+        message.type === "tab.detached" ||
+        message.type === "tab.result" ||
+        message.type === "tab.event"
+      ) {
+        if (!peer.tabRelay) return;
+        if (bytes.byteLength > browserSourceTabFrameBytes) {
+          socket.close(1009, "Chrome tab frame too large");
+          return;
+        }
+        try {
+          const recorded = peer.tabRelay.receive(message);
+          if (recorded && message.type === "tab.detached") {
+            const source = peer;
+            void recorded
+              .then(() => {
+                if (
+                  wire.kind === "negotiated" &&
+                  wire.wire >= browserSourceTabDetachReplayWire &&
+                  socket.readyState === WebSocket.OPEN &&
+                  this.#connections.get(source.sourceId) === source
+                )
+                  socket.send(JSON.stringify(message), (error) => {
+                    if (error) socket.close();
+                  });
+              })
+              .catch((error: unknown) => {
+                this.#onError(error);
+                socket.close(1011, "Chrome detach receipt could not be recorded");
+              });
+          }
+        } catch {
+          socket.close(1007, "Invalid Chrome tab frame");
+        }
+        return;
+      }
       const pending = peer.pending.get(message.operationId);
       // A source can finish after the caller's timeout. Its stale reply must
       // not disconnect unrelated concurrent operations.
@@ -438,10 +517,34 @@ export class BrowserSourceService {
       clearPending();
       if (!peer) return;
       if (this.#connections.get(peer.sourceId) === peer) this.#connections.delete(peer.sourceId);
+      peer.tabRelay?.close();
       rejectPending(peer, new Error("Browser source disconnected"));
       void this.#store.markSeen(peer.sourceId).catch(this.#onError);
     });
     socket.on("error", () => socket.close());
+  }
+
+  async grantableChromeTabs(ownerId: UserId) {
+    return (await this.chromeTabGrantCatalog(ownerId)).chromeTabs;
+  }
+
+  async chromeTabGrantCatalog(ownerId: UserId, sources?: readonly BrowserSourceRecord[]) {
+    const companions = (sources ?? (await this.#store.list(ownerId))).filter(
+      (source) => source.liveTabsOnly,
+    );
+    const entries = await Promise.all(
+      companions.map(async ({ id, name, deviceId }) => {
+        const computerName = deviceId && (await this.#computerName?.(ownerId, deviceId));
+        return computerName ? { sourceId: id, computerName, paired: true } : name;
+      }),
+    );
+    const chromeTabs = entries.filter((entry) => typeof entry !== "string");
+    const chromeTabsRepairNames = entries.filter((entry) => typeof entry === "string");
+    return {
+      chromeTabs,
+      chromeTabsNeedPairing: chromeTabsRepairNames.length > 0,
+      chromeTabsRepairNames,
+    };
   }
 
   async listState(input: { readonly ownerId: UserId }): Promise<BrowserSourcesState> {
@@ -451,9 +554,11 @@ export class BrowserSourceService {
     ]);
     const active = new Set(sources.map((source) => source.id));
     return {
+      ...(await this.chromeTabGrantCatalog(input.ownerId, sources)),
       extensionDirectory: this.#extensionDirectory,
       sources: sources.map((source) => ({
-        connected: this.#isConnected(source.id),
+        connected: this.#connections.get(source.id)?.ready ?? false,
+        ...(source.liveTabsOnly ? { capability: "live-tabs" as const } : {}),
         createdAt: source.createdAt.toISOString(),
         id: source.id,
         lastSeenAt: source.lastSeenAt?.toISOString() ?? null,
@@ -478,7 +583,7 @@ export class BrowserSourceService {
     readonly url: string;
   }): Promise<BrowserSourceInspection> {
     const site = parseSignInSite(input.url);
-    const candidates = await this.#candidates(await this.#store.list(input.ownerId), site);
+    const candidates = await this.#candidates(await this.#cookieSources(input.ownerId), site);
     return {
       site,
       candidates: candidates.map((candidate) => ({
@@ -507,7 +612,11 @@ export class BrowserSourceService {
     readonly sourceId: BrowserSourceId;
   }): Promise<boolean> {
     const revoked = await this.#store.revoke(input);
-    if (revoked) this.#endConnections(input.sourceId, input.ownerId);
+    if (revoked) {
+      await this.liveTabs?.stopSource(input.sourceId);
+      this.liveTabs?.closeForSource(input.sourceId);
+      this.#endConnections(input.sourceId, input.ownerId);
+    }
     return revoked;
   }
 
@@ -546,6 +655,11 @@ export class BrowserSourceService {
     const invocationId = invocationUuid(`owner:${input.ownerId}:${input.idempotencyKey}`);
     const receipt = await this.#store.getSignIn({ ownerId: input.ownerId, invocationId });
     if (receipt) return appliedOutcome(assertReceiptScope(receipt, target.sessionId, site));
+    if (this.#uncertainInvocations.has(invocationId)) {
+      throw new OperationOutcomeUnknown(
+        "The sign-in may have been applied. Check the page before trying again.",
+      );
+    }
     if (!target.live) return problem("session-closed", site, null);
     if (!target.stateImport) return problem(stateImportRefusal(target), site, null);
     const choice = await this.#chooseForOwner(
@@ -591,6 +705,11 @@ export class BrowserSourceService {
     const invocationId = invocationUuid(`agent:${input.runId}:${input.callId}`);
     const receipt = await this.#store.getSignIn({ ownerId: input.ownerId, invocationId });
     if (receipt) return copiedResult(assertReceiptScope(receipt, sessionId, site));
+    if (this.#uncertainInvocations.has(invocationId)) {
+      throw new OperationOutcomeUnknown(
+        "The sign-in may have been applied. Check the page before trying again.",
+      );
+    }
     const prior = await this.#requests.findByCallIdentity({
       callId: input.callId,
       originatingRunId: input.runId,
@@ -605,7 +724,7 @@ export class BrowserSourceService {
       site,
       deploymentId: target.deploymentId,
     });
-    const sources = await this.#store.list(input.ownerId);
+    const sources = await this.#cookieSources(input.ownerId);
     const candidates = grant ? [] : await this.#candidates(sources, site);
     if (!this.#admitCall(input.runId, sessionId, site)) return unavailable(site, "rate-limited");
     if (candidates.length > 0 && candidates.every((candidate) => candidate.status === "no-state"))
@@ -642,7 +761,7 @@ export class BrowserSourceService {
     const asked = await ask();
     // A Chrome that connected after `candidates` may have run its check before
     // this Request was stored; check again for it.
-    const connectedSince = (await this.#store.list(input.ownerId)).some(
+    const connectedSince = (await this.#cookieSources(input.ownerId)).some(
       (source) =>
         this.#isConnected(source.id) &&
         !candidates.some(
@@ -709,13 +828,17 @@ export class BrowserSourceService {
             return problem("no-state", site, null);
           case "session-closed":
             return problem("session-closed", site, null);
+          case "unconfirmed":
+            throw new OperationOutcomeUnknown(
+              "The sign-in may have been applied. Check the page before trying again.",
+            );
         }
       }
       throw new OpensteerError({ code: "conflict", message: "The sign-in Request is closed." });
     }
     if (await this.#refusesSite(site)) return problem("not-allowed", site, null);
     const source = await this.#store.get(input.decision.sourceId, input.ownerId);
-    if (!source) {
+    if (!source || source.liveTabsOnly) {
       throw new OpensteerError({
         code: "not_found",
         message: "That Chrome is no longer connected.",
@@ -746,6 +869,7 @@ export class BrowserSourceService {
     if (this.#closed) return;
     this.#closed = true;
     clearInterval(this.#heartbeat);
+    this.liveTabs?.close();
     for (const socket of this.#sockets) socket.close(1001, "Host stopping");
     this.#connections.clear();
   }
@@ -766,6 +890,7 @@ export class BrowserSourceService {
 
   #sourceReady(peer: SourceSocket): void {
     void this.#store.markSeen(peer.sourceId).catch(this.#onError);
+    if (peer.liveTabsOnly) return;
     const previous = this.#drains.get(peer.ownerId) ?? Promise.resolve();
     const drain = previous
       .then(() => this.#drain(peer.ownerId, peer.sourceId))
@@ -792,7 +917,7 @@ export class BrowserSourceService {
         ownerId,
         sourceId,
       });
-      const sources = await this.#store.list(ownerId);
+      const sources = await this.#cookieSources(ownerId);
       const ready = sources.find((source) => source.id === sourceId);
       if (!ready) return;
       for (const request of page) {
@@ -882,7 +1007,7 @@ export class BrowserSourceService {
     ownerId: UserId,
     site: string,
   ): Promise<BrowserSignInRequestResponse | null> {
-    const candidates = await this.#candidates(await this.#store.list(ownerId), site);
+    const candidates = await this.#candidates(await this.#cookieSources(ownerId), site);
     if (
       candidates.length === 0 ||
       !candidates.every((candidate) => candidate.status === "no-state")
@@ -926,8 +1051,12 @@ export class BrowserSourceService {
       request.payload.kind === "browser.sign-in" && request.payload.sessionId === sessionId;
     const chosen = grant && sameSession ? await this.#standingSource(grant, sources, site) : null;
     if (!chosen) return { status: "pending", site, requestId: request.id, replayed: true };
-    const delivered = await this.#deliverRequest(request, chosen);
-    if (delivered.status === "applied") return copiedResult(delivered);
+    try {
+      const delivered = await this.#deliverRequest(request, chosen);
+      if (delivered.status === "applied") return copiedResult(delivered);
+    } catch (error) {
+      if (!(error instanceof OperationOutcomeUnknown)) throw error;
+    }
     const current = (await this.#requests.get(request.id)) ?? request;
     return this.#requestResult(current, sessionId, site);
   }
@@ -945,6 +1074,7 @@ export class BrowserSourceService {
     review?: { readonly settlementSessionId?: string; readonly expectedRevision: string },
   ): Promise<RequestDelivery> {
     if (request.payload.kind !== "browser.sign-in") throw new Error("Not a sign-in Request");
+    const invocationId = invocationUuid(`request:${request.id}`);
     const { site } = request.payload;
     const sessionId = parseSignInSessionId(request.payload.sessionId);
     const target = await this.#browser.signInTarget({
@@ -964,19 +1094,33 @@ export class BrowserSourceService {
     if (!target?.live || target.deploymentId !== this.#deploymentId) return closed();
     if (!target.stateImport) return problem(stateImportRefusal(target), site, null);
     if (!this.#isConnected(source.id)) return problem("chrome-offline", site, source.name);
-    const delivered = await this.#deliver({
-      actor: "request",
-      ...(review?.settlementSessionId ? { settlementSessionId: review.settlementSessionId } : {}),
-      ...(review ? { expectedRequestRevision: review.expectedRevision } : {}),
-      invocationId: invocationUuid(`request:${request.id}`),
-      ownerId: request.requestedBy,
-      rememberSite: false,
-      requestId: request.id,
-      requireGrant: true,
-      site,
-      source,
-      target,
-    });
+    let delivered: Delivery;
+    try {
+      delivered = await this.#deliver({
+        actor: "request",
+        ...(review?.settlementSessionId ? { settlementSessionId: review.settlementSessionId } : {}),
+        ...(review ? { expectedRequestRevision: review.expectedRevision } : {}),
+        invocationId,
+        ownerId: request.requestedBy,
+        rememberSite: false,
+        requestId: request.id,
+        requireGrant: true,
+        site,
+        source,
+        target,
+      });
+    } catch (error) {
+      if (error instanceof OperationOutcomeUnknown) {
+        // Durably settle the Request as unconfirmed (Sol 8) so cards clear on phone/web and
+        // a Home restart cannot replay the import.
+        await this.#requests.fulfilBrowserSignInRequest({
+          ownerId: request.requestedBy,
+          requestId: request.id,
+          response: { outcome: "unconfirmed" },
+        });
+      }
+      throw error;
+    }
     if (delivered.status === "grant-removed") return problem("site-removed", site, null);
     if (delivered.status === "problem" && delivered.problem === "session-closed") return closed();
     return delivered;
@@ -1074,7 +1218,7 @@ export class BrowserSourceService {
   ): Promise<SourceChoice> {
     if (sourceId) {
       const source = await this.#store.get(sourceId, ownerId);
-      if (!source) {
+      if (!source || source.liveTabsOnly) {
         throw new OpensteerError({
           code: "not_found",
           message: "That Chrome is no longer connected.",
@@ -1086,7 +1230,7 @@ export class BrowserSourceService {
     }
     const [grant, sources] = await Promise.all([
       this.#store.getGrant({ ownerId, site, deploymentId }),
-      this.#store.list(ownerId),
+      this.#cookieSources(ownerId),
     ]);
     const preferred = sources.find((source) => source.id === grant?.preferredSourceId);
     if (preferred && this.#isConnected(preferred.id)) return { source: preferred };
@@ -1140,6 +1284,11 @@ export class BrowserSourceService {
     const { site, source, target } = input;
     const receipt = await this.#store.getSignIn(input);
     if (receipt) return appliedOutcome(assertReceiptScope(receipt, target.sessionId, site));
+    if (this.#uncertainInvocations.has(input.invocationId)) {
+      throw new OperationOutcomeUnknown(
+        "The sign-in may have been applied. Check the page before trying again.",
+      );
+    }
     if (await this.#refusesSite(site)) return problem("not-allowed", site, null);
     const peer = this.#connections.get(source.id);
     if (!peer?.ready) return problem("chrome-offline", site, source.name);
@@ -1202,7 +1351,15 @@ export class BrowserSourceService {
       ...(target.agentBindingId ? { agentBindingId: target.agentBindingId } : {}),
     });
     if (!admitted?.live) return problem("session-closed", site, null);
-    const applied = await this.#browser.applySiteCookies(target.sessionId, site, cookies);
+    let applied: Awaited<ReturnType<BrowserService["applySiteCookies"]>>;
+    try {
+      applied = await this.#browser.applySiteCookies(target.sessionId, site, cookies);
+    } catch (error) {
+      if (error instanceof OperationOutcomeUnknown && input.requestId === null) {
+        this.#uncertainInvocations.add(input.invocationId);
+      }
+      throw error;
+    }
     if (applied !== "applied") return problem(applied, site, null);
     const committed = await this.#store.commitSignIn({
       actor: input.actor,
@@ -1259,7 +1416,12 @@ export class BrowserSourceService {
   }
 
   #isConnected(sourceId: BrowserSourceId): boolean {
-    return this.#connections.get(sourceId)?.ready ?? false;
+    const peer = this.#connections.get(sourceId);
+    return peer?.ready === true && !peer.liveTabsOnly;
+  }
+
+  async #cookieSources(ownerId: UserId): Promise<readonly BrowserSourceRecord[]> {
+    return (await this.#store.list(ownerId)).filter((source) => !source.liveTabsOnly);
   }
 
   async #admitDestination(
@@ -1364,7 +1526,17 @@ export class BrowserSourceService {
       socket.close(1008, "Browser extension update required");
       return null;
     }
+    const liveTabsOnly = "capability" in message && message.capability === "live-tabs";
+    if (
+      liveTabsOnly !== !!source.liveTabsOnly ||
+      (liveTabsOnly && (wire.wire < browserSourceTabWire || !this.liveTabs))
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This Chrome extension cannot use that sharing mode.",
+      });
     const peer: SourceSocket = {
+      liveTabsOnly,
       sourceId: source.id,
       ownerId: source.ownerId,
       generation: source.generation,
@@ -1388,8 +1560,33 @@ export class BrowserSourceService {
       }
       const previous = this.#connections.get(source.id);
       if (previous) {
+        previous.tabRelay?.close();
         rejectPending(previous, new Error("Browser source superseded"));
         previous.socket.close(1008, "New connection");
+      }
+      if (liveTabsOnly && this.liveTabs) {
+        const fail = () => socket.close(1013, "Chrome tab transport overloaded");
+        peer.tabRelay = this.liveTabs.connectSource({
+          sourceId: source.id,
+          ownerId: source.ownerId,
+          name: source.name,
+          ...(source.deviceId ? { deviceId: source.deviceId } : {}),
+          detachReceipts: wire.wire >= browserSourceTabDetachWire,
+          detachReplay: wire.wire >= browserSourceTabDetachReplayWire,
+          fail,
+          write: (frame) => {
+            const data = JSON.stringify(frame);
+            if (socket.readyState !== WebSocket.OPEN) return false;
+            if (socket.bufferedAmount + Buffer.byteLength(data) > browserSourceTabBufferedBytes) {
+              fail();
+              return false;
+            }
+            socket.send(data, (error) => {
+              if (error) socket.close();
+            });
+            return true;
+          },
+        });
       }
       this.#connections.set(source.id, peer);
       peer.ready = true;
@@ -1397,7 +1594,8 @@ export class BrowserSourceService {
         JSON.stringify({
           type: "source.ready",
           sourceId: source.id,
-        } satisfies BrowserSourceHostMessage),
+          ...(liveTabsOnly ? { capability: "live-tabs" as const } : {}),
+        } satisfies BrowserSourceHostFrame),
       );
       return peer;
     } finally {
@@ -1409,6 +1607,11 @@ export class BrowserSourceService {
     peer: SourceSocket,
     message: Extract<BrowserSourceHostMessage, { operationId: string }>,
   ): Promise<SourceReply> {
+    if (peer.liveTabsOnly)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This Chrome connection shares live tabs.",
+      });
     if (!(await this.#destinationIsCurrent(peer))) {
       this.#routeChanged(peer.socket);
       throw new OpensteerError({ code: "runner_offline", message: "Browser source route changed" });
@@ -1576,6 +1779,8 @@ export function chromeCookiesResult(request: Request, replayed = true): ChromeCo
           return unavailable(site, "chrome-signed-out");
         case "session-closed":
           return unavailable(site, "session-closed");
+        case "unconfirmed":
+          return unavailable(site, "unconfirmed");
       }
     }
     case "cancelled":
@@ -1605,8 +1810,8 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function readSourceMessage(raw: string, tolerant: boolean): ClientMessage | UnknownMessage | null {
-  if (tolerant) return readClientMessage(raw);
+function readSourceMessage(raw: string, wire: number): ClientMessage | UnknownMessage | null {
+  if (wire >= tolerantWire) return readClientMessage(raw, wire);
   try {
     return BrowserSourceClientMessageSchema.parse(JSON.parse(raw));
   } catch {

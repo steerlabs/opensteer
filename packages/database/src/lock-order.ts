@@ -11,6 +11,12 @@
  */
 export const databaseLockOrder = [
   "client_sync_state",
+  "browser_pool_slots",
+  "browser_pool_controller_calls",
+  "browser_pool_document_losses",
+  "browser_pool_relays",
+  "browser_pool_targets",
+  "browser_tab_opens",
   // The 0029 fence occupies the same rank before the offline rename.
   "deployment_event_state",
   // BEGIN team authority and content lock order.
@@ -68,6 +74,9 @@ export const databaseLockOrder = [
   // Cloud session ownership precedes Account capacity, Deployment identity and origin.
   "advisory:cloud",
   "advisory:account-capacity",
+  "advisory:cloud-computer-backup-pool",
+  "advisory:browser-pool-capacity",
+  "advisory:cloud-computer-billing-reconcile",
   "advisory:deployment",
   "advisory:origin",
   "advisory:browser-source-pairing",
@@ -100,13 +109,19 @@ export const databaseLockOrder = [
   // Written only under the deployment fence, first by commands that already hold their idempotency key.
   "personal_settings",
   // Run admission and control precede Occurrences and browser execution state.
+  "agent_directory_cache",
   "agent_connections",
+  // A session and its operations are admitted under their connection, before any Run.
+  "agent_sessions",
+  "agent_operations",
+  "agent_session_device_holds",
   "runs",
   "agent_control_requests",
   "trigger_control_requests",
   "trigger_occurrences",
   "advisory:personal-tab-reopen",
   "browser_sessions",
+  "browser_pool_sessions",
   "tab_layouts",
   "personal_tabs",
   // Personal reservations serialize browser and installation creation.
@@ -162,14 +177,12 @@ export const databaseLockOrder = [
   // Account authorization and Connection authority precede channel routing.
   "integration_auth_attempts",
   "integration_connections",
-  // Complete channel parents precede Binding, Identity, Grant and conversation state.
+  // Complete channel parents precede identity and conversation state.
   "channel_accounts",
-  "channel_bindings",
   "channel_identities",
   // A sender's new display name reaches its Principal before adoption locks the conversation.
   "principals",
-  "channel_access_grants",
-  "channel_conversations",
+  "bridge_conversations",
   // Threads precede Trigger/watch selection and provider-session projection.
   "threads",
   "triggers",
@@ -182,8 +195,8 @@ export const databaseLockOrder = [
   "apps",
   "app_versions",
   "app_servers",
-  "channel_deliveries",
-  "channel_link_codes",
+  "bridge_deliveries",
+  "bridge_link_codes",
   // Computer approvals and integration Grants precede Request settlement.
   "computer_app_setup_requests",
   // A server's secrets change under its locked server, inside or after its approval.
@@ -200,6 +213,9 @@ export const databaseLockOrder = [
   // Assignment projections precede Commands, Inputs, Messages and their derived state.
   "delegations",
   "commands",
+  // Written after the admission holds its connection, before the command acts (G4).
+  "command_attempts",
+  "trigger_occurrence_attempts",
   "thread_inputs",
   "messages",
   "message_revisions",
@@ -242,7 +258,6 @@ export const databaseLockOrder = [
   "account_directory_projections",
   "personal_remote_pairing_codes",
   "personal_remote_session_grant_uses",
-  "watch_control_requests",
   // Only paths already holding the Run write its nodes, attempts and grants, last.
   "execution_nodes",
   "run_attempts",
@@ -274,6 +289,8 @@ export const databaseLockOrder = [
   "control-plane:hosted_oauth_broker_attempts",
   "control-plane:hosted_oauth_broker_refreshes",
   "control-plane:portal_sessions",
+  "control-plane:cloud_computer_provisioner_lease",
+  "control-plane:cloud_computer_stripe_events",
   // Account authority precedes session, notification and Personal-link mutations.
   "control-plane:users",
   "control-plane:auth_sessions",
@@ -292,12 +309,20 @@ export const databaseLockOrder = [
   "control-plane:deployment_directory_entries",
   // OAuth client identity precedes cloud operation projection and token cleanup.
   "control-plane:oauth_clients",
-  // Deleting a hosted team removes the Deployment adopted at its address first, and an
-  // adoption, retried ones included, fences its team's claim after its own locks.
-  "control-plane:hosted_teams",
+  "control-plane:cloud_computer_checkouts",
+  "control-plane:cloud_computers",
+  "control-plane:browser_pool_hosts",
+  "control-plane:browser_pool_slots",
+  "control-plane:cloud_computer_egress_endpoints",
+  "control-plane:cloud_computer_backup_targets",
+  "control-plane:cloud_computer_backup_namespaces",
+  // A health report is written under a share lock on its Cloud Computer.
+  "control-plane:cloud_computer_health",
   "control-plane:cloud_deployment_operations",
   "control-plane:oauth_refresh_token",
   "control-plane:oauth_consents",
+  "control-plane:agent_directory_state",
+  "control-plane:agent_directory_entries",
 ] as const;
 
 export function databaseLockRank(resource: string): number {
@@ -309,6 +334,11 @@ export function databaseLockRank(resource: string): number {
  * shared identity domain until their production key format is declared here.
  */
 export function advisoryLockResource(key: string, seed: number): string {
+  if (seed === 0 && key === "cloud-computer-billing-reconcile")
+    return "advisory:cloud-computer-billing-reconcile";
+  if (seed === 0 && key === "cloud-computer-backup-pool")
+    return "advisory:cloud-computer-backup-pool";
+  if (seed === 0 && key === "browser-pool-capacity") return "advisory:browser-pool-capacity";
   if (seed === 2) return "advisory:adoption-proof";
   if (seed === 1) return "advisory:origin";
   if (seed !== 0) throw new Error(`Undeclared advisory hash seed: ${seed}`);

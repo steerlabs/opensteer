@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { act, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
+  connectionModeDescriptions,
   threadPlacementOptions,
   executionAccounts,
   type ExecutionSelection,
@@ -180,7 +181,7 @@ describe("Expo engine/account/model journeys", () => {
     await act(async () => target!.click());
   }
   async function browseSecond() {
-    const engine = document.querySelector<HTMLButtonElement>('[aria-label="Engine: Codex"]');
+    const engine = document.querySelector<HTMLButtonElement>('[aria-label="Agent: Codex"]');
     expect(engine).not.toBeNull();
     await act(async () => engine!.click());
     await act(async () =>
@@ -762,6 +763,25 @@ describe("Expo engine/account/model journeys", () => {
       original.id,
       expect.objectContaining({ harnessInstanceId: codex.harnessInstanceId }),
       { expectedProviderSessionId: "session-1" },
+    );
+  });
+
+  it("uses connectionModeDescriptions when the task was started by a connected agent or a chat", async () => {
+    await mount();
+    await act(async () => {
+      move({
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === original.id ? { ...thread, startedByOther: true } : thread,
+        ),
+      });
+    });
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="This conversation"]')!.click(),
+    );
+    expect(document.body.textContent).toContain(connectionModeDescriptions["approval-required"]);
+    expect(document.body.textContent).not.toContain(
+      "unless a rule you set in the engine already allows it",
     );
   });
 });

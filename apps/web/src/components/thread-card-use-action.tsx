@@ -25,6 +25,7 @@ export function CardUseRequestBody({
   readonly disabled: boolean;
   readonly request: Request;
 }) {
+  const oneTime = request.originatingAgentSessionId != null;
   const pending = request.status === "pending";
   const chooser = useHostSignIn(client, pending && !disabled ? request.id : null);
   const [chosenId, setChosenId] = useState<string | null>(null);
@@ -146,8 +147,12 @@ export function CardUseRequestBody({
               : "Loading cards…"}
         </p>
       )}
-      <p>{cardUseConsent(payload.site, payload.expiresAt)}</p>
-      <span className="sign-in-card__expiry">{passwordSignInExpiry(payload.expiresAt, now)}</span>
+      {/* An ended card use says only what is true now: no deadline it no longer has. */}
+      {stage === "gone" ? null : <p>{cardUseConsent(payload.site, payload.expiresAt)}</p>}
+      {/* Gone has no time left on it: never "no longer running" beside "Expires in". */}
+      {stage === "gone" ? null : (
+        <span className="sign-in-card__expiry">{passwordSignInExpiry(payload.expiresAt, now)}</span>
+      )}
       {chooser.readError ? (
         <p role="alert">
           {chooser.readError}{" "}
@@ -159,7 +164,7 @@ export function CardUseRequestBody({
       {error ? <p role="alert">{error}</p> : null}
       <div className="action-buttons">
         <button className="btn" disabled={locked} onClick={() => void respond(false)}>
-          Don’t allow
+          {oneTime ? "Don't allow" : "Don’t allow"}
         </button>
         {chosen ? (
           <button
@@ -168,7 +173,7 @@ export function CardUseRequestBody({
             disabled={locked || expired}
             onClick={() => void respond(true)}
           >
-            Allow card use
+            {oneTime ? "Allow once" : "Allow card use"}
           </button>
         ) : null}
       </div>

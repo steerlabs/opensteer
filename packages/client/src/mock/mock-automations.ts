@@ -1,5 +1,4 @@
 import { firstTriggerFireAt } from "@opensteer/triggers/schedule";
-import { WATCH_AUTO_PAUSE_REASON } from "@opensteer/triggers/limits";
 
 import { createId, RunSchema, type Run } from "@opensteer/core";
 import {
@@ -10,12 +9,12 @@ import {
   TriggerWatchActivationSchema,
   type Trigger,
   type TriggerOccurrence,
-  type TriggerProgram,
   type TriggerRevision,
   type TriggerSource,
   type TriggerSummary,
   type TriggerWatchActivation,
 } from "@opensteer/triggers/models";
+import type { AutomationScript } from "@opensteer/triggers/script";
 import type { ThreadSummary } from "../host/client.js";
 
 /** One Trigger as the preview keeps it: everything `triggers.get` answers. */
@@ -29,6 +28,8 @@ export interface MockTriggerRecord {
   readonly downstreamRunsTruncated: boolean;
   readonly occurrences: readonly TriggerOccurrence[];
   readonly revision: TriggerRevision;
+  readonly secretNames?: readonly string[];
+  readonly secretsUnreadable?: boolean;
   readonly trigger: Trigger;
 }
 
@@ -72,34 +73,16 @@ function withoutPayload(
 /** The Trigger behind the preview's "Nightly typecheck" message, so its link opens it. */
 export const mockNightlyTriggerId = "trg_00000000-0000-4000-8000-000000000001";
 
-const reminderProgram: TriggerProgram = {
-  language: "typescript",
-  source: `export default async function ({ opensteer }) {
-  await opensteer.callTool("opensteer_task_send", {
-    delivery: "queue",
-    message: "Reminder: it's time.",
-    taskId: "TASK_ID",
-  });
-}`,
-  toolContractVersion: 5,
+const reminderScript: AutomationScript = {
+  interpreter: ["bash"],
+  text: `opensteer tool opensteer_task_send '{"delivery":"queue","message":"Reminder: it is time.","taskId":"TASK_ID"}'`,
 };
 
-const watchProgram: TriggerProgram = {
-  language: "typescript",
-  source: `import { watch } from "node:fs";
-
-export default async function ({ opensteer }) {
-  watch(process.env.HOME + "/Downloads", (_event, name) => {
-    void opensteer.callTool("opensteer_task_send", {
-      delivery: "queue",
-      message: \`New download: \${name}\`,
-      observationId: name,
-      taskId: "TASK_ID",
-    });
-  });
-  await new Promise(() => {});
-}`,
-  toolContractVersion: 5,
+const watchScript: AutomationScript = {
+  interpreter: ["bash"],
+  text: `while read -r name; do
+  opensteer tool opensteer_task_send "{\\"delivery\\":\\"queue\\",\\"message\\":\\"New download: \${name}\\",\\"taskId\\":\\"TASK_ID\\"}"
+done`,
 };
 
 /**
@@ -128,14 +111,13 @@ export function seedMockAutomations(input: {
   const record = (spec: {
     readonly activation?: (trigger: Trigger, revision: TriggerRevision) => TriggerWatchActivation;
     readonly anchor: ThreadSummary;
-    readonly consecutiveFailures?: number;
     readonly createdByThread?: ThreadSummary;
     readonly createdDaysAgo: number;
     readonly id?: string;
     readonly name: string;
     readonly occurrences?: readonly OccurrenceSpec[];
     readonly pauseReason?: string;
-    readonly program?: TriggerProgram;
+    readonly script?: AutomationScript;
     readonly source: TriggerSource;
     readonly status?: "active" | "paused";
   }): MockTriggerRecord => {
@@ -147,14 +129,13 @@ export function seedMockAutomations(input: {
       createdByThreadId: spec.createdByThread?.id ?? null,
       id: createId("triggerRevision"),
       ordinal: 1,
-      program: spec.program ?? reminderProgram,
+      script: spec.script ?? reminderScript,
       source: spec.source,
       triggerId,
     });
     const status = spec.status ?? "active";
     const trigger = TriggerSchema.parse({
       anchorThreadId: spec.anchor.id,
-      consecutiveFailures: spec.consecutiveFailures ?? 0,
       createdAt,
       createdBy: input.userId,
       createdByThreadId: spec.createdByThread?.id ?? null,
@@ -208,7 +189,6 @@ export function seedMockAutomations(input: {
     }),
     record({
       anchor: anchorThread,
-      consecutiveFailures: 1,
       createdDaysAgo: 3,
       name: "Reminder: renew passport",
       occurrences: [
@@ -294,7 +274,7 @@ export function seedMockAutomations(input: {
       anchor: anchorThread,
       createdDaysAgo: 5,
       name: "Downloads folder",
-      program: watchProgram,
+      script: watchScript,
       source: { kind: "watch" },
     }),
     record({
@@ -310,8 +290,8 @@ export function seedMockAutomations(input: {
       anchor: anchorThread,
       createdDaysAgo: 9,
       name: "Inbox watcher",
-      pauseReason: WATCH_AUTO_PAUSE_REASON,
-      program: watchProgram,
+      pauseReason: "Paused after IMAP credentials expired.",
+      script: watchScript,
       source: { kind: "watch" },
       status: "paused",
     }),

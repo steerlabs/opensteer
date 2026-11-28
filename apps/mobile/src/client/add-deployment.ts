@@ -3,13 +3,12 @@ import {
   deploymentConnectionFromVerifiedEndpoints,
   deploymentConnectionFromVerifiedPersonalRoute,
   resolveConnection,
-  verifyAccessEndpoint,
+  verifyDeploymentAddress,
   verifyPersonalAccessEndpoint,
   type DeploymentCatalogStore,
-  type VerifiedHostEndpoint,
+  type VerifiedDeploymentAddress,
   type VerifiedPersonalHostEndpoint,
 } from "@opensteer/client/connections";
-import { isPersonalHost } from "@opensteer/deployment-authority";
 import { personalSessionFrom, type PersonalSessionStore } from "./personal-session-store.js";
 
 export type AddDeploymentFetch = typeof globalThis.fetch;
@@ -21,46 +20,39 @@ export type AddDeploymentFetch = typeof globalThis.fetch;
  * a computer that owns a cookie jar. A phone does not: its Personal session
  * comes back in the exchange body and this application has to keep it, so the
  * personal arm is composed here instead. Everything either door decides —
- * verifying the endpoint, refusing a Personal Host at the server door, building
- * the connection, and resolving the attachment — goes through the shared
- * client, which stays the only place those rules live.
+ * verifying the endpoint, telling a Home on its own server from a Mac reached
+ * by route, building the connection, and resolving the attachment — goes
+ * through the shared client, which stays the only place those rules live.
  */
 
 /**
- * Step one of the server door: prove the address serves a Deployment, and show
- * the person its name and key fingerprint before anything is added. No
- * credential is sent.
+ * Step one of the address door: prove the address serves a Home,
+ * and show the person its name and key fingerprint before anything is added.
+ * No credential is sent.
  */
 export async function verifyServerDeployment(options: {
   readonly fetch: AddDeploymentFetch;
   readonly origin: string;
   readonly signal?: AbortSignal;
-}): Promise<VerifiedHostEndpoint> {
-  const verified = await verifyAccessEndpoint({
+}): Promise<VerifiedDeploymentAddress> {
+  return verifyDeploymentAddress({
     fetch: options.fetch,
-    kind: "canonical",
     origin: options.origin,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
-  if (isPersonalHost(verified.discovery)) {
-    throw new Error(
-      "That address belongs to a personal computer. Use “Pair a computer” and its pairing code.",
-    );
-  }
-  return verified;
 }
 
-/** Adds a verified team beside the selected personal computer. */
+/** Adds a verified team or Home; the Home signs in at its own address afterwards. */
 export async function addServerDeployment(options: {
   readonly catalog: Pick<DeploymentCatalogStore, "upsert">;
   readonly name: string;
-  readonly verified: VerifiedHostEndpoint;
+  readonly verified: VerifiedDeploymentAddress;
 }): Promise<void> {
   await options.catalog.upsert(
     deploymentConnectionFromVerifiedEndpoints({
       accountAccess: null,
       endpoints: [options.verified],
-      kind: "team",
+      kind: options.verified.kind,
       name: options.name,
       source: { kind: "manual" },
     }),
@@ -121,7 +113,7 @@ export async function addPersonalDeployment(options: {
  * a name is described by what it is.
  */
 export function defaultDeploymentName(origin: string, personal: boolean): string {
-  if (personal) return "Personal computer";
+  if (personal) return "Mac";
   const hostname = new URL(origin).hostname;
-  return hostname.length > 0 && hostname.length <= 120 ? hostname : "Self-hosted deployment";
+  return hostname.length > 0 && hostname.length <= 120 ? hostname : "Server";
 }

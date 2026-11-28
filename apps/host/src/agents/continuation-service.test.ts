@@ -798,12 +798,15 @@ function withMacs(
               ),
           },
           store: {
+            requesterGrant: async () => null,
+            requesterShown: async () => null,
             listDeviceComputerAppSetupRequests: async () => [],
             integrationRequests: { listPendingIntegrationAccessRequests: async () => [] },
           },
           listCallableTools: this.listCallableTools,
           computerToolEnabled: () => true,
           computerUseVersion: () => 2,
+          localDeviceAccessBlocked: async () => undefined,
         } as unknown as DeviceService,
         input,
         run,
@@ -820,6 +823,7 @@ function withMacs(
               apps: [
                 {
                   bundleId: "com.apple.Notes",
+                  teamId: null,
                   name: "Notes",
                   access: "read-write",
                   status: "approved",

@@ -24,6 +24,10 @@ describe("public MCP discovery boundaries", () => {
       connectionId: "mcn_test",
       userId: createId("user"),
       accessMode: "approval-required" as const,
+      grant: { scope: "everything" } as const,
+      grantRevision: 1,
+      consentVersion: 1,
+      expiresAt: Date.now() + 60_000,
     };
     const authenticate = vi
       .spyOn(oauth.authenticator, "authenticate")
@@ -56,6 +60,15 @@ describe("public MCP discovery boundaries", () => {
         ...connection,
         kind: "connection",
         key: "connection:mcn_test",
+        // Its row, with the consent it gave, as every authenticated connection carries (B5).
+        agentConnection: {
+          agentConnectionId: "mcn_test",
+          grant: { scope: "everything" },
+          grantRevision: 1,
+          consentVersion: 1,
+          accessMode: "approval-required",
+          bridgeSenders: null,
+        },
       });
       expect(authenticate).toHaveBeenCalledExactlyOnceWith(
         token,

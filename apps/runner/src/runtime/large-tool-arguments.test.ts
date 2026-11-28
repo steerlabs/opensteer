@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createId, toolArgumentsMaxSerializedBytes } from "@opensteer/core";
-import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import {
   PendingAgentEventSchema,
@@ -51,6 +51,7 @@ it("records a successful Codex command with large inline arguments without faili
     context: {
       accessMode: "full-access",
       personalContext: true,
+      personLineage: true,
       assignment: null,
       agentTools: {
         tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
@@ -150,7 +151,6 @@ it("records a successful Codex command with large inline arguments without faili
     browserHarnessExecutable: "/unused/browser-harness",
     deploymentShape: { kind: "personal" },
     environmentId,
-    harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
     harnesses: registry,
     maxConcurrentRuns: 1,
     dataDirectory: directory,

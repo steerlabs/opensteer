@@ -8,6 +8,7 @@ import { Fragment, useState, type ReactNode } from "react";
 type Modifier =
   | { readonly kind: "click"; readonly handler: () => void }
   | { readonly kind: "label"; readonly label: string }
+  | { readonly kind: "weight" }
   | { readonly kind: "other" };
 
 interface ViewProps {
@@ -17,12 +18,22 @@ interface ViewProps {
   readonly enabled?: boolean;
 }
 
-function view({ children, modifiers, onClick, enabled }: ViewProps): ReactNode {
+function view(props: ViewProps): ReactNode {
+  return laidOut(undefined, props);
+}
+
+/** A view that says which layout it is, so a test can tell a Row from a Column. */
+function laidOut(
+  layout: string | undefined,
+  { children, modifiers, onClick, enabled }: ViewProps,
+): ReactNode {
   const click =
     modifiers?.find((modifier) => modifier.kind === "click")?.handler ?? onClick ?? null;
   const label = modifiers?.find((modifier) => modifier.kind === "label")?.label;
   return click === null ? (
-    <div aria-label={label}>{children}</div>
+    <div aria-label={label} data-layout={layout}>
+      {children}
+    </div>
   ) : (
     <button aria-label={label} disabled={enabled === false} onClick={click}>
       {children}
@@ -35,7 +46,7 @@ export const compose = {
   Box: view,
   Button: view,
   CircularProgressIndicator: () => null,
-  Column: view,
+  Column: (props: ViewProps) => laidOut("Column", props),
   DropdownMenu: Object.assign(
     ({ children, expanded }: { children?: ReactNode; expanded?: boolean }) => (
       <div data-menu data-expanded={expanded === true}>
@@ -75,7 +86,7 @@ export const compose = {
   ),
   RadioButton: () => null,
   RNHostView: slot,
-  Row: view,
+  Row: (props: ViewProps) => laidOut("Row", props),
   Switch: ({
     value,
     onCheckedChange,
@@ -83,7 +94,21 @@ export const compose = {
     value: boolean;
     onCheckedChange?: (v: boolean) => void;
   }) => <input type="checkbox" checked={value} onChange={() => onCheckedChange?.(!value)} />,
-  Text: ({ children }: { readonly children?: ReactNode }) => <span>{children}</span>,
+  // A text's own semantics description is its accessible name too, and weight marks layout fill.
+  Text: ({
+    children,
+    modifiers,
+  }: {
+    readonly children?: ReactNode;
+    readonly modifiers?: readonly Modifier[];
+  }) => (
+    <span
+      aria-label={modifiers?.find((modifier) => modifier.kind === "label")?.label}
+      data-weight={modifiers?.some((modifier) => modifier.kind === "weight") || undefined}
+    >
+      {children}
+    </span>
+  ),
   TextButton: view,
   useNativeState: <T,>(initial: T) => {
     const [value, set] = useState(initial);
@@ -109,5 +134,5 @@ export const composeModifiers = {
   Shapes: { Circle: {} },
   size: other,
   toggleable: (_value: boolean, handler: () => void): Modifier => ({ kind: "click", handler }),
-  weight: other,
+  weight: (): Modifier => ({ kind: "weight" }),
 };

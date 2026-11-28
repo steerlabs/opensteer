@@ -37,7 +37,10 @@ const artifactDirectory = path.resolve(
   process.env.OPENSTEER_START_PAGE_COMPUTERS_E2E_ARTIFACT_DIR ??
     path.join(tmpdir(), "opensteer-start-page-computers-e2e"),
 );
-const taskPath = "/tasks/thr_00000000-0000-4000-8000-000000000002";
+// A task whose agent holds no Mac app: there the address's middle is the start page. (Where a
+// task's agent is using a Mac app, as the preview's second task does with Keynote, the middle
+// shows that app's picture instead, and New tab opens the start page.)
+const taskPath = "/tasks/thr_00000000-0000-4000-8000-000000000003";
 const away = ".start-apps__away .start-apps__row";
 const keynote = ".start-tile[aria-label^='Keynote on']";
 const pixel = ".start-tile[aria-label^='Pixel 7']";

@@ -1,7 +1,7 @@
 import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { dataAppName } from "../devices/access-requests.js";
 import { localTargetBlocked } from "../devices/target-blocked.js";
-import { isPhoneDisplayDefinitionId } from "@opensteer/core";
+import { commandAgentStatus, isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import {
   BrowserRequestOutcomeSchema,
@@ -292,6 +292,7 @@ export async function continuationMessage(
       return `Plugin execution ${execution} was ${request.cancellationReason === "plugin-expired" ? "expired" : "interrupted"}. Earlier calls may have taken effect. Check current state with a safe read; never rerun the program blindly.`;
     return `The person ${request.status === "fulfilled" ? "answered" : "declined"} plugin Request ${request.id}. Call plugin_resume({executionId:${JSON.stringify(execution)}}) to collect the execution's result. Do not repeat the call or program; earlier effects are not rolled back.`;
   }
+  if (request.command) return commandContinuation(request);
   if (request.mode === "durable" && request.status === "cancelled") {
     return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; opensteer_request_answer shows status, not the answer.`;
   }
@@ -361,6 +362,8 @@ export async function continuationMessage(
           return `Request ${request.id} ended: no connected Chrome is signed in to ${site}, so nothing was copied. The user did not decline.`;
         case "session-closed":
           return `Request ${request.id} was allowed, but the browser tab had closed. Call chrome_cookies_request again with your current tabId.`;
+        case "unconfirmed":
+          return `Request ${request.id} ended without confirmation: the sign-in for ${site} may have been applied. Reload and check the page before calling chrome_cookies_request again.`;
       }
     }
     case "browser.password-sign-in": {
@@ -677,6 +680,41 @@ function passwordSignInContinuation(
       return `The saved-login release for ${site} stopped on ${computerName} before anything was released. Call saved_login_request again if the task still needs it.`;
     case "session-closed":
       return `The browser tab closed before the saved login for ${site} was released.`;
+  }
+}
+
+/** What became of a command the agent proposed, from the Request's own record of it. */
+export function commandContinuation(request: Request): string {
+  const command = request.command!;
+  // What the proposer reads back: what it sent (the type, the Request) and a value-free status,
+  // never the Home's sentence or anything the Home looked up (rule 5).
+  const asked = `your proposal ${command.type} (Request ${request.id})`;
+  const Asked = `${asked[0]!.toUpperCase()}${asked.slice(1)}`;
+  if (request.status === "withdrawn") return `${Asked} was withdrawn; nothing changed.`;
+  switch (commandAgentStatus(request)) {
+    case "closed":
+      return request.cancellationReason === "authority-revoked"
+        ? `${Asked} closed: you can no longer ask for it, so nothing changed.`
+        : `${Asked} closed before it was answered; nothing changed.`;
+    case "declined":
+      return [
+        `The person declined ${asked}.`,
+        "Nothing changed. The same proposal is answered as declined for a day; do not repeat it unless something changed.",
+      ].join("\n");
+    case "person-says-done":
+      return `The person says they did this themselves (${asked}). Nothing here shows that it happened, and your proposal did not run. Read the current state before relying on it.`;
+    case "done-by-person":
+      return `The person did what you proposed themselves, with their own command (${asked}); your proposal itself did not run.`;
+    case "approved-done":
+      return `The person approved ${asked}, and it was made.${!command.proposer.connectionId && command.outcome?.status === "done" && command.outcome.result !== undefined ? ` Result: ${JSON.stringify(command.outcome.result).slice(0, command.type === "plugins.install" ? 8_000 : 4_000)}` : ""}`;
+    case "approved-failed":
+      return `The person approved ${asked}, but it did not happen (${command.outcome?.status === "failed" ? command.outcome.code : "failed"}): ${command.outcome?.status === "failed" ? command.outcome.message : ""}`;
+    case "approved-unknown":
+      if (command.outcome?.status === "unknown" && command.outcome.progress)
+        return `The person approved ${asked}. ${command.outcome.progress.message}`;
+      return `The person approved ${asked}, but the Home does not know whether it took effect. Check the current state with a safe read before doing anything else; never repeat it blindly.`;
+    default:
+      return `The person approved ${asked}; it is still being made.`;
   }
 }
 

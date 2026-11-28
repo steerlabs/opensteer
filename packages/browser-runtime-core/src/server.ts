@@ -1,10 +1,26 @@
 import {
+  standardCdpDetachFrame,
+  standardCdpPath,
+  standardCdpSettledReason,
+  standardCdpLeasePath,
+  StandardCdpLeaseReconciliationSchema,
+  StandardCdpAttemptReconciliationSchema,
+} from "@opensteer/protocol/standard-cdp";
+export { standardCdpPath } from "@opensteer/protocol/standard-cdp";
+import {
+  standardCdpBufferedMaxBytes,
+  standardCdpMaxPending,
+  standardCdpMessageMaxBytes,
+  type StandardCdpAttachment,
+} from "@opensteer/browser-core";
+import {
   BrowserAttachPublicKeysSchema,
   BrowserRuntimeServerMessageSchema,
   LocalProfileBindingSchema,
   type BrowserAttachPublicKey,
   type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
@@ -19,7 +35,16 @@ import { z } from "zod";
 import type { BrowserControllerSink } from "./browser/controller.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import type { BrowserAttachment, BrowserRuntime } from "./runtime.js";
+import type { BrowserPoolControl } from "./browser-pool.js";
+import { readBrowserSandbox } from "./browser-pool-sandbox.js";
 import { encodeBrowserFrame, type BrowserFrame } from "./stream/frame.js";
+
+const standardCdpRequest = z.strictObject({
+  id: z.number().int().nonnegative(),
+  method: z.string().max(256),
+  params: z.record(z.string(), z.unknown()).optional(),
+  sessionId: z.string().max(512).optional(),
+});
 
 export interface BrowserRuntimeServerOptions {
   relayBridge?: {
@@ -47,7 +72,11 @@ export class BrowserRuntimeServer {
   private readonly port: number;
   private readonly runtime: BrowserRuntime;
   private readonly websocketServer: WebSocketServer;
+  private readonly cdpServer: WebSocketServer;
   private closePromise: Promise<void> | null = null;
+  private readonly relayAttachments = new Map<WebSocket, Promise<void>>();
+  private relayTeardownFailed = false;
+  private relayRestartPlanned = false;
   private listening: Promise<unknown> | null = null;
   private startPromise: Promise<ListeningAddress> | undefined;
 
@@ -62,6 +91,15 @@ export class BrowserRuntimeServer {
       if (request.method === "GET" && request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
         response.end(JSON.stringify(this.runtime.health()));
+        return;
+      }
+      // A pooled runtime's signed controls arrive over the bridge (pool-runtime-in-guest.md):
+      // the bridge token gates them, the controller's signature authorizes them.
+      if (safePathname(request)?.startsWith("/v1/pool/")) {
+        void this.poolControl(request, response).catch(() => {
+          if (!response.headersSent) response.writeHead(400);
+          response.end();
+        });
         return;
       }
       if (safePathname(request)?.startsWith("/v1/local-profiles")) {
@@ -80,9 +118,14 @@ export class BrowserRuntimeServer {
       noServer: true,
       perMessageDeflate: false,
     });
+    this.cdpServer = new WebSocketServer({
+      maxPayload: standardCdpMessageMaxBytes,
+      noServer: true,
+      perMessageDeflate: false,
+    });
     this.httpServer.on("upgrade", (request, socket, head) => {
       const pathname = safePathname(request);
-      if (pathname !== "/v1/browser") {
+      if (pathname !== "/v1/browser" && pathname !== standardCdpPath) {
         refuseConnection(socket, 404, "Not Found");
         return;
       }
@@ -97,8 +140,15 @@ export class BrowserRuntimeServer {
         refuseConnection(socket, 401, "Unauthorized");
         return;
       }
-      this.websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-        this.websocketServer.emit("connection", websocket, request);
+      const server = pathname === standardCdpPath ? this.cdpServer : this.websocketServer;
+      server.handleUpgrade(request, socket, head, (websocket) => {
+        if (server === this.cdpServer) {
+          const trustedBridge =
+            this.relayBridge !== undefined &&
+            request.headers["x-opensteer-browser-cdp-bridge"] === "1" &&
+            request.headers["x-opensteer-browser-bridge-token"] === this.relayBridge.token;
+          this.acceptStandardCdp(websocket, ticket, trustedBridge);
+        } else server.emit("connection", websocket, request);
       });
     });
     this.websocketServer.on("connection", (websocket: WebSocket, request: IncomingMessage) => {
@@ -107,7 +157,10 @@ export class BrowserRuntimeServer {
         websocket.close(1008, "attach rejected");
         return;
       }
-      this.accept(websocket, ticket, {
+      const bridge =
+        this.relayBridge !== undefined &&
+        request.headers["x-opensteer-browser-bridge-token"] === this.relayBridge.token;
+      this.accept(websocket, ticket, bridge, {
         passkeys:
           Boolean(this.relayBridge) && request.headers["x-opensteer-browser-passkeys"] === "1",
       });
@@ -141,7 +194,78 @@ export class BrowserRuntimeServer {
     if (new Set(keys.map((key) => key.keyId)).size !== keys.length) {
       throw new Error("The browser attach key IDs are not unique.");
     }
-    bridge.updateAttachKeys(keys);
+    if (!this.runtime.pooled) bridge.updateAttachKeys(keys);
+  }
+
+  private async poolControl(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const token = request.headers["x-opensteer-browser-bridge-token"];
+    if (
+      !this.relayBridge ||
+      !this.runtime.pooled ||
+      typeof token !== "string" ||
+      token.length > 4096 ||
+      !safeTokenEqual(token, this.relayBridge.token)
+    ) {
+      response.writeHead(403);
+      response.end();
+      return;
+    }
+    const reply = (status: number, body: unknown) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    };
+    if (request.method === "GET" && request.url === "/v1/pool/state")
+      return reply(200, { state: this.runtime.poolState() });
+    // Decision 8: the sandbox as the running browser has it, read from its renderers. Evidence,
+    // never a gate (round D, D4): a compromised guest can make it say anything.
+    if (request.method === "GET" && request.url === "/v1/pool/sandbox")
+      return reply(200, await readBrowserSandbox());
+    if (
+      request.method !== "POST" ||
+      (request.url !== "/v1/pool/control" && request.url !== "/v1/pool/end")
+    )
+      return reply(404, {});
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+      size += bytes.byteLength;
+      if (size > 16 * 1024) throw new Error("The pool control exceeds its limit.");
+      chunks.push(bytes);
+    }
+    const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (request.url === "/v1/pool/end") {
+      // The Home's request to end one session (P15): its answer, given after the teardown.
+      const { ticket } = PoolEndRequestSchema.parse(body);
+      try {
+        reply(200, await this.runtime.endPoolSession(ticket));
+      } catch (error) {
+        const failure = toBrowserRuntimeError(error);
+        reply(409, {
+          code: failure.code,
+          message: failure.message,
+          state: this.runtime.poolState(),
+        });
+      }
+      return;
+    }
+    const { control, signature } = PoolControlRequestSchema.parse(body);
+    try {
+      const state = await this.runtime.controlPool(
+        control as BrowserPoolControl,
+        Buffer.from(signature, "base64"),
+      );
+      reply(200, { state });
+    } catch (error) {
+      const failure = toBrowserRuntimeError(error);
+      reply(409, {
+        code: failure.code,
+        message: failure.message,
+        // Optional: why a control was refused, as the Home acts on it (an end not confirmed).
+        ...(failure.reason ? { reason: failure.reason } : {}),
+        state: this.runtime.poolState(),
+      });
+    }
   }
 
   private async profileMaintenance(
@@ -165,7 +289,16 @@ export class BrowserRuntimeServer {
       response.end(JSON.stringify({ storage: this.runtime.localProfileStorage, profiles }));
       return;
     }
-    if (request.method === "POST" && request.url === "/v1/local-profiles/delete") {
+    if (request.method === "GET" && request.url === standardCdpLeasePath) {
+      const evidence = await this.runtime.reconcileStandardCdpLease();
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(evidence));
+      return;
+    }
+    if (
+      request.method === "POST" &&
+      (request.url === "/v1/local-profiles/delete" || request.url === standardCdpLeasePath)
+    ) {
       const chunks: Buffer[] = [];
       let size = 0;
       for await (const chunk of request) {
@@ -174,10 +307,22 @@ export class BrowserRuntimeServer {
         if (size > 16 * 1024) throw new Error("Profile maintenance body exceeds its limit.");
         chunks.push(bytes);
       }
-      const input = z
+      const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      if (request.url === standardCdpLeasePath) {
+        const reconciliation = z
+          .union([StandardCdpLeaseReconciliationSchema, StandardCdpAttemptReconciliationSchema])
+          .parse(body);
+        const evidence = await ("attachmentId" in reconciliation
+          ? this.runtime.reconcileStandardCdpAttempt(reconciliation)
+          : this.runtime.reconcileStandardCdpLease(reconciliation));
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(evidence));
+        return;
+      }
+      const { binding, deletionId } = z
         .strictObject({ binding: LocalProfileBindingSchema, deletionId: z.uuid() })
-        .parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-      const state = await this.runtime.deleteLocalProfile(input.binding, input.deletionId);
+        .parse(body);
+      const state = await this.runtime.deleteLocalProfile(binding, deletionId);
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ state }));
       return;
@@ -213,10 +358,49 @@ export class BrowserRuntimeServer {
     return closing;
   }
 
-  private accept(websocket: WebSocket, ticket: string, options: { passkeys: boolean }): void {
+  prepareRunnerRestart(): void {
+    this.relayRestartPlanned = true;
+  }
+
+  /** Called by the desktop after the old relay has exited and before booting its replacement. */
+  async drainRunnerAttachments(): Promise<boolean> {
+    const attachments = [...this.relayAttachments];
+    for (const [socket] of attachments) socket.terminate();
+    const settled = await withTimeout(
+      Promise.allSettled(attachments.map(([, ended]) => ended)),
+      5_000,
+      { timeoutError: () => new Error("Browser attachments are still closing.") },
+    ).catch(() => null);
+    this.relayRestartPlanned = false;
+    return (
+      settled !== null &&
+      !this.relayTeardownFailed &&
+      settled.every((result) => result.status === "fulfilled")
+    );
+  }
+
+  private trackRelayAttachment(socket: WebSocket, ended: Promise<void>): void {
+    this.relayAttachments.set(socket, ended);
+    void ended
+      .catch(() => {
+        this.relayTeardownFailed = true;
+      })
+      .finally(() => {
+        this.relayAttachments.delete(socket);
+      });
+  }
+
+  private accept(
+    websocket: WebSocket,
+    ticket: string,
+    bridge: boolean,
+    options: { passkeys: boolean },
+  ): void {
     const sink = new WebSocketBrowserSink(websocket, this.maxBufferedBytes);
     let attachment: BrowserAttachment | null = null;
     let disconnected = false;
+    let restarting = false;
+    let channelLost = false;
     const cancellation = new AbortController();
     let queuedBytes = 0;
     const queued: Buffer[] = [];
@@ -253,36 +437,212 @@ export class BrowserRuntimeServer {
       queued.push(frame);
     });
 
-    websocket.once("close", () => {
+    const closed = Promise.withResolvers<void>();
+    websocket.once("close", (code: number) => {
       disconnected = true;
+      restarting = bridge && this.relayRestartPlanned;
+      // A pooled guest outlives its Runner: a channel the Home did not close keeps its pages.
+      channelLost = this.runtime.pooled && code !== 1000;
       cancellation.abort();
-      void attachment?.close().catch(() => undefined);
+      closed.resolve();
     });
 
-    void this.runtime.attach(ticket, sink, { ...options, signal: cancellation.signal }).then(
-      async (attached) => {
-        attachment = attached;
-        if (disconnected) {
-          await attached.close().catch(() => undefined);
-          return;
+    const ready = this.runtime
+      .attach(ticket, sink, {
+        ...options,
+        signal: cancellation.signal,
+        waitForCleanup: bridge,
+      })
+      .then(
+        (attached) => {
+          attachment = attached;
+          if (disconnected) return;
+          if (this.relayBridge) {
+            websocket.send(
+              JSON.stringify({
+                type: "browser.attached",
+                ...(attached.initialPage ? { initialPage: attached.initialPage } : {}),
+              }),
+            );
+          }
+          // The controller owns command ordering; a paste may await a later part.
+          for (const frame of queued) void attached.handle(frame).catch(() => undefined);
+          queued.length = 0;
+        },
+        async (error: unknown) => {
+          await sendProtocolError(sink, toBrowserRuntimeError(error)).catch(() => undefined);
+          if (websocket.readyState === WebSocket.OPEN) websocket.close(1008, "attach rejected");
+        },
+      );
+    const ended = closed.promise.then(async () => {
+      try {
+        await ready;
+      } finally {
+        await attachment?.close(bridge, restarting, channelLost);
+      }
+    });
+    if (bridge) this.trackRelayAttachment(websocket, ended);
+    else void ended.catch(() => undefined);
+  }
+
+  private acceptStandardCdp(websocket: WebSocket, ticket: string, bridge: boolean): void {
+    const cancellation = new AbortController();
+    let attachment: StandardCdpAttachment | undefined;
+    let detaching = false;
+    let inFlightBytes = 0;
+    const pending = new Set<string>();
+    let outboundBytes = 0;
+    let outboundCount = 0;
+    const close = (code: number, reason: string) => {
+      if (cancellation.signal.aborted) return;
+      cancellation.abort();
+      attachment?.close();
+      if (websocket.readyState === WebSocket.OPEN) websocket.close(code, reason);
+      if (websocket.readyState !== WebSocket.CLOSED) {
+        const hardClose = setTimeout(() => websocket.terminate(), 1_000);
+        hardClose.unref();
+        websocket.once("close", () => clearTimeout(hardClose));
+      }
+    };
+    const overloaded = () => close(1013, "CDP connection exceeded its buffer limit");
+    const send = async (value: unknown): Promise<void> => {
+      if (cancellation.signal.aborted || websocket.readyState !== WebSocket.OPEN) return;
+      const data = JSON.stringify(value);
+      const size = Buffer.byteLength(data);
+      if (
+        size > standardCdpMessageMaxBytes ||
+        inFlightBytes + outboundBytes + size > standardCdpBufferedMaxBytes ||
+        outboundCount >= standardCdpMaxPending
+      ) {
+        overloaded();
+        return;
+      }
+      outboundBytes += size;
+      outboundCount++;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          websocket.send(data, (error) => (error ? reject(error) : resolve()));
+        });
+      } finally {
+        outboundBytes -= size;
+        outboundCount--;
+      }
+    };
+    const closed = Promise.withResolvers<void>();
+    websocket.once("close", () => {
+      close(1000, "CDP disconnected");
+      closed.resolve();
+    });
+    websocket.on("error", () => close(1011, "CDP transport failed"));
+    const ready = this.runtime.attachStandardCdp(ticket, overloaded, cancellation.signal).then(
+      (client) => {
+        attachment = client;
+        if (cancellation.signal.aborted) {
+          client.close();
+          return client;
         }
-        if (this.relayBridge) {
-          websocket.send(
-            JSON.stringify({
-              type: "browser.attached",
-              ...(attached.initialPage ? { initialPage: attached.initialPage } : {}),
-            }),
+        client.signal.addEventListener(
+          "abort",
+          () => {
+            if (!detaching) close(1000, "Browser Session ended");
+          },
+          { once: true },
+        );
+        if (client.signal.aborted) {
+          close(1000, "Browser Session ended");
+          return undefined;
+        }
+        client.onEvent(({ method, parameters, sessionId }) => {
+          void send({ method, params: parameters, sessionId }).catch(() =>
+            close(1011, "CDP transport failed"),
           );
-        }
-        // The controller owns command ordering; a paste may await a later part.
-        for (const frame of queued) void attached.handle(frame).catch(() => undefined);
-        queued.length = 0;
+        });
+        if (bridge)
+          void send({ type: "browser.attached", standardCdpMode: client.mode }).catch(() =>
+            close(1011, "CDP transport failed"),
+          );
+        return client;
       },
-      async (error: unknown) => {
-        await sendProtocolError(sink, toBrowserRuntimeError(error)).catch(() => undefined);
-        if (websocket.readyState === WebSocket.OPEN) websocket.close(1008, "attach rejected");
+      () => {
+        close(1008, "CDP attachment rejected");
+        return undefined;
       },
     );
+
+    if (bridge)
+      this.trackRelayAttachment(
+        websocket,
+        closed.promise.then(async () => {
+          await ready;
+          await attachment?.settled;
+        }),
+      );
+
+    websocket.on("message", (raw: RawData, binary: boolean) => {
+      if (cancellation.signal.aborted || detaching) return;
+      if (binary) {
+        close(1003, "CDP requires JSON text");
+        return;
+      }
+      const frame = normalizeRawData(raw);
+      if (
+        bridge &&
+        frame.length === standardCdpDetachFrame.length &&
+        frame.toString("utf8") === standardCdpDetachFrame
+      ) {
+        detaching = true;
+        attachment?.close();
+        void ready.then(async (client) => {
+          if (!client) return;
+          client.close();
+          await client.settled;
+          close(1000, standardCdpSettledReason);
+        });
+        return;
+      }
+      if (
+        inFlightBytes + outboundBytes + frame.byteLength > standardCdpBufferedMaxBytes ||
+        pending.size >= standardCdpMaxPending
+      ) {
+        overloaded();
+        return;
+      }
+      let request: z.infer<typeof standardCdpRequest>;
+      try {
+        request = standardCdpRequest.parse(JSON.parse(frame.toString("utf8")));
+      } catch {
+        close(1007, "Invalid CDP command");
+        return;
+      }
+      const { id, method, params, sessionId } = request;
+      const key = JSON.stringify([id, sessionId]);
+      if (pending.has(key)) {
+        close(1007, "Duplicate pending CDP command");
+        return;
+      }
+      pending.add(key);
+      inFlightBytes += frame.byteLength;
+      const dispatch = async (client: StandardCdpAttachment | undefined) => {
+        if (!client || cancellation.signal.aborted || detaching) return;
+        try {
+          const result = await client.send({
+            method,
+            ...(params === undefined ? {} : { parameters: params }),
+            ...(sessionId === undefined ? {} : { sessionId }),
+          });
+          await send({ id, sessionId, result: result ?? {} });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "CDP command failed.";
+          await send({ id, sessionId, error: { code: -32000, message } });
+        }
+      };
+      void (attachment ? dispatch(attachment) : ready.then(dispatch))
+        .catch(() => close(1007, "Invalid CDP command"))
+        .finally(() => {
+          inFlightBytes -= frame.byteLength;
+          pending.delete(key);
+        });
+    });
   }
 
   private async closeOnce(): Promise<void> {
@@ -290,19 +650,32 @@ export class BrowserRuntimeServer {
     const persistence = this.runtime.shutdown();
     void persistence.catch(() => undefined);
     await this.listening?.catch(() => undefined);
-    const closed = [new Promise<void>((resolve) => this.websocketServer.close(() => resolve()))];
+    const closed = [this.websocketServer, this.cdpServer].map(
+      (server) => new Promise<void>((resolve) => server.close(() => resolve())),
+    );
     if (this.httpServer.listening) closed.push(closeHttpServerNow(this.httpServer));
-    for (const websocket of this.websocketServer.clients) {
+    for (const websocket of [...this.websocketServer.clients, ...this.cdpServer.clients]) {
       // The reason goes first as best effort; nobody's answer is waited for.
       if (websocket.readyState === WebSocket.OPEN) {
         websocket.close(1001, "runtime shutting down");
       }
       websocket.terminate();
     }
-    await Promise.all(closed);
+    // A listener whose close never settles (a socket a peer holds) does not hold the stop; the
+    // saving of profiles is awaited in full, within the runtime's own bound (TS17).
+    const listenersClosed = await withTimeout(
+      Promise.all(closed).then(() => true),
+      serverCloseMs,
+      { timeoutError: () => new Error("Browser runtime listeners did not close.") },
+    ).catch(() => false);
+    if (!listenersClosed)
+      process.stderr.write('{"event":"browser-runtime.listeners-unconfirmed"}\n');
     await persistence;
   }
 }
+
+/** How long the runtime's listeners may take to close before the stop goes on without them. */
+const serverCloseMs = 2_000;
 
 class WebSocketBrowserSink implements BrowserControllerSink {
   private readonly maxBufferedBytes: number;
@@ -320,6 +693,10 @@ class WebSocketBrowserSink implements BrowserControllerSink {
 
   sendFrame(frame: BrowserFrame): Promise<void> {
     return this.send(encodeBrowserFrame(frame), true);
+  }
+
+  closeForPool(): void {
+    this.websocket.close(1012, "browser-pool-retire");
   }
 
   private send(data: Buffer | string, binary: boolean): Promise<void> {
@@ -374,3 +751,27 @@ function sendProtocolError(sink: BrowserControllerSink, error: BrowserRuntimeErr
     type: "browser.error",
   });
 }
+
+const PoolFenceSchema = z.strictObject({
+  slot: z.string().min(1).max(256),
+  term: z.number().int().positive(),
+  instance: z.string().min(1).max(256),
+  epoch: z.number().int().positive(),
+});
+
+/** A signed pool control as the Home relays it; the signature decides, the shape only bounds. */
+const PoolEndRequestSchema = z.strictObject({ ticket: z.string().min(1).max(16_384) });
+
+const PoolControlRequestSchema = z.strictObject({
+  control: z.strictObject({
+    kind: z.enum(["install", "retire", "release", "seal", "adopt", "complete"]),
+    fence: PoolFenceSchema,
+    intent: z
+      .strictObject({ id: z.string().min(1).max(256), sequence: z.number().int().positive() })
+      .optional(),
+    attempt: z.number().int().positive().optional(),
+    sequence: z.number().int().positive(),
+    expect: PoolFenceSchema.nullable(),
+  }),
+  signature: z.string().max(512),
+});

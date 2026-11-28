@@ -9,8 +9,12 @@ import Foundation
 protocol FocusGuard: AnyObject, Sendable {
   var pid: pid_t { get }
   func stop()
+  @WorkActor func act<Result>(
+    cancellation: SessionCancellation, deliveryProgress: Locked<Bool>,
+    _ body: () async throws -> Result
+  ) async throws -> Result
   @WorkActor func guarded<Result>(
-    window: AXUIElement?, prepare: Bool, keys: Bool,
+    window: AXUIElement?, prepare: Bool, keys: Bool, afterInputWatch: TimeInterval,
     finalCheck: @escaping @Sendable () throws -> Void,
     deliveryCheck: @escaping @Sendable () throws -> Void,
     check: () throws -> Void, prepared: (Bool) -> Void,
@@ -37,10 +41,12 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     var isActive: Bool
     var stopped = false
     var clickTap: EventTap?
+    var act: ActKeeper?
   }
 
   private let state: Locked<State>
   private let suppression = Locked<(@Sendable (UInt32, Int64) -> Bool)?>(nil)
+  private let foregroundKeys = PersonKeyOrder.ForegroundWatch()
   private let personRound = Locked<Round?>(nil)
   private let personDeliveryWindow = Locked<(id: CGWindowID, lost: Bool)?>(nil)
   private var activationTap: EventTap?
@@ -50,6 +56,21 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
   static let activationTypes = [
     FocusEvents.appKitDefined, FocusEvents.appActivated, FocusEvents.appDeactivated,
   ]
+  static let afterInputWatch: TimeInterval = 0.25
+  static let settleDuration: TimeInterval = 2
+
+  static func ownerRestorationBudget(started: TimeInterval,
+    now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+  ) -> OwnerInputAXBudget {
+    OwnerInputAXBudget(deadline: started + settleDuration, limit: 0.1, now: now, check: {})
+  }
+
+  static func restorationAcknowledged(
+    restored: Bool, originalActivated: Bool, targetDeactivated: Bool, afterAgentInput: Bool
+  ) -> Bool {
+    // After agent input the window server's verified foreground and window order are enough.
+    !restored || afterAgentInput || originalActivated && targetDeactivated
+  }
 
   /// Nil when macOS refuses the taps that guard the person's focus; no input
   /// is then sent.
@@ -76,15 +97,20 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     for name in [
       NSWorkspace.didActivateApplicationNotification,
       NSWorkspace.didDeactivateApplicationNotification,
+      NSWorkspace.didTerminateApplicationNotification,
     ] {
       observers.append(
         center.addObserver(forName: name, object: nil, queue: nil) { [weak self] note in
           guard let self,
-            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-            app.processIdentifier == self.pid
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
           else { return }
+          if name == NSWorkspace.didTerminateApplicationNotification {
+            self.foregroundKeys.forget(app.processIdentifier)
+            return
+          }
           let active = name == NSWorkspace.didActivateApplicationNotification
-          self.update { $0.isActive = active }
+          if active { _ = self.state.current.act?.observeFront() }
+          if app.processIdentifier == self.pid { self.update { $0.isActive = active } }
         })
     }
   }
@@ -99,11 +125,12 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
       current -> (Bool, Bool, EventTap?) in
       defer {
         current.stopped = true
-        current.clickTap = nil
+        if current.act == nil { current.clickTap = nil }
       }
-      return (current.stopped, current.active, current.clickTap)
+      return (current.stopped, current.active, current.act == nil ? current.clickTap : nil)
     }
     guard !wasStopped else { return }
+    foregroundKeys.stop()
     clickTap?.stop()
     for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
     observers = []
@@ -127,6 +154,43 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
 
   // MARK: - Guarded input
 
+  @WorkActor
+  func act<Result>(
+    cancellation: SessionCancellation, deliveryProgress: Locked<Bool>,
+    _ body: () async throws -> Result
+  ) async throws -> Result {
+    try cancellation.check()
+    let act = ActKeeper(
+      target: pid, front: { PrivateAPI.focusPID(front: true) },
+      cancellation: cancellation, deliveryProgress: deliveryProgress)
+    update { if !$0.stopped { $0.act = act } }
+    defer { update { $0.act = nil } }
+    try cancellation.check()
+    guard state.current.clickTap != nil else { throw Self.unguarded }
+    await withCheckedContinuation { ready in
+      EventTapThread.shared.perform { ready.resume() }
+    }
+    try cancellation.check()
+    return try await act.run(putBack: { act in
+      await OwnerFocusGate.shared.acquire()
+      defer { OwnerFocusGate.shared.release() }
+      return await self.putBack(act)
+    }, body)
+  }
+
+  private func putBack(_ act: ActKeeper, isolation: isolated (any Actor)? = #isolation) async -> Bool {
+    guard let original = act.originalToRestore() else { return true }
+    guard let app = NSRunningApplication(processIdentifier: original), foregroundKeys.keep(original),
+      let round = try? Round(target: pid, original: app, act: act)
+    else { return false }
+    suppression.withLock { $0 = round.suppress }
+    defer {
+      suppression.withLock { $0 = nil }
+      round.end()
+    }
+    return await putBack(round)
+  }
+
   /// Input to the app after preparation restores the person's front app
   /// and keyboard ownership, before delivery.
   ///
@@ -139,9 +203,12 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
   /// keeps believing it is active. `prepared` hears, before any input, whether
   /// it came forward only while the screen was held, so the person never saw it.
   ///
-  /// The input goes out after that, with nothing redirected or sent back:
-  /// the person's keys and clicks go wherever they naturally go, and nothing
-  /// the person does stops or fails the input once it has started.
+  /// While the person has another app in front (any app, Opensteer included),
+  /// the act keeps that app's round from preparation to after the input: a key
+  /// the person types that would reach the app goes to their app, and an app
+  /// the input brings forward is sent back (`agentGuard`). Nothing the person
+  /// does stops or fails the input once it has started; a person who clicks
+  /// into the app chooses it, and it stays.
   ///
   /// Keys and menu commands go to the app's key window, whichever window
   /// their events name: with `keys`, an app that believes it is active with
@@ -157,6 +224,7 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
   @WorkActor
   func guarded<Result>(
     window: AXUIElement?, prepare: Bool, keys: Bool,
+    afterInputWatch: TimeInterval = FocusEnforcer.afterInputWatch,
     finalCheck: @escaping @Sendable () throws -> Void = {},
     deliveryCheck: @escaping @Sendable () throws -> Void = {},
     check: () throws -> Void,
@@ -172,17 +240,17 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
       target != nil && state.current.active ? keyWindowID(timeout: axMessagingTimeout) : nil
     let switching = target != nil && state.current.active && keyWindow != target
     let preparing = prepare && (!state.current.focus || switching)
-    let front = PrivateAPI.focusPID(front: true)
+    let act = state.current.act
+    let front: pid_t?
+    if let act {
+      front = try await act.recover { await self.putBack($0) }
+    } else {
+      front = PrivateAPI.focusPID(front: true)
+    }
     if switching, front == pid { throw Self.personsWindow }
     func ready() throws { try gate(check, switching: switching) }
-    var unseen = false
-    if preparing, let front, front != pid,
-      let original = NSRunningApplication(processIdentifier: front)
-    {
-      unseen = try await safelyEnforce(
-        window, switching: switching, resigning: keyWindow, target: target, original: original,
-        finalCheck: finalCheck, check: check, gate: ready)
-    } else {
+    let plan = Self.agentGuard(front: front, target: pid, preparing: preparing)
+    guard let person = plan.original else {
       if preparing {
         try await enforce(
           window, switching: switching, resigning: keyWindow, finalCheck: finalCheck, gate: ready)
@@ -190,34 +258,123 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
         if switching, let target { try await requireKey(target, gate: ready) }
       }
       try ready()
+      prepared(false)
+      return try await deliver {
+        try deliveryCheck()
+        try self.proceed()
+      }
+    }
+    guard let original = NSRunningApplication(processIdentifier: person) else {
+      throw Self.unguarded
+    }
+    if act != nil, !foregroundKeys.keep(person) { throw Self.unguarded }
+    // One round for the whole act: the person's keys meant for the app go to their own app,
+    // and the app is sent back if the input brings it forward. A person who clicks into the
+    // app chooses it (`relinquish`): it then stays, and their keys reach it.
+    let round = try Round(target: pid, original: original, act: act)
+    suppression.withLock { $0 = round.suppress }
+    defer {
+      suppression.withLock { $0 = nil }
+      round.end()
+    }
+    var unseen = false
+    if plan.holdsScreen {
+      unseen = try await safelyEnforce(
+        window, switching: switching, resigning: keyWindow, target: target, round: round,
+        finalCheck: finalCheck, check: check, gate: ready)
+    } else {
+      try ready()
     }
     prepared(unseen)
-    return try await deliver {
-      try self.proceed()
-      try deliveryCheck()
+    round.begin()
+    let result: Result
+    do {
+      result = try await deliver {
+        try deliveryCheck()
+        try self.proceed()
+      }
+    } catch {
+      if plan.watchesAfterInput { _ = await putBack(round, watch: afterInputWatch) }
+      throw error
+    }
+    if plan.watchesAfterInput {
+      let restored = await putBack(round, watch: afterInputWatch)
+      try act?.checkRecovery(restored)
+      if !restored { throw Self.leftInFront }
+    }
+    return result
+  }
+
+  /// Restore the person's app even when delivery throws.
+  private func putBack(
+    _ round: Round, watch: TimeInterval = FocusEnforcer.afterInputWatch,
+    isolation: isolated (any Actor)? = #isolation
+  ) async -> Bool {
+    do {
+      _ = try await round.settle(check: {}, enforcement: nil, afterInput: true, watch: watch)
+      return true
+    } catch let error as HelperError
+      where error == Self.personSwitched || round.act?.cancellation.reason?.error == error
+    {
+      return true
+    } catch {
+      Log.focus.notice(
+        "After the input, app \(self.pid, privacy: .public) was not settled behind the person's app.")
+      return false
     }
   }
 
+  /// How one agent act guards the person's front app.
+  struct AgentGuard: Equatable {
+    /// The app kept in front, and given the person's keys meant for the target, for the act:
+    /// whichever app the person has in front. None when the target itself is in front.
+    let original: pid_t?
+    /// Screen updates are held while the target is prepared.
+    let holdsScreen: Bool
+    /// After the input, the target coming forward is watched for and the person's app is put back.
+    let watchesAfterInput: Bool
+  }
+
+  /// Every act while the person has another app in front is guarded from preparation to after
+  /// its input: an app already prepared (it believes it is active) is guarded too, and an app
+  /// that comes forward on the input is sent back, whichever app the person had in front.
+  static func agentGuard(front: pid_t?, target: pid_t, preparing: Bool) -> AgentGuard {
+    let original = front == target ? nil : front
+    return AgentGuard(
+      original: original, holdsScreen: preparing && original != nil,
+      watchesAfterInput: original != nil)
+  }
+
   /// Remote person input protects each bounded burst through its delivery and
-  /// watches for an input-caused activation afterwards. Agent delivery above
-  /// deliberately ends that protection before input starts. The shared gate
-  /// keeps either lane's preparation from overlapping the other lane's burst.
+  /// watches for an input-caused activation afterwards, as agent input above
+  /// does. The shared gate keeps either lane's preparation from overlapping the
+  /// other lane's burst.
   func guardedPerson<Result>(
     isolation: isolated (any Actor)? = #isolation,
     window: AXUIElement?, prepare: Bool, keys: Bool,
+    axBudget: OwnerInputAXBudget? = nil,
     finalCheck: @escaping @Sendable () throws -> Void = {},
     check: () throws -> Void,
     hasPendingInput: () -> Bool = { false },
+    releaseIfStopped: () async -> Void = {},
     deliver: (_ proceed: @escaping @Sendable () throws -> Void) async throws -> Result
   ) async throws -> (result: Result, unseen: Bool) {
     await OwnerFocusGate.shared.acquire()
     defer { OwnerFocusGate.shared.release() }
     try check(); try finalCheck()
-    let target = keys && prepare ? window.flatMap(KeyWindow.windowID) : nil
+    let prepareCheck: @Sendable () throws -> Void = {
+      try finalCheck()
+      if let axBudget, axBudget.timeout() == nil { throw MacOwnerInput.Refusal("unavailable") }
+    }
+    let target = OwnerInputAXBudget.$current.withValue(axBudget) {
+      keys && prepare ? window.flatMap(KeyWindow.windowID) : nil
+    }
     // An app that believes it is active keeps its key window until told
     // otherwise; one that does not is activated with `window` key.
-    let keyWindow =
+    let keyWindow = OwnerInputAXBudget.$current.withValue(axBudget) {
       target != nil && state.current.active ? keyWindowID(timeout: axMessagingTimeout) : nil
+    }
+    try prepareCheck()
     let switching = target != nil && state.current.active && keyWindow != target
     let preparing = prepare && (!state.current.focus || switching)
     defer { personDeliveryWindow.withLock { $0 = nil } }
@@ -239,16 +396,19 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
       if switching, front == pid { throw Self.personsWindow }
       func ready() throws { try gate(check, switching: switching) }
       if preparing {
-        try await enforce(
-          window, switching: switching, resigning: keyWindow, finalCheck: finalCheck,
-          gate: ready)
-        await waitUntilBelievedFrontmost(timeout: 0.25)
-        if switching, let target { try await requireKey(target, gate: ready) }
+        try await OwnerInputAXBudget.$current.withValue(axBudget) {
+          try await enforce(
+            window, switching: switching, resigning: keyWindow, finalCheck: prepareCheck, gate: ready)
+          await waitUntilBelievedFrontmost(timeout: 0.25)
+          if switching, let target { try await requireKey(target, gate: ready) }
+        }
       }
       try ready()
       return (try await deliverGuarded(nil), false)
     }
-    let round = try Round(target: pid, original: original)
+    let round = try OwnerInputAXBudget.$current.withValue(axBudget) {
+      try Round(target: pid, original: original)
+    }
     suppression.withLock { $0 = round.suppress }
     self.personRound.withLock { $0 = round }
     defer {
@@ -272,22 +432,29 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
       if preparing {
         var enforcement: (any Error)?
         do {
-          try await enforce(
-            window, switching: switching, resigning: keyWindow, round: round,
-            finalCheck: finalCheck, gate: ready)
+          try await OwnerInputAXBudget.$current.withValue(axBudget) {
+            try await enforce(
+              window, switching: switching, resigning: keyWindow, round: round,
+              finalCheck: prepareCheck, gate: ready)
+          }
         } catch {
           enforcement = error
         }
-        unseen = try await round.settle(check: check, enforcement: enforcement, afterInput: false)
+        unseen = try await round.settle(check: check, enforcement: enforcement, afterInput: false,
+          ownerBudget: axBudget, releaseIfStopped: releaseIfStopped)
         if let enforcement { throw enforcement }
-        if switching, let target { try await requireKey(target, gate: ready) }
+        if switching, let target {
+          try await OwnerInputAXBudget.$current.withValue(axBudget) { try await requireKey(target, gate: ready) }
+        }
       }
       try ready()
     } catch {
+      await releaseIfStopped()
       // Settling that failed has already tried; anything else stopped first.
       let tried = [Self.unsettled, Self.notRestored].contains { $0 == error as? HelperError }
       if preparing, !tried {
-        _ = try await round.settle(check: {}, enforcement: error, afterInput: false)
+        _ = try await round.settle(check: {}, enforcement: error, afterInput: false,
+          ownerBudget: axBudget, releaseIfStopped: releaseIfStopped)
       }
       throw error
     }
@@ -298,13 +465,15 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     do {
       result = try await deliverGuarded(round)
     } catch {
-      _ = try? await round.settle(check: {}, enforcement: nil, afterInput: true)
+      _ = try? await round.settle(check: {}, enforcement: nil, afterInput: true,
+        ownerBudget: axBudget, releaseIfStopped: releaseIfStopped)
       throw error
     }
     // Input is out: nothing stops the person's app being put back, and an app
     // left in front is reported, never passed off as delivered quietly.
     do {
-      if try await round.settle(check: {}, enforcement: nil, afterInput: true, additionalInput: {
+      if try await round.settle(check: {}, enforcement: nil, afterInput: true,
+        ownerBudget: axBudget, releaseIfStopped: releaseIfStopped, additionalInput: {
         guard self.personDeliveryWindow.current?.lost != true,
           !OwnerFocusGate.shared.hasWaiters, hasPendingInput() else { return false }
         result = try await deliverGuarded(round)
@@ -320,21 +489,15 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     return (result, unseen)
   }
 
-  /// Preparing the app while the person's app is in front: the round's taps,
-  /// its notice suppression and the screen hold last until the app is
-  /// prepared and the person's app is back, and end before any input.
+  /// Preparing the app while the person's app is in front, inside the act's
+  /// round: the screen hold lasts until the app is prepared and the person's
+  /// app is back, and ends before any input.
   private func safelyEnforce(
     _ window: AXUIElement?, switching: Bool, resigning: CGWindowID?, target: CGWindowID?,
-    isolation: isolated (any Actor)? = #isolation,
-    original: NSRunningApplication, finalCheck: @escaping @Sendable () throws -> Void,
+    round: Round, isolation: isolated (any Actor)? = #isolation,
+    finalCheck: @escaping @Sendable () throws -> Void,
     check: () throws -> Void, gate: () throws -> Void
   ) async throws -> Bool {
-    let round = try Round(target: pid, original: original)
-    suppression.withLock { $0 = round.suppress }
-    defer {
-      suppression.withLock { $0 = nil }
-      round.end()
-    }
     guard let release = PrivateAPI.holdScreenUpdates() else { throw Self.unguarded }
     defer { release() }
     do {
@@ -435,7 +598,7 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
   private func keyWindowID(timeout: Float) -> CGWindowID? {
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, timeout)
-    return AXValueReader.copyElement(app, kAXFocusedWindowAttribute).flatMap(KeyWindow.windowID)
+    return AXValueReader.copyElement(app, kAXFocusedWindowAttribute, maximum: timeout).flatMap(KeyWindow.windowID)
   }
 
   /// Keys are sent only once `window` has the keyboard, within half a second.
@@ -453,10 +616,13 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
   private func waitUntilBelievedFrontmost(timeout: TimeInterval, isolation: isolated (any Actor)? = #isolation) async {
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, 0.1)
-    let deadline = ProcessInfo.processInfo.systemUptime + timeout
-    while ProcessInfo.processInfo.systemUptime < deadline {
-      if AXValueReader.copyBool(app, "AXFrontmost") == true { return }
-      try? await Task.sleep(nanoseconds: 10_000_000)
+    let budget = OwnerInputAXBudget.current
+    let deadline = min(ProcessInfo.processInfo.systemUptime + timeout, budget?.deadline ?? .infinity)
+    while ProcessInfo.processInfo.systemUptime < deadline, budget == nil || budget?.timeout() != nil {
+      if AXValueReader.copy(app, "AXFrontmost", maximum: 0.1) as? Bool == true { return }
+      let remaining = deadline - ProcessInfo.processInfo.systemUptime
+      guard remaining > 0, budget == nil || budget?.timeout() != nil else { return }
+      try? await Task.sleep(nanoseconds: UInt64(min(remaining, 0.01) * 1_000_000_000))
     }
   }
 
@@ -507,13 +673,13 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     return .pass(believesActive: believesActive, endsDelivery: !fromHelper || appLevelUndo)
   }
 
-  /// A belief change, and the click tap it calls for: present exactly while
-  /// the app believes it is active but is not.
   private func update(_ change: (inout State) -> Void) {
     let removed = state.withLock { current -> EventTap? in
       change(&current)
-      let pretending = !current.stopped && current.active && !current.isActive
-      if pretending, current.clickTap == nil {
+      let watching = ActKeeper.watchesClicks(
+        acting: current.act != nil,
+        pretending: !current.stopped && current.active && !current.isActive)
+      if watching, current.clickTap == nil {
         current.clickTap = EventTap(
           .session, place: .headInsertEventTap, options: .listenOnly,
           types: [CGEventType.leftMouseDown.rawValue],
@@ -521,7 +687,7 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
             self?.personClicked(event)
             return event
           })
-      } else if !pretending, let tap = current.clickTap {
+      } else if !watching, let tap = current.clickTap {
         current.clickTap = nil
         return tap
       }
@@ -530,26 +696,27 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     removed?.stop()
   }
 
-  /// A person’s click activates the app unless its synthetic active state
-  /// ended before main-thread handling. A click already addressed to the app
-  /// needs no reconciliation. This does not cancel input already under way.
   private func personClicked(_ event: CGEvent) {
-    guard
-      pid_t(exactly: event.getIntegerValueField(FocusEvents.sourcePIDField)) != getpid(),
-      pid_t(exactly: event.getIntegerValueField(FocusEvents.targetPIDField)) != pid,
-      let window = CGWindowID(exactly: event.getIntegerValueField(FocusEvents.windowNumberField)),
-      window != 0,
-      let info =
-        (CGWindowListCopyWindowInfo([.optionIncludingWindow, .excludeDesktopElements], window)
-        as? [[String: Any]])?.first,
-      ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
-      (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
+    guard pid_t(exactly: event.getIntegerValueField(FocusEvents.sourcePIDField)) != getpid()
     else { return }
+    let addressedTo = pid_t(exactly: event.getIntegerValueField(FocusEvents.targetPIDField))
+    var windowOwner: pid_t?
+    if let window = CGWindowID(exactly: event.getIntegerValueField(FocusEvents.windowNumberField)),
+      window != 0,
+      let info = (CGWindowListCopyWindowInfo([.optionIncludingWindow, .excludeDesktopElements], window)
+        as? [[String: Any]])?.first,
+      ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0 {
+      windowOwner = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+    }
+    let act = state.current.act
+    if let act { act.noteClick(windowOwner: windowOwner, addressedTo: addressedTo) }
+    guard (windowOwner ?? addressedTo) == pid else { return }
     personRound.current?.relinquish()
+    guard addressedTo != pid else { return }
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       let current = self.state.current
-      guard !current.stopped, current.active, !current.isActive else { return }
+      guard !current.stopped, current.active, !current.isActive, act?.choseTarget != false else { return }
       _ = NSRunningApplication(processIdentifier: self.pid)?.activate(options: [])
     }
   }
@@ -558,8 +725,9 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
 
   private static func activationPoint(of window: AXUIElement) -> CGPoint? {
     var value: CFTypeRef?
-    guard
-      AXUIElementCopyAttributeValue(window, "AXActivationPoint" as CFString, &value) == .success,
+    guard OwnerInputAXBudget.prepare(window),
+      OwnerInputAXBudget.received(
+        AXUIElementCopyAttributeValue(window, "AXActivationPoint" as CFString, &value)) == .success,
       let value, CFGetTypeID(value) == AXValueGetTypeID()
     else { return nil }
     var point = CGPoint.zero
@@ -575,7 +743,10 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
       AXUIElementSetMessagingTimeout(app, axMessagingTimeout)
       return AXValueReader.copyElement(app, kAXFocusedWindowAttribute)
     },
-    raise: (AXUIElement) -> AXError = { AXUIElementPerformAction($0, kAXRaiseAction as CFString) }
+    raise: (AXUIElement) -> AXError = { window in
+      guard OwnerInputAXBudget.prepare(window) else { return .cannotComplete }
+      return AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+    }
   ) throws -> AXError {
     guard let focused = focusedWindow(originalPID), CFEqual(focused, window),
       frontPID() == originalPID, !relinquished() else { throw personSwitched }
@@ -610,8 +781,107 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     .failed, "This app did not settle in the background in time, so nothing was sent.")
 }
 
-/// Preparation protects both lanes. Agent input ends this round before
-/// delivery; person bursts keep it until their after-input watch completes.
+/// The person's choice and the input boundary shared by every round of one action.
+final class ActKeeper: Sendable {
+  private struct Owner {
+    var app: pid_t?
+    var pendingTargetClick = false
+  }
+
+  let target: pid_t
+  let cancellation: SessionCancellation
+  private let front: @Sendable () -> pid_t?
+  private let deliveryProgress: Locked<Bool>
+  private let owner: Locked<Owner>
+
+  init(target: pid_t, front: @escaping @Sendable () -> pid_t?, cancellation: SessionCancellation,
+       deliveryProgress: Locked<Bool>) {
+    self.target = target
+    self.front = front
+    self.cancellation = cancellation
+    self.deliveryProgress = deliveryProgress
+    owner = Locked(Owner(app: front()))
+  }
+
+  static func watchesClicks(acting: Bool, pretending: Bool) -> Bool { acting || pretending }
+
+  var choseTarget: Bool { owner.withLock { $0.pendingTargetClick || $0.app == target } }
+
+  func noteClick(windowOwner: pid_t?, addressedTo: pid_t?) {
+    guard (windowOwner ?? addressedTo) == target else { return }
+    owner.withLock { $0.pendingTargetClick = true }
+  }
+
+  @discardableResult func observeFront() -> pid_t? {
+    owner.withLock { owner in
+      guard let now = front() else { return nil }
+      if now == target {
+        if owner.pendingTargetClick { owner = Owner(app: target) }
+      } else if now != owner.app {
+        owner = Owner(app: now)
+      }
+      return now
+    }
+  }
+
+  func permitsRestoring(_ app: pid_t) -> Bool {
+    owner.withLock { $0.app == app && !$0.pendingTargetClick }
+  }
+
+  func originalToRestore() -> pid_t? {
+    guard observeFront() == target else { return nil }
+    return backgroundOwner
+  }
+
+  private var backgroundOwner: pid_t? {
+    owner.withLock { $0.pendingTargetClick || $0.app == target ? nil : $0.app }
+  }
+
+  func checkRecovery(_ restored: Bool) throws {
+    try cancellation.check()
+    if !restored { throw deliveryProgress.current ? FocusEnforcer.leftInFront : FocusEnforcer.notRestored }
+  }
+
+  // One restore request is enough when the user stops. The activation tap can already be gone.
+  func checkCancellation(front: pid_t?, original: pid_t, attemptedRestore: Bool) throws {
+    if front == target && permitsRestoring(original) && !attemptedRestore { return }
+    try cancellation.check()
+  }
+
+  @discardableResult
+  @WorkActor func recover(_ putBack: (ActKeeper) async -> Bool) async throws -> pid_t? {
+    try cancellation.check()
+    let current = observeFront()
+    guard current == target, backgroundOwner != nil else { return current }
+    let restored = await putBack(self)
+    let after = observeFront()
+    try checkRecovery(backgroundOwner == nil || (restored && after != nil && after != target))
+    return after
+  }
+
+  @WorkActor func run<Result>(
+    putBack: (ActKeeper) async -> Bool, _ body: () async throws -> Result
+  ) async throws -> Result {
+    let result: Result
+    do {
+      result = try await body()
+    } catch {
+      try cancellation.check()
+      if let failure = error as? HelperError,
+        failure == FocusEnforcer.leftInFront || failure == FocusEnforcer.notRestored {
+        throw failure
+      }
+      if originalToRestore() != nil { _ = await putBack(self) }
+      try cancellation.check()
+      throw error
+    }
+    try await recover(putBack)
+    return result
+  }
+}
+
+/// One act's protection of the person's front app, in both lanes: from
+/// preparation through the input to its after-input watch.
 private final class Round: @unchecked Sendable {
   private struct Seen {
     var realActivationObserved = false
@@ -622,19 +892,18 @@ private final class Round: @unchecked Sendable {
     var relinquished = false
   }
 
-  /// How long after the input an app is given to come forward on it.
-  static let afterInputWatch: TimeInterval = 0.25
-
   let target: pid_t
   let original: NSRunningApplication
+  let act: ActKeeper?
   private let originalWindow: AXUIElement?
   private let originalWindowID: CGWindowID?
   private let seen = Locked(Seen())
   private var taps: [EventTap] = []
 
-  init(target: pid_t, original: NSRunningApplication) throws {
+  init(target: pid_t, original: NSRunningApplication, act: ActKeeper? = nil) throws {
     self.target = target
     self.original = original
+    self.act = act
     let originalPID = original.processIdentifier
     let app = AXUIElementCreateApplication(originalPID)
     AXUIElementSetMessagingTimeout(app, axMessagingTimeout)
@@ -652,7 +921,7 @@ private final class Round: @unchecked Sendable {
           let kind = type.rawValue
           let subtype = event.getIntegerValueField(FocusEvents.appKitSubtypeField)
           return seen.withLock { state -> CGEvent? in
-            guard !state.relinquished else { return event }
+            guard !state.relinquished, act?.permitsRestoring(originalPID) != false else { return event }
             state.lastEventTime = Round.now()
             if FocusEvents.isActivation(kind, subtype) {
               state.realActivationObserved = true
@@ -675,7 +944,7 @@ private final class Round: @unchecked Sendable {
               != getpid(),
             pid_t(truncatingIfNeeded: event.getIntegerValueField(FocusEvents.targetPIDField))
               == target,
-            !seen.current.relinquished
+            !seen.current.relinquished, act?.permitsRestoring(originalPID) != false
           else { return event }
           return PersonKeyOrder.shared.sendOn(event, to: originalPID) ? nil : event
         })
@@ -689,10 +958,10 @@ private final class Round: @unchecked Sendable {
   /// What the target's own activation tap drops: its deactivation and
   /// resign notices, so it keeps believing it is active.
   var suppress: @Sendable (UInt32, Int64) -> Bool {
-    let seen = self.seen
+    let seen = self.seen, act = self.act, originalPID = original.processIdentifier
     return { kind, subtype in
       seen.withLock { state in
-        guard !state.relinquished else { return false }
+        guard !state.relinquished, act?.permitsRestoring(originalPID) != false else { return false }
         state.lastEventTime = Round.now()
         if kind == FocusEvents.appActivated {
           state.realActivationObserved = true
@@ -715,7 +984,9 @@ private final class Round: @unchecked Sendable {
   /// their keys reach it.
   func relinquish() { seen.withLock { $0.relinquished = true } }
 
-  var relinquished: Bool { seen.current.relinquished }
+  var relinquished: Bool {
+    seen.current.relinquished || act?.permitsRestoring(original.processIdentifier) == false
+  }
 
   func end() {
     guard !taps.isEmpty else { return }
@@ -732,6 +1003,8 @@ private final class Round: @unchecked Sendable {
   /// Returns whether the person's app had to be put back. A person who chose
   /// the target is never sent back; before the input that ends the round.
   func settle(isolation: isolated (any Actor)? = #isolation, check: () throws -> Void, enforcement: (any Error)?, afterInput: Bool = false,
+              watch: TimeInterval = FocusEnforcer.afterInputWatch,
+              ownerBudget: OwnerInputAXBudget? = nil, releaseIfStopped: () async -> Void = {},
               additionalInput: () async throws -> Bool = { false })
     async throws -> Bool
   {
@@ -742,15 +1015,18 @@ private final class Round: @unchecked Sendable {
     let targetApp = AXUIElementCreateApplication(target)
     AXUIElementSetMessagingTimeout(targetApp, 0.1)
     while true {
+      if ownerBudget != nil { await releaseIfStopped() }
       try check()
-      if seen.current.relinquished {
+      let front = act?.observeFront() ?? PrivateAPI.focusPID(front: true)
+      try act?.checkCancellation(
+        front: front, original: original.processIdentifier, attemptedRestore: restored)
+      if relinquished {
         if afterInput { return false }
         throw FocusEnforcer.personSwitched
       }
       let time = Round.now()
       let elapsed = time - started
-      // The window server's answer, not NSWorkspace's, which follows it late.
-      let front = PrivateAPI.focusPID(front: true)
+      if elapsed >= FocusEnforcer.settleDuration { throw FocusEnforcer.unsettled }
       // Reads above and below wait on apps; a person's choice made meanwhile wins.
       if front == target {
         if time - lastRestore >= 0.05, !relinquished {
@@ -759,6 +1035,7 @@ private final class Round: @unchecked Sendable {
             $0.targetDeactivated = false
             $0.lastEventTime = time
           }
+          if let act, act.observeFront() != target || relinquished { continue }
           guard original.activate(options: []) else { throw FocusEnforcer.notRestored }
           restored = true
           lastRestore = time
@@ -767,24 +1044,33 @@ private final class Round: @unchecked Sendable {
         guard front == original.processIdentifier else { throw FocusEnforcer.personSwitched }
         let ready =
           afterInput
-          ? elapsed >= Self.afterInputWatch
-          : enforcement != nil || AXValueReader.copyBool(targetApp, "AXFrontmost") == true
+          ? elapsed >= watch
+          : enforcement != nil || OwnerInputAXBudget.$current.withValue(ownerBudget) {
+            AXValueReader.copy(targetApp, "AXFrontmost", maximum: 0.1) as? Bool == true
+          }
         var raised = false
         if let originalWindow, let originalWindowID,
           Self.targetWindowIsAbove(originalWindowID, target: target)
         {
           // A raise that keeps failing leaves the target over the person's
           // window: that is not settled.
+          // Restoring the person's own window uses the round's time and may continue after Stop.
+          let restorationBudget = ownerBudget.map { _ in FocusEnforcer.ownerRestorationBudget(started: started) }
           let status: AXError
           if original.processIdentifier == getpid() {
             // In-process AX invokes AppKit directly; window ordering needs its main thread.
+            let token = AXWindowToken(element: originalWindow)
             status = try await MainActor.run {
+              try OwnerInputAXBudget.$current.withValue(restorationBudget) {
+                try FocusEnforcer.raiseOriginalWindow(token.element,
+                  originalPID: original.processIdentifier, relinquished: { self.relinquished })
+              }
+            }
+          } else {
+            status = try OwnerInputAXBudget.$current.withValue(restorationBudget) {
               try FocusEnforcer.raiseOriginalWindow(originalWindow,
                 originalPID: original.processIdentifier, relinquished: { self.relinquished })
             }
-          } else {
-            status = try FocusEnforcer.raiseOriginalWindow(originalWindow,
-              originalPID: original.processIdentifier, relinquished: { self.relinquished })
           }
           if status == .success {
             seen.withLock { $0.lastEventTime = time }
@@ -795,9 +1081,14 @@ private final class Round: @unchecked Sendable {
         }
         // The reads above wait on apps; the front app is read again before
         // the round can end.
-        if !raised, PrivateAPI.focusPID(front: true) == original.processIdentifier {
+        let currentFront = act?.observeFront() ?? PrivateAPI.focusPID(front: true)
+        try act?.checkCancellation(
+          front: currentFront, original: original.processIdentifier, attemptedRestore: restored)
+        if !raised, currentFront == original.processIdentifier {
           let state = seen.current
-          let acknowledged = !restored || state.originalActivated && state.targetDeactivated
+          let acknowledged = FocusEnforcer.restorationAcknowledged(
+            restored: restored, originalActivated: state.originalActivated,
+            targetDeactivated: state.targetDeactivated, afterAgentInput: afterInput && act != nil)
           let quiet = !(enforcement != nil || restored || state.realActivationObserved)
             || Round.now() - state.lastEventTime >= 0.1
           if acknowledged && quiet {
@@ -811,7 +1102,6 @@ private final class Round: @unchecked Sendable {
           }
         }
       }
-      if elapsed >= 2 { throw FocusEnforcer.unsettled }
       try? await Task.sleep(nanoseconds: 10_000_000)
     }
     if restored {

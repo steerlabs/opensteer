@@ -337,6 +337,33 @@ describe("Thread placement", () => {
     });
   });
 
+  // The Runner answers every inspection; one that failed is never still being checked.
+  it("says why an engine whose inspection failed cannot run, instead of checking", () => {
+    const location = environment("environment-main", "main", "This computer", [
+      { driverKind: "codex", readiness: "runtime-check" },
+    ]);
+    const detail =
+      "Codex CLI 0.146.1 is older than Opensteer supports; update it to 0.156.0 or newer";
+    const catalog = HarnessInstanceCatalogSchema.parse({
+      detail,
+      driverKind: "codex",
+      harnessInstanceId: harnesses[0]?.id,
+      models: [],
+      status: "error",
+    });
+    const [placement] = threadPlacementOptions(
+      [{ ...location, harnessCatalogs: [catalog] }],
+      [harnesses[0]!],
+    );
+    expect(placement).toMatchObject({ availability: "unavailable", available: false, detail });
+    // Before any answer arrives, it is still being checked.
+    const [unanswered] = threadPlacementOptions(
+      [{ ...location, harnessCatalogs: [] }],
+      [harnesses[0]!],
+    );
+    expect(unanswered).toMatchObject({ availability: "runtime-check", available: false });
+  });
+
   it("names a work location \u201cthis computer\u201d only by verified Runner identity", () => {
     const environments: EnvironmentSummary[] = [
       environment("environment-main", "main", "Hosted Runner", [
@@ -479,7 +506,6 @@ function environment(
     id,
     kind,
     name,
-    providerStateModes: ["ambient", "isolated"],
     runnerId: `runner-${id}`,
     status: "connected",
   };

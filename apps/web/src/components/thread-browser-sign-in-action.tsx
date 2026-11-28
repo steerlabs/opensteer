@@ -207,13 +207,16 @@ export function BrowserSignInRequestBody({
       request.response?.kind === "external" ? request.response.value : null,
     );
     const notSignedIn = response.success && response.data.outcome === "not-signed-in";
+    const unconfirmed = response.success && response.data.outcome === "unconfirmed";
     return (
       <ActionNote>
         {request.status === "declined"
           ? "Not allowed."
           : notSignedIn
             ? `Chrome isn’t signed in to ${browserSiteLabel(site)}. Your agent will help you sign in another way.`
-            : "Answered."}
+            : unconfirmed
+              ? `The ${browserSiteLabel(site)} sign-in may have been applied; check the page.`
+              : "Answered."}
       </ActionNote>
     );
   }

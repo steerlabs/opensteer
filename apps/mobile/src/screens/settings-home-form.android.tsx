@@ -1,5 +1,5 @@
 import { contactSupport } from "../report-mail.js";
-import { settingsDestinations, type SettingsHomeTeam } from "./settings-home-model.js";
+import { settingsDestinations } from "./settings-home-model.js";
 import {
   LinkRow,
   Section,
@@ -8,10 +8,8 @@ import {
 } from "./settings-form-primitives.android.js";
 export function SettingsHomeForm({
   onOpen,
-  team,
 }: {
   readonly onOpen: (route: (typeof settingsDestinations)[number]["route"]) => void;
-  readonly team: SettingsHomeTeam | null;
 }) {
   return (
     <SettingsHost>
@@ -25,13 +23,6 @@ export function SettingsHomeForm({
               ))}
           </Section>
         ))}
-        {team ? (
-          <Section title={team.name}>
-            {team.rows.map((row) => (
-              <LinkRow key={row.title} onPress={row.onPress} title={row.title} />
-            ))}
-          </Section>
-        ) : null}
         <Section>
           <LinkRow onPress={() => contactSupport()} title="Contact support" />
         </Section>

@@ -1,11 +1,47 @@
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { Session } from "electron";
-import { browserIdentity } from "@opensteer/browser-core";
+import { browserIdentity, isExtensionUrl } from "@opensteer/browser-core";
+import {
+  isDynamicExtensionHop,
+  recordDynamicExtensionRequestHop,
+  recordExtensionRedirect,
+  takeDynamicExtensionRequestHop,
+} from "./extensions/extension-redirects.js";
+import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { isLoopbackHostname } from "@opensteer/core";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
+import {
+  homeElsewhereText,
+  isHomeSessionCookieName,
+  type ThisHomeAddressSet,
+} from "@opensteer/shared/homeAddress";
+
+export { homeElsewhereText };
 
 export { browserIdentity, chromeUserAgent } from "@opensteer/browser-core";
 export type { BrowserIdentity, BrowserUserAgentMetadata } from "@opensteer/browser-core";
+
+/** Tabs whose page was refused one of this Home's addresses, until they show where it opens. */
+const homeRefusals = new Set<number>();
+
+/** Whether this tab's last page was refused because it was this Home's; asked once per refusal. */
+export function takeHomeRefusal(webContentsId: number): boolean {
+  return homeRefusals.delete(webContentsId);
+}
+
+/**
+ * Removes this Home's session cookies from a browser profile it owns, once at start (G1): a profile
+ * from before this rule may hold one. None can arrive again, since none of its pages loads here.
+ */
+export async function forgetHomeSessionCookies(session: Pick<Session, "cookies">): Promise<void> {
+  for (const cookie of await session.cookies.get({}))
+    if (isHomeSessionCookieName(cookie.name)) {
+      const host = (cookie.domain ?? "").replace(/^\./u, "");
+      await session.cookies
+        .remove(`${cookie.secure ? "https" : "http"}://${host}${cookie.path ?? "/"}`, cookie.name)
+        .catch(() => undefined);
+    }
+}
 
 export interface BrowserSessionPolicyOptions {
   readonly provider?: boolean;
@@ -13,6 +49,10 @@ export interface BrowserSessionPolicyOptions {
   readonly onUploadRequest?: (webContentsId: number, requestId: number) => void;
   readonly onRequestFinished?: (requestId: number) => void;
   readonly onMainFrameRequest?: (webContentsId: number, method: string) => void;
+  /** Whether a WebContents is currently controlled by a connected agent (cancels `chrome-extension:` requests). */
+  readonly isConnectionWebContents?: (webContentsId: number) => boolean;
+  /** This Home's addresses, as the Home last told this browser (G1). */
+  readonly homeAddresses?: () => ThisHomeAddressSet;
   readonly acceptLanguages?: string;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
@@ -31,8 +71,9 @@ const grantedPermissions = new Set([
   "sensors",
 ]);
 // Clipboard stays denied: this browser shares the person's own clipboard,
-// and page script must not write it without the person copying. The agent
-// CDP policy refuses agent copy/cut for the same reason.
+// and page script must not write it without the person copying. The CDP
+// router refuses a connected agent's copy, cut, paste and clipboard
+// permission grants for the same reason.
 /** Expands each preferred language with its base language, as Chrome does. */
 export function browserAcceptLanguages(preferred: readonly string[]): string {
   const languages: string[] = [];
@@ -68,18 +109,67 @@ export function applyBrowserSessionPolicy(
     ...(options.acceptLanguages ? [options.acceptLanguages] : []),
   );
   session.webRequest.onBeforeRequest((details, callback) => {
+    // G1: no address of this Home loads in a browser the Home owns, for anyone: a page, a popup, a
+    // frame, a redirect hop (each is asked here), a worker or a service worker (no WebContents).
+    // Its pages never load here, so nobody signs in to it here and its session cookie never
+    // exists in these profiles. One scan of the address for the person's own pages.
+    if (options.homeAddresses?.().includesReported(details.url) === true) {
+      if (details.resourceType === "mainFrame" && details.webContentsId !== undefined)
+        homeRefusals.add(details.webContentsId);
+      callback({ cancel: true });
+      return;
+    }
     if (details.webContentsId !== undefined && !["GET", "HEAD"].includes(details.method))
       options.onUploadRequest?.(details.webContentsId, details.id);
     if (details.resourceType === "mainFrame" && details.webContentsId !== undefined)
       options.onMainFrameRequest?.(details.webContentsId, details.method);
-    if (!isAllowedBrowserRequest(details.url)) callback({ cancel: true });
+    const kind = classifyBrowserRequest(details.url);
+    if (kind === "denied") callback({ cancel: true });
     // An extension's own files are part of the browser, not the web: they
     // never wait for the profile's cookies, and its worker starts from them.
-    else if (details.url.startsWith("chrome-extension://")) callback({ cancel: false });
-    else if (requestGates.has(session))
+    // Pages controlled by a connected agent cannot load or probe extension URLs (M1a, S1);
+    // any other page loads only what the extension lists as web-accessible for it.
+    else if (kind === "extension") {
+      const cancel =
+        (details.webContentsId !== undefined &&
+          options.isConnectionWebContents?.(details.webContentsId) === true) ||
+        !mayRequestExtensionResource(session, details);
+      callback({ cancel });
+    } else if (requestGates.has(session))
       requestGates.get(session)!.beforeRequest(details.webContentsId, callback);
     else callback({ cancel: false });
   });
+  // A navigation a server redirects into an extension is judged by the origin that redirects
+  // (W1): only this hook names it, before the page's `will-redirect` takes it. It also sees
+  // Chromium's own rewrite of an extension's dynamic address into its static one, for any request.
+  session.webRequest.onBeforeRedirect(
+    { urls: ["<all_urls>", "chrome-extension://*/*"] },
+    (details) => {
+      if (!details.redirectURL.includes("chrome-extension:")) return;
+      const navigation =
+        details.resourceType === "mainFrame" || details.resourceType === "subFrame";
+      if (!navigation) {
+        if (isDynamicExtensionHop(details.url, details.redirectURL))
+          recordDynamicExtensionRequestHop(session, details.id, details.redirectURL);
+        return;
+      }
+      if (details.webContentsId === undefined || !isExtensionUrl(details.redirectURL)) return;
+      let frameTreeNodeId: number | undefined;
+      try {
+        frameTreeNodeId = details.frame?.frameTreeNodeId;
+      } catch {
+        frameTreeNodeId = undefined;
+      }
+      if (frameTreeNodeId === undefined) return;
+      recordExtensionRedirect(
+        session,
+        details.webContentsId,
+        frameTreeNodeId,
+        details.url,
+        details.redirectURL,
+      );
+    },
+  );
   if (options.onRequestFinished) {
     session.webRequest.onCompleted((details) => options.onRequestFinished!(details.id));
     session.webRequest.onErrorOccurred((details) => options.onRequestFinished!(details.id));
@@ -187,13 +277,59 @@ function isLoopbackOrigin(value: string): boolean {
 
 const pagePolicyPreloadId = "opensteer-page-policy";
 
-function isAllowedBrowserRequest(value: string): boolean {
+/**
+ * Whether a page's own request for an extension resource may load (Chrome's web-accessible
+ * rule, `mayReachExtensionResource`), judged by the requesting frame's origin, or by the
+ * request's initiator when it has no frame (a worker, a keepalive request after its page went).
+ * Navigations are decided by the page's navigation events instead: a load the browser itself
+ * starts (an extension's popup, its options page) arrives here carrying the frame's previous
+ * origin. A request with neither a frame nor an initiator is left to Chromium's own extension
+ * loader, which already refuses a web page's request for a file that is not web-accessible.
+ */
+function mayRequestExtensionResource(
+  session: Session,
+  details: Electron.OnBeforeRequestListenerDetails,
+): boolean {
+  if (details.resourceType === "mainFrame" || details.resourceType === "subFrame") return true;
+  // Chromium's own rewrite of an extension's dynamic address: it enforces the resource's access
+  // at this static address itself.
+  if (takeDynamicExtensionRequestHop(session, details.id, details.url)) return true;
+  let origin: string | undefined;
   try {
-    return ["blob:", "chrome-extension:", "data:", "http:", "https:", "ws:", "wss:"].includes(
-      new URL(value).protocol,
-    );
+    origin = details.frame ? details.frame.origin : details.initiatorOrigin;
   } catch {
-    return false;
+    // The frame is gone: its initiator, if Electron gives one, still says who asked.
+    if (details.initiatorOrigin === undefined) return false;
+    origin = details.initiatorOrigin;
+  }
+  if (origin === undefined) return true;
+  return mayReachExtensionResource(
+    details.url,
+    origin,
+    (extensionId) => session.extensions.getExtension(extensionId)?.manifest as unknown,
+  );
+}
+
+/**
+ * Classifies one request URL without adding a second `new URL()` parse on the hot web path:
+ * Chromium delivers canonical URLs here, so ordinary `https://`/`http://` requests skip extension
+ * recursion while `chrome-extension:` and `blob:`/`filesystem:` wrappers are still caught.
+ */
+function classifyBrowserRequest(value: string): "denied" | "extension" | "web" {
+  if (value.startsWith("chrome-extension:")) return "extension";
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "chrome-extension:") return "extension";
+    if (
+      (parsed.protocol === "blob:" || parsed.protocol === "filesystem:") &&
+      isExtensionUrl(parsed.pathname)
+    )
+      return "extension";
+    return ["blob:", "data:", "http:", "https:", "ws:", "wss:"].includes(parsed.protocol)
+      ? "web"
+      : "denied";
+  } catch {
+    return "denied";
   }
 }
 

@@ -24,8 +24,7 @@ pnpm integration:rerun /absolute/run-record/attempt
 
 Report the first failure, command, SHA and cleanup outcome.
 
-Use the fresh personal and team fixtures for their respective Host kinds. A team fixture has
-no Runner; a personal fixture has one owner and hosting computer. Run authority races with:
+Use the fresh personal fixture: it has one owner and hosting computer. Run authority races with:
 
 ```sh
 OPENSTEER_LOCK_ORDER_MODE=enforce pnpm test:integration -- --config vitest.integration.config.ts path/to/file.integration.test.ts

@@ -51,6 +51,8 @@ import {
   type HarnessGenerateTextInput,
   type HarnessGenerateTextResult,
   type SupervisedProcess,
+  assertEngineMayRun,
+  opensteerToolIdentity,
 } from "@opensteer/harness";
 import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -70,7 +72,6 @@ const grokSourceId = "xai";
 const grokApiKeySetupMethodId = "xai-api-key";
 const grokDeviceSetupMethodId = "grok-device-code";
 const grokConnectionSlot = "primary";
-const grokNativeUserDetail = "Grok runs only on a computer you signed in on.";
 const grokAuthenticationDetail = "Sign in to Grok or add an xAI API key.";
 const grokAuthenticationTimeoutMs = 5 * 60_000;
 const grokApiKeyFileName = "opensteer-xai-api-key";
@@ -147,9 +148,6 @@ export class GrokHarnessDriver implements HarnessDriver {
 
   async inspect(context: HarnessInspectionContext): Promise<HarnessInspectionResult> {
     assertGrokSource(context.sourceId);
-    if (context.runtimeBoundary.kind !== "native-user") {
-      return { detail: grokNativeUserDetail, status: "unavailable" };
-    }
     const config = GrokHarnessConfigSchema.parse(context.config);
     const runtime = grokInstalledRuntime();
     let version: string;
@@ -259,7 +257,6 @@ export class GrokHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     selection: HarnessAuthenticationSelection,
   ): Promise<HarnessAuthenticationStart> {
-    assertNativeUser(context);
     assertGrokSource(context.sourceId);
     assertConnectionSlot(selection.connectionSlot);
     if (selection.methodId === grokApiKeySetupMethodId) {
@@ -297,7 +294,6 @@ export class GrokHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     selection: HarnessLogoutSelection,
   ): Promise<void> {
-    assertNativeUser(context);
     assertGrokSource(context.sourceId);
     assertConnectionSlot(selection.connectionSlot);
     if (context.providerState.kind === "isolated") {
@@ -324,7 +320,6 @@ export class GrokHarnessDriver implements HarnessDriver {
   }
 
   async removeProfile(context: HarnessAuthenticationContext): Promise<void> {
-    assertNativeUser(context);
     assertGrokSource(context.sourceId);
     if (context.providerState.kind !== "isolated") return;
     await grokApiKey(context.providerState).remove();
@@ -425,7 +420,6 @@ class GrokHarnessAdapter implements HarnessAdapter {
         rewritePromptText: rewriteGrokSkillInvocation,
       },
       launch: async ({ accessMode, context }) => {
-        assertNativeUser(context);
         const environment = await grokProcessEnvironment(
           context.environment,
           context.providerState,
@@ -478,7 +472,8 @@ class GrokHarnessAdapter implements HarnessAdapter {
   }
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
-    assertNativeUser(context);
+    // Grok cannot be run here to show what of the person's it loads.
+    assertEngineMayRun("grok", context);
     return this.#delegate.startSession(this.#resolvedContext(context));
   }
 
@@ -486,7 +481,7 @@ class GrokHarnessAdapter implements HarnessAdapter {
     providerSessionReference: string,
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
-    assertNativeUser(context);
+    assertEngineMayRun("grok", context);
     await assertGrokSessionExists(providerSessionReference, context);
     return this.#delegate.resumeSession(providerSessionReference, this.#resolvedContext(context));
   }
@@ -546,10 +541,16 @@ export function grokPermissionChoices(request: AcpPermissionRequest) {
  * Grok titles a call with its tool name, or with words about the step; only a
  * name names it, and structured MCP fields name it better still.
  */
-export function grokToolIdentity(call: import("@opensteer/harness-acp").AcpToolCall) {
-  return !acpMcpTool(call) && call.title && /^[\w.:-]+$/u.test(call.title)
-    ? validToolIdentity({ name: call.title, namespace: "acp" })
-    : undefined;
+export function grokToolIdentity(
+  call: import("@opensteer/harness-acp").AcpToolCall,
+  context?: Pick<HarnessSessionContext, "agentTools">,
+) {
+  if (acpMcpTool(call) || !call.title || !/^[\w.:-]+$/u.test(call.title)) return undefined;
+  return validToolIdentity(
+    context?.agentTools.tools.includes(call.title)
+      ? opensteerToolIdentity("opensteer", call.title)
+      : { name: call.title, namespace: "acp" },
+  );
 }
 
 // Adapted from T3 Code's xaiAcpExtension.ts (MIT).
@@ -753,7 +754,6 @@ async function generateGrokText(
   context: HarnessGenerateTextInput["context"],
   input: HarnessGenerateTextInput,
 ): Promise<string> {
-  assertNativeUser(context);
   return withBackgroundTextDirectory(context, input.signal, async (directory) => {
     const home = join(directory, "home");
     await mkdir(home, { mode: 0o700 });
@@ -1107,8 +1107,10 @@ function grokAuthenticationMethod(
 }
 
 function sanitizeGrokError(error: unknown): string {
-  if (error instanceof OpensteerError && error.message.trim()) return error.message.slice(0, 2_000);
-  if (error instanceof Error && error.message.trim()) return error.message.slice(0, 2_000);
+  // Leave truncation to AcpHarnessSession after named-secret redaction so a
+  // credential crossing character 2,000 cannot survive half-sliced.
+  if (error instanceof OpensteerError && error.message.trim()) return error.message;
+  if (error instanceof Error && error.message.trim()) return error.message;
   return "Grok could not complete the request";
 }
 
@@ -1122,11 +1124,6 @@ function grokInstalledRuntime() {
     throw new OpensteerError({ code: "internal", message: "Grok runtime is not installed-shaped" });
   }
   return entry.runtime;
-}
-
-function assertNativeUser(context: { readonly runtimeBoundary: { readonly kind: string } }): void {
-  if (context.runtimeBoundary.kind === "native-user") return;
-  throw new OpensteerError({ code: "forbidden", message: grokNativeUserDetail });
 }
 
 function assertGrokSource(sourceId: string): void {

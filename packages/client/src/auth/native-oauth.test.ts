@@ -1,7 +1,4 @@
-import { MockTeamHost, TeamSessionClient, createMemoryTeamPersistence } from "../team/index.js";
 import { HostTransport, type HostNetworkSocketEvents } from "../connections/host-transport.js";
-import { TeamMemberSchema } from "@opensteer/protocol";
-import * as teamEntryModule from "../team/native-team-entry.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { createId, opensteerAccountOAuthScopes } from "@opensteer/core";
@@ -21,9 +18,10 @@ import {
 import {
   MemoryProtectedAuthStore,
   signTestDiscoveryEnvelope,
+  testHostIdentityProofAnswer,
   testHostAuthorityKeys,
 } from "../test-support/index.js";
-import { NativeOAuthManager, TeamIdentityGrantUnsupportedError } from "./native-oauth.js";
+import { NativeOAuthManager } from "./native-oauth.js";
 import type { ProtectedAuthStore } from "./protected-auth-store.js";
 
 describe("NativeOAuthManager", () => {
@@ -35,7 +33,7 @@ describe("NativeOAuthManager", () => {
     hold = cleanup.promise;
     const signingOut = f.manager.signOutHost(f.connection);
     hold = undefined;
-    const signingIn = f.manager.signInTeam(f.connection);
+    const signingIn = f.manager.signInHome(f.connection);
     await vi.waitFor(() => expect(f.opened).toHaveLength(1), { timeout: 1000 });
     await f.manager.handleCallback(
       callbackUrl("host", new URL(f.opened[0]!).searchParams.get("state")!, "code"),
@@ -44,42 +42,7 @@ describe("NativeOAuthManager", () => {
     cleanup.resolve();
     await signingOut;
     expect(f.manager.hostCredentialState(f.connection).status).toBe("signed-in");
-    expect(f.manager.isTeamSignInSuppressed(f.connection)).toBe(false);
-    f.manager.dispose();
-  });
-
-  it("lets identical sign-ins queued behind background entry share one browser flow", async () => {
-    const f = await managerFixture();
-    await f.manager.initialize();
-    const background = f.manager.signInTeam(f.connection, undefined, false).catch(() => null);
-    const first = f.manager.signInTeam(f.connection);
-    const second = f.manager.signInTeam(f.connection);
-    await background;
-    await vi.waitFor(() => expect(f.opened).toHaveLength(1), { timeout: 1000 });
-    await f.manager.handleCallback(
-      callbackUrl("host", new URL(f.opened[0]!).searchParams.get("state")!, "code"),
-    );
-    await expect(first).resolves.toMatchObject({ status: "signed-in" });
-    await expect(second).resolves.toMatchObject({ status: "signed-in" });
-    expect(f.opened).toHaveLength(1);
-    f.manager.dispose();
-  });
-
-  it("keeps the browser callback valid when passive recovery joins sign-in", async () => {
-    const f = await managerFixture();
-    await f.manager.initialize();
-    const signingIn = f.manager.signInTeam(f.connection);
-    await vi.waitFor(() => expect(f.opened).toHaveLength(1), { timeout: 1000 });
-    const concurrentSignIn = f.manager.signInTeam(f.connection);
-    const recovering = f.manager.recoverHostAuthorization(f.connection);
-    await f.manager.handleCallback(
-      callbackUrl("host", new URL(f.opened[0]!).searchParams.get("state")!, "code"),
-    );
-    await expect(signingIn).resolves.toMatchObject({ status: "signed-in" });
-    await expect(recovering).resolves.toBe(true);
-    await expect(concurrentSignIn).resolves.toMatchObject({ status: "signed-in" });
-    expect(f.opened).toHaveLength(1);
-    expect(f.revocations).toEqual([]);
+    expect(f.manager.isHostSignInSuppressed(f.connection)).toBe(false);
     f.manager.dispose();
   });
 
@@ -102,16 +65,14 @@ describe("NativeOAuthManager", () => {
     f.clock.now = new Date("2026-08-11T19:00:02.000Z");
     const refreshing = f.manager.authorizationHeader(f.connection);
     await vi.waitFor(() => expect(f.refreshes).toHaveLength(1), { timeout: 1000 });
-    const startup = f.manager.signInTeam(f.connection, undefined, false);
+    const startup = f.manager.signInHome(f.connection, false);
     gate.resolve();
     await expect(refreshing).resolves.toMatch(/^Bearer host-access-2/u);
     await expect(startup).resolves.toMatchObject({ status: "signed-in" });
     expect(f.revocations).toEqual([]);
     requests.length = 0;
-    vi.mocked(teamEntryModule.verifyTeamEndpoint).mockClear();
     await expect(f.manager.recoverHostAuthorization(f.connection)).resolves.toBe(true);
     expect(requests).toHaveLength(1);
-    expect(teamEntryModule.verifyTeamEndpoint).not.toHaveBeenCalled();
     expect(requests[0]).toMatch(/token$/u);
     f.manager.dispose();
   });
@@ -131,14 +92,11 @@ describe("NativeOAuthManager", () => {
     );
     const rejected = await f.manager.authorizationHeader(f.connection);
     requests.length = 0;
-    vi.mocked(teamEntryModule.verifyTeamEndpoint).mockClear();
     await expect(f.manager.recoverHostAuthorization(f.connection, rejected)).resolves.toBe(true);
     expect(requests).toHaveLength(1);
-    expect(teamEntryModule.verifyTeamEndpoint).not.toHaveBeenCalled();
     expect(f.refreshes).toHaveLength(1);
     await expect(f.manager.recoverHostAuthorization(f.connection, rejected)).resolves.toBe(true);
     expect(requests).toHaveLength(1);
-    expect(teamEntryModule.verifyTeamEndpoint).not.toHaveBeenCalled();
     f.manager.dispose();
   });
 
@@ -163,7 +121,6 @@ describe("NativeOAuthManager", () => {
       let events: HostNetworkSocketEvents | undefined;
       const transport = new HostTransport({
         deploymentId: f.connection.authority.document.deploymentId,
-        expectedKind: "team",
         catalog: { load: f.catalog.load, subscribe: () => () => {} },
         localRuntime: { current: async () => null },
         credentials: f.manager,
@@ -214,8 +171,10 @@ describe("NativeOAuthManager", () => {
     const f = await managerFixture();
     await f.manager.initialize();
     await f.manager.signOutHost(f.connection);
-    await f.manager.signInTeam(f.connection, undefined, false);
-    expect(f.manager.isTeamSignInSuppressed(f.connection)).toBe(true);
+    await expect(f.manager.signInHome(f.connection, false)).rejects.toMatchObject({
+      outcome: { status: "sign-in-required" },
+    });
+    expect(f.manager.isHostSignInSuppressed(f.connection)).toBe(true);
     expect(f.opened).toEqual([]);
     f.manager.dispose();
   });
@@ -247,7 +206,14 @@ describe("NativeOAuthManager", () => {
       accountOrigin: "https://accounts.opensteer.test",
       accountSessions: fixture.accountSessions,
       catalog: fixture.catalog,
-      fetch: async () => {
+      // Only the Home's proof that it still answers at its address; nothing else goes out.
+      fetch: async (input) => {
+        const proof = testHostIdentityProofAnswer(
+          String(input),
+          fixture.connection.authority,
+          discoveryKeys,
+        );
+        if (proof) return proof;
         throw new Error("Unexpected network");
       },
       now: () => fixture.clock.now,
@@ -477,43 +443,6 @@ describe("NativeOAuthManager", () => {
       "https://host.opensteer.test",
     ]);
     expect(fixture.refreshes).toEqual([]);
-  });
-
-  it("proves an invite in the browser before the team's own sign-in, so its callback admits", async () => {
-    const older = await managerFixture();
-    await older.manager.initialize();
-    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
-    // An older invite page drops `authorize` and would leave this sign-in waiting forever.
-    await expect(older.manager.beginHostSignIn(older.connection, invite)).rejects.toThrow(
-      /browser/iu,
-    );
-    expect(older.opened).toEqual([]);
-    older.manager.dispose();
-
-    const fixture = await managerFixture({
-      capabilities: ["native-oauth", "team-invite-native-continuation-v1"],
-    });
-    await fixture.manager.initialize();
-    await fixture.manager.beginHostSignIn(fixture.connection, invite);
-    const opened = new URL(fixture.opened[0]!);
-    // The team's invite page, verifier only in the fragment, carrying the native sign-in.
-    expect(opened.origin + opened.pathname).toBe(
-      `https://host.opensteer.test/invite/${invite.selector}`,
-    );
-    expect(opened.hash).toBe(`#${invite.verifier}`);
-    expect([...opened.searchParams.keys()]).toEqual(["authorize"]);
-    const authorize = new URL(
-      `/v1/auth/native/oauth2/authorize?${opened.searchParams.get("authorize")}`,
-      opened.origin,
-    );
-    expect(authorize.toString()).not.toContain(invite.verifier);
-    await fixture.manager.handleCallback(
-      callbackUrl("host", authorize.searchParams.get("state")!, "host-code"),
-    );
-    expect(fixture.manager.hostCredentialState(fixture.connection)).toMatchObject({
-      status: "signed-in",
-    });
-    fixture.manager.dispose();
   });
 
   it("requests an explicit fresh Account session without replaying an Account mutation", async () => {
@@ -873,7 +802,7 @@ describe("NativeOAuthManager", () => {
     const fixture = await managerFixture({ tokenLifetimeSeconds: 61 });
     await fixture.manager.initialize();
     await fixture.signInAccount();
-    const owner = fixture.manager.teamRuntime();
+    const owner = fixture.manager.accountRuntime();
     const lease = await fixture.manager.accountAuthorizationLease();
     const listener = vi.fn();
     fixture.manager.subscribe(listener);
@@ -893,7 +822,7 @@ describe("NativeOAuthManager", () => {
     });
     const refreshed = await fixture.manager.accountAuthorizationLease();
     expect(refreshed?.authorization).toBe(expected);
-    expect(fixture.manager.teamRuntime()).toBe(owner);
+    expect(fixture.manager.accountRuntime()).toBe(owner);
     expect(owner.signal.aborted).toBe(false);
     expect(refreshed?.signal).toBe(lease?.signal);
     expect(lease?.signal.aborted).toBe(false);
@@ -1233,498 +1162,6 @@ describe("NativeOAuthManager", () => {
   });
 });
 
-describe("NativeOAuthManager team session exchange", () => {
-  const exchangeCapability = ["team-session-exchange-v1"];
-  const assertion = `${"a".repeat(30)}.${"b".repeat(30)}.${"c".repeat(30)}`;
-  const member = {
-    userId: createId("user"),
-    displayName: "Ada",
-    handle: "ada",
-    image: null,
-    role: "member",
-    state: "active",
-    generation: "1",
-    joinedAt: "2026-08-11T19:00:00.000Z",
-  };
-
-  it.each([false, true])(
-    "renews an expired assertion only once (persistent refusal: %s)",
-    async (persistent) => {
-      let grants = 0,
-        exchanges = 0;
-      const f = await managerFixture({
-        capabilities: exchangeCapability,
-        route: (url) => {
-          if (url.includes("/team-identity-grants")) {
-            grants++;
-            return Response.json({ assertion, expiresAt: "2026-08-11T19:11:00.000Z" });
-          }
-          if (!url.endsWith("/v1/team/session/exchange")) return undefined;
-          exchanges++;
-          if (exchanges === 1 || persistent)
-            return Response.json(
-              {
-                error: {
-                  code: "unauthorized",
-                  reason: "assertion-expired",
-                  message: "Expired",
-                  retryable: true,
-                },
-              },
-              { status: 401 },
-            );
-          return Response.json({
-            admitted: false,
-            member,
-            tokens: {
-              access_token: "a".repeat(32),
-              refresh_token: "r".repeat(32),
-              expires_in: 600,
-              scope: "openid profile email offline_access host:access",
-              token_type: "Bearer",
-            },
-          });
-        },
-      });
-      try {
-        await f.manager.initialize();
-        await f.signInAccount();
-        const exchange = f.manager.exchangeTeamSession(f.connection);
-        if (persistent)
-          await expect(exchange).rejects.toMatchObject({ reason: "assertion-expired" });
-        else await expect(exchange).resolves.toMatchObject({ admitted: false });
-        expect(grants).toBe(2);
-        expect(exchanges).toBe(2);
-      } finally {
-        f.manager.dispose();
-      }
-    },
-  );
-
-  it("retains a fresh invite when refused refresh recovers through Account exchange", async () => {
-    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
-    const exchanges: unknown[] = [];
-    const f = await managerFixture({
-      capabilities: exchangeCapability,
-      tokenLifetimeSeconds: 600,
-      refreshStatuses: [400],
-      route: (url, init) => {
-        if (url.includes("/team-identity-grants"))
-          return Response.json({ assertion, expiresAt: "2026-08-11T19:11:00.000Z" });
-        if (!url.endsWith("/v1/team/session/exchange")) return undefined;
-        const body = JSON.parse(String(init?.body));
-        exchanges.push(body);
-        if (!body.invite)
-          return Response.json(
-            {
-              error: {
-                code: "forbidden",
-                reason: "not-a-member",
-                message: "Ask for an invite",
-                retryable: false,
-              },
-            },
-            { status: 403 },
-          );
-        return Response.json({
-          admitted: true,
-          member,
-          tokens: {
-            access_token: "a".repeat(32),
-            refresh_token: "r".repeat(32),
-            expires_in: 600,
-            scope: "openid profile email offline_access host:access",
-            token_type: "Bearer",
-          },
-        });
-      },
-    });
-    try {
-      await f.manager.initialize();
-      await f.signInAccount();
-      await f.manager.beginHostSignIn(f.connection);
-      await f.manager.handleCallback(
-        callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
-      );
-      f.clock.now = new Date(f.clock.now.getTime() + 600_000);
-      const entry = new teamEntryModule.NativeTeamEntry({
-        oauth: f.manager,
-        catalog: f.catalog,
-        verify: (origin) => teamEntryModule.verifyTeamEndpoint(origin, { fetch: globalThis.fetch }),
-        bootstrap: async () => TeamMemberSchema.parse(member),
-      });
-      await expect(
-        entry.enter(
-          {
-            discovery: f.connection.authority.document,
-            discoveryEnvelope: f.connection.authority,
-            capabilities: f.connection.capabilities ?? [],
-            bootstrapMethods: f.connection.bootstrapMethods,
-            endpoint: f.connection.endpoints[0]!,
-          },
-          invite,
-        ),
-      ).resolves.toMatchObject({ admitted: true });
-      expect(exchanges).toEqual([{ assertion, invite }]);
-    } finally {
-      f.manager.dispose();
-    }
-  });
-
-  it("drops unbound browser credentials and fences browser flows on Account identity changes", async () => {
-    const f = await managerFixture();
-    await f.manager.initialize();
-    await f.manager.beginHostSignIn(f.connection);
-    await f.manager.handleCallback(
-      callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
-    );
-    await f.signInAccount();
-    expect(await f.manager.authorizationHeader(f.connection)).toBeNull();
-    expect((await f.store.load()).hosts).toEqual([]);
-    await f.manager.beginHostSignIn(f.connection);
-    const state = new URL(f.opened.at(-1)!).searchParams.get("state")!;
-    await f.manager.signOutAccount();
-    await f.manager.handleCallback(callbackUrl("host", state, "late"));
-    expect((await f.store.load()).hosts).toEqual([]);
-  });
-
-  it("preserves bound team credentials when the same Account reauthorizes", async () => {
-    const f = await managerFixture({
-      capabilities: exchangeCapability,
-      route: (url) =>
-        url.includes("/team-identity-grants")
-          ? Response.json({ assertion, expiresAt: "2026-08-11T19:01:00.000Z" })
-          : url.endsWith("/v1/team/session/exchange")
-            ? Response.json({
-                admitted: false,
-                member,
-                tokens: {
-                  access_token: "a".repeat(32),
-                  refresh_token: "r".repeat(32),
-                  expires_in: 600,
-                  scope: "openid profile email offline_access host:access",
-                  token_type: "Bearer",
-                },
-              })
-            : undefined,
-    });
-    await f.manager.initialize();
-    await f.signInAccount();
-    await f.manager.exchangeTeamSession(f.connection);
-    const owner = f.manager.teamRuntime();
-    const host = new MockTeamHost();
-    const persistence = createMemoryTeamPersistence();
-    const scope = { teamDeploymentId: host.teamId, userId: host.userId };
-    const session = new TeamSessionClient({
-      scope,
-      owner,
-      persistence,
-      rpc: host.rpc,
-      connect: host.connect,
-    });
-    const channel = { kind: "channel" as const, channelId: [...host.channels.values()][0]!.id };
-    await session.setDraft(channel, "Before reauthorization");
-    const lease = await f.manager.accountAuthorizationLease();
-    await f.signInAccount();
-    expect(f.manager.teamRuntime()).toBe(owner);
-    expect(owner.signal.aborted).toBe(false);
-    expect(lease?.signal.aborted).toBe(true);
-    await session.setDraft(channel, "After reauthorization");
-    expect(Object.values((await persistence.load(scope))!.drafts)).toEqual([
-      "After reauthorization",
-    ]);
-    host.dispose();
-    session.dispose();
-    expect(await f.manager.authorizationHeader(f.connection)).toBe(`Bearer ${"a".repeat(32)}`);
-  });
-
-  it("keeps recovery nonterminal when refused team refresh falls back to an unreachable Account", async () => {
-    const f = await managerFixture({
-      capabilities: exchangeCapability,
-      refreshStatuses: [400],
-      route: (url) =>
-        url.includes("/team-identity-grants") ? Response.json({}, { status: 503 }) : undefined,
-    });
-    await f.manager.initialize();
-    await f.signInAccount();
-    await f.manager.beginHostSignIn(f.connection);
-    await f.manager.handleCallback(
-      callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
-    );
-    await expect(f.manager.recoverHostAuthorization(f.connection)).rejects.toMatchObject({
-      classification: "transient",
-    });
-    expect(f.manager.hostCredentialState(f.connection).status).toBe("signed-out");
-    expect((await f.store.load()).hosts).toHaveLength(0);
-  });
-
-  it("refreshes and replays a rejected Account token before local expiry", async () => {
-    let requests = 0;
-    const f = await managerFixture({
-      route: (url) =>
-        url.includes("/team-identity-grants")
-          ? ++requests === 1
-            ? Response.json({}, { status: 401 })
-            : Response.json({ assertion, expiresAt: "2026-08-11T19:01:00.000Z" })
-          : undefined,
-    });
-    await f.manager.initialize();
-    await f.signInAccount();
-    await expect(
-      f.manager.issueTeamIdentityGrant(f.connection.authority.document.deploymentId, {
-        expectedAuthority: { ...f.connection.authority.document, hostKeyFingerprint: "unused" },
-        surface: "desktop",
-      } as never),
-    ).resolves.toMatchObject({ assertion });
-    expect(f.refreshes).toHaveLength(1);
-    expect(requests).toBe(2);
-  });
-
-  it("enters a team with the Account's identity and keeps its tokens like a browser sign-in's", async () => {
-    const calls: { url: string; headers: Headers; body: unknown }[] = [];
-    const fixture = await managerFixture({
-      capabilities: exchangeCapability,
-      route: (url, init) => {
-        if (!url.includes("/team-identity-grants") && !url.endsWith("/v1/team/session/exchange"))
-          return undefined;
-        calls.push({
-          url,
-          headers: new Headers(init?.headers),
-          body: JSON.parse(String(init?.body)),
-        });
-        return url.includes("/team-identity-grants")
-          ? Response.json({ assertion, expiresAt: "2026-08-11T19:01:00.000Z" })
-          : Response.json({
-              admitted: true,
-              member,
-              tokens: {
-                access_token: `team-access-${"t".repeat(20)}`,
-                expires_in: 600,
-                refresh_token: `team-refresh-${"r".repeat(20)}`,
-                scope: "openid profile email offline_access host:access",
-                token_type: "Bearer",
-              },
-            });
-      },
-    });
-    await fixture.manager.initialize();
-    await fixture.signInAccount();
-    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
-    const document = fixture.connection.authority.document;
-
-    await expect(
-      fixture.manager.exchangeTeamSession(fixture.connection, invite),
-    ).resolves.toMatchObject({ admitted: true, member: { handle: "ada" } });
-    expect(calls).toHaveLength(2);
-    expect(calls[0]).toMatchObject({
-      url: `https://accounts.opensteer.test/v1/account/deployments/${document.deploymentId}/team-identity-grants`,
-      body: {
-        surface: "desktop",
-        expectedAuthority: {
-          canonicalOrigin: document.canonicalOrigin,
-          deploymentId: document.deploymentId,
-          hostInstanceId: document.hostInstanceId,
-        },
-      },
-    });
-    expect(calls[0]!.headers.get("authorization")).toMatch(/^Bearer account-access-/u);
-    expect(calls[1]).toMatchObject({
-      url: "https://host.opensteer.test/v1/team/session/exchange",
-      body: { assertion, invite },
-    });
-    expect(calls[1]!.headers.get("authorization")).toBeNull();
-    expect(fixture.manager.hostCredentialState(fixture.connection)).toMatchObject({
-      status: "signed-in",
-    });
-    await expect(fixture.manager.authorizationHeader(fixture.connection)).resolves.toBe(
-      `Bearer team-access-${"t".repeat(20)}`,
-    );
-    expect(fixture.opened.filter((url) => url.startsWith("https://host."))).toEqual([]);
-    expect((await fixture.store.load()).hosts[0]?.accountIdentity).toMatchObject({
-      issuer: "https://accounts.opensteer.test",
-      subject: fixture.manager.accountIdentity()!.subject,
-    });
-    await fixture.manager.signOutAccount();
-    await expect(fixture.manager.authorizationHeader(fixture.connection)).resolves.toBeNull();
-    expect((await fixture.store.load()).hosts).toEqual([]);
-  });
-
-  it("commits no credential if Account signs out while the team exchange is in flight", async () => {
-    const gate = deferred<void>();
-    let started = false;
-    const fixture = await managerFixture({
-      capabilities: exchangeCapability,
-      route: (url) => {
-        if (url.includes("/team-identity-grants"))
-          return Response.json({ assertion, expiresAt: "2026-08-11T19:01:00.000Z" });
-        if (url.endsWith("/v1/team/session/exchange")) {
-          started = true;
-          const body = JSON.stringify({
-            admitted: false,
-            member,
-            tokens: {
-              access_token: "a".repeat(32),
-              refresh_token: "r".repeat(32),
-              expires_in: 600,
-              scope: "openid profile email offline_access host:access",
-              token_type: "Bearer",
-            },
-          });
-          return new Response(
-            new ReadableStream({
-              async start(controller) {
-                await gate.promise;
-                controller.enqueue(new TextEncoder().encode(body));
-                controller.close();
-              },
-            }),
-            { headers: { "content-type": "application/json" } },
-          );
-        }
-        return undefined;
-      },
-    });
-    await fixture.manager.initialize();
-    await fixture.signInAccount();
-    const exchanging = fixture.manager.exchangeTeamSession(fixture.connection);
-    const rejected = expect(exchanging).rejects.toThrow();
-    await vi.waitFor(() => expect(started, "team exchange never started").toBe(true), {
-      timeout: 1000,
-    });
-    await fixture.manager.signOutAccount();
-    gate.resolve();
-    await rejected;
-    expect((await fixture.store.load()).hosts).toEqual([]);
-    expect(fixture.manager.hostCredentialState(fixture.connection).status).toBe("signed-out");
-  });
-
-  it("refreshes manual-row capabilities during passive entry and keeps membership refusal", async () => {
-    const fixture = await managerFixture({
-      capabilities: exchangeCapability,
-      route: (url) =>
-        url.includes("/team-identity-grants")
-          ? Response.json({ assertion, expiresAt: "2026-08-11T19:01:00.000Z" })
-          : url.endsWith("/v1/team/session/exchange")
-            ? Response.json(
-                {
-                  error: {
-                    code: "forbidden",
-                    message: "You're not a member of this team. Ask for an invite.",
-                    reason: "not-a-member",
-                    retryable: false,
-                  },
-                },
-                { status: 403 },
-              )
-            : undefined,
-    });
-    await fixture.manager.initialize();
-    await fixture.signInAccount();
-    const fresh = await teamEntryModule.verifyTeamEndpoint("https://host.opensteer.test", {
-      fetch: globalThis.fetch,
-    });
-    const stale = { ...fixture.connection, capabilities: [] };
-    fixture.catalog.current = catalogFor(stale);
-    vi.mocked(teamEntryModule.verifyTeamEndpoint).mockResolvedValue(fresh);
-    await expect(fixture.manager.signInTeam(stale, undefined, false)).rejects.toMatchObject({
-      name: "TeamEntryRefusedError",
-      reason: "not-a-member",
-    });
-    expect(fixture.opened.filter((url) => url.startsWith("https://host."))).toEqual([]);
-    await expect(fixture.store.load()).resolves.toMatchObject({ hosts: [] });
-  });
-
-  it("tells an Account without identity grants apart from one that refuses the grant", async () => {
-    let grant: Response = Response.json(
-      { error: "Not Found", message: "Route POST:/v1/account/… not found", statusCode: 404 },
-      { status: 404 },
-    );
-    const fixture = await managerFixture({
-      capabilities: exchangeCapability,
-      route: (url) => (url.includes("/team-identity-grants") ? grant : undefined),
-    });
-    await fixture.manager.initialize();
-    await fixture.signInAccount();
-    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
-    await expect(
-      fixture.manager.exchangeTeamSession(fixture.connection, invite),
-    ).rejects.toBeInstanceOf(TeamIdentityGrantUnsupportedError);
-    grant = Response.json(
-      { error: { code: "not_found", message: "Team was not found" } },
-      { status: 404 },
-    );
-    const refused = await fixture.manager
-      .exchangeTeamSession(fixture.connection, invite)
-      .catch((error: unknown) => error);
-    expect(refused).toBeInstanceOf(Error);
-    expect(refused).not.toBeInstanceOf(TeamIdentityGrantUnsupportedError);
-  });
-
-  it("does not exchange an outgoing Account's invite after a refused refresh", async () => {
-    const refresh = deferred<void>();
-    const fixture = await managerFixture({
-      refreshGate: refresh.promise,
-      refreshStatuses: [400],
-      capabilities: exchangeCapability,
-    });
-    await fixture.manager.initialize();
-    await fixture.signInAccount();
-    await fixture.manager.beginHostSignIn(fixture.connection);
-    await fixture.manager.handleCallback(
-      callbackUrl("host", new URL(fixture.opened.at(-1)!).searchParams.get("state")!, "host-code"),
-    );
-    fixture.clock.now = new Date("2026-08-11T20:00:02.000Z");
-    const grant = vi.spyOn(fixture.manager, "exchangeTeamSession");
-    const signingIn = fixture.manager.signInTeam(fixture.connection, {
-      selector: "s".repeat(32),
-      verifier: "v".repeat(43),
-    });
-    const rejected = expect(signingIn).rejects.toThrow();
-    await vi.waitFor(() => expect(fixture.refreshes).toHaveLength(1), { timeout: 1000 });
-    fixture.clock.now = new Date("2026-08-11T19:00:00.000Z");
-    fixture.accountSubject.current = ControlPlaneAccountIdSchema.parse(
-      `acct_${crypto.randomUUID()}`,
-    );
-    await fixture.signInAccount();
-    refresh.resolve();
-    await rejected;
-    expect(grant).not.toHaveBeenCalled();
-    expect((await fixture.store.load()).hosts).toEqual([]);
-  });
-
-  it("rejects entry suspended in credential lookup after explicit team sign-out", async () => {
-    const fixture = await managerFixture();
-    await fixture.manager.initialize();
-    const lookup = deferred<string | null>();
-    vi.spyOn(fixture.manager, "authorizationHeader").mockReturnValueOnce(lookup.promise);
-    const signingIn = fixture.manager.signInTeam(fixture.connection);
-    const rejected = expect(signingIn).rejects.toThrow();
-    await vi.waitFor(() => expect(fixture.manager.authorizationHeader).toHaveBeenCalled(), {
-      timeout: 1000,
-    });
-    await fixture.manager.signOutHost(fixture.connection);
-    lookup.resolve(null);
-    await rejected;
-    expect(fixture.opened).toEqual([]);
-    expect(fixture.manager.isTeamSignInSuppressed(fixture.connection)).toBe(true);
-  });
-
-  it("signs in through the browser when the team does not advertise the exchange", async () => {
-    const route = vi.fn((_url: string) => undefined);
-    const fixture = await managerFixture({ route });
-    await fixture.manager.initialize();
-    await fixture.signInAccount();
-    const signingIn = fixture.manager.signInTeam(fixture.connection);
-    await vi.waitFor(() => expect(fixture.opened).toHaveLength(2));
-    await fixture.manager.handleCallback(
-      callbackUrl("host", new URL(fixture.opened.at(-1)!).searchParams.get("state")!, "code"),
-    );
-    await expect(signingIn).resolves.toMatchObject({ status: "signed-in" });
-    expect(new URL(fixture.opened.at(-1)!).pathname).toBe("/v1/auth/native/oauth2/authorize");
-    expect(route.mock.calls.filter(([url]) => url.includes("team"))).toEqual([]);
-  });
-});
-
 describe("NativeOAuthManager credential boundaries", () => {
   it("invalidates Account-derived capabilities before sign-out cleanup", async () => {
     const fixture = await managerFixture();
@@ -1792,7 +1229,7 @@ describe("NativeOAuthManager credential boundaries", () => {
 
     await expect(fixture.manager.state()).resolves.toMatchObject({
       account: {
-        detail: expect.stringMatching(/different Opensteer Account/u),
+        detail: expect.stringMatching(/different Opensteer account/u),
         identity: { subject: original },
         status: "signed-in",
       },
@@ -1990,17 +1427,7 @@ async function managerFixture(
     readonly writeFailure?: string;
   } = {},
 ) {
-  const connection = deploymentConnection(
-    "team",
-    options.capabilities ?? ["team-native-browser-return-v1"],
-  );
-  vi.spyOn(teamEntryModule, "verifyTeamEndpoint").mockResolvedValue({
-    discovery: connection.authority.document,
-    discoveryEnvelope: connection.authority,
-    capabilities: connection.capabilities ?? [],
-    bootstrapMethods: connection.bootstrapMethods,
-    endpoint: connection.endpoints[0]!,
-  });
+  const connection = deploymentConnection("personal", options.capabilities ?? []);
   const catalog = {
     upsert: async (
       input: import("../connections/deployment-catalog.js").DeploymentConnectionInput,
@@ -2011,7 +1438,6 @@ async function managerFixture(
       };
       return catalog.current;
     },
-    addPendingAccountDeployment: async () => catalog.current,
     remove: async () => catalog.current,
     current: catalogFor(connection),
     load: async () => catalog.current,
@@ -2031,6 +1457,9 @@ async function managerFixture(
   let tokenSequence = 0;
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
+    // The saved Home proves it still answers at its address before anything is sent to it.
+    const proof = testHostIdentityProofAnswer(url, connection.authority, discoveryKeys);
+    if (proof) return proof;
     const routed = options.route?.(url, init);
     if (routed) return routed;
     const form = new URLSearchParams(String(init?.body ?? ""));
@@ -2083,8 +1512,8 @@ async function managerFixture(
   const store: ProtectedAuthStore = {
     assertAvailable: () => memoryStore.assertAvailable(),
     clearAccount: () => memoryStore.clearAccount(),
-    setTeamSignOutSuppression: (deploymentId, suppressed) =>
-      memoryStore.setTeamSignOutSuppression(deploymentId, suppressed),
+    setHostSignOutSuppression: (deploymentId, suppressed) =>
+      memoryStore.setHostSignOutSuppression(deploymentId, suppressed),
     clearHost: (deploymentId) => memoryStore.clearHost(deploymentId),
     clearHosts: (deploymentIds) => memoryStore.clearHosts(deploymentIds),
     load: () => memoryStore.load(),
@@ -2169,7 +1598,7 @@ function signDiscovery(document: HostDiscoveryDocument): HostDiscoveryEnvelope {
 }
 
 function deploymentConnection(
-  kind: "team" | "team",
+  kind: "personal",
   capabilities: readonly string[] = [],
 ): DeploymentConnection {
   const deploymentId = createId("deployment");
@@ -2181,7 +1610,7 @@ function deploymentConnection(
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        kind: "team" as const,
+        kind: "personal" as const,
       },
     }),
     bootstrapMethods: ["password"],

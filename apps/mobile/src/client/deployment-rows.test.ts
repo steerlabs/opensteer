@@ -2,6 +2,7 @@ import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { describe, expect, it } from "vitest";
 import { testDeploymentConnection } from "../../test-support/deployment-fixtures.js";
 import {
+  listedKind,
   deploymentSignInLabel,
   deploymentStatusDetail,
   describeDeploymentRow,
@@ -14,19 +15,19 @@ const attached: DeploymentFacts = { ...held, attachment: "connected" };
 
 describe("describeDeploymentRow", () => {
   it("calls a deployment with a held credential signed in, and nothing more", () => {
-    const row = describeDeploymentRow(testDeploymentConnection({ kind: "team" }), held);
+    const row = describeDeploymentRow(testDeploymentConnection({ home: true }), held);
 
     // "Connected" is a socket, and there is none: a credential in protected
     // storage says only that this phone could sign in without asking again.
     expect(row.status).toBe("signed-in");
-    expect(row.kindLabel).toBe("Team");
-    expect(row.origin).toBe("https://host.example.com");
+    expect(row.kindLabel).toBe("Server");
+    expect(row.origin).toBe("https://home.example.com");
   });
 
   it("does not call a deployment the Account lists Cloud, and marks it managed", () => {
     const row = describeDeploymentRow(
       testDeploymentConnection({
-        kind: "team",
+        home: true,
         source: {
           issuer: "https://account.example.com",
           kind: "account",
@@ -37,14 +38,25 @@ describe("describeDeploymentRow", () => {
     );
 
     // The directory says who may reach a deployment, never who runs it.
-    expect(row.kindLabel).toBe("Team");
+    expect(row.kindLabel).toBe("Server");
     expect(row.accountManaged).toBe(true);
   });
 
+  it("lists a Home on its own server as a Home that signs in at its address", () => {
+    const connection = testDeploymentConnection({ home: true });
+    const row = describeDeploymentRow(connection, signedOut);
+
+    expect(row.kindLabel).toBe("Server");
+    expect(row.origin).toBe("https://home.example.com");
+    expect(row.status).toBe("needs-sign-in");
+    expect(row.signIn).toBe("host-oauth");
+    expect(describeDeploymentRow(connection, held).status).toBe("signed-in");
+  });
+
   it("asks for a sign-in when no credential is held", () => {
-    expect(
-      describeDeploymentRow(testDeploymentConnection({ kind: "team" }), signedOut).status,
-    ).toBe("needs-sign-in");
+    expect(describeDeploymentRow(testDeploymentConnection({ home: true }), signedOut).status).toBe(
+      "needs-sign-in",
+    );
   });
 
   it("calls a personal computer with no live route unavailable, credential or not", () => {
@@ -54,8 +66,36 @@ describe("describeDeploymentRow", () => {
     expect(describeDeploymentRow(connection, signedOut).status).toBe("unavailable");
   });
 
+  it("says Remote access is off where the account holds no route, and asleep where it holds one", () => {
+    const source = {
+      issuer: "https://account.example.com",
+      kind: "account" as const,
+      subject: ControlPlaneAccountIdSchema.parse("acct_0192f4a1-3333-4000-8000-000000000003"),
+    };
+    const off = describeDeploymentRow(
+      testDeploymentConnection({ kind: "personal", reachable: false, source }),
+      held,
+    );
+    expect(off.status).toBe("unavailable");
+    expect(deploymentStatusDetail(off)).toBe(
+      "Remote access is off. Turn it on in Opensteer on that Mac.",
+    );
+    // The account holds its route, and the Mac hasn't been seen lately: asleep, not off.
+    const routed = testDeploymentConnection({ kind: "personal", route: { kind: "connect" } });
+    expect("personalAccessRoute" in routed && routed.personalAccessRoute).toBeTruthy();
+    const asleep = describeDeploymentRow(
+      {
+        ...testDeploymentConnection({ kind: "personal", reachable: false, source }),
+        personalAccessRoute: "personalAccessRoute" in routed ? routed.personalAccessRoute : null,
+      } as never,
+      held,
+    );
+    expect(asleep.status).toBe("unavailable");
+    expect(deploymentStatusDetail(asleep)).toBe("That computer is asleep or off its network.");
+  });
+
   it("puts what a verification found ahead of every other state", () => {
-    const connection = testDeploymentConnection({ kind: "team" });
+    const connection = testDeploymentConnection({ home: true });
 
     expect(
       describeDeploymentRow(connection, { ...attached, verification: "host-too-old" }).status,
@@ -68,13 +108,13 @@ describe("describeDeploymentRow", () => {
 
 describe("deployment status wording", () => {
   it("names the side that needs updating, rather than saying only that they differ", () => {
-    const connection = testDeploymentConnection({ kind: "team" });
+    const connection = testDeploymentConnection({ home: true });
 
     expect(
       deploymentStatusDetail(
         describeDeploymentRow(connection, { ...attached, verification: "host-too-old" }),
       ),
-    ).toMatch(/Update the deployment\.$/u);
+    ).toBe(`${connection.name} needs an Opensteer update to work with this app.`);
     expect(
       deploymentStatusDetail(
         describeDeploymentRow(connection, { ...attached, verification: "client-too-old" }),
@@ -84,8 +124,8 @@ describe("deployment status wording", () => {
 });
 
 describe("the door a row that needs a credential opens", () => {
-  it("sends a team to its own authorization server", () => {
-    const row = describeDeploymentRow(testDeploymentConnection({ kind: "team" }), signedOut);
+  it("sends a Home at its own address to its own authorization server", () => {
+    const row = describeDeploymentRow(testDeploymentConnection({ home: true }), signedOut);
 
     expect(row.status).toBe("needs-sign-in");
     expect(row.signIn).toBe("host-oauth");
@@ -100,7 +140,7 @@ describe("the door a row that needs a credential opens", () => {
 
     expect(row.signIn).toBe("account-grant");
     expect(deploymentSignInLabel("account-grant")).toBe("Sign in");
-    expect(deploymentStatusDetail(row)).toBe("Sign in to this deployment to see your work.");
+    expect(deploymentStatusDetail(row)).toBe("Sign in to this Opensteer to see your work.");
   });
 
   it("asks for a pairing code where only the operator can supply one", () => {
@@ -118,10 +158,10 @@ describe("the door a row that needs a credential opens", () => {
 
   it("offers no door where there is nothing to sign in to, or nothing to fix", () => {
     expect(
-      describeDeploymentRow(testDeploymentConnection({ kind: "team" }), attached).signIn,
+      describeDeploymentRow(testDeploymentConnection({ home: true }), attached).signIn,
     ).toBeNull();
     expect(
-      describeDeploymentRow(testDeploymentConnection({ kind: "team" }), {
+      describeDeploymentRow(testDeploymentConnection({ home: true }), {
         ...signedOut,
         verification: "client-too-old",
       }).signIn,
@@ -148,7 +188,7 @@ describe("the door a row that needs a credential opens", () => {
       signIn: "account-grant",
       status: "needs-sign-in",
     });
-    expect(deploymentStatusDetail(accountRequired)).toMatch(/Opensteer Account again/u);
+    expect(deploymentStatusDetail(accountRequired)).toMatch(/Opensteer account again/u);
 
     expect(
       describeDeploymentRow(connection, {
@@ -159,5 +199,16 @@ describe("the door a row that needs a credential opens", () => {
     expect(
       describeDeploymentRow(connection, { ...signedOut, sessionFailure: "unavailable" }),
     ).toMatchObject({ signIn: null, status: "offline" });
+  });
+});
+
+describe("what the list of Homes calls a Home", () => {
+  it("calls a Home the Account says is a Cloud Computer one, and leaves any other its kind", () => {
+    expect(listedKind({ kindLabel: "Server" }, true)).toEqual({
+      label: "Cloud Computer",
+      cloud: true,
+    });
+    expect(listedKind({ kindLabel: "Server" }, false)).toEqual({ label: "Server", cloud: false });
+    expect(listedKind({ kindLabel: "Mac" }, false).label).toBe("Mac");
   });
 });

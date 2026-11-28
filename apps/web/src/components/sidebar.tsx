@@ -1,3 +1,4 @@
+import { TaskOriginLine, useOpenSessionTask } from "./agent-work.js";
 import { runAction, toastOutcome } from "./use-action.js";
 import { NeedsYouList } from "./needs-you-list.js";
 import { placeByKey } from "@opensteer/client/host";
@@ -27,6 +28,9 @@ import type {
 } from "@opensteer/protocol/desktop";
 import {
   allTabs,
+  chromeTabDetail,
+  chromeTabUsedBy,
+  placeAgents,
   browserSiteLabel,
   devicesElsewhere,
   placeDeviceLabels,
@@ -37,17 +41,19 @@ import {
   type TabFilter,
   listedRowThreadId,
   doneDays,
-  doneTaskList,
   quietlyMoved,
   quietSeenScope,
-  taskList,
   actingOccupants,
+  isolatedPlainSentence,
+  taskOriginLabels,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
+  type SentencePart,
   type TaskRow,
 } from "@opensteer/client/host";
 import {
+  useConnectedAgents,
   useHostSelector,
   usePlace,
   usePlaceActivity,
@@ -70,6 +76,7 @@ import { useConnectionDot } from "./connection-shell.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
+import { ConnectedAgentsNow } from "./connected-agents-now.js";
 import { createPortal } from "react-dom";
 import { fromLivePage } from "../ui-utils.js";
 import { useToast } from "./toast.js";
@@ -94,10 +101,11 @@ import { PlaceMark } from "./workspace/place-mark.js";
 import type { DeviceElsewhere } from "@opensteer/client/computers";
 import { DeviceLabel } from "./computers/device-label.js";
 import { useHereId } from "./computers/here.js";
-import { useTaskDirectory, type TaskDirectory } from "./workspace/task-directory.js";
-import { useTeams } from "../team/team-attachments.js";
-import type { SegmentBadge } from "./team/team-sidebar.js";
-import type { SidebarSide, SidebarSides } from "@opensteer/client/team";
+import {
+  personDoneTaskList,
+  useTaskDirectory,
+  type TaskDirectory,
+} from "./workspace/task-directory.js";
 import {
   useHighlightMatch,
   useWorkspace,
@@ -126,7 +134,6 @@ import { useTaskSnapshot } from "./task-rows.js";
 import { useDesktopPlaces } from "../desktop/places-context.js";
 import { PlaceMenuPlaces } from "./places/place-menu.js";
 import { PlaceAccountFooter, SignOutDialog } from "./places/place-account.js";
-import { TeamSideFor, TeamSwitch } from "../team/team-sidebar-sections.js";
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -145,8 +152,7 @@ export interface SidebarProps {
 }
 
 /**
- * The one navigator: Needs you and Voice, the tasks by folder, each
- * team, the places open now, and a menu for everything else. A task row changes only the conversation; a tab row
+ * The one navigator: Needs you and Voice, the tasks by folder, the places open now, and a menu for everything else. A task row changes only the conversation; a tab row
  * only the middle; a mark on a tab both, as one step.
  */
 export function Sidebar({
@@ -165,6 +171,7 @@ export function Sidebar({
   onToggleCollapsed,
 }: SidebarProps) {
   const workspace = useWorkspace();
+  const openSessionTask = useOpenSessionTask();
   const { nav } = workspace;
   const { pathname } = useLocation();
   const snapshot = useTaskSnapshot(hostClient);
@@ -226,23 +233,22 @@ export function Sidebar({
   const tabsList = useRef<HTMLUListElement | null>(null);
   const motion = useRef<RowMotion | null>(null);
   const announcer = useRef<HTMLParagraphElement | null>(null);
-  const sortRows = useMemo(() => sortRowsOf(liveStrip), [liveStrip]);
   const sort = useTabSort({
     strip: liveStrip,
-    rows: sortRows,
+    rowsOf: sortRowsOf,
     movable: true,
     list: tabsList,
     motion,
     move: (move) => {
       const input = organizeInput(move, layout);
+      if (!input) return null;
       // The drag is over by the answer, so only a toast is left to say it didn't move.
-      if (input)
-        void runAction(hostClient, {
-          label: "move this tab",
-          done: "moved",
-          happened: "this tab moved",
-          execute: () => hostClient.organizeTabs(input),
-        }).then(toastOutcome(toast));
+      return runAction(hostClient, {
+        label: "move this tab",
+        done: "moved",
+        happened: "this tab moved",
+        execute: () => hostClient.organizeTabs(input),
+      }).then(toastOutcome(toast));
     },
     announce: (words) => {
       if (announcer.current) announcer.current.textContent = words;
@@ -251,8 +257,8 @@ export function Sidebar({
   });
   // A lifted row must draw and take the pointer above a native page.
   useNativeBrowserOverlay(sort.lift !== null);
-  // Until the drop the list stands as it was when the row lifted.
-  const strip = sort.lift?.strip ?? liveStrip;
+  // Until the drop the list stands as it was when the row lifted; from the drop, as it was moved.
+  const strip = sort.lift?.strip ?? sort.strip;
   const tabIndices = useMemo(
     () => new Map(strip.ordered.map((tabId, index) => [tabId, index])),
     [strip.ordered],
@@ -285,8 +291,6 @@ export function Sidebar({
   const directory = useTaskDirectory(hostClient, openRowThreadId);
   const { list } = directory;
   const tasksList = useRef<HTMLUListElement | null>(null);
-  const { sides, openSide } = nav;
-  const { side } = sides;
   const doneShelf = useRef<HTMLLIElement | null>(null);
   // Done takes the place of Tasks while it is open.
   const [doneView, setDoneView] = useState(false);
@@ -294,9 +298,9 @@ export function Sidebar({
   useEffect(() => {
     if (quietTasks) void hostClient.loadDoneTasks().catch(() => undefined);
   }, [hostClient, quietTasks, userId]);
-  const doneList = useMemo(() => doneTaskList(directory.snapshot), [directory.snapshot]);
-  const doneRows = doneList?.rows ?? list.done;
-  const doneCount = doneList?.total ?? list.done.length;
+  const doneList = useMemo(() => personDoneTaskList(directory.snapshot), [directory.snapshot]);
+  const doneRows = doneList?.rows ?? list.done.filter((row) => !row.connectedAgentTask);
+  const doneCount = doneList ? doneList.total : doneRows.length;
   const [quietSeen, markQuietSeen] = useQuietSeen(quietSeenScope(directory.snapshot));
   const moved = useMemo(() => quietlyMoved(doneList, quietSeen, Date.now()), [doneList, quietSeen]);
   const openDone = () => {
@@ -308,8 +312,8 @@ export function Sidebar({
   const doneActive = !doneView && openInDone;
   // Opening a Done task brings its shelf into view, once the shelf is there to
   // show; the open task moving to Done later leaves the list where it was.
-  const openListed =
-    openRowThreadId !== null && (openInDone || directory.rows.has(openRowThreadId));
+  const openRow = openRowThreadId === null ? undefined : directory.rows.get(openRowThreadId);
+  const openListed = openInDone || (openRow !== undefined && !openRow.connectedAgentTask);
   const opening = useRef<{ readonly threadId: string | null; placed: boolean }>({
     threadId: null,
     placed: false,
@@ -325,14 +329,21 @@ export function Sidebar({
     opening.current.placed = true;
   }, [collapsed, doneActive, openInDone, openListed, openRowThreadId]);
 
+  // Search keeps the full directory, including a connected agent's own task.
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
+  const wantsOrigins =
+    allTasks.some(({ originConnectionId }) => originConnectionId !== undefined) ||
+    doneRows.some(({ originConnectionId }) => originConnectionId !== undefined);
+  const { connections, revoked } = useConnectedAgents(wantsOrigins ? hostClient : null);
+  const origins = useMemo(() => taskOriginLabels(connections, revoked), [connections, revoked]);
   const searchSources = useMemo<SidebarSearchSources>(
     () => ({
       tasks: allTasks,
       attention: directory.attentionByThread,
+      origins,
       snapshot,
     }),
-    [allTasks, directory.attentionByThread, snapshot],
+    [allTasks, directory.attentionByThread, origins, snapshot],
   );
 
   const openSearch = useCallback(() => {
@@ -527,10 +538,10 @@ export function Sidebar({
 
   const classes = ["sidebar"];
   if (mobileOpen) classes.push("sidebar--open");
-  const rows = [...list.working, ...list.ready];
+  const rows = [...list.working, ...list.ready].filter((row) => !row.connectedAgentTask);
   const days = doneView ? doneDays(doneRows, Date.now()) : [];
   const doneMore = doneList?.hasMore ?? list.hasMore;
-  const doneLine = doneCount > 0 || moved.length > 0;
+  const doneLine = doneCount > 0 || doneList?.hasMore === true || moved.length > 0;
   const rowKeys = doneView
     ? [
         ...days.flatMap((day) => [`day:${day.id}`, ...day.rows.map((row) => row.threadId)]),
@@ -558,7 +569,6 @@ export function Sidebar({
       hostClient={hostClient}
       ask={
         directory.attentionByThread.get(row.threadId)?.title ??
-        // A teammate's ask waiting in the task: who asked, and what.
         (row.tone === "needs-you" && row.line ? row.line : null)
       }
       key={row.threadId}
@@ -566,6 +576,7 @@ export function Sidebar({
       onNavigate={onCloseMobile}
       onSetDone={onSetTaskDone}
       open={row.threadId === openRowThreadId}
+      origin={origins.get(row.originConnectionId ?? "")}
       row={row}
       unsent={drafts.replies.has(row.threadId)}
       workspace={workspace}
@@ -709,13 +720,16 @@ export function Sidebar({
           onOpen={(entry) => {
             setNeedsYouOpen(false);
             onCloseMobile();
-            // A teammate's ask waits in its task, where it is answered.
-            if (entry.kind === "team-ask") {
-              if (entry.task) nav.openConversation(nav.threadPath(entry.task.threadId));
-            } else
+            if (entry.request.originatingAgentSessionId) {
+              const waiting = snapshot.waitingRequests.find(
+                ({ request }) => request.id === entry.request.id,
+              );
+              openSessionTask(entry.navigationThreadId, waiting ?? { request: entry.request });
+            } else {
               nav.openConversation(nav.threadPath(entry.navigationThreadId), {
                 focusRequest: entry.request.id,
               });
+            }
           }}
         />
       ) : null}
@@ -755,7 +769,10 @@ export function Sidebar({
           </button>
         )}
       </div>
-      <TasksBadgeSwitch hostClient={hostClient} onSide={openSide} sides={sides} />
+
+      {!collapsed && (!mobile || mobileOpen) ? (
+        <ConnectedAgentsNow hostClient={hostClient} onNavigate={onCloseMobile} />
+      ) : null}
 
       <SidebarSearch
         badges={presentations.badges}
@@ -781,143 +798,134 @@ export function Sidebar({
         sources={searchSources}
       >
         <section
-          aria-labelledby={side === "tasks" ? "sidebar-tasks" : undefined}
-          aria-label={side === "tasks" ? undefined : "Team"}
+          aria-labelledby="sidebar-tasks"
           className="side-section side-section--tasks"
           onKeyDown={(event) => {
             if (doneView && event.key === "Escape" && !event.defaultPrevented) setDoneView(false);
           }}
-          style={sectionFloor(side === "tasks" ? rowKeys.length + 1 : 8)}
+          style={sectionFloor(rowKeys.length + 1)}
         >
-          {side === "tasks" ? (
-            <>
-              {doneView ? (
-                <div className="side-head side-head--done">
-                  <button
-                    aria-label="Back to Tasks"
-                    className="icon-btn icon-btn--small side-head__back"
-                    onClick={() => setDoneView(false)}
-                    title="Back to Tasks · Esc"
-                    type="button"
-                  >
-                    <Icon name="chevron-left" />
-                  </button>
-                  <h2 className="side-head__title" id="sidebar-tasks">
-                    Done
-                  </h2>
-                  <span className="side-head__count">{doneCount}</span>
-                </div>
-              ) : (
-                <div className="side-head">
-                  <h2 className="side-head__title" id="sidebar-tasks">
-                    Tasks
-                  </h2>
-                  {needsYouCount > 0 ? (
-                    <button
-                      aria-label={`${needsYouCount} need you. Open Needs you`}
-                      className="side-needs"
-                      onClick={openNeedsYou}
-                      title="Open Needs you"
-                      type="button"
-                    >
-                      <span aria-hidden className="side-needs__bang">
-                        !
-                      </span>
-                      <span aria-hidden>{needsYouCount}</span>
-                    </button>
-                  ) : null}
-                  <button
-                    aria-label="New task"
-                    className="icon-btn icon-btn--small side-head__action"
-                    onClick={newTask}
-                    title="New task · ⌘N"
-                    type="button"
-                  >
-                    <Icon name="plus" />
-                  </button>
-                </div>
-              )}
-              <SideList labelledBy="sidebar-tasks" listRef={tasksList}>
-                <RowMotion
-                  snap={false}
-                  list={tasksList}
-                  signature={rowKeys.join(",")}
-                  lifted={false}
+          <>
+            {doneView ? (
+              <div className="side-head side-head--done">
+                <button
+                  aria-label="Back to Tasks"
+                  className="icon-btn icon-btn--small side-head__back"
+                  onClick={() => setDoneView(false)}
+                  title="Back to Tasks · Esc"
+                  type="button"
                 >
-                  {/* One keyed run, so a row that moves keeps its element and focus,
+                  <Icon name="chevron-left" />
+                </button>
+                <h2 className="side-head__title" id="sidebar-tasks">
+                  Done
+                </h2>
+                <span className="side-head__count">{doneCount}</span>
+              </div>
+            ) : (
+              <div className="side-head">
+                <h2 className="side-head__title" id="sidebar-tasks">
+                  Tasks
+                </h2>
+                {needsYouCount > 0 ? (
+                  <button
+                    aria-label={`${needsYouCount} need you. Open Needs you`}
+                    className="side-needs"
+                    onClick={openNeedsYou}
+                    title="Open Needs you"
+                    type="button"
+                  >
+                    <span aria-hidden className="side-needs__bang">
+                      !
+                    </span>
+                    <span aria-hidden>{needsYouCount}</span>
+                  </button>
+                ) : null}
+                <button
+                  aria-label="New task"
+                  className="icon-btn icon-btn--small side-head__action"
+                  onClick={newTask}
+                  title="New task · ⌘N"
+                  type="button"
+                >
+                  <Icon name="plus" />
+                </button>
+              </div>
+            )}
+            <SideList labelledBy="sidebar-tasks" listRef={tasksList}>
+              <RowMotion snap={false} list={tasksList} signature={rowKeys.join(",")} lifted={false}>
+                {/* One keyed run, so a row that moves keeps its element and focus,
                       and slides to its new place. */}
-                  {doneView
-                    ? [
-                        ...days.flatMap((day) => [
-                          <li
-                            className="side-day"
-                            data-motion-key={`day:${day.id}`}
-                            key={`day:${day.id}`}
-                          >
-                            <h3 className="side-day__title">{day.title}</h3>
-                          </li>,
-                          ...day.rows.map((row) => taskRow(row)),
-                        ]),
-                        ...(days.length === 0
-                          ? [
-                              <li
-                                className="sidebar__empty"
-                                data-motion-key="done-empty"
-                                key="done-empty"
-                              >
-                                Nothing in Done yet.
-                              </li>,
-                            ]
-                          : []),
-                        ...(doneMore ? [showMore] : []),
-                      ]
-                    : [
-                        ...rows.map((row) => taskRow(row)),
-                        ...(list.hasMore ? [showMore] : []),
-                        ...(doneLine
-                          ? [
-                              <DoneLine
-                                active={doneActive}
-                                count={doneCount}
-                                hostClient={hostClient}
-                                key="done-shelf"
-                                lineRef={doneShelf}
-                                moved={moved}
-                                onOpen={openDone}
-                                onOpenTask={openTask}
-                                onSeen={markQuietSeen}
-                                quietTaskDays={directory.snapshot.quietTaskDays}
-                              />,
-                            ]
-                          : []),
-                      ]}
-                </RowMotion>
-              </SideList>
-              {!doneView && namedDrafts.length > 0 ? (
-                <details>
-                  <summary>Drafts</summary>
-                  <ul>
-                    {namedDrafts.map(({ draftId, title }) => (
-                      <li key={draftId}>
-                        <button
-                          className="btn btn--ghost btn--small"
-                          onClick={() => {
-                            onCloseMobile();
-                            nav.openConversation("/", { draftId });
-                          }}
-                          type="button"
+                {doneView
+                  ? [
+                      ...days.flatMap((day) => [
+                        <li
+                          className="side-day"
+                          data-motion-key={`day:${day.id}`}
+                          key={`day:${day.id}`}
                         >
-                          {title}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              ) : null}
-            </>
-          ) : (
-            <TeamSideFor onNavigate={onCloseMobile} teamId={side} />
-          )}
+                          <h3 className="side-day__title">{day.title}</h3>
+                        </li>,
+                        ...day.rows.map((row) => taskRow(row)),
+                      ]),
+                      ...(days.length === 0 && !doneMore
+                        ? [
+                            <li
+                              className="sidebar__empty"
+                              data-motion-key="done-empty"
+                              key="done-empty"
+                            >
+                              Nothing in Done yet.
+                            </li>,
+                          ]
+                        : []),
+                      ...(doneMore ? [showMore] : []),
+                    ]
+                  : [
+                      ...rows.map((row) => taskRow(row)),
+                      ...(list.hasMore ? [showMore] : []),
+                      ...(doneLine
+                        ? [
+                            <DoneLine
+                              active={doneActive}
+                              count={doneCount}
+                              hostClient={hostClient}
+                              key="done-shelf"
+                              lineRef={doneShelf}
+                              moved={moved}
+                              onOpen={openDone}
+                              onOpenTask={openTask}
+                              onSeen={markQuietSeen}
+                              origins={origins}
+                              quietTaskDays={directory.snapshot.quietTaskDays}
+                            />,
+                          ]
+                        : []),
+                    ]}
+              </RowMotion>
+            </SideList>
+            {!doneView && namedDrafts.length > 0 ? (
+              <details>
+                <summary>Drafts</summary>
+                <ul>
+                  {namedDrafts.map(({ draftId, title }) => (
+                    <li key={draftId}>
+                      <button
+                        className="btn btn--ghost btn--small"
+                        onClick={() => {
+                          onCloseMobile();
+                          nav.openConversation("/", { draftId });
+                        }}
+                        type="button"
+                      >
+                        {title}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+          </>
         </section>
         <SideSplit onCommit={commitTabsHeight} />
         <section
@@ -1103,28 +1111,6 @@ function VoiceButton({ onOpen }: { readonly onOpen: () => void }) {
   );
 }
 
-const selectTasksBadge = (snapshot: HostSnapshot): SegmentBadge => {
-  const needs = snapshot.needsYou?.count ?? 0;
-  if (needs > 0) return { kind: "needs-you", count: needs };
-  return taskList(snapshot).ready.some((row) => row.unread) ? { kind: "new" } : null;
-};
-const sameBadge = (left: SegmentBadge, right: SegmentBadge) =>
-  JSON.stringify(left) === JSON.stringify(right);
-
-/** The switch, with the Tasks badge read here so it never redraws the lists. */
-function TasksBadgeSwitch({
-  hostClient,
-  onSide,
-  sides,
-}: {
-  readonly hostClient: HostClient;
-  readonly onSide: (side: SidebarSide) => void;
-  readonly sides: SidebarSides;
-}) {
-  const badge = useHostSelector(hostClient, selectTasksBadge, sameBadge);
-  return <TeamSwitch onSide={onSide} sides={sides} tasksBadge={badge} />;
-}
-
 /**
  * A conversation row's plain click opens it beside the place the address
  * shows now, not the one the row last rendered with: a tab chosen a moment
@@ -1158,6 +1144,7 @@ interface TaskRowItemProps {
   readonly onNavigate: () => void;
   readonly onSetDone: (threadId: string, done: boolean) => void;
   readonly open: boolean;
+  readonly origin: readonly SentencePart[] | undefined;
   readonly row: TaskRow;
   /** A reply is waiting here, unsent. */
   readonly unsent: boolean;
@@ -1171,6 +1158,7 @@ const TaskRowItem = memo(function TaskRowItem({
   onNavigate,
   onSetDone,
   open,
+  origin,
   row,
   unsent,
   workspace,
@@ -1193,7 +1181,7 @@ const TaskRowItem = memo(function TaskRowItem({
     `side-task--${row.tone}`,
     open ? (work ? "is-open" : "is-filled") : quiet ? "is-quiet" : "",
     lit ? "is-match" : "",
-    needsYou ? "has-ask" : "",
+    needsYou || origin ? "has-ask" : "",
   ];
   const words = taskStateWords(row.tone);
   const mainRef = useRef<HTMLAnchorElement | null>(null);
@@ -1203,6 +1191,7 @@ const TaskRowItem = memo(function TaskRowItem({
   }, [open]);
   const label = [
     row.unread && row.tone !== "needs-you" ? `${row.title}, unread` : row.title,
+    origin ? isolatedPlainSentence(origin) : null,
     words ? `${words}${needsYou && ask ? `: ${ask}` : ""}` : null,
     unsent ? "unsent draft" : null,
   ]
@@ -1261,6 +1250,7 @@ const TaskRowItem = memo(function TaskRowItem({
           <TaskMark size={20} mark={taskMark(row)} quiet={quiet} />
           <span className="side-task__text">
             <span className="side-task__title">{row.title}</span>
+            <TaskOriginLine parts={origin} />
             {needsYou ? <span className="side-task__ask">{ask}</span> : null}
           </span>
           {unsent ? <UnsentMark /> : null}
@@ -1379,7 +1369,12 @@ const TabRowItem = memo(function TabRowItem({
   placeKey,
   ...props
 }: TabRowProps) {
-  const place = usePlace(props.hostClient, placeKey);
+  const live = usePlace(props.hostClient, placeKey);
+  // Until the drop the list stands as it was: a tab closed elsewhere keeps its row, as it last
+  // was, while a row is lifted, and leaves the list with the drop.
+  const last = useRef(live);
+  if (live) last.current = live;
+  const place = live ?? (props.sort?.held() ? last.current : undefined);
   const occupantIds = useMemo(
     () => place?.occupants.map((occupant) => occupant.threadId) ?? [],
     [place?.occupants],
@@ -1391,6 +1386,7 @@ const TabRowItem = memo(function TabRowItem({
     <TabRow
       {...props}
       badge={badges ? place.identity : null}
+      sort={place.tab.sharedByPerson ? null : props.sort}
       device={device}
       directory={directory}
       place={place}
@@ -1469,6 +1465,15 @@ const TabRow = memo(function TabRow({
     () => actingOccupants(place.occupants, activity),
     [place.occupants, activity],
   );
+  const sharedChrome = place.tab.sharedByPerson;
+  const sharedDetail = sharedChrome ? chromeTabDetail(sharedChrome.computerName) : null;
+  const sharedUsers = sharedChrome
+    ? chromeTabUsedBy(
+        placeAgents({ destination: place.destination, occupants }, directory.snapshot).agents.map(
+          (agent) => agent.connectedAgentName ?? agent.title,
+        ),
+      )
+    : null;
   const site = place.site ? browserSiteLabel(place.site) : null;
   // A phone's row is its name already.
   const elsewhere =
@@ -1476,7 +1481,8 @@ const TabRow = memo(function TabRow({
   // The whole destination in words, label or not: "Q4 numbers – Notion — Work · Mac mini · Offline".
   const where =
     [
-      presentation ? browserWords(presentation, hereId) : elsewhere,
+      sharedDetail ?? (presentation ? browserWords(presentation, hereId) : elsewhere),
+      sharedUsers,
       // Marked though it is this device (not the main computer): the label overrides the mark's name.
       device?.id === hereId ? device.name : null,
       place.unavailableReason,
@@ -1582,7 +1588,15 @@ const TabRow = memo(function TabRow({
             </span>
           ) : null}
         </span>
-        <span className="side-tab__title">{place.title}</span>
+        {sharedDetail ? (
+          <span className="side-tab__words">
+            <span className="side-tab__title">{place.title}</span>
+            <span className="side-tab__detail">{sharedDetail}</span>
+            {sharedUsers ? <span className="side-tab__detail">{sharedUsers}</span> : null}
+          </span>
+        ) : (
+          <span className="side-tab__title">{place.title}</span>
+        )}
         {device ? <DeviceLabel className="side-tab__device" device={device} iconOnly /> : null}
       </button>
       <OccupantMarks
@@ -1732,7 +1746,6 @@ function SidebarFooter({
 }) {
   const navigate = useNavigate();
   const places = useDesktopPlaces();
-  const inTeams = useTeams().teams.length > 0;
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
@@ -1757,16 +1770,6 @@ function SidebarFooter({
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
     { icon: "app", label: "Apps", onSelect: () => go("/apps", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
-    // Once in a team, this lives under Settings → Teams instead.
-    ...(inTeams
-      ? []
-      : [
-          {
-            icon: "users" as const,
-            label: "Create or join a team",
-            onSelect: () => go("/teams", false),
-          },
-        ]),
   ];
   return (
     <div className="sidebar__footer">
@@ -1819,7 +1822,9 @@ function SidebarFooter({
               </button>
             ))}
           </div>
-          {places ? <PlaceMenuPlaces onClose={() => setOpen(false)} places={places} /> : null}
+          {places ? (
+            <PlaceMenuPlaces onClose={() => setOpen(false)} places={places} severalOnly />
+          ) : null}
           {places ? (
             <PlaceAccountFooter
               account={places.snapshot.account}

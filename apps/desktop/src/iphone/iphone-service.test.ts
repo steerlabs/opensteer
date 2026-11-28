@@ -74,6 +74,97 @@ it("configures Wi-Fi only for this Mac's bound phone and preserves preferences o
   expect((await f.store.records())[0]?.wifiEnabledByOpensteer).toBe(false);
 });
 
+it.each([true, false])(
+  "waits for native iPhone session close and reports its result (%s)",
+  async (success) => {
+    const f = await fixture();
+    cleanups.push(f.cleanup);
+    await f.bind();
+    const connection = f.service.forSlot(ownerA).connect(() => undefined);
+    const assignment = {
+      deviceId: f.deviceId,
+      generation: 1,
+      role: "screen" as const,
+      definitionId: "iphone-screen" as const,
+    };
+    await connection.request("iphone.targets", { assignments: [assignment] }, f.options());
+    await connection.request(
+      "iphone.session.open",
+      {
+        deviceId: f.deviceId,
+        driverGeneration: 1,
+        sessionId: "session",
+        runId: "run",
+        access: "control",
+      },
+      f.options(),
+    );
+    const nativeClose = Promise.withResolvers<void>();
+    f.native.held.set("session.close", nativeClose.promise);
+    if (!success) f.native.failures.set("session.close", new Error("Native close failed"));
+    const confirmed = vi.fn();
+    const closing = Promise.resolve(connection.close()).then(confirmed);
+    try {
+      await vi.waitFor(() =>
+        expect(f.native.calls.some(({ method }) => method === "session.close")).toBe(true),
+      );
+      expect(confirmed).not.toHaveBeenCalled();
+    } finally {
+      nativeClose.resolve();
+    }
+    await closing;
+    expect(confirmed).toHaveBeenCalledWith(success);
+    await expect(connection.close()).resolves.toBe(success);
+  },
+);
+
+it.each(["failed", "outcome-unknown", "no-session"] as const)(
+  "keeps the native evidence for an explicit iPhone close (%s)",
+  async (code) => {
+    const f = await fixture();
+    cleanups.push(f.cleanup);
+    await f.bind();
+    const connection = f.service.forSlot(ownerA).connect(() => undefined);
+    await connection.request(
+      "iphone.targets",
+      {
+        assignments: [
+          { deviceId: f.deviceId, generation: 1, role: "screen", definitionId: "iphone-screen" },
+        ],
+      },
+      f.options(),
+    );
+    const session = {
+      deviceId: f.deviceId,
+      driverGeneration: 1,
+      sessionId: "session",
+      runId: "run",
+    };
+    await connection.request("iphone.session.open", { ...session, access: "control" }, f.options());
+    f.native.failures.set(
+      "session.close",
+      code === "outcome-unknown"
+        ? new Error("Lost native close reply")
+        : new IphoneServiceError(code),
+    );
+    const close = () => connection.request("iphone.session.close", session, f.options());
+    const sends = () => f.native.calls.filter(({ method }) => method === "session.close").length;
+    if (code === "no-session") await expect(close()).resolves.toEqual({});
+    else if (code === "outcome-unknown")
+      await expect(close()).rejects.toMatchObject({ effect: "unknown" });
+    else await expect(close()).rejects.toMatchObject({ code: "failed", effect: "not-started" });
+    expect(sends()).toBe(1);
+    f.native.failures.delete("session.close");
+    if (code === "outcome-unknown") {
+      await expect(close()).rejects.toMatchObject({ effect: "unknown" });
+      expect(sends()).toBe(1);
+    } else {
+      await expect(close()).resolves.toEqual({});
+      expect(sends()).toBe(code === "failed" ? 2 : 1);
+    }
+  },
+);
+
 it("ends USB input on a Wi-Fi transport event and never accepts or replays its late receipt", async () => {
   const f = await fixture();
   cleanups.push(f.cleanup);
@@ -633,7 +724,9 @@ it("returns iphone.targets promptly during a slow probe, passes 120s to session 
   await f.bind();
   const events: IphoneRunnerEvent[] = [];
   const connection = f.service.forSlot(ownerA).connect((event) => events.push(event));
-  cleanups.push(async () => connection.close());
+  cleanups.push(async () => {
+    await connection.close();
+  });
 
   // First observe passes the 120s DDI mount budget to session.open.
   const record = (await f.store.records())[0]!;
@@ -843,7 +936,9 @@ it("releases a newly acquired binding when a probe is canceled while binding.acq
     return originalRequest(method, params, schema, opts);
   });
   const connection = service.forSlot(ownerA).connect(() => undefined);
-  cleanups.push(async () => connection.close());
+  cleanups.push(async () => {
+    await connection.close();
+  });
   await connection.request(
     "iphone.targets",
     {

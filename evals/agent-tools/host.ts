@@ -1,3 +1,4 @@
+import { discover } from "@opensteer/agent-tools/discover";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -19,6 +20,7 @@ import { agentToolFailureResult, agentToolRecordResult, agentTools } from "@open
 import { OpensteerMcpService } from "../../apps/host/src/mcp/opensteer-mcp-service.js";
 import type { AgentToolHandlers } from "../../apps/host/src/mcp/handlers/types.js";
 import { TriggerToolHandlers } from "../../apps/host/src/mcp/handlers/triggers.js";
+import { commandSubject } from "../../packages/database/src/resource-access.js";
 import type { RunToolScope } from "../../apps/host/src/agents/run-tool-tokens.js";
 
 import { type EvalCase } from "./cases.js";
@@ -43,7 +45,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const calls: RecordedCall[] = [];
   const boundaryChecks: Check[] = [];
   const secret = randomUUID();
-  const scope = {
+  const scope: RunToolScope = {
+    aud: "opensteer-run-tools",
     bindingGeneration: 1,
     environmentId: createId("environment"),
     requestedBy: createId("user"),
@@ -53,10 +56,11 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     threadId: testCase.tasks.find((entry) => entry.self)?.task.id ?? createId("thread"),
     exp: Math.floor(Date.now() / 1000) + 3600,
     iat: Math.floor(Date.now() / 1000),
-    iss: "opensteer-host" as const,
+    iss: "opensteer-host",
     jti: randomUUID(),
   };
   const agentToken = randomUUID();
+  const connectionId = randomUUID();
   const http = createServer();
   http.listen(0, "127.0.0.1");
   await once(http, "listening");
@@ -78,30 +82,40 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     parentThreadId: null,
     pendingRequests: 0,
     purpose: testCase.purpose,
-    teamOrigin: testCase.teamBound
-      ? { teamId: createId("deployment"), channelId: createId("teamChannel"), threadRootId: "1" }
-      : null,
     status: "idle",
     title: "Eval",
     updatedAt: new Date().toISOString(),
   });
   // Automation tools expand and validate in their production handler before the
   // fixture replaces the backend.
-  const triggers = new TriggerToolHandlers({ manage: async () => unavailable() });
+  const triggers = new TriggerToolHandlers(
+    { manage: async () => unavailable() },
+    { triggerOrigins: async () => new Map() },
+    {
+      door: (_caller, registry) => ({
+        registry,
+        scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
+        // As the real door admits an agent: it names the subject it admitted, which every later
+        // admission of the command reads again.
+        admit: async (caller) => ({
+          answer: "now",
+          face: 0,
+          execution: { subject: commandSubject(caller.key) } as never,
+        }),
+        secretDigestKey: Buffer.alloc(32, 0x33),
+      }),
+    },
+  );
   const handlers: AgentToolHandlers = {
+    discover: async () => unavailable(),
     opensteer_ai_account_list: async () => unavailable(),
-    opensteer_ai_account_update: async () => unavailable(),
-    opensteer_defaults_read: async () => unavailable(),
-    opensteer_defaults_update: async () => unavailable(),
+    opensteer_commands: async () => unavailable(),
+    opensteer_command: async () => unavailable(),
+    opensteer_state: async () => unavailable(),
     computer_list: async () => unavailable(),
-    computer_update: async () => unavailable(),
-    computer_remove: async () => unavailable(),
     computer_use: async () => unavailable(),
     computer_apps: async () => unavailable(),
     computer_access_request: async () => unavailable(),
-    opensteer_messaging_bridge_list: async () => unavailable(),
-    opensteer_messaging_bridge_update: async () => unavailable(),
-    opensteer_messaging_bridge_remove: async () => unavailable(),
     opensteer_plugin_list: async () => unavailable(),
     opensteer_plugin_install: async () => unavailable(),
     opensteer_plugin_catalog: async () => unavailable(),
@@ -120,8 +134,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     local_server_add: async () => unavailable(),
     local_server_list: async () => unavailable(),
     local_server_remove: async () => unavailable(),
-    browser_profile_update: async () => unavailable(),
-    browser_profile_remove: async () => unavailable(),
+    browser_use: async () => unavailable(),
+    browser_connect: async () => unavailable(),
     app_publish: async () => unavailable(),
     app_list: async () => unavailable(),
     app_start: async () => unavailable(),
@@ -166,47 +180,51 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     opensteer_automation_update: (call) => triggers.write(call),
     opensteer_automation_control: (call) => triggers.write(call),
     app_access_request: async () => unavailable(),
-    opensteer_team_read: async () => unavailable(),
-    opensteer_team_file_download: async () => unavailable(),
-    opensteer_team_search: async () => unavailable(),
-    opensteer_team_post: async () => unavailable(),
-    opensteer_knowledge_topic_list: async () => unavailable(),
-    opensteer_knowledge_search: async () => unavailable(),
-    opensteer_knowledge_read: async () => unavailable(),
-    opensteer_knowledge_save: async () => unavailable(),
-    opensteer_knowledge_remove: async () => unavailable(),
   };
   const agent = new OpensteerMcpService({
-    teamsAvailable: async () => testCase.teamBound || testCase.knowledge,
     publicUrl: url,
     handlers,
     callers: {
       authenticate: async (token: string) => {
         if (token !== agentToken) throw refused("unauthorized", "Invalid eval credential");
-        const claims = scope as unknown as RunToolScope;
         const common = {
           userId: scope.requestedBy,
           accessMode: thread.accessMode,
         };
-        if (testCase.caller === "connection")
+        if (testCase.caller === "connection") {
+          const grant = { scope: "everything" } as const;
+          const grantRevision = 1;
           return {
             ...common,
             kind: "connection" as const,
-            key: "connection:eval",
-            connectionId: "eval",
+            key: `connection:${connectionId}`,
+            connectionId,
+            grant,
+            grantRevision,
+            agentConnection: {
+              agentConnectionId: connectionId,
+              grant,
+              grantRevision,
+              // A connection as it consents today: direct work included (B5).
+              consentVersion: 2,
+              accessMode: common.accessMode,
+              bridgeSenders: null,
+            },
           };
+        }
         return {
           ...common,
           kind: "run" as const,
           key: `run:${scope.runId}`,
           thread,
-          claims,
+          claims: scope,
         };
       },
     },
     store: {
       requests: { get: async () => null },
-      getThreadForOwner: async (id) => ({ ...thread, id }),
+      readTask: async (_reader, id) => ({ ...thread, id }),
+      threadOrigins: async () => new Map(),
     },
   });
   const tabs = new TabFixture(testCase.browser ?? BrowserFixtureSchema.parse({}), scope.threadId);
@@ -216,7 +234,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const clients: Client[] = [];
   const activeCalls = new Map<string, number>();
   const mockOffsets = new Map<string, number>();
-  const automationWrites = new Map<string, unknown>();
+  const automationWrites = new Map<string, Record<string, unknown>>();
   const endpoints = new Map<
     string,
     {
@@ -290,6 +308,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         }) as unknown as Transport,
       );
       const { tools } = await client.listTools();
+      const offered = new Set(tools.map(({ name }) => name));
       const instructions = client.getInstructions() ?? "";
       endpoints.set(name, { client, tools, instructions });
       // MCP calls and Browser Harness opensteer.callTool both arrive here, as in production.
@@ -299,23 +318,49 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         index: number,
       ): Promise<CallToolResult> => {
         const original = await client.callTool({ name, arguments: args });
-        const definition = agentTools
-          .filter((tool) => tool.callers.some((kind) => kind === testCase.caller))
-          .find((tool) => tool.name === name);
+        const definition =
+          name === "discover" ? discover : agentTools.find((tool) => tool.name === name);
         const valid =
           !!definition &&
-          definition.input.safeParse(args).success &&
+          offered.has(name) &&
           (original.isError !== true ||
             (isRecord(original.structuredContent) &&
               isRecord(original.structuredContent.error) &&
               original.structuredContent.error.message === validated));
         calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid };
         if (!valid) return original as CallToolResult;
-        let result = Object.hasOwn(mocks, name)
+        const fixture = Object.hasOwn(mocks, name)
           ? mocks[name]
           : tabFixtureTools.has(name)
             ? undefined
-            : (taskFixtureResult(testCase, name, args, scope.threadId) ?? defaultResult(name));
+            : taskFixtureResult(testCase, name, args, scope.threadId);
+        // Nothing configured for this tool: its empty answer, or an unavailable refusal when its
+        // output has no place for one. The call was valid; only the case's answer is missing.
+        let result =
+          fixture !== undefined || tabFixtureTools.has(name)
+            ? fixture
+            : definition!.output.safeParse(defaultResult(name)).success
+              ? defaultResult(name)
+              : { $error: unconfigured, $code: "unavailable" };
+        // A Home that changed answers with the change: `$after` reads `changed` once an earlier
+        // accepted call in this sample matched `call` (tool and partial arguments), else
+        // `before`, so a model that checks its own work sees what the Home would show. It may
+        // stand for a whole mock or for one `$byArgs` entry's result.
+        const changed = (value: unknown): unknown => {
+          if (!isRecord(value) || !isRecord(value.$after)) return value;
+          const after = value.$after;
+          const call = isRecord(after.call) ? after.call : {};
+          const done = calls
+            .slice(0, index)
+            .some(
+              (previous) =>
+                previous?.valid === true &&
+                previous.tool === call.tool &&
+                partialMatch(previous.args, isRecord(call.args) ? call.args : {}),
+            );
+          return done ? after.changed : after.before;
+        };
+        result = changed(result);
         if (
           result !== null &&
           typeof result === "object" &&
@@ -335,7 +380,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             (candidate) => isRecord(candidate) && partialMatch(args, candidate.args),
           );
           result = isRecord(entry)
-            ? entry.result
+            ? changed(entry.result)
             : { $error: "No case mock matches these arguments" };
         }
         if (isRecord(result) && typeof result.$error === "string") {
@@ -387,9 +432,10 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         if (name === "opensteer_automation_read" && isRecord(result)) {
           if (isRecord(result.automation) && typeof result.automation.id === "string") {
             const automationId = result.automation.id;
+            // A write answers with the automation alone; the read keeps its own fields.
             result = {
               ...result,
-              automation: automationWrites.get(automationId) ?? result.automation,
+              automation: { ...result.automation, ...automationWrites.get(automationId) },
             };
           }
         }
@@ -400,9 +446,10 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         )
           result = {
             ...result,
+            // A list entry keeps its summary fields (source, task, latest occurrence).
             automations: result.automations.map((automation) =>
               isRecord(automation) && typeof automation.id === "string"
-                ? (automationWrites.get(automation.id) ?? automation)
+                ? { ...automation, ...automationWrites.get(automation.id) }
                 : automation,
             ),
           };
@@ -642,8 +689,13 @@ function taskFixtureResult(
   return undefined;
 }
 
+const unconfigured =
+  "No matching fixture is configured for this operation. No resource was created.";
+
 function defaultResult(name: string): unknown {
   switch (name) {
+    case "discover":
+      return { items: [], nextCursor: null };
     case "plugin_search":
       return { items: [], namespaces: [], remaining: 0, next: null };
     case "computer_apps":
@@ -651,16 +703,16 @@ function defaultResult(name: string): unknown {
     case "opensteer_task_list":
       return { tasks: [], hasMore: false, nextCursor: null };
     case "opensteer_request_list":
-      return { requests: [] };
+      return {
+        requests: [],
+        window: { byteCount: 0, hasMore: false, itemCount: 0, nextCursor: null, totalItems: 0 },
+      };
     case "browser_profile_list":
       return { profiles: [], sites: [] };
     case "opensteer_automation_list":
       return { automations: [] };
     default:
-      return {
-        status: "unavailable",
-        message: "No matching fixture is configured for this operation. No resource was created.",
-      };
+      return { status: "unavailable", message: unconfigured };
   }
 }
 

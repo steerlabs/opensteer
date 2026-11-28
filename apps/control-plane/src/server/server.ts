@@ -1,5 +1,13 @@
+import { registerAgentDirectoryRoutes } from "../agent-directory/routes.js";
+import type { AgentDirectoryReader } from "../agent-directory/store.js";
+import {
+  registerCloudComputerRoutes,
+  type CloudComputerRouteOptions,
+} from "../cloud-computers/routes.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import Fastify, { type FastifyInstance } from "fastify";
+import { decodeJwt } from "jose";
+import { decodeBasicCredentials } from "@better-auth/core/oauth2";
 import { z } from "zod";
 import { HostedOAuthAttemptIdSchema } from "@opensteer/control-plane-protocol";
 import type {
@@ -40,17 +48,15 @@ import type { PortalSessionStore } from "../portal/portal-sessions.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
 import type { AccountProfiles } from "../account/account-profiles.js";
-import type { TeamIdentityGrantService } from "../account/team-identity-grants.js";
 import {
   hostedOAuthLaunchReturnTo,
   registerHostedOAuthBrokerRoutes,
 } from "../auth/hosted-oauth-broker-routes.js";
 import type { HostedOAuthBrokerService } from "../auth/hosted-oauth-broker-service.js";
-import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
-import { registerHostedTeamProvisionerRoutes } from "../hosted-teams/provisioner-routes.js";
-import { registerHostedTeamAccountRoutes } from "../hosted-teams/account-routes.js";
 
 const maxHttpBodyBytes = 1 * 1_024 * 1_024;
+const IssuedIdTokenSchema = z.object({ id_token: z.string().min(1) });
+const OAuthClientBodySchema = z.object({ client_id: z.string() });
 /** Every response from both vhosts, so no Opensteer hostname is ever downgraded. */
 const strictTransportSecurity = "max-age=31536000; includeSubDomains";
 const UiFormSchema = z
@@ -79,13 +85,8 @@ export async function createControlPlaneServer(
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
-    /** Teams Opensteer hosts, and the check that admits only their provisioner. */
-    readonly hostedTeams?: {
-      readonly store: HostedTeamStore;
-      readonly verifyProvisioner: (authorization: string | undefined) => Promise<void>;
-      /** Wakes Account's setup of teams whose Host just started. */
-      readonly kickBootstrap?: () => void;
-    };
+    readonly cloudComputers?: CloudComputerRouteOptions;
+    readonly agentDirectory?: AgentDirectoryReader;
     readonly desktopDownloadUrl?: string;
     readonly iosAppUrl?: string;
     readonly androidAppUrl?: string;
@@ -96,7 +97,6 @@ export async function createControlPlaneServer(
     readonly personalRemoteAccount?: PersonalRemoteAccountService;
     readonly portalSessions?: PortalSessionStore;
     readonly store: ControlPlaneStore;
-    readonly teamIdentityGrants?: TeamIdentityGrantService;
     readonly accountProfiles?: AccountProfiles;
   },
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
@@ -131,7 +131,7 @@ export async function createControlPlaneServer(
             href: portal.ownsRequest(request) ? "/" : `${portal.origin.origin}/`,
             label: "Go to your Opensteers",
           }
-        : { href: "/", label: "Go to Opensteer Account" },
+        : { href: "/", label: "Go to your Opensteer account" },
       ...failure,
     });
     void reply
@@ -177,6 +177,9 @@ export async function createControlPlaneServer(
   // request is rewritten onto the Account public origin. The machine API under
   // /v1 and /healthz belongs to neither browser vhost and stays host-agnostic.
   const accountDeletion = new AccountDeletionService({
+    ...(dependencies.cloudComputers?.kickBilling
+      ? { afterDelete: dependencies.cloudComputers.kickBilling }
+      : {}),
     ...(dependencies.appleSignIn ? { appleSignIn: dependencies.appleSignIn } : {}),
     auth: dependencies.auth,
     connectLifecycle: dependencies.connectLifecycle,
@@ -192,7 +195,9 @@ export async function createControlPlaneServer(
           ? { desktopDownloadUrl: dependencies.desktopDownloadUrl }
           : {}),
         fonts,
-        ...(dependencies.hostedTeams ? { hostedTeams: dependencies.hostedTeams.store } : {}),
+        ...(dependencies.cloudComputers
+          ? { cloudComputers: dependencies.cloudComputers.store }
+          : {}),
         portalOrigin: dependencies.portalOrigin,
         portalSessions: dependencies.portalSessions,
         ...(dependencies.personalRemoteAccount
@@ -208,17 +213,19 @@ export async function createControlPlaneServer(
   pageFonts.register(app);
   registerControlPlaneRoutes(app, { ...dependencies, accountDeletion });
   registerNotificationRoutes(app, dependencies);
-  if (dependencies.hostedTeams) {
-    registerHostedTeamProvisionerRoutes(app, {
-      hostedTeams: dependencies.hostedTeams.store,
-      verifyProvisioner: dependencies.hostedTeams.verifyProvisioner,
-      ...(dependencies.hostedTeams.kickBootstrap
-        ? { kickBootstrap: dependencies.hostedTeams.kickBootstrap }
-        : {}),
+  if (dependencies.agentDirectory) {
+    registerAgentDirectoryRoutes(app, {
+      agentDirectory: dependencies.agentDirectory,
+      auth: dependencies.auth,
+      publicOrigin: dependencies.publicOrigin,
     });
-    registerHostedTeamAccountRoutes(app, {
+  }
+  if (dependencies.cloudComputers) {
+    registerCloudComputerRoutes(app, {
+      ...dependencies.cloudComputers,
       authenticator: dependencies.authenticator,
-      hostedTeams: dependencies.hostedTeams.store,
+      authenticateHostCredential: (authorization) =>
+        dependencies.store.authenticateHostCredential(authorization),
     });
   }
   if (dependencies.hostedOAuthBroker) {
@@ -255,9 +262,47 @@ export async function createControlPlaneServer(
   const authHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     requireAccountHost(request);
     assertAuthorizeRequestSecurity(request, dependencies.publicOrigin);
-    const response = await dependencies.auth.handler(
-      toFetchRequest(request, dependencies.publicOrigin),
-    );
+    const url = new URL(request.url, dependencies.publicOrigin);
+    const authorize = url.pathname === `${controlPlaneAuthPath}/oauth2/authorize`;
+    const token = url.pathname === `${controlPlaneAuthPath}/oauth2/token`;
+    const issue = () =>
+      dependencies.auth.handler(toFetchRequest(request, dependencies.publicOrigin));
+    const formClient =
+      (authorize || token) && request.method === "POST"
+        ? OAuthClientBodySchema.safeParse(
+            Buffer.isBuffer(request.body) || typeof request.body === "string"
+              ? parseForm(request.body)
+              : request.body,
+          ).data?.client_id
+        : undefined;
+    const basicClient = token ? basicClientId(request.headers.authorization) : undefined;
+    const candidates = [
+      basicClient,
+      formClient,
+      authorize ? url.searchParams.get("client_id") : undefined,
+    ];
+    const clientId = candidates.find((client) => client?.startsWith("occ_"));
+    if (clientId && candidates.some((candidate) => candidate && candidate !== clientId))
+      throw new ControlPlaneError("bad_request", "Conflicting OAuth client identities");
+    const computers = dependencies.cloudComputers?.store;
+    const replacement =
+      token && request.method === "POST" && clientId
+        ? await computers?.pendingReplacementOwnerAccess(clientId)
+        : undefined;
+    const response = await issue();
+    if (computers && clientId && replacement?.accountId && response.ok) {
+      const result = IssuedIdTokenSchema.safeParse(await response.clone().json());
+      if (result.success) {
+        const claims = decodeJwt(result.data.id_token);
+        if (
+          claims.iss === dependencies.publicOrigin.origin &&
+          claims.aud === clientId &&
+          claims.sub === replacement.accountId
+        ) {
+          await computers.recordReplacementOwnerAccess(clientId, replacement);
+        }
+      }
+    }
     void reply.header("cache-control", "no-store");
     return sendWebResponse(reply, response);
   };
@@ -310,7 +355,7 @@ function registerAccountPages(
     void reply.header("cache-control", "no-store");
     if (portal?.ownsRequest(request)) return portal.home(request, reply);
     if (portal) return reply.redirect(`${portal.origin.origin}/`, 302);
-    return sendAccountPage(reply, "Opensteer Account", accountFrontDoorBody());
+    return sendAccountPage(reply, "Opensteer account", accountFrontDoorBody());
   });
 
   app.get("/sign-in", async (request, reply) => {
@@ -402,6 +447,16 @@ function registerAccountPages(
         Boolean(form.switch_account),
       );
       copySetCookies(reply, response);
+      // A sign-in page left open past its signed query's expiry, or one whose
+      // query does not verify, starts the authorization again from the
+      // request it carried, for every provider; it never ends on the JSON.
+      if (form.oauth_query && (await signedQueryRefused(response))) {
+        const request = new URLSearchParams(form.oauth_query);
+        for (const name of signedQueryParameters) request.delete(name);
+        return request.get("client_id")
+          ? reply.redirect(`${controlPlaneAuthPath}/oauth2/authorize?${request.toString()}`, 303)
+          : sendAuthorizationRestartPage(reply);
+      }
       if (credentials && (response.status === 401 || response.status === 429)) {
         return sendSignInPage(reply.code(response.status), {
           returnTo,
@@ -526,6 +581,15 @@ function serializeRequestBody(body: unknown) {
   return JSON.stringify(body);
 }
 
+function basicClientId(authorization: string | undefined): string | undefined {
+  if (!authorization) return;
+  try {
+    return decodeBasicCredentials(authorization).clientId;
+  } catch {
+    return undefined;
+  }
+}
+
 async function sendWebResponse(reply: FastifyReply, response: Response): Promise<FastifyReply> {
   for (const [name, value] of response.headers.entries()) {
     const normalized = name.toLowerCase();
@@ -541,6 +605,28 @@ async function sendWebResponse(reply: FastifyReply, response: Response): Promise
 function copySetCookies(reply: FastifyReply, response: Response): void {
   const cookies = response.headers.getSetCookie();
   if (cookies.length > 0) void reply.header("set-cookie", cookies);
+}
+
+/**
+ * What the OAuth provider adds to an authorization request when it signs it for
+ * the sign-in page. Without them it is the request the client made, which
+ * authorize checks again in full: client, redirect, scope, state and PKCE.
+ */
+const signedQueryParameters = ["sig", "exp", "ba_iat", "ba_pl", "ba_param"] as const;
+
+/** The OAuth provider refused a sign-in's signed query: expired, or not its own. */
+async function signedQueryRefused(response: Response): Promise<boolean> {
+  if (response.status !== 400) return false;
+  const body: unknown = await response
+    .clone()
+    .json()
+    .catch(() => null);
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "error" in body &&
+    body.error === "invalid_signature"
+  );
 }
 
 function registerTransportSecurity(app: FastifyInstance): void {

@@ -12,6 +12,11 @@ export class TabLease {
     this.changed = changed;
   }
 
+  /** V7: the wake in flight, if any. */
+  get waking(): Promise<void> | null {
+    return this.resuming;
+  }
+
   get busy(): boolean {
     return this.operations > 0;
   }
@@ -57,7 +62,11 @@ export class TabLease {
     this.changed();
   }
 
-  resume(start: () => Promise<void>): Promise<void> {
+  /**
+   * `onLive` runs inside the one resume every caller waits on, once the tab is live: what it
+   * announces is the live tab, and every caller returns after it (V2).
+   */
+  resume(start: () => Promise<void>, onLive?: () => void): Promise<void> {
     if (this.resuming) return this.resuming;
     const resume = async () => {
       if (this.state === "sleeping") {
@@ -70,7 +79,10 @@ export class TabLease {
       this.state = "resuming";
       try {
         await start();
-        if (this.state === "resuming") this.state = "live";
+        if (this.state === "resuming") {
+          this.state = "live";
+          onLive?.();
+        }
       } catch (error) {
         if (this.state === "resuming") this.state = "suspended";
         throw error;

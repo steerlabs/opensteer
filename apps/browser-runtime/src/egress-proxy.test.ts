@@ -5,6 +5,8 @@ import {
   settleTestConnections,
   type TestConnectionObservation,
 } from "@opensteer/shared/test-support/serverProbes";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createServer, globalAgent, request as httpRequest } from "node:http";
 import { connect, createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import {
@@ -96,6 +98,83 @@ describe("PublicBrowserEgressProxy", () => {
     cleanups.push(() => proxy.close());
     await expect(proxyConnect(address.port, "127.0.0.1:443")).resolves.toBe(403);
   });
+
+  it("refuses SMTP and pending traffic before resolving a destination", async () => {
+    const lookedUp: string[] = [];
+    const proxy = new PublicBrowserEgressProxy({
+      port: 0,
+      upstreamRequired: true,
+      resolveAddress: async (hostname) => {
+        lookedUp.push(hostname);
+        throw new Error("Unexpected DNS request");
+      },
+    });
+    const { port } = await proxy.start();
+    cleanups.push(() => proxy.close());
+    for (const smtp of [25, 465, 587]) {
+      await expect(proxyRequest(port, `http://public.test:${smtp}/`)).resolves.toMatchObject({
+        status: 403,
+      });
+      await expect(proxyConnect(port, `public.test:${smtp}`)).resolves.toBe(403);
+    }
+    await expect(proxyRequest(port, "http://public.test/")).resolves.toMatchObject({ status: 502 });
+    await expect(proxyConnect(port, "public.test:443")).resolves.toBe(502);
+    expect(lookedUp).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "refuses a request queued before socket activation when the required upstream is missing",
+    async () => {
+      const listener = createNetServer();
+      listener.listen(0, "127.0.0.1");
+      cleanups.push(async () => {
+        if (listener.listening)
+          await new Promise<void>((resolve) => listener.close(() => resolve()));
+      });
+      await once(listener, "listening");
+      const { port } = listener.address() as AddressInfo;
+      // Pass the real listening descriptor at fd 3, as systemd does. Node exposes this
+      // descriptor on its server handle.
+      const fd = (listener as unknown as { readonly _handle: { readonly fd: number } })._handle.fd;
+      const entry = new URL("./egress-main.ts", import.meta.url).href;
+      const script = `
+        process.env.LISTEN_PID = String(process.pid);
+        process.stdin.once("end", () => void import(${JSON.stringify(entry)}));
+        process.stdin.resume();
+      `;
+      const child = spawn(
+        process.execPath,
+        ["--import", "tsx", "--input-type=module", "-e", script],
+        {
+          env: { LISTEN_FDS: "1", OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED: "true" },
+          stdio: ["pipe", "ignore", "inherit", fd],
+        },
+      );
+      const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
+      cleanups.push(async () => {
+        child.kill("SIGTERM");
+        await exited;
+      });
+      await once(child, "spawn");
+      await new Promise<void>((resolve, reject) =>
+        listener.close((error) => (error ? reject(error) : resolve())),
+      );
+
+      // The child has not loaded the entry point. The kernel still accepts the connection.
+      const queued = await rawClient(
+        port,
+        "GET http://127.0.0.1/ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+      );
+      cleanups.push(async () => {
+        queued.socket.destroy();
+        await queued.closed;
+      });
+      child.stdin!.end();
+      await queued.until("HTTP/1.1 502 Bad Gateway");
+      await queued.closed;
+      await expect(proxyRequest(port, "/health")).resolves.toMatchObject({ status: 200 });
+    },
+  );
 });
 
 /*

@@ -15,6 +15,7 @@ import {
   validateSealedLoginActionBindings,
 } from "./password-sign-in.js";
 import {
+  ScrollAmountSchema,
   ComputerUseErrorSchema,
   ComputerUseObservationIdSchema,
   ComputerUsePerformedSchema,
@@ -173,7 +174,7 @@ const androidPhoneActionVariants = [
    * moves is the app's to decide, so the next observation says where it is.
    */
   z.strictObject({
-    amount: z.number().int().min(1).max(20),
+    amount: ScrollAmountSchema,
     direction: z.enum(["up", "down", "left", "right"]),
     target: AndroidPhoneTargetSchema,
     type: z.literal("scroll"),

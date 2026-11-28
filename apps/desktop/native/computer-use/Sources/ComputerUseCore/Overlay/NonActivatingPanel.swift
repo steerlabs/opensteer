@@ -29,18 +29,21 @@ class NonActivatingPanel: NSPanel {
   }
 }
 
-/// A click-through panel that lives inside the app it draws over: ordered
-/// directly above one of that app's windows, at that window's level, so
-/// whatever covers the window covers it too, and never on top of the
-/// person's other apps.
+/// A panel that lives inside the app it draws over: ordered directly above
+/// one of that app's windows, at that window's level, so whatever covers the
+/// window covers it too, and never on top of the person's other apps.
 ///
 /// It is shown only while that window is on the Space being looked at: the
 /// tracker orders it out the moment the window is not on screen, and back in
 /// above the window when it returns. It is `.transient` rather than
 /// `.managed`, because a managed window takes part in Mission Control, App
-/// Exposé and Stage Manager — the pointer and outline would show there as
+/// Exposé and Stage Manager — the chip and the click ring would show there as
 /// windows of their own, and Stage Manager would treat the helper as an app
 /// with a window to bring forward. A transient window is hidden by them.
+///
+/// The click ring lets every click through; the chip takes the person's
+/// pointer, and as a non-activating panel that can never become key it does
+/// so without taking focus from the app or activating the helper.
 final class WindowOverlayPanel: NonActivatingPanel {
   /// The window and level it was last ordered directly above.
   struct Placement: Equatable {
@@ -51,16 +54,15 @@ final class WindowOverlayPanel: NonActivatingPanel {
   /// Forgotten when the panel is ordered out.
   private(set) var placement: Placement?
 
-  init(size: NSSize) {
-    super.init(contentRect: NSRect(origin: .zero, size: size), ignoresMouse: true)
+  init(size: NSSize, ignoresMouse: Bool = true) {
+    super.init(contentRect: NSRect(origin: .zero, size: size), ignoresMouse: ignoresMouse)
     isFloatingPanel = false
     level = .normal
     collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary]
   }
 
-  // AppKit otherwise moves the panel below the menu bar when its transparent
-  // padding crosses a screen edge, separating the border or pointer from its
-  // target. These panels follow window-server coordinates, not the work area.
+  // AppKit otherwise moves the panel below the menu bar when it crosses a
+  // screen edge, separating the chip from the window it marks. These panels follow window-server coordinates, not the work area.
   override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
     frameRect
   }

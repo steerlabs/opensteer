@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { BrowserChannelIdSchema } from "@opensteer/protocol/browser-relay";
@@ -71,6 +71,31 @@ describe("LocalBrowserRuntimeBridge", () => {
       await old.close();
     }
   });
+  it("answers a channel's close with the runtime's own close code, and 1006 when none comes", async () => {
+    const f = await fixture();
+    const silent = new Set<string>();
+    f.sockets.on("connection", (socket, request) => {
+      socket.send(JSON.stringify({ type: "browser.attached" }));
+      // A runtime that never reads the close: it neither answers nor ends the channel.
+      if (silent.size && request.headers["x-opensteer-browser-bridge-token"])
+        (socket as unknown as { _socket: { pause(): void } })._socket.pause();
+    });
+    const sink = { onClosed() {}, onFrame() {}, onServerMessage() {} };
+    try {
+      const taken = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+      await f.bridge.attach(taken, "abc.def.ghi", sink);
+      await expect(f.bridge.closeWithReceipt(taken, 5_000)).resolves.toBe(1000);
+      // A channel the bridge no longer holds is lost, never cleanly closed.
+      await expect(f.bridge.closeWithReceipt(taken, 5_000)).resolves.toBe(1006);
+      silent.add("next");
+      const unanswered = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+      await f.bridge.attach(unanswered, "abc.def.ghi", sink);
+      await expect(f.bridge.closeWithReceipt(unanswered, 300)).resolves.toBe(1006);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("opens local relay channel 33", async () => {
     const f = await fixture();
     f.sockets.on("connection", (socket) =>
@@ -169,6 +194,116 @@ describe("LocalBrowserRuntimeBridge", () => {
         detail: null,
       });
     } finally {
+      await f.close();
+    }
+  });
+
+  it("M5/S8: enforces raw ingress text and binary frame bounds before JSON parsing while accepting boundary frames", async () => {
+    const f = await fixture();
+    const address = f.sockets.options.server!.address();
+    if (!address || typeof address === "string") throw new Error("missing port");
+    const bounded = new LocalBrowserRuntimeBridge({
+      bridgeToken: "a".repeat(64),
+      runtimeId: "runtime_test",
+      url: new URL(`http://127.0.0.1:${address.port}`),
+      maxTextFrameBytes: 128,
+      maxBinaryFrameBytes: 256,
+    });
+    const keys = generateKeyPairSync("ed25519");
+    bounded.setAttachPublicKeys([
+      {
+        keyId: "test",
+        publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+      },
+    ]);
+    try {
+      const receivedText: unknown[] = [];
+      const receivedBinary: Buffer[] = [];
+      const textDelivered = Promise.withResolvers<unknown>();
+      const closed = Promise.withResolvers<number>();
+      let serverSocket: import("ws").WebSocket | undefined;
+      f.sockets.once("connection", (socket) => {
+        serverSocket = socket;
+        socket.send(JSON.stringify({ type: "browser.attached" }));
+      });
+      const ch = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+      await bounded.attach(ch, "abc.def.ghi", {
+        onClosed: (_id, code) => closed.resolve(code),
+        onFrame: (_id, frame) => receivedBinary.push(frame),
+        onServerMessage: (_id, msg) => {
+          receivedText.push(msg);
+          textDelivered.resolve(msg);
+        },
+      });
+      // Boundary text frame (<= 128 bytes) is actually sent, accepted, and delivered.
+      const okPayload = JSON.stringify({
+        type: "cdp.event",
+        event: { method: "Page.loadEventFired", parameters: {}, sequence: 1 },
+      });
+      expect(Buffer.byteLength(okPayload, "utf8")).toBeLessThanOrEqual(128);
+      serverSocket!.send(okPayload);
+      expect(await textDelivered.promise).toMatchObject({
+        type: "cdp.event",
+        event: { method: "Page.loadEventFired", parameters: {}, sequence: 1 },
+      });
+      expect(receivedText).toHaveLength(1);
+      // Oversized text frame (> 128 bytes) must be rejected BEFORE JSON.parse is called.
+      const parseSpy = vi.spyOn(JSON, "parse");
+      try {
+        serverSocket!.send("not-json-" + "x".repeat(140));
+        expect(await closed.promise).toBe(1007);
+        expect(parseSpy).not.toHaveBeenCalled();
+      } finally {
+        parseSpy.mockRestore();
+      }
+
+      // Valid small binary frame (<= 256 bytes) is accepted and delivered, then an oversized
+      // binary frame (> 256 bytes) closes the channel with 1007 before decode.
+      const binaryDelivered = Promise.withResolvers<Buffer>();
+      const closedBinary = Promise.withResolvers<number>();
+      let binSocket: import("ws").WebSocket | undefined;
+      f.sockets.once("connection", (socket) => {
+        binSocket = socket;
+        socket.send(JSON.stringify({ type: "browser.attached" }));
+      });
+      const ch2 = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+      await bounded.attach(ch2, "abc.def.ghi", {
+        onClosed: (_id, code) => closedBinary.resolve(code),
+        onFrame: (_id, frame) => {
+          receivedBinary.push(frame);
+          binaryDelivered.resolve(frame);
+        },
+        onServerMessage: (_id, msg) => receivedText.push(msg),
+      });
+      const headerJson = Buffer.from(
+        JSON.stringify({
+          encoding: "jpeg",
+          frameId: 1,
+          rasterHeight: 100,
+          rasterWidth: 100,
+          surfaceId: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
+          viewportHeight: 100,
+          viewportWidth: 100,
+        }),
+        "utf8",
+      );
+      const headerLen = Buffer.alloc(4);
+      headerLen.writeUInt32BE(headerJson.byteLength, 0);
+      const okBinary = Buffer.concat([
+        headerLen,
+        headerJson,
+        Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      ]);
+      expect(okBinary.byteLength).toBeLessThanOrEqual(256);
+      binSocket!.send(okBinary, { binary: true });
+      expect((await binaryDelivered.promise).equals(okBinary)).toBe(true);
+      expect(receivedBinary).toHaveLength(1);
+
+      binSocket!.send(Buffer.alloc(257, 1), { binary: true });
+      expect(await closedBinary.promise).toBe(1007);
+      expect(receivedBinary).toHaveLength(1);
+    } finally {
+      bounded.closeAll();
       await f.close();
     }
   });

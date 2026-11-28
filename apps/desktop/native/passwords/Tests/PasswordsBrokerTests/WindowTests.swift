@@ -192,12 +192,32 @@ final class WindowTests: BrokerTestCase {
       XCTAssertEqual(window.logins, .hidden, what)
       XCTAssertFalse(broker.loginsShown, what)
     }
-    // Idle: a window action keeps the visit; none for the limit ends it.
-    let window = try await shown()
-    try await Task.sleep(nanoseconds: 250_000_000)
-    _ = try await broker.listLogins()
-    try await Task.sleep(nanoseconds: 250_000_000)
-    XCTAssertTrue(broker.loginsShown, "the action restarted the idle time")
+    // Idle: a window action keeps the visit; none for the limit ends it. The check has to fall
+    // inside the restarted limit, read on the timer's own clock: an attempt this process
+    // overslept says nothing about the broker, so it is taken again, never judged.
+    let limit: UInt64 = 400_000_000
+    let uptime = { DispatchTime.now().uptimeNanoseconds }
+    var kept: PasswordsWindowModel?
+    for _ in 0..<20 where kept == nil {
+      let began = uptime()
+      let window = try await shown()
+      try await Task.sleep(nanoseconds: 250_000_000)
+      guard uptime() - began < limit - 50_000_000 else {
+        window.windowClosed()
+        continue
+      }
+      let acted = uptime()
+      _ = try await broker.listLogins()
+      try await Task.sleep(nanoseconds: 250_000_000)
+      let stillShown = broker.loginsShown
+      guard uptime() - acted < limit else {
+        window.windowClosed()
+        continue
+      }
+      XCTAssertTrue(stillShown, "the action restarted the idle time")
+      kept = window
+    }
+    let window = try XCTUnwrap(kept, "every attempt overslept its own idle limit")
     try await harness.eventually("idle", timeout: 2) { !broker.loginsShown }
     XCTAssertEqual(window.logins, .hidden)
     let asked = presence.askCount

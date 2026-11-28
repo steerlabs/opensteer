@@ -154,7 +154,10 @@ it("finishes a manual webhook setup with the secret and field the service gave",
       rows(page(sheet)).some(
         (candidate) =>
           "detail" in candidate &&
-          candidate.detail?.startsWith("https://hooks.opensteer.example/hooks/v1/plugins/"),
+          candidate.detail?.startsWith("https://hooks.opensteer.example/hooks/v1/plugins/") ===
+            true &&
+          "addressIn" in candidate &&
+          candidate.addressIn === "detail",
       ),
   ).toBe(true);
   expect(row(page(sheet), (candidate) => candidate.label === "Done")).toMatchObject({

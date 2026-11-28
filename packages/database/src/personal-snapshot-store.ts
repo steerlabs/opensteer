@@ -1,3 +1,4 @@
+import { AgentConnectionIdentityAtConsentSchema } from "@opensteer/control-plane-protocol";
 import type { ThreadId, UserId } from "@opensteer/core";
 import type { DurablePersonalResourceKind } from "@opensteer/protocol/resources";
 import { utf8Prefix } from "@opensteer/core";
@@ -11,6 +12,7 @@ import { nodeSubjectView } from "./execution-nodes.js";
 import { clientSendKeyWireReserve } from "@opensteer/protocol/transcript";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
 import { readAttentionKeys } from "./personal-attention-store.js";
+import { readConnectionRowStanding } from "./resource-access.js";
 import {
   type authorizedSyncState,
   type PersonalReadScope,
@@ -19,10 +21,12 @@ import {
 import {
   currentTasks,
   readInitialTaskWindows,
+  taskExternalWorkSelection,
   taskPageThreadSelections,
   taskPageThreadsFromRows,
   threadProviderRetry,
   threadRunQueued,
+  type TaskExternalWork,
 } from "./personal-task-store.js";
 
 type Tx = PersonalMutationTransaction;
@@ -41,6 +45,9 @@ function encodeTaskBoundary(
 export function taskView(task: Task) {
   return {
     id: task.id,
+    ...(!task.externalWork && task.originConnectionId !== null
+      ? { originConnectionId: task.originConnectionId }
+      : {}),
     title: task.title,
     revision: task.revision,
     status: task.status,
@@ -51,11 +58,17 @@ export function taskView(task: Task) {
     doneReason: task.doneReason,
     pendingRequestCount: task.pendingRequestCount,
     lastReplyPreview: task.lastReplyPreview,
+    ...(task.failureCode ? { failureCode: task.failureCode } : { failureCode: null }),
     failurePreview: task.failurePreview,
     latestRunCompletedAt: task.latestRunCompletedAt?.toISOString() ?? null,
     environmentId: task.environmentId,
     harnessInstanceId: task.harnessInstanceId,
     runQueued: task.runQueued,
+    ...(task.runStartHoldReason ? { runStartHoldReason: task.runStartHoldReason } : {}),
+    ...(task.externalWork?.status === "active"
+      ? { agentSessionId: task.externalWork.sessionId }
+      : {}),
+    ...(task.externalWork ? { externalWork: externalWorkView(task.externalWork) } : {}),
     retry: task.retry ?? null,
   };
 }
@@ -107,6 +120,21 @@ export const returnHintResources: ReadonlySet<DurablePersonalResourceKind> = new
   "harness-catalog",
 ]);
 
+/**
+ * Whether the connection that originated a task has ended, read by the same rule as
+ * `assertPersonMayContinue`: zero queries for the person's own tasks (`originConnectionId === null`).
+ */
+export async function endedOriginForThread(
+  tx: Tx,
+  viewerId: UserId,
+  originConnectionId: string | null,
+): Promise<"chat" | "agent" | null> {
+  if (originConnectionId === null) return null;
+  const standing = await readConnectionRowStanding(tx, viewerId, originConnectionId);
+  if (standing.row || standing.waiting) return null;
+  return standing.chat ? "chat" : "agent";
+}
+
 /** A task's detail value: its row and full Thread view, return hint included. */
 export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: ThreadId) {
   // One read of the row serves both the task fields and the thread value derived from it.
@@ -115,13 +143,16 @@ export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: Thre
     .selectAll("threads")
     .select(taskPageThreadSelections())
     .select(threadRunQueued.as("runQueued"))
+    .select(taskExternalWorkSelection)
     .select(threadProviderRetry.as("retry"))
     .where("threads.id", "=", threadId)
     .where("threads.createdBy", "=", viewerId)
     .where("threads.removedAt", "is", null)
     .executeTakeFirst();
   const view = row && (await taskPageThreadsFromRows(tx, [row])).get(row.id);
-  return row && view ? { ...taskView(row), thread: view } : undefined;
+  const endedOrigin =
+    row && view ? await endedOriginForThread(tx, viewerId, row.originConnectionId) : null;
+  return row && view ? { ...taskView(row), thread: view, endedOrigin } : undefined;
 }
 
 /**
@@ -237,11 +268,10 @@ const attentionSnapshotRows = 200;
 async function readPendingAttention(tx: Tx) {
   const items: {
     id: string;
-    kind: "request" | "team-ask" | "failed-ask";
+    kind: "request";
     threadId: ThreadId | null;
     revision: string;
     title: string;
-    preview?: string;
   }[] = [];
   let bytes = 2;
   let before: { at: string; id: string } | undefined;
@@ -253,8 +283,7 @@ async function readPendingAttention(tx: Tx) {
         kind: entry.kind,
         threadId: entry.threadId,
         revision: entry.revision,
-        title: utf8Prefix(entry.title || (entry.kind === "request" ? "Request" : "Team ask"), 240),
-        ...(entry.blockedReason ? { preview: utf8Prefix(entry.blockedReason, 500) } : {}),
+        title: utf8Prefix(entry.title || "Request", 240),
       };
       const size = Buffer.byteLength(JSON.stringify(row)) + 1;
       if (bytes + size > attentionSnapshotBytes || items.length === attentionSnapshotRows)
@@ -266,4 +295,28 @@ async function readPendingAttention(tx: Tx) {
     const last = page[49]!;
     before = { at: last.at, id: last.id };
   }
+}
+
+/** A session task's connection as clients name it: no credential, only what the Home proved. */
+export function externalWorkView(work: TaskExternalWork) {
+  const { connection } = work;
+  let redirectOrigin: string | null = null;
+  try {
+    redirectOrigin = connection.redirectUri ? new URL(connection.redirectUri).origin : null;
+  } catch {
+    redirectOrigin = null;
+  }
+  const identity = AgentConnectionIdentityAtConsentSchema.safeParse(connection.identityAtConsent);
+  return {
+    sessionId: work.sessionId,
+    status: work.status,
+    endReason: work.endReason,
+    connection: {
+      id: connection.id,
+      label: connection.label,
+      clientName: connection.clientName,
+      client: { fingerprint: connection.clientFingerprint, redirectOrigin },
+      ...(identity.success ? { identityAtConsent: identity.data } : {}),
+    },
+  };
 }

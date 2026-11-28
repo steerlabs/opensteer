@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HostClientRequestError } from "../host/client.js";
 import {
+  browserPoolRefusalWords,
   clientIssue,
   presentClientIssue,
   presentConnectionDetail,
@@ -51,7 +52,7 @@ describe("safe client issues", () => {
         showInterruption: true,
       } as ClientConnectionState);
     expect(say({ code: "sign-in", reason: "account-required" })).toEqual({
-      title: "Sign in to your Opensteer Account",
+      title: "Sign in to your Opensteer account",
       detail: "Use the Account linked to Mac mini.",
       action: "sign-in",
     });
@@ -96,6 +97,25 @@ describe("safe client issues", () => {
     expect(presentClientIssue({ ...issue!, done: "answered" }).title).toBe(
       `Not answered. ${detail}`,
     );
+  });
+  it.each([
+    [
+      "bridge-anyone-grant",
+      "When anyone in the conversation can message it, it can use only tasks and the plugins you choose.",
+    ],
+    [
+      "bridge-needs-tasks",
+      "A chat can only ask your own agents to work, so it always needs tasks.",
+    ],
+  ])("says a chat's grant refusal in the Home's words (%s)", (reason, detail) => {
+    const error = new HostClientRequestError({
+      code: "bad_request",
+      message: "Unfiltered Host message",
+      reason,
+      status: 400,
+    });
+    const issue = clientIssue(error, { operation: "action", label: "save this change" });
+    expect(presentClientIssue({ ...issue!, done: "saved" }).title).toBe(`Not saved. ${detail}`);
   });
   it("distinguishes slow connecting, recovering, same-computer unreachable, remote unreachable, and offline", () => {
     const base: ClientConnectionState = {
@@ -155,21 +175,6 @@ describe("safe client issues", () => {
       detail: "Opensteer on this computer is reconnecting on its own.",
       action: null,
     });
-    expect(
-      presentConnectionGate({
-        ...base,
-        phase: "recovering",
-        route: "private-network",
-        target: "team",
-        name: "Acme",
-        trying: false,
-        issue: { code: "connection", reason: "reconnecting", target: "team" },
-      }),
-    ).toEqual({
-      title: "Reconnecting to Acme…",
-      detail: "Opensteer is reconnecting on its own. Your own tasks still work.",
-      action: null,
-    });
 
     // Observed unreachable failure on same-computer never blames internet connectivity.
     const localUnreachable = presentConnectionGate({
@@ -186,7 +191,7 @@ describe("safe client issues", () => {
     });
     expect(JSON.stringify(localUnreachable).toLowerCase()).not.toContain("internet");
 
-    // Observed unreachable on remote computer and team keeps remote/team copy and offers retry.
+    // Observed unreachable on a remote computer keeps the remote copy and offers retry.
     expect(
       presentConnectionGate({
         ...base,
@@ -198,21 +203,6 @@ describe("safe client issues", () => {
     ).toEqual({
       title: "Can't reach Mac mini",
       detail: "Make sure it's on and connected to the internet.",
-      action: "retry",
-    });
-    expect(
-      presentConnectionGate({
-        ...base,
-        phase: "recovering",
-        route: "private-network",
-        target: "team",
-        name: "Acme",
-        trying: false,
-        issue: { code: "connection", reason: "unreachable", target: "team" },
-      }),
-    ).toEqual({
-      title: "Can't reach Acme",
-      detail: "Your own tasks still work.",
       action: "retry",
     });
 
@@ -294,7 +284,7 @@ describe("safe client issues", () => {
     ];
     const said: string[] = [];
     for (const name of [undefined, "Mac mini"])
-      for (const target of ["computer", "team"] as const)
+      for (const target of ["computer"] as const)
         for (const route of [undefined, "same-computer", "connect"] as const)
           for (const code of codes)
             for (const reason of [undefined, "offline", "reconnecting", "unreachable"]) {
@@ -337,5 +327,68 @@ describe("safe client issues", () => {
     expect(presentMessageDelivery("rejected", { code: "rejected" })).toBe(
       "Not sent. Your computer didn't accept it.",
     );
+  });
+
+  it("presents outcome-unknown Host conflicts as unconfirmed rather than a definite rejection (M8)", () => {
+    const issue = clientIssue(
+      { code: "conflict", reason: "outcome-unknown", retryable: false },
+      { operation: "action", label: "send your answer" },
+    );
+    expect(issue).toEqual({ code: "unconfirmed", action: "send your answer" });
+    expect(presentClientIssue({ ...issue!, happened: "your answer was sent" })).toMatchObject({
+      title: "Couldn't confirm your answer was sent.",
+      action: "check",
+    });
+  });
+
+  it.each([
+    [
+      "browser-pool-refused",
+      "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+    ],
+    [
+      "browser-pool-start-refused",
+      "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+    ],
+    ["browser-pool-setting-up", "Setting up your browser… This can take a few minutes."],
+    [
+      "browser-pool-unreachable",
+      "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+    ],
+    [
+      "browser-pool-disconnected",
+      "Your Cloud Computer’s browser isn’t connected right now. Try again in a moment.",
+    ],
+  ])(
+    "words Cloud Computer pooled-browser refusal (%s) without exposing raw messages",
+    (reason, words) => {
+      expect(browserPoolRefusalWords(reason)).toBe(words);
+      const error = new HostClientRequestError({
+        code: "conflict",
+        message: "INTERNAL_UNFILTERED_MESSAGE",
+        reason,
+        status: 409,
+      });
+      const issue = clientIssue(error, { operation: "action", label: "open this" });
+      expect(issue).toMatchObject({ code: "rejected", reason });
+      expect(presentClientIssue({ ...issue!, done: "opened" }).title).toBe(`Not opened. ${words}`);
+      expect(browserPoolRefusalWords("browser-placement-unavailable")).toBeUndefined();
+      expect(browserPoolRefusalWords(undefined)).toBeUndefined();
+    },
+  );
+
+  it("words a cloud-tab typing overload stop as a single standalone sentence", () => {
+    expect(
+      presentClientIssue({
+        code: "rejected",
+        action: "send that to the page",
+        done: "sent",
+        reason: "browser-typing-overload",
+      }),
+    ).toEqual({
+      title: "Typing stopped. Some of it may not have arrived: check the text.",
+      detail: null,
+      action: null,
+    });
   });
 });

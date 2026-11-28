@@ -1,9 +1,12 @@
+import { runOutOfMemoryCode, runTerminationUnprovenCode } from "@opensteer/core";
 import {
   createToolImageStore,
+  killedSupervisedProcesses,
   withGeneratedImageReplies,
   withStoredImages,
 } from "@opensteer/harness";
 import type { RunFileExecution } from "@opensteer/protocol";
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import { RunFileError, type RunFileAccess } from "../attachments/run-files.js";
 import { AppServerManager } from "../apps/app-server-manager.js";
 import { VoiceCalls } from "../voice/voice-calls.js";
@@ -12,14 +15,20 @@ import { appHostingGuide } from "@opensteer/agent-tools";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { hostCommandPlatform } from "@opensteer/shared/command";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
-import { safeMessage } from "@opensteer/shared/safeMessage";
+import {
+  engineDiagnosticSecrets,
+  networkEnvironmentNames,
+  redactNetworkCredentials,
+  safeMessage,
+  shortNamedSecrets,
+} from "@opensteer/shared/safeMessage";
 import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { platform, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
 import {
   createId,
@@ -33,6 +42,7 @@ import {
   requestTextMaxLength,
   requestTitleMaxLength,
   runFailureMessageMaxLength,
+  runRetryMessageMaxLength,
   surrogateSafeCut,
   toolOutputTextMaxBytes,
   utf8ByteLength,
@@ -48,17 +58,23 @@ import {
   type RequestId,
   type RuntimeMode,
   type RunId,
+  type TaskPurpose,
   type ThreadId,
+  type ToolOutputImage,
   type TriggerOccurrenceId,
   type TriggerWatchActivationId,
 } from "@opensteer/core";
 import {
+  EngineUnavailableForTaskError,
+  assertEngineMayRun,
   assertFreshProviderSessionContext,
   discoverModelServers,
   HarnessSteerDeliveryUnknownError,
+  HarnessStopUnprovenError,
   identifyModelServer,
   EventBufferOverflowError,
   isHarnessLiveEvent,
+  isOpenStopProven,
   LiveSessionDirectory,
   type HarnessGenerateTextResult,
   type HarnessDurableEvent,
@@ -71,7 +87,6 @@ import {
   spawnSupervised,
   type HarnessProcessLaunchWrapper,
   type HarnessSharedEngineLaunch,
-  type HarnessRuntimeBoundary,
   type HarnessSession,
   type ResolvedAttachment,
 } from "@opensteer/harness";
@@ -116,10 +131,18 @@ import {
   ExecutionContainment,
   executionScopeVariable,
   type TerminationProof,
+  type RunnerShutdownProof,
 } from "./execution-containment.js";
-import { warmEngineKey, WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
+import {
+  runnerMemoryBytes,
+  warmEngineIdleCap,
+  warmEngineKey,
+  WarmEnginePool,
+  type WarmEngine,
+} from "./warm-engine-pool.js";
+import { type MemoryKills } from "./memory-kills.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
-import { TriggerProgramExecutor, type ProgramLaunchPlanner } from "../agent/program-executor.js";
+import { AutomationScriptExecutor, type AutomationScriptEvent } from "../agent/script-executor.js";
 import { WatchSupervisor } from "../triggers/watch-supervisor.js";
 import {
   isMachineAccessRoutes,
@@ -133,11 +156,6 @@ import {
   type MachineAccessUnavailableReason,
   type MachineAccessValidationHook,
 } from "../shell/machine-access-setup.js";
-import {
-  harnessSandboxRequired,
-  type HarnessProcessSandbox,
-  type HarnessSandboxRunPlan,
-} from "../sandbox/harness-sandbox.js";
 import {
   existingIsolatedHarnessProviderState,
   prepareHarnessProviderState,
@@ -160,15 +178,49 @@ export type HarnessDriverAvailability = Pick<RunnerHarnessDriver, "driverKind" |
   readonly sources?: readonly Pick<HarnessSourceDescriptor, "sourceId" | "stateKinds">[];
 };
 
+export type ProxyTokenRenewalTarget = Extract<
+  RunnerOperationalReport,
+  { readonly type: "runner.proxy-token.renew" }
+>["target"];
+
+export type ProxyTokenRenewalResult = Pick<
+  Extract<HostToRunnerMessage, { readonly type: "host.proxy-token.renewed" }>,
+  "browserCdp" | "mcp" | "reason"
+>;
+
 export interface RunnerMessageSink {
   send(message: RunnerOperationalReport): Promise<void>;
   /** Undefined when the Host gave no answer; the Run keeps its tokens and retries. */
   refreshRunCredentials?(runId: RunId): Promise<RefreshedRunCredentials | undefined>;
+  /** On-demand renewal of a watch or firing's Host capability token over the WebSocket. */
+  renewProxyToken?(target: ProxyTokenRenewalTarget): Promise<ProxyTokenRenewalResult | undefined>;
+  /** Uploads a recorded tool output image into Host-owned storage before the event is emitted. */
+  publishOutputImage?(image: ToolOutputImage, signal: AbortSignal): Promise<void>;
+}
+
+/** What a Run may reach on disk (`RunnerRuntime.#runFolders`). */
+interface RunFolders {
+  readonly workingDirectory: string;
+  readonly writableRoots: readonly string[];
+  readonly fileRoot: string;
+  /** Agent home, for the person's skills and settings; null without personal context. */
+  readonly agentHome: string | null;
 }
 
 export interface RunnerRuntimeOptions {
   /** Execution leases only; request, engine and transport budgets stay real. */
   readonly executionClock?: Clock;
+  /**
+   * How long a stopped Run's engine gets before its processes are ended, and
+   * how long a session on a shared engine gets to settle its stop before the
+   * Run's end is unknown. Tests shorten them.
+   */
+  readonly stopTimings?: {
+    readonly graceMs?: number;
+    readonly sharedEngineSettleMs?: number;
+    readonly uncontainedRetryMs?: number;
+    readonly unprovenLastResortMs?: number;
+  };
   /** Schedules credential refresh only; leases, sockets and engine timers stay real. */
   readonly credentialRefreshClock?: Pick<Clock, "schedule">;
   readonly attachmentCache?: AttachmentCache;
@@ -177,17 +229,31 @@ export interface RunnerRuntimeOptions {
   readonly bootId: string;
   /** Proves each execution's processes gone; built from the boot and data directory when omitted. */
   readonly containment?: ExecutionContainment;
+  /** Whether this Runner's startup reap verified that all earlier boots' processes are gone. */
+  readonly earlierBootsContained?: boolean;
   /** The Runner's whole data directory: the root model-executed tools must never read. */
   readonly dataDirectory: string;
   readonly deploymentShape: RunnerConfig["deploymentShape"];
   readonly environmentId: RunnerCommand["environmentId"];
   readonly harnesses: HarnessRegistry;
-  /** Present exactly when {@link harnessSandboxRequired} says so for this Runner. */
-  readonly harnessSandbox?: HarnessProcessSandbox;
   readonly plugins: typeof cacheRunPlugins;
-  readonly harnessRuntimeBoundary: HarnessRuntimeBoundary;
   readonly logger?: RunnerLogger;
   readonly maxConcurrentRuns: number;
+  /**
+   * The kernel's count of the Runner's processes killed for lack of memory,
+   * where the Runner can read one (its Linux cgroup); marked as each Run starts
+   * and read again only when a Run failed.
+   */
+  readonly memoryKills?: MemoryKills;
+  /**
+   * Whether a SIGKILL its supervisor did not send ended an engine process of
+   * this containment scope. By default, the supervised processes' own record.
+   */
+  readonly engineKilled?: (scope: string) => boolean;
+  /**
+   * The person stopped agents on this computer. While true, new Runs and
+   * Trigger programs are refused as not ready, so the Home keeps them queued.
+   */
   readonly maxConcurrentTriggerPrograms?: number;
   readonly maxRunEventBytes?: number;
   readonly maxRunEvents?: number;
@@ -204,15 +270,17 @@ export interface RunnerRuntimeOptions {
    */
   readonly modelServerHome?: string;
   readonly nativeFsHelperBinary?: string;
+  readonly networkSecrets?: readonly string[];
   readonly nodeExecutable?: string;
   readonly privateStateDirectory: string;
   readonly projectContinuationIdentity: ProviderContinuationIdentityProjector;
-  readonly programExecutor?: Pick<TriggerProgramExecutor, "execute">;
+  readonly scriptExecutor?: Pick<AutomationScriptExecutor, "execute">;
   readonly agentHome: AgentHomeAccess;
   readonly watchSupervisor?: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
-  >;
+  > &
+    Partial<Pick<WatchSupervisor, "stopAttempt">>;
 }
 
 type HarnessAuthenticationResponse = Pick<
@@ -255,11 +323,32 @@ interface RunJournal {
   terminal: boolean;
 }
 
+/** One Run executing on this Runner, as the computer it runs on may show it. */
+export interface RunnerLocalActivity {
+  readonly runId: RunId;
+  readonly threadId: ThreadId;
+  /** When this Runner admitted the Run, as an ISO time. */
+  readonly startedAt: string;
+  readonly purpose: TaskPurpose;
+  /** The engine doing the work, as the person named it. */
+  readonly engine: string;
+}
+
 interface ActiveRun {
   interruptionCause?: "lease-lost";
+  /** When this Runner admitted the Run. */
+  readonly admittedAt: number;
   shutdown?: boolean;
   readonly abort: AbortController;
   readonly command: Extract<RunnerCommand, { readonly type: "run.execute" }>;
+  environment?: Readonly<Record<string, string>>;
+  proxiedSecret?: string;
+  redaction?: {
+    readonly agentToolsToken: string | undefined;
+    readonly environment: Readonly<Record<string, string>> | undefined;
+    readonly proxiedSecret: string | undefined;
+    readonly value: RunDiagnosticRedaction;
+  };
   readonly journal: RunJournal;
   /** Local time after which the Run stops unless the Host renews its lease. */
   leaseDeadline: number;
@@ -293,7 +382,8 @@ interface ActiveRun {
   readonly saturatedToolDeltaCallIds: Set<string>;
   readonly toolDeltaBytes: Map<string, number>;
   readonly toolNodeIds: Map<string, ExecutionNodeId>;
-  agentHome?: AgentHomeWorkspace;
+  /** What it may reach on disk, from `runFolders`; set once it has a working directory. */
+  folders?: RunFolders;
   /**
    * What the engine reaches the Host and the browser through, while this Run
    * holds them; cut on interrupt. A Run that hands its engine on lets go of
@@ -320,10 +410,26 @@ interface ActiveRun {
   task?: Promise<void>;
 }
 
+type EngineSessionEndResult =
+  | { readonly proven: true; readonly termination: "proven" }
+  | {
+      readonly proven: false;
+      readonly termination: Exclude<TerminationProof, "proven">;
+      readonly engineStopping?: Promise<void> | undefined;
+      readonly lastResort?: (() => Promise<void>) | undefined;
+    };
+
+type ExecutionEndReport = Extract<
+  RunnerOperationalReport,
+  {
+    readonly type: "runner.event" | "runner.trigger-result" | "runner.watch-status";
+  }
+>;
+
 interface ActiveTriggerProgram {
   readonly abort: AbortController;
   readonly command: Extract<RunnerCommand, { readonly type: "trigger.execute" }>;
-  readonly sink: RunnerMessageSink;
+  sink: RunnerMessageSink;
   task?: Promise<void>;
 }
 
@@ -344,7 +450,17 @@ const terminalEventReserveBytes = pendingAgentEventMaxSerializedBytes;
 const runtimeTaskStopWaitMs = 30_000;
 /** How long a stopped Run's engine gets to wind down before the Runner ends its processes. */
 const executionStopGraceMs = 3_000;
+/**
+ * How long a session on a shared engine may take to settle its stop: Codex
+ * sends `turn/interrupt` without waiting for its reply, then runs up to four
+ * unload rounds (each bounded by 10 s for the `thread/unsubscribe` reply and
+ * 10 s for `thread/closed`, up to 80 s), and retires its server if any
+ * conversation still has not closed.
+ */
+const sharedEngineStopSettleMs = 90_000;
 const uncontainedRetryMs = 5_000;
+/** How soon after an unproven stop the Runner runs its scoped last resort and re-checks. */
+const unprovenStopLastResortMs = 10_000;
 /** Matches the Host coordinator's hard attempt lifetime so neither side outlives the other. */
 const harnessAuthenticationLifetimeMs = 15 * 60_000;
 /**
@@ -376,7 +492,6 @@ export class RunnerRuntime {
   readonly #deploymentShape: RunnerConfig["deploymentShape"];
   readonly #environmentId: RunnerCommand["environmentId"];
   readonly #harnesses: HarnessRegistry;
-  readonly #harnessSandbox: HarnessProcessSandbox | undefined;
   readonly #harnessAuthenticationLifetime = new AbortController();
   readonly #harnessAuthenticationStartups = new Set<Promise<void>>();
   readonly #harnessAuthenticationStartupsByInstance = new Map<string, Promise<void>>();
@@ -392,33 +507,52 @@ export class RunnerRuntime {
   readonly #installationLifetime = new AbortController();
   readonly #installationTasks = new Set<Promise<void>>();
   readonly #plugins: typeof cacheRunPlugins;
-  readonly #harnessRuntimeBoundary: HarnessRuntimeBoundary;
   readonly #ledger = new CommandLedger();
   readonly #logger: RunnerLogger | undefined;
+  readonly #safeMessageOptions: typeof safeMessageOptions;
   readonly #maxConcurrentRuns: number;
+  readonly #memoryKills: MemoryKills | undefined;
+  readonly #engineKilled: (scope: string) => boolean;
   readonly #maxConcurrentTriggerPrograms: number;
   readonly #maxRunEventBytes: number;
   readonly #maxRunEvents: number;
   readonly #credentialRefreshClock: Pick<Clock, "schedule">;
   readonly #executionClock: Clock | undefined;
   readonly #executionNow: () => number;
+  readonly #stopGraceMs: number;
+  readonly #sharedEngineSettleMs: number;
+  readonly #uncontainedRetryMs: number;
+  readonly #unprovenLastResortMs: number;
   readonly #machineAccess: RunnerRuntimeOptions["machineAccess"];
   readonly #mode: RuntimeMode;
   readonly #privateStateDirectory: string;
   readonly #voice: VoiceCalls;
   readonly #modelServerHome: string | undefined;
   readonly #projectContinuationIdentity: ProviderContinuationIdentityProjector;
-  readonly #programExecutor: Pick<TriggerProgramExecutor, "execute">;
+  readonly #scriptExecutor: Pick<AutomationScriptExecutor, "execute">;
   readonly #runs = new Map<RunId, ActiveRun>();
   readonly #containment: ExecutionContainment;
+  readonly #earlierBootsContained: boolean;
   /** Engines kept running between a Thread's Runs. */
   readonly #warm: WarmEnginePool;
   /**
-   * Threads whose last execution left processes the Runner could not prove
-   * gone, with the containment scope of those processes. Nothing new starts on
-   * one until they are.
+   * Threads whose last execution left processes or a shared engine session the
+   * Runner could not prove ended. Nothing new starts on one until every pending
+   * scope and engine stop for it has settled.
    */
-  readonly #uncontainedThreads = new Map<ThreadId, string>();
+  readonly #uncontainedThreads = new Map<
+    ThreadId,
+    {
+      readonly scopes: Set<string>;
+      readonly engineStops: Set<{
+        done: boolean;
+        readonly settled: Promise<void>;
+        readonly lastResort?: () => Promise<void>;
+      }>;
+      readonly cancel: () => void;
+      readonly runLastResort: () => Promise<boolean>;
+    }
+  >();
   /**
    * Runs that have ended but whose last events the Host has not acknowledged,
    * oldest first. They are kept for replay until it does, within
@@ -429,13 +563,31 @@ export class RunnerRuntime {
   readonly #settledRuns = new Map<RunId, ActiveRun & { readonly settledAt: number }>();
   /** The connection Runs report on, once the Host has reattached them to it. */
   #connection: RunnerMessageSink | null = null;
+  readonly #publishingImages = new Set<string>();
+  readonly #imagePublishLifetime = new AbortController();
   /** When this Runner last announced its Runs; the answer's leases run from here. */
   #attachRequestedAt: number | undefined;
   #stopLeaseWatchdog: (() => void) | undefined;
   readonly #sessions: LiveSessionDirectory;
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
+  readonly #bootId: string;
+  readonly #endedAttempts = new Map<string, ExecutionEndReport | "ended" | "never-seen">();
+  readonly #unverifiedTriggerEnds = new Map<
+    string,
+    Extract<ExecutionEndReport, { type: "runner.trigger-result" }>
+  >();
+  readonly #unverifiedRunEnds = new Map<
+    string,
+    {
+      /** A shared engine's stop that had not settled when the Run ended. */
+      readonly engineStopped?: { readonly done: boolean };
+      readonly scope: string;
+      readonly report: Extract<ExecutionEndReport, { type: "runner.event" }>;
+    }
+  >();
   readonly #agentHome: AgentHomeAccess;
+  readonly #nativeFsHelperBinary: string | undefined;
   #hostSupportsRunRetry = true;
   /** Records whether the connected Host confirmed `run.retry` support on `host.welcome`. */
   setHostRunRetryEvents(supported: boolean): void {
@@ -465,6 +617,30 @@ export class RunnerRuntime {
   #settingsHome: string | undefined;
   #stopSettingsWatch: (() => void) | undefined;
   #settingsReports: Promise<void> = Promise.resolve();
+  async ensureAgentHome(
+    agentHome: ComputerFolder,
+    signal: AbortSignal,
+    requireCanonical: boolean,
+  ): Promise<string> {
+    const canonical = this.#agentHome.ensure
+      ? await this.#agentHome.ensure(agentHome, signal, requireCanonical)
+      : (
+          await this.#agentHome.prepare({
+            agentHome,
+            personalContext: false,
+            signal,
+          })
+        ).path;
+    this.#settingsHome = canonical;
+    return canonical;
+  }
+
+  homeFileOptions(): { readonly dataDirectory: string; readonly helperBinary: string } | undefined {
+    return this.#nativeFsHelperBinary
+      ? { dataDirectory: this.#dataDirectory, helperBinary: this.#nativeFsHelperBinary }
+      : undefined;
+  }
+
   /**
    * Hears every read of Agent home's settings.json while a Host connection is open.
    * The Host names Agent home in its welcome; otherwise a Run makes it known.
@@ -523,31 +699,41 @@ export class RunnerRuntime {
   readonly #watchSupervisor: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
-  >;
+  > &
+    Partial<Pick<WatchSupervisor, "stopAttempt">>;
   #draining = false;
+  readonly #activityListeners = new Set<() => void>();
 
   constructor(options: RunnerRuntimeOptions) {
     this.#executionClock = options.executionClock;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
+    this.#stopGraceMs = options.stopTimings?.graceMs ?? executionStopGraceMs;
+    this.#sharedEngineSettleMs =
+      options.stopTimings?.sharedEngineSettleMs ?? sharedEngineStopSettleMs;
+    this.#uncontainedRetryMs = options.stopTimings?.uncontainedRetryMs ?? uncontainedRetryMs;
+    this.#unprovenLastResortMs =
+      options.stopTimings?.unprovenLastResortMs ?? unprovenStopLastResortMs;
+    this.#earlierBootsContained = options.earlierBootsContained === true;
     this.#credentialRefreshClock = options.credentialRefreshClock ?? systemClock;
     this.#attachmentCache = options.attachmentCache;
     this.#agentSkills = options.agentSkills;
     this.#browserHarnessExecutable = resolve(options.browserHarnessExecutable);
     this.#dataDirectory = resolve(options.dataDirectory);
+    this.#nativeFsHelperBinary = options.nativeFsHelperBinary;
     this.#imageStore = createToolImageStore(this.#dataDirectory);
     this.#deploymentShape = options.deploymentShape;
     this.#environmentId = options.environmentId;
     this.#harnesses = options.harnesses;
     this.#plugins = options.plugins;
-    this.#harnessRuntimeBoundary = options.harnessRuntimeBoundary;
-    if (
-      harnessSandboxRequired(platform(), options.harnessRuntimeBoundary) &&
-      !options.harnessSandbox
-    ) {
-      throw new Error("An isolated-service Linux Runner requires the Runner-owned harness sandbox");
-    }
-    this.#harnessSandbox = options.harnessSandbox;
-    this.#logger = options.logger;
+    this.#safeMessageOptions =
+      options.networkSecrets === undefined
+        ? safeMessageOptions
+        : { ...safeMessageOptions, secrets: options.networkSecrets };
+    this.#logger = options.logger
+      ? scrubbingLogger(options.logger, this.#safeMessageOptions.secrets)
+      : undefined;
+    this.#memoryKills = options.memoryKills;
+    this.#engineKilled = options.engineKilled ?? engineKilledBySignal;
     this.#maxConcurrentRuns = boundedPositiveInteger(
       options.maxConcurrentRuns,
       1,
@@ -578,39 +764,101 @@ export class RunnerRuntime {
     this.#voice = new VoiceCalls(join(this.#privateStateDirectory, "voice"));
     this.#modelServerHome = options.modelServerHome;
     this.#projectContinuationIdentity = options.projectContinuationIdentity;
-    this.#programExecutor =
-      options.programExecutor ?? programExecutorFor(options, this.#privateStateDirectory);
+    this.#scriptExecutor =
+      options.scriptExecutor ?? scriptExecutorFor(options, this.#privateStateDirectory);
     this.#agentHome = options.agentHome;
     this.#watchSupervisor =
       options.watchSupervisor ??
       new WatchSupervisor({
         environmentId: options.environmentId,
+        isAnchorHeld: (anchorThreadId) => this.#uncontainedThreads.has(anchorThreadId),
         nodeExecutable: options.nodeExecutable ?? process.execPath,
-        planLaunch: (executionId, launch) => this.#planProgramLaunch(executionId, launch),
+        planLaunch: (executionId) => this.#planProgramLaunch(executionId),
         privateStateDirectory: this.#privateStateDirectory,
         terminate: (executionId) => this.#containment.terminate(executionId),
+        onStopped: (report) => this.#rememberEndReceipt(report),
         transport: { mode: this.#mode },
         agentHome: options.agentHome,
       });
     this.#sessions = new LiveSessionDirectory(options.bootId);
+    this.#bootId = options.bootId;
     this.#containment =
       options.containment ??
       new ExecutionContainment({ bootId: options.bootId, dataDirectory: options.dataDirectory });
     this.appServers = new AppServerManager({
       privateDirectory: join(options.dataDirectory, "private", "app-servers"),
       resolveRoot: (spec) => options.agentHome.folder(spec.folder, spec.agentHome),
-      planLaunch: (id, launch) => this.#planProgramLaunch(id, launch),
+      planLaunch: (id) => this.#planProgramLaunch(id),
       terminate: (id, stopEngine) => this.#containment.terminate(id, stopEngine),
     });
-    this.#warm = new WarmEnginePool({ retire: (engine) => this.#retireWarmEngine(engine) });
+    this.#warm = new WarmEnginePool({
+      maxIdle: warmEngineIdleCap(runnerMemoryBytes(), this.#maxConcurrentRuns),
+      retire: async (engine) => {
+        await this.#retireWarmEngine(engine);
+      },
+    });
   }
 
   voice(userId: UserId, command: RunnerVoiceCommand): Promise<RunnerVoiceResult> {
     return this.#voice.handle(userId, command);
   }
 
+  idleForUpdate(): boolean {
+    return (
+      !this.#draining &&
+      this.#runs.size === 0 &&
+      this.#triggerPrograms.size === 0 &&
+      this.#backgroundText.size === 0 &&
+      this.#harnessAuthenticationStartups.size === 0 &&
+      this.#installationTasks.size === 0
+    );
+  }
+
   activeRunIds(): readonly RunId[] {
     return [...this.#runs.keys()];
+  }
+
+  /** The Runs still doing work here; one being stopped is no longer listed. */
+  localActivity(): readonly RunnerLocalActivity[] {
+    return [...this.#runs.values()]
+      .filter((active) => !active.interrupted && !active.abort.signal.aborted)
+      .map(({ admittedAt, command: { context } }) => ({
+        runId: context.runId,
+        threadId: context.threadId,
+        startedAt: new Date(admittedAt).toISOString(),
+        purpose: context.taskPurpose,
+        engine: context.harness.name,
+      }));
+  }
+
+  subscribeLocalActivity(listener: () => void): () => void {
+    this.#activityListeners.add(listener);
+    return () => this.#activityListeners.delete(listener);
+  }
+
+  /**
+   * The person stopped one Run on this computer. It ends as the Home's own
+   * Stop ends it, through the same interrupt, so the Home records it as
+   * interrupted; a Home out of reach hears it when the Runner reconnects.
+   */
+  stopRunLocally(runId: RunId): boolean {
+    const active = this.#runs.get(runId);
+    if (!active || active.interrupted) return false;
+    this.#endLocalAccess(active);
+    active.interrupted = true;
+    active.abort.abort(new Error("The person stopped this Run on this computer"));
+    this.#activityChanged();
+    return true;
+  }
+
+  #activityChanged(): void {
+    for (const listener of this.#activityListeners) {
+      try {
+        listener();
+      } catch {
+        // A watcher's failure never changes a Run.
+      }
+    }
   }
 
   /** An unacknowledged terminal outcome, after execution and cleanup have settled. */
@@ -759,6 +1007,40 @@ export class RunnerRuntime {
     }
   }
 
+  /**
+   * What a Run may reach on disk, decided once from whether it has personal context: its working
+   * directory (also its environment's workspace and its warm engine's), the roots it may write,
+   * the folder a file it sends by a relative path is read from, and Agent home where it may read
+   * the person's skills and settings. Without personal context the Run's own folder is all it has:
+   * nothing of Agent home (memory, AGENTS.md, home skills, settings) is a root, a file source,
+   * named in its environment or part of its warm engine. Nothing else reads Agent home's path on a
+   * Run's behalf (`runtime-agent-home.test.ts`).
+   */
+  async #runFolders(
+    context: { readonly personalContext: boolean; readonly providerSessionId: string },
+    workspace: AgentHomeWorkspace,
+  ): Promise<RunFolders> {
+    if (context.personalContext)
+      return {
+        workingDirectory: workspace.path,
+        writableRoots: [workspace.path],
+        fileRoot: workspace.path,
+        agentHome: workspace.path,
+      };
+    // Shared Messaging must not trigger native discovery of the owner's home instructions.
+    const workingDirectory = join(
+      await (this.#messagingWorkRoot ??= mkdtemp(join(tmpdir(), "opensteer-messaging-"))),
+      context.providerSessionId,
+    );
+    await mkdir(workingDirectory, { recursive: true, mode: 0o700 });
+    return {
+      workingDirectory,
+      writableRoots: [workingDirectory],
+      fileRoot: workingDirectory,
+      agentHome: null,
+    };
+  }
+
   withRunFiles<T>(
     execution: RunFileExecution,
     signal: AbortSignal,
@@ -770,7 +1052,7 @@ export class RunnerRuntime {
       active.settling ||
       active.abort.signal.aborted ||
       active.command.context.bindingGeneration !== execution.bindingGeneration ||
-      !active.agentHome
+      !active.folders
     )
       return Promise.reject(
         new RunFileError("This task execution has ended; retry from the current task."),
@@ -779,7 +1061,7 @@ export class RunnerRuntime {
     if (!this.#canDeliverMessageAttachments(context.harness.driverKind) || !this.#attachmentCache)
       return Promise.reject(new RunFileError("This engine or machine cannot receive files."));
     const cache = this.#attachmentCache;
-    const agentHomePath = active.agentHome.path;
+    const fileRoot = active.folders.fileRoot;
     const lifetime = new AbortController();
     const linked = AbortSignal.any([
       signal,
@@ -790,7 +1072,7 @@ export class RunnerRuntime {
     const task = (async () => {
       const directory = await cache.directory(context.threadId);
       linked.throwIfAborted();
-      return await work({ roots: [agentHomePath, directory], directory, signal: linked });
+      return await work({ roots: [fileRoot, directory], directory, signal: linked });
     })();
     active.fileTasks.add(task);
     void task
@@ -804,20 +1086,11 @@ export class RunnerRuntime {
 
   #canDeliverMessageAttachments(driverKind: HarnessId): boolean {
     const capability = this.#harnesses.driverCapabilities(driverKind)?.messageAttachments;
-    if (!this.#attachmentCache || !capability) return false;
-    if (this.#harnessRuntimeBoundary.kind === "native-user" || process.platform === "linux")
-      return true;
-    return process.platform === "darwin" && capability.darwinIsolatedServiceSandbox === true;
+    return Boolean(this.#attachmentCache && capability);
   }
 
   subscribeHarnessPreparation(listener: (instanceId: HarnessInstanceId) => void): () => void {
     return this.#harnesses.subscribePreparations(listener);
-  }
-
-  providerStateModes(): readonly ("ambient" | "isolated")[] {
-    return this.#harnessRuntimeBoundary.kind === "native-user"
-      ? ["ambient", "isolated"]
-      : ["isolated"];
   }
 
   /**
@@ -859,15 +1132,16 @@ export class RunnerRuntime {
           const result = await this.#harnesses.inspectDefinition(
             definition,
             options.environment,
-            this.#harnessRuntimeBoundary,
             providerState,
             this.#privateStateDirectory,
             signal,
           );
+          const redactDetail = (detail: string) =>
+            redactNetworkCredentials(detail, this.#safeMessageOptions.secrets);
           if (result.status === "preparing") {
             return HarnessInstanceCatalogSchema.parse({
               connections: [],
-              detail: result.detail,
+              detail: redactDetail(result.detail),
               driverKind: definition.driverKind,
               harnessInstanceId: definition.id,
               models: [],
@@ -880,7 +1154,7 @@ export class RunnerRuntime {
             if (result.status === "authentication-required") {
               return HarnessInstanceCatalogSchema.parse({
                 connections,
-                detail: result.detail,
+                detail: redactDetail(result.detail),
                 driverKind: definition.driverKind,
                 harnessInstanceId: definition.id,
                 models: [],
@@ -890,7 +1164,7 @@ export class RunnerRuntime {
             }
             return HarnessInstanceCatalogSchema.parse({
               connections,
-              detail: result.detail,
+              detail: redactDetail(result.detail),
               driverKind: definition.driverKind,
               harnessInstanceId: definition.id,
               models: [],
@@ -908,7 +1182,7 @@ export class RunnerRuntime {
               continuationKey: providerState.continuationKey,
               driverKind: definition.driverKind,
             }),
-            ...(result.detail ? { detail: result.detail } : {}),
+            ...(result.detail ? { detail: redactDetail(result.detail) } : {}),
             driverKind: definition.driverKind,
             harnessInstanceId: definition.id,
             models: result.models,
@@ -928,12 +1202,17 @@ export class RunnerRuntime {
           this.#logger?.error("AI engine inspection failed", {
             driverKind: definition.driverKind,
             harnessInstanceId: definition.id,
-            detail: safeMessage(error, safeMessageOptions),
+            detail: safeMessage(error, this.#safeMessageOptions),
             ...(error instanceof OpensteerError && typeof error.details?.stderr === "string"
-              ? { stderr: error.details.stderr }
+              ? {
+                  stderr: redactNetworkCredentials(
+                    error.details.stderr,
+                    this.#safeMessageOptions.secrets,
+                  ),
+                }
               : {}),
           });
-          return errorCatalog(definition, error);
+          return errorCatalog(definition, error, this.#safeMessageOptions);
         }
       }),
     );
@@ -956,7 +1235,7 @@ export class RunnerRuntime {
       if (parsed.success) return { ...rest, usage: parsed.data };
       this.#logger?.error("Discarding invalid AI engine usage observation", {
         connectionSlot: connection.connectionSlot,
-        detail: safeMessage(parsed.error, safeMessageOptions),
+        detail: safeMessage(parsed.error, this.#safeMessageOptions),
         driverKind: definition.driverKind,
         harnessInstanceId: definition.id,
       });
@@ -965,20 +1244,12 @@ export class RunnerRuntime {
   }
 
   /**
-   * The model servers on this computer, or the one at `address`. Only a
-   * computer the person owns looks: on a shared Runner the servers belong to
-   * whoever runs the machine, and no engine that talks to them runs there.
+   * The model servers on this computer, or the one at `address`.
    */
   async discoverModelServers(
     address: string | undefined,
     signal: AbortSignal,
   ): Promise<readonly ModelServer[]> {
-    if (this.#harnessRuntimeBoundary.kind !== "native-user") {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Model servers are used only on a computer you own.",
-      });
-    }
     const options = {
       ...(this.#modelServerHome ? { home: this.#modelServerHome } : {}),
       signal,
@@ -1040,22 +1311,12 @@ export class RunnerRuntime {
           mode: 0o700,
         });
         directory = await mkdtemp(join(this.#privateStateDirectory, "background", "text-"));
-        const wrapProcessLaunch = await this.#wrapProcessLaunch({
-          environment: options.environment,
-          providerState,
-          launchDirectory: undefined,
-          pluginCacheDirectories: [],
-          threadStateDirectory: directory,
-          workspacePath: directory,
-          writableRoots: [directory],
-        });
         abort.signal.throwIfAborted();
         return await adapter.generateText({
           context: {
             environment: options.environment,
             providerState,
-            runtimeBoundary: this.#harnessRuntimeBoundary,
-            wrapProcessLaunch,
+            wrapProcessLaunch: (launch) => launch,
             scratchDirectory: directory,
           },
           modelSelection: request.modelSelection,
@@ -1190,7 +1451,6 @@ export class RunnerRuntime {
           await this.#harnesses.removeDefinition(
             harness,
             options.environment,
-            this.#harnessRuntimeBoundary,
             providerState,
             this.#privateStateDirectory,
             this.#harnessAuthenticationLifetime.signal,
@@ -1215,7 +1475,6 @@ export class RunnerRuntime {
         await this.#harnesses.logoutDefinition(
           harness,
           options.environment,
-          this.#harnessRuntimeBoundary,
           providerState,
           this.#privateStateDirectory,
           this.#harnessAuthenticationLifetime.signal,
@@ -1364,7 +1623,6 @@ export class RunnerRuntime {
         const started = await this.#harnesses.authenticateDefinition(
           harness,
           options.environment,
-          this.#harnessRuntimeBoundary,
           providerState,
           this.#privateStateDirectory,
           startupSignal,
@@ -1630,24 +1888,38 @@ export class RunnerRuntime {
   }
 
   handleCommand(command: RunnerCommand, sink: RunnerMessageSink): Promise<CommandDecision> {
+    if (command.environmentId !== this.#environmentId)
+      return Promise.resolve(
+        reject("forbidden", "Command targets a different execution environment", false),
+      );
+    if ("stop" in command && command.stop) return this.#stopAttempt(command, sink);
     return this.#ledger.execute(command, async () => {
-      if (command.environmentId !== this.#environmentId) {
-        return reject("forbidden", "Command targets a different execution environment", false);
-      }
       switch (command.type) {
         case "run.execute":
           return this.#admitExecution(command, sink);
         case "trigger.execute":
           return this.#admitTriggerProgram(command, sink);
-        case "watch.reconcile":
-          await this.#watchSupervisor.reconcile(command, sink);
+        case "watch.reconcile": {
+          const desired = command.desired.filter(
+            (item) => !this.#uncontainedThreads.has(item.anchorThreadId),
+          );
+          await this.#watchSupervisor.reconcile({ ...command, desired }, sink);
+          const desiredIds = new Set(desired.map(({ activationId }) => activationId));
+          for (const report of this.#endedAttempts.values())
+            if (
+              typeof report !== "string" &&
+              report.type === "runner.watch-status" &&
+              !desiredIds.has(report.activationId)
+            )
+              void sink.send(report).catch(() => undefined);
           return { status: "accepted" };
+        }
         case "trigger.interrupt":
-          return this.#interruptTrigger(command.occurrenceId);
+          return this.#interruptTrigger(command.occurrenceId, command.executionGeneration);
         case "node.stop":
           return this.#stopNode(command);
         case "run.interrupt":
-          return this.#interrupt(command.runId, command.threadId, command.bindingGeneration);
+          return this.#interrupt(command.runId, command.threadId, sink, command.bindingGeneration);
         case "request.resolve":
           return this.#resolveRequest(command);
         case "run.steer":
@@ -1658,17 +1930,72 @@ export class RunnerRuntime {
     });
   }
 
+  async #stopAttempt(
+    command: Extract<
+      RunnerCommand,
+      { type: "run.interrupt" | "trigger.interrupt" | "watch.reconcile" }
+    >,
+    sink: RunnerMessageSink,
+  ): Promise<CommandDecision> {
+    if (command.stop?.bootId !== this.#bootId)
+      return { status: "accepted", stopState: "never-seen" };
+    if (command.type === "watch.reconcile") {
+      const stop = command.stop!;
+      return {
+        status: "accepted",
+        stopState:
+          (await this.#watchSupervisor.stopAttempt?.(
+            stop.activationId,
+            stop.executionGeneration,
+            sink,
+          )) ?? "still-ending",
+      };
+    }
+    const key =
+      command.type === "run.interrupt"
+        ? `${command.runId}:${command.bindingGeneration}`
+        : `${command.occurrenceId}:${command.executionGeneration}`;
+    const prior = this.#endedAttempts.get(key);
+    if (prior) {
+      if (typeof prior !== "string") void sink.send(prior).catch(() => undefined);
+      return { status: "accepted", stopState: prior === "never-seen" ? prior : "ended" };
+    }
+    if (command.type === "run.interrupt") {
+      const active = this.#runs.get(command.runId);
+      if (
+        this.#unverifiedRunEnds.has(key) ||
+        (active && active.command.context.bindingGeneration === command.bindingGeneration)
+      ) {
+        await this.#interrupt(command.runId, command.threadId, sink, command.bindingGeneration);
+        return {
+          status: "accepted",
+          stopState: this.#endedAttempts.has(key) ? "ended" : "still-ending",
+        };
+      }
+    } else {
+      const active = this.#triggerPrograms.get(command.occurrenceId);
+      if (active && active.command.context.executionGeneration === command.executionGeneration) {
+        this.#interruptTrigger(command.occurrenceId, command.executionGeneration);
+        return { status: "accepted", stopState: "still-ending" };
+      }
+      const pending = this.#unverifiedTriggerEnds.get(key);
+      if (pending) {
+        const proof = await this.#containment.terminate(key).catch(() => "unknown");
+        if (proof !== "proven") return { status: "accepted", stopState: "still-ending" };
+        this.#unverifiedTriggerEnds.delete(key);
+        this.#rememberEndReceipt(pending);
+        void sink.send(pending).catch(() => undefined);
+        return { status: "accepted", stopState: "ended" };
+      }
+    }
+    this.#endedAttempts.set(key, "never-seen");
+    return { status: "accepted", stopState: "never-seen" };
+  }
+
   async #startHarnessUpdate(
     driverKind: HarnessId,
     sink: RunnerMessageSink,
   ): Promise<CommandDecision> {
-    if (this.#harnessRuntimeBoundary.kind !== "native-user") {
-      return reject(
-        "forbidden",
-        "Installed AI engines can only be updated on a person's computer",
-        false,
-      );
-    }
     if (this.#driverMaintenance.has(driverKind)) {
       return reject("conflict", "This AI engine is already updating", true);
     }
@@ -1732,6 +2059,7 @@ export class RunnerRuntime {
           "conflict",
           resolved.descriptor.detail ?? "Update this AI engine with the tool that installed it.",
           false,
+          { secrets: this.#safeMessageOptions.secrets },
         );
       }
       this.#driverInstallationFacts.set(driverKind, resolved.descriptor);
@@ -1849,7 +2177,7 @@ export class RunnerRuntime {
     } catch (error) {
       outcome = {
         ...previous,
-        detail: safeMessage(error, safeMessageOptions).slice(0, 2_000),
+        detail: safeMessage(error, this.#safeMessageOptions).slice(0, 2_000),
         update: "failed",
       };
     } finally {
@@ -1923,7 +2251,7 @@ export class RunnerRuntime {
             .terminate(active.containmentScope)
             .catch(() => undefined)
             .then(() => resolve());
-        }, executionStopGraceMs);
+        }, this.#stopGraceMs);
         timer.unref?.();
       };
       if (active.abort.signal.aborted) halt();
@@ -1932,28 +2260,388 @@ export class RunnerRuntime {
   }
 
   /**
-   * Keeps a Thread closed to new executions until the processes its last Run
-   * left behind are proven gone, retrying their termination meanwhile.
+   * Keeps a Thread closed to new executions until everything its last Run or
+   * retired warm engine left behind — Run-scoped processes and any shared
+   * engine stop — has settled. Each Thread is held once under one retry loop
+   * and one bounded last-resort recovery pass.
    */
-  #holdUncontainedThread(threadId: ThreadId, runId: RunId | null, executionId: string): void {
-    this.#uncontainedThreads.set(threadId, executionId);
-    this.#logger?.error("A stopped Run left processes the Runner could not end", {
-      ...(runId ? { runId } : {}),
-      threadId,
-    });
-    const retry = setInterval(() => {
-      void this.#containment
-        .terminate(executionId)
-        .catch(() => "unknown" as const)
-        .then((termination) => {
-          if (termination !== "proven") return;
-          clearInterval(retry);
-          if (this.#uncontainedThreads.get(threadId) === executionId) {
-            this.#uncontainedThreads.delete(threadId);
-          }
-        });
-    }, uncontainedRetryMs);
-    retry.unref?.();
+  #holdUncontainedThread(
+    threadId: ThreadId,
+    runId: RunId | null,
+    executionId: string,
+    engineStopping?: Promise<void>,
+    lastResort?: () => Promise<void>,
+  ): void {
+    this.#logger?.error(
+      engineStopping
+        ? "A stopped Run's engine stop has not settled yet"
+        : "A stopped Run left processes the Runner could not end",
+      {
+        ...(runId ? { runId } : {}),
+        threadId,
+      },
+    );
+    const existing = this.#uncontainedThreads.get(threadId);
+    const scopes = existing ? new Set(existing.scopes) : new Set<string>();
+    scopes.add(executionId);
+    const engineStops = existing
+      ? new Set(existing.engineStops)
+      : new Set<{
+          done: boolean;
+          readonly settled: Promise<void>;
+          readonly lastResort?: () => Promise<void>;
+        }>();
+    if (engineStopping) {
+      const stop: {
+        done: boolean;
+        settled: Promise<void>;
+        readonly lastResort?: () => Promise<void>;
+      } = {
+        done: false,
+        settled: Promise.resolve(),
+        ...(lastResort ? { lastResort } : {}),
+      };
+      stop.settled = engineStopping.then(
+        () => {
+          stop.done = true;
+        },
+        () => {
+          stop.done = true;
+        },
+      );
+      engineStops.add(stop);
+    }
+    existing?.cancel();
+    let checking = false;
+    let rechecking: Promise<boolean> | undefined;
+    let retry: ReturnType<typeof setInterval> | undefined;
+    let lastResortTimer: ReturnType<typeof setTimeout> | undefined;
+    const cancel = () => {
+      if (retry) {
+        clearInterval(retry);
+        retry = undefined;
+      }
+      if (lastResortTimer) {
+        clearTimeout(lastResortTimer);
+        lastResortTimer = undefined;
+      }
+    };
+    const allEngineStopsDone = () => {
+      for (const stop of engineStops) {
+        if (!stop.done) return false;
+      }
+      return true;
+    };
+    const liftIfProven = (): boolean => {
+      if (this.#uncontainedThreads.get(threadId) !== hold)
+        return !this.#uncontainedThreads.has(threadId);
+      if (!allEngineStopsDone() || scopes.size > 0) return false;
+      cancel();
+      this.#uncontainedThreads.delete(threadId);
+      this.#flushUnverifiedRunEnds(threadId);
+      return true;
+    };
+    const ensurePolling = () => {
+      if (retry || this.#uncontainedThreads.get(threadId) !== hold) return;
+      retry = setInterval(check, this.#uncontainedRetryMs);
+      retry.unref?.();
+    };
+    const recheckScopes = async (deleteProven: boolean): Promise<void> => {
+      await Promise.all(
+        [...scopes].map(async (scope) => {
+          const termination = await this.#containment
+            .terminate(scope)
+            .catch(() => "unknown" as const);
+          if (termination === "proven" && deleteProven) scopes.delete(scope);
+        }),
+      );
+    };
+    const runLastResort = (): Promise<boolean> => {
+      if (rechecking) return rechecking;
+      rechecking = (async () => {
+        if (this.#uncontainedThreads.get(threadId) !== hold) {
+          return !this.#uncontainedThreads.has(threadId);
+        }
+        // Scoped last resort: retire ONLY the failing session's shared engine
+        // (never adapter-wide) and terminate every recorded Run process scope.
+        const pendingStops = [...engineStops].filter((stop) => !stop.done);
+        await Promise.all(
+          pendingStops.map(async (stop) => {
+            if (!stop.lastResort) return;
+            const settled = await settleBy(
+              stop.lastResort().then(
+                () => true,
+                () => false,
+              ),
+              Date.now() + this.#sharedEngineSettleMs,
+            );
+            if (settled === true) stop.done = true;
+          }),
+        );
+        await recheckScopes(allEngineStopsDone());
+        if (liftIfProven()) return true;
+        if (allEngineStopsDone() && scopes.size > 0) ensurePolling();
+        return false;
+      })().finally(() => {
+        rechecking = undefined;
+      });
+      return rechecking;
+    };
+    const hold = {
+      scopes,
+      engineStops,
+      cancel,
+      runLastResort,
+    };
+    this.#uncontainedThreads.set(threadId, hold);
+    // A shared engine still stopping is the rest of what must be proven; its
+    // stop settling is the late evidence, looked at as soon as it arrives.
+    // Do not start the containment retry interval while an engine stop is
+    // still pending, so an unproven hold that never settles leaks no timer.
+    const check = () => {
+      if (checking || this.#uncontainedThreads.get(threadId) !== hold) return;
+      if (!allEngineStopsDone()) return;
+      checking = true;
+      void recheckScopes(true).finally(() => {
+        checking = false;
+        if (this.#uncontainedThreads.get(threadId) !== hold) return;
+        if (!allEngineStopsDone()) return;
+        if (!liftIfProven()) ensurePolling();
+      });
+    };
+    if (allEngineStopsDone()) {
+      ensurePolling();
+    } else {
+      for (const stop of hold.engineStops) {
+        if (!stop.done) void stop.settled.then(check);
+      }
+    }
+    if ([...hold.engineStops].some((stop) => !stop.done && stop.lastResort) || scopes.size > 0) {
+      lastResortTimer = setTimeout(() => {
+        lastResortTimer = undefined;
+        void runLastResort();
+      }, this.#unprovenLastResortMs);
+      lastResortTimer.unref?.();
+    }
+  }
+
+  /**
+   * Re-runs the Runner's scoped last resort and containment check for a held
+   * Thread on demand ("Check again"). Never unlocks without proof.
+   */
+  async recheckThreadStop(threadId: ThreadId): Promise<{ readonly proven: boolean }> {
+    if (this.#threads.has(threadId)) return { proven: false };
+    const hold = this.#uncontainedThreads.get(threadId);
+    if (hold) {
+      const proven = await hold.runLastResort();
+      return { proven };
+    }
+    let matchedUnverified = false;
+    let stillUnproven = false;
+    for (const [key, pending] of this.#unverifiedRunEnds.entries()) {
+      if (pending.report.event.threadId !== threadId) continue;
+      matchedUnverified = true;
+      const proof = await this.#containment.terminate(pending.scope).catch(() => "unknown");
+      if (proof !== "proven" || pending.engineStopped?.done === false) {
+        stillUnproven = true;
+        continue;
+      }
+      this.#unverifiedRunEnds.delete(key);
+      const report = {
+        ...pending.report,
+        event: { ...pending.report.event, emittedAt: new Date().toISOString() },
+      };
+      this.#rememberEndReceipt(report);
+      void this.#connection?.send(report).catch(() => undefined);
+    }
+    if (matchedUnverified) return { proven: !stillUnproven };
+    // A Runner whose in-memory maps hold no record of the attempt has no evidence
+    // about it unless this Runner's own startup reap verified earlier boots are gone.
+    return { proven: this.#earlierBootsContained };
+  }
+
+  #flushUnverifiedRunEnds(threadId: ThreadId): void {
+    for (const [key, pending] of this.#unverifiedRunEnds.entries()) {
+      if (pending.report.event.threadId !== threadId) continue;
+      this.#unverifiedRunEnds.delete(key);
+      const report = {
+        ...pending.report,
+        event: { ...pending.report.event, emittedAt: new Date().toISOString() },
+      };
+      this.#rememberEndReceipt(report);
+      void this.#connection?.send(report).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Ends an engine session and every Run-scoped process under `scope`,
+   * answering proven or not proven on evidence:
+   * - for a shared engine: the session's stop settled and its Run-scoped processes are gone;
+   * - for a dedicated engine: any open in flight settled, its session stopped, and its process scope is gone.
+   * Used by every path: Stop, Run end, warm retire, pool eviction and warm-key change.
+   */
+  async #endEngineSession(input: {
+    readonly scope: string;
+    readonly session?: HarnessSession | undefined;
+    readonly opening?: Promise<HarnessSession> | undefined;
+    readonly sharedEngineProcess?: boolean | undefined;
+    readonly abortLifetime?: (() => void) | undefined;
+  }): Promise<EngineSessionEndResult> {
+    let asked: Promise<void> | undefined;
+    let termination = await this.#containment
+      .terminate(input.scope, async () => {
+        input.abortLifetime?.();
+        asked = input.session ? stopEvidence(input.session) : undefined;
+        if (asked) await settleBy(asked, Date.now() + this.#stopGraceMs);
+      })
+      .catch(() => "unknown" as const);
+    const settled = await this.#settleEngineStop(
+      input.session,
+      input.opening,
+      asked,
+      input.sharedEngineProcess === true,
+    );
+    if (settled?.recheckContainment) {
+      termination = await this.#containment.terminate(input.scope).catch(() => "unknown" as const);
+    }
+    const pending = settled?.stopping;
+    if (termination === "proven" && !pending) {
+      return { proven: true, termination: "proven" };
+    }
+    return {
+      proven: false,
+      termination: pending || termination === "proven" ? "unknown" : termination,
+      ...(pending ? { engineStopping: pending } : {}),
+      ...(settled?.lastResort ? { lastResort: settled.lastResort } : {}),
+    };
+  }
+
+  /**
+   * Waits, within the bound, for an open in flight (dedicated or shared) or a
+   * shared-engine session stop to settle. Returns `stopping` when the bound
+   * passes, or `recheckContainment` when an open settled after the initial
+   * containment pass so `#endEngineSession` looks for leftover processes again.
+   */
+  async #settleEngineStop(
+    session: HarnessSession | undefined,
+    opening: Promise<HarnessSession> | undefined,
+    asked: Promise<void> | undefined,
+    sharedEngine = false,
+  ): Promise<
+    | {
+        readonly stopping: Promise<void>;
+        readonly lastResort?: (() => Promise<void>) | undefined;
+        readonly recheckContainment?: false;
+      }
+    | {
+        readonly stopping?: undefined;
+        readonly lastResort?: undefined;
+        readonly recheckContainment: true;
+      }
+    | undefined
+  > {
+    const deadline = Date.now() + this.#sharedEngineSettleMs;
+    const retireFor = (target: HarnessSession): (() => Promise<void>) | undefined =>
+      target.engineProcess === "shared" && target.retireEngine
+        ? () =>
+            target.retireEngine!(
+              "Stopping could not be confirmed in time, so this session's shared engine was ended",
+            )
+        : undefined;
+    let current = session;
+    if (!current && opening) {
+      const opened = await settleBy(
+        opening.then(
+          (value) => ({ ok: true as const, session: value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        ),
+        deadline,
+      );
+      if (opened === boundPassed) {
+        let lateLastResort: (() => Promise<void>) | undefined;
+        return {
+          stopping: opening.then(
+            (late) => {
+              if (late.engineProcess === "shared") {
+                lateLastResort = retireFor(late);
+                return stopEvidence(late);
+              }
+              // A dedicated engine's own Run-scoped process tree is the entire
+              // engine: once its late open settles, give session.stop() the
+              // Run's stop grace bound from this moment and then let the
+              // existing scope poll terminate and verify the scope whether or
+              // not stop() ever settles.
+              const lateStop = stopEvidence(late);
+              lateStop.catch(() => undefined);
+              return settleBy(lateStop, Date.now() + this.#stopGraceMs).then(() => undefined);
+            },
+            (error: unknown) => {
+              if (error instanceof HarnessStopUnprovenError && error.retireEngine) {
+                const retire = error.retireEngine;
+                lateLastResort = () =>
+                  retire(
+                    "A shared-engine session failed to open cleanly during stop, so its engine was ended",
+                  );
+              }
+              return !sharedEngine && !(error instanceof HarnessStopUnprovenError)
+                ? undefined
+                : isOpenStopProven(error)
+                  ? undefined
+                  : retireOpenFailureOrNever(
+                      error,
+                      "A shared-engine session failed to open cleanly during stop, so its engine was ended",
+                    );
+            },
+          ),
+          lastResort: async () => {
+            if (!lateLastResort) throw new Error("Engine open has not yielded a scoped engine");
+            await lateLastResort();
+          },
+        };
+      }
+      if (!opened.ok) {
+        if (!sharedEngine && !(opened.error instanceof HarnessStopUnprovenError)) {
+          return { recheckContainment: true };
+        }
+        if (isOpenStopProven(opened.error)) return { recheckContainment: true };
+        const retire =
+          opened.error instanceof HarnessStopUnprovenError ? opened.error.retireEngine : undefined;
+        const stopping = retireOpenFailureOrNever(
+          opened.error,
+          "A shared-engine session failed to open cleanly during stop, so its engine was ended",
+        );
+        return (await settleBy(stopping, deadline)) === boundPassed
+          ? {
+              stopping,
+              ...(retire
+                ? {
+                    lastResort: () =>
+                      retire(
+                        "A shared-engine session failed to open cleanly during stop, so its engine was ended",
+                      ),
+                  }
+                : {}),
+            }
+          : { recheckContainment: true };
+      }
+      current = opened.session;
+      // A session that opened after its Run was stopped is stopped like any other,
+      // and containment is checked again after it stops.
+      const stopping = stopEvidence(current);
+      if (current.engineProcess !== "shared") {
+        stopping.catch(() => undefined);
+        await settleBy(stopping, Math.min(deadline, Date.now() + this.#stopGraceMs));
+        return { recheckContainment: true };
+      }
+      return (await settleBy(stopping, deadline)) === boundPassed
+        ? { stopping, lastResort: retireFor(current) }
+        : { recheckContainment: true };
+    }
+    if (!current || current.engineProcess !== "shared") return undefined;
+    const stopping = asked ?? stopEvidence(current);
+    return (await settleBy(stopping, deadline)) === boundPassed
+      ? { stopping, lastResort: retireFor(current) }
+      : undefined;
   }
 
   /**
@@ -1973,6 +2661,37 @@ export class RunnerRuntime {
       terminal: active.journal.terminal,
       threadId: active.command.context.threadId,
     }));
+  }
+
+  /**
+   * Every firing this Runner holds (active or settled awaiting ack), announced
+   * on attach so the Host can reattach running firings across disconnects/restarts (T12).
+   */
+  attachFiringInventory(): NonNullable<
+    Extract<RunnerOperationalReport, { readonly type: "runner.executions.attach" }>["firings"]
+  > {
+    const firings: NonNullable<
+      Extract<RunnerOperationalReport, { readonly type: "runner.executions.attach" }>["firings"]
+    > = [];
+    for (const active of this.#triggerPrograms.values()) {
+      firings.push({
+        environmentId: active.command.environmentId,
+        executionGeneration: active.command.context.executionGeneration,
+        occurrenceId: active.command.context.occurrenceId,
+        terminal: false,
+      });
+    }
+    for (const report of this.#endedAttempts.values()) {
+      if (typeof report === "string" || report.type !== "runner.trigger-result") continue;
+      if (this.#triggerPrograms.has(report.output.occurrenceId)) continue;
+      firings.push({
+        environmentId: report.environmentId,
+        executionGeneration: report.executionGeneration,
+        occurrenceId: report.output.occurrenceId,
+        terminal: true,
+      });
+    }
+    return firings;
   }
 
   /**
@@ -2052,6 +2771,26 @@ export class RunnerRuntime {
       if (!answered.has(runId)) revoked.push({ reason: "The Host does not hold this Run", runId });
     }
     if (revoked.length > 0) this.revokeRuns(revoked);
+    if (answer.firingResults !== undefined) {
+      const firingAnswers = new Map(
+        answer.firingResults.map((result) => [result.occurrenceId, result]),
+      );
+      for (const active of this.#triggerPrograms.values()) {
+        const result = firingAnswers.get(active.command.context.occurrenceId);
+        if (!result || result.status === "revoked") {
+          active.abort.abort(
+            new Error(result?.reason ?? "The Host does not hold this automation firing"),
+          );
+        } else {
+          active.sink = sink;
+        }
+      }
+      for (const [key, report] of this.#endedAttempts) {
+        if (typeof report === "string" || report.type !== "runner.trigger-result") continue;
+        const result = firingAnswers.get(report.output.occurrenceId);
+        if (result?.status === "revoked") this.#endedAttempts.delete(key);
+      }
+    }
     await Promise.all(resumed);
     for (const [driverKind, installation] of this.#pendingDriverInstallationAdvertisements) {
       const operation = this.#driverInstallationOperations.get(driverKind);
@@ -2065,6 +2804,23 @@ export class RunnerRuntime {
       }
     }
     await this.#publishPendingHarnessCatalogInvalidations(sink);
+    for (const report of this.#endedAttempts.values())
+      if (typeof report !== "string") void sink.send(report).catch(() => undefined);
+  }
+  #rememberEndReceipt(report: ExecutionEndReport): void {
+    let key: string;
+    switch (report.type) {
+      case "runner.event":
+        key = `${report.event.runId}:${report.event.bindingGeneration}`;
+        break;
+      case "runner.trigger-result":
+        key = `${report.output.occurrenceId}:${report.executionGeneration}`;
+        break;
+      case "runner.watch-status":
+        key = `${report.activationId}:${report.executionGeneration}`;
+        break;
+    }
+    this.#endedAttempts.set(key, report);
   }
 
   resynchronizeLive(runId: RunId): void {
@@ -2074,8 +2830,22 @@ export class RunnerRuntime {
   /** Forgets what the Host has committed; nothing acknowledged is replayed again. */
   acknowledge(
     acks: Extract<HostToRunnerMessage, { readonly type: "host.executions.acked" }>["acks"],
+    firingAcks?: Extract<
+      HostToRunnerMessage,
+      { readonly type: "host.executions.acked" }
+    >["firingAcks"],
   ): void {
     for (const ack of acks) {
+      for (const [key, report] of this.#endedAttempts) {
+        if (
+          typeof report !== "string" &&
+          report.type === "runner.event" &&
+          report.event.runId === ack.runId &&
+          report.event.ordinal <= ack.throughOrdinal
+        ) {
+          this.#endedAttempts.set(key, "ended");
+        }
+      }
       const active = this.#runs.get(ack.runId) ?? this.#settledRuns.get(ack.runId);
       if (!active) continue;
       const { journal } = active;
@@ -2086,6 +2856,9 @@ export class RunnerRuntime {
       }
       if (ack.sessionBound) journal.sessionBound = null;
       this.#releaseIfSettled(active);
+    }
+    for (const ack of firingAcks ?? []) {
+      this.#endedAttempts.delete(`${ack.occurrenceId}:${ack.executionGeneration}`);
     }
   }
 
@@ -2214,22 +2987,18 @@ export class RunnerRuntime {
   }
 
   async connectionLost(sink: RunnerMessageSink): Promise<void> {
-    // Runs keep executing: they hold leases the Host renews, and what they
-    // report waits in each Run's journal for the next connection. Trigger
-    // programs and watches belong to the connection that started them.
+    // Runs and automation firings keep executing across transient disconnects
+    // and Host restarts (T12): their results wait in memory and reattach on the
+    // next connection. Watches and app servers belong to the connection that started them.
     if (this.#connection === sink) this.#connection = null;
     const tasks: Promise<void>[] = [];
-    for (const active of this.#triggerPrograms.values()) {
-      if (active.sink !== sink) continue;
-      active.abort.abort(new Error("Host connection was lost"));
-      if (active.task) tasks.push(active.task);
-    }
     tasks.push(this.#watchSupervisor.connectionLost(sink));
     tasks.push(this.appServers.stopAll());
     await Promise.allSettled(tasks);
   }
 
-  async close(): Promise<void> {
+  async close(proveTermination = false): Promise<RunnerShutdownProof | undefined> {
+    this.#imagePublishLifetime.abort();
     this.#draining = true;
     await this.#cancelBackgroundText(() => true);
     const voiceClosed = this.#voice.close();
@@ -2260,8 +3029,11 @@ export class RunnerRuntime {
     await settlesWithin([this.#warm.close()], runtimeTaskStopWaitMs);
     await this.#sessions.stopAll();
     await this.#harnesses.close();
+    for (const hold of this.#uncontainedThreads.values()) hold.cancel();
+    this.#uncontainedThreads.clear();
     if (this.#messagingWorkRoot)
       await rm(await this.#messagingWorkRoot, { recursive: true, force: true });
+    return proveTermination ? this.#containment.shutdownProof() : undefined;
   }
 
   activeWatchActivationIds(): readonly TriggerWatchActivationId[] {
@@ -2272,6 +3044,8 @@ export class RunnerRuntime {
     command: Extract<RunnerCommand, { readonly type: "run.execute" }>,
     sink: RunnerMessageSink,
   ): CommandDecision {
+    if (this.#endedAttempts.has(`${command.context.runId}:${command.context.bindingGeneration}`))
+      return reject("conflict", "Run attempt already ended", false);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#harnessMaintenance.has(command.context.harnessInstanceId)) {
       return reject("conflict", "AI engine profile maintenance is in progress", true);
@@ -2296,14 +3070,21 @@ export class RunnerRuntime {
         ? reject("conflict", "The Run's previous attempt is still stopping", true)
         : reject("conflict", "Run is already active", false);
     }
+    if (this.#uncontainedThreads.has(command.context.threadId)) {
+      return reject(
+        "conflict",
+        "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+        true,
+        { reason: "previous-stop-unconfirmed" },
+      );
+    }
     if (this.#threads.has(command.context.threadId)) {
       return reject("conflict", "Thread already has an active run", true);
     }
-    if (this.#uncontainedThreads.has(command.context.threadId)) {
-      return reject("conflict", "The Thread's previous Run is still stopping", true);
-    }
     if (this.#runs.size >= this.#maxConcurrentRuns) {
-      return reject("conflict", "Runner Run concurrency limit is saturated", true);
+      return reject("conflict", "Runner Run concurrency limit is saturated", true, {
+        reason: "run-concurrency-limit",
+      });
     }
     if (command.context.environmentId !== command.environmentId) {
       return reject("forbidden", "Run context targets a different execution environment", false);
@@ -2339,6 +3120,8 @@ export class RunnerRuntime {
     // A restarted Run's next attempt continues the Run's ordinals.
     const firstOrdinal = context.firstOrdinal ?? 0;
     const active: ActiveRun = {
+      // Wall time for the person; the lease clock may be a test clock.
+      admittedAt: Date.now(),
       abort: new AbortController(),
       command,
       emittedEventBytes: 0,
@@ -2406,6 +3189,7 @@ export class RunnerRuntime {
     }
     this.#runs.set(command.context.runId, active);
     this.#threads.set(command.context.threadId, command.context.runId);
+    this.#activityChanged();
     active.task = new Promise<void>((resolvePromise) => {
       setImmediate(() => {
         void this.#execute(active).then(resolvePromise, () => resolvePromise());
@@ -2418,7 +3202,18 @@ export class RunnerRuntime {
     command: Extract<RunnerCommand, { readonly type: "trigger.execute" }>,
     sink: RunnerMessageSink,
   ): CommandDecision {
+    const key = `${command.context.occurrenceId}:${command.context.executionGeneration}`;
+    if (this.#endedAttempts.has(key) || this.#unverifiedTriggerEnds.has(key))
+      return reject("conflict", "Trigger attempt already stopped", false);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
+    if (this.#uncontainedThreads.has(command.context.anchorThreadId)) {
+      return reject(
+        "conflict",
+        "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+        true,
+        { reason: "previous-stop-unconfirmed" },
+      );
+    }
     if (this.#triggerPrograms.has(command.context.occurrenceId)) {
       return reject("conflict", "Trigger occurrence is already active", false);
     }
@@ -2441,6 +3236,7 @@ export class RunnerRuntime {
 
   async #executeTriggerProgram(active: ActiveTriggerProgram): Promise<void> {
     const { context } = active.command;
+    const key = `${context.occurrenceId}:${context.executionGeneration}`;
     let workspace: AgentHomeWorkspace | undefined;
     let output: TriggerExecutionOutput | undefined;
     let endpoints: ProgramEndpointSet | undefined;
@@ -2452,16 +3248,64 @@ export class RunnerRuntime {
         agentHome: active.command.agentHome,
         signal: active.abort.signal,
       });
+      let currentMcpToken = context.mcp.token;
+      let currentBrowserToken = context.browserCdp?.token ?? null;
+      let tokenIssuedAt = Date.now();
+      let pendingTokenRenewal: Promise<void> | undefined;
+      const ensureFreshTokens = async (): Promise<void> => {
+        if (Date.now() - tokenIssuedAt < 11 * 60 * 60_000 || !active.sink.renewProxyToken) {
+          return;
+        }
+        pendingTokenRenewal ??= active.sink
+          .renewProxyToken({
+            executionGeneration: context.executionGeneration,
+            kind: "firing",
+            occurrenceId: context.occurrenceId,
+          })
+          .then((answer) => {
+            if (answer?.mcp) {
+              currentMcpToken = answer.mcp.token;
+              currentBrowserToken = answer.browserCdp?.token ?? null;
+              tokenIssuedAt = Date.now();
+            }
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            pendingTokenRenewal = undefined;
+          });
+        await pendingTokenRenewal;
+      };
       endpoints = await startProgramEndpoints({
-        capabilities: () => context,
+        capabilities: () => ({
+          browserCdp:
+            context.browserCdp && currentBrowserToken
+              ? { token: currentBrowserToken, url: context.browserCdp.url }
+              : null,
+          mcp: { token: currentMcpToken, url: context.mcp.url },
+        }),
+        resolveBrowserToken: async () => {
+          await ensureFreshTokens();
+          return currentBrowserToken ?? "";
+        },
+        resolveMcpToken: async () => {
+          await ensureFreshTokens();
+          return currentMcpToken;
+        },
         transport: { mode: this.#mode },
       });
       active.abort.signal.throwIfAborted();
-      output = await this.#programExecutor.execute({
-        context,
+      output = await this.#scriptExecutor.execute({
+        automationId: context.triggerId,
         endpoints: endpoints.endpoints,
-        planLaunch: (launch) => this.#planProgramLaunch(context.occurrenceId, launch),
+        event: scriptEventFromTriggerEvent(context),
+        firingId: context.occurrenceId,
+        planLaunch: () => this.#planProgramLaunch(key),
+        script: context.script,
+        ...(context.secrets ? { secrets: context.secrets } : {}),
         signal: active.abort.signal,
+        ...(context.webhookBodyBase64 !== undefined
+          ? { webhookBody: Buffer.from(context.webhookBodyBase64, "base64") }
+          : {}),
         workspace,
       });
     } catch (error) {
@@ -2469,7 +3313,7 @@ export class RunnerRuntime {
         completedAt: new Date().toISOString(),
         error: active.abort.signal.aborted
           ? "Trigger program was canceled"
-          : safeMessage(error, safeMessageOptions).slice(0, 20_000),
+          : safeMessage(error, this.#safeMessageOptions).slice(0, 20_000),
         exitCode: null,
         occurrenceId: context.occurrenceId,
         result: null,
@@ -2480,43 +3324,51 @@ export class RunnerRuntime {
     } finally {
       output ??= {
         completedAt: new Date().toISOString(),
-        error: "Trigger program ended without an execution result",
+        error: "Automation script ended without an execution result",
         exitCode: null,
         occurrenceId: context.occurrenceId,
         result: null,
-        status: "failed",
+        status: "unknown",
         stderr: "",
         stdout: "",
       };
       active.abort.signal.removeEventListener("abort", endAccess);
       await endpoints?.close();
-      // Whatever the program left running ends with its occurrence.
-      await this.#containment.terminate(context.occurrenceId).catch(() => undefined);
-      await active.sink
-        .send({
-          environmentId: active.command.environmentId,
-          executionGeneration: context.executionGeneration,
-          output,
-          type: "runner.trigger-result",
-        })
-        .catch(() => undefined);
-      this.#triggerPrograms.delete(context.occurrenceId);
+      const report = {
+        environmentId: active.command.environmentId,
+        executionGeneration: context.executionGeneration,
+        output,
+        type: "runner.trigger-result" as const,
+      };
+      try {
+        const proof = await this.#containment.terminate(key);
+        if (proof === "proven") {
+          this.#rememberEndReceipt(report);
+          await (this.#connection ?? active.sink).send(report).catch(() => undefined);
+        } else {
+          this.#logger?.error("Trigger containment could not be verified", {
+            occurrenceId: context.occurrenceId,
+            proof,
+          });
+        }
+      } catch (error) {
+        this.#logger?.error("An automation left processes the Runner could not end", {
+          occurrenceId: context.occurrenceId,
+          error: safeMessage(error, this.#safeMessageOptions),
+        });
+      } finally {
+        if (!this.#endedAttempts.has(key)) this.#unverifiedTriggerEnds.set(key, report);
+        this.#triggerPrograms.delete(context.occurrenceId);
+      }
     }
   }
 
   /**
-   * A Trigger or Watch program's launch: in the Runner sandbox where Runs are
-   * sandboxed, and marked with its execution's scope so nothing it starts
-   * outlives it.
+   * A Trigger or Watch program's launch, marked with its execution's scope so
+   * nothing it starts outlives it.
    */
-  async #planProgramLaunch(
-    executionId: string,
-    launch: Parameters<ProgramLaunchPlanner>[0],
-  ): Promise<HarnessProcessLaunchWrapper> {
-    return this.#containment.wrap(
-      executionId,
-      this.#harnessSandbox ? await this.#harnessSandbox.planProgram(launch) : (input) => input,
-    );
+  async #planProgramLaunch(executionId: string): Promise<HarnessProcessLaunchWrapper> {
+    return this.#containment.wrap(executionId, (input) => input);
   }
 
   async #execute(active: ActiveRun): Promise<void> {
@@ -2528,11 +3380,18 @@ export class RunnerRuntime {
     let machineAccessSetup: MachineAccessSetup | undefined;
     let plugins: Awaited<ReturnType<typeof cacheRunPlugins>> | undefined;
     let terminal: HarnessDurableEvent | undefined;
+    // The kernel's count of kills for memory as this Run starts: only a kill counted after it can
+    // be this Run's. One synchronous read of a small kernel file, where there is one; no statement.
+    const memoryKillsSince = this.#memoryKills?.mark();
     let consumptionError: unknown;
     let internalBinding: ReturnType<LiveSessionDirectory["acquire"]> | undefined;
     // An engine this Run took from the warm pool, or one it may leave there.
     let warmEngine: WarmEngine | undefined;
     let unlinkEngineLifetime: (() => void) | undefined;
+    // A session still opening when the Run is stopped holds its conversation
+    // until it settles; the end waits for it, within a bound.
+    let opening: Promise<HarnessSession> | undefined;
+    let sharedEngineProcess = false;
     // Settles once a stopped Run's grace has passed and its processes have
     // been ended for it, so no wait on the engine outlasts that.
     const halted = this.#haltAfterGrace(active);
@@ -2558,18 +3417,26 @@ export class RunnerRuntime {
         active.abort.abort(new Error("The Run's execution lease ran out without the Host"));
       }
       signal.throwIfAborted();
+      const baseEnvironment = await this.#harnessEnvironment(context.harness.driverKind);
+      active.environment = baseEnvironment;
+      // Before anything of the Run starts: an engine not shown to start
+      // without the person's own configuration runs only their own tasks.
+      assertEngineMayRun(context.harness.driverKind, {
+        ...context,
+        environment: baseEnvironment,
+        providerState: { kind: context.harness.stateKind },
+      });
       workspace = await this.#agentHome.prepare({
         agentHome: command.agentHome,
         personalContext: context.personalContext,
         signal: active.abort.signal,
       });
-      active.agentHome = workspace;
       const adapter = await this.#harnesses.adapter(context.harnessInstanceId);
+      sharedEngineProcess = adapter.capabilities.sharedEngineProcess === true && !context.voiceCall;
       const transport = { deploymentShape: this.#deploymentShape, mode: this.#mode };
       const credentials = new RunCredentials(context);
       active.credentials = credentials;
       this.#scheduleCredentialRefresh(active, context.credentialRefreshAfterMs);
-      const baseEnvironment = await this.#harnessEnvironment(context.harness.driverKind);
       // Both state kinds resolve through the same store record, so a Run and an
       // inspection of the same profile always project one continuation
       // namespace instead of two derived from different identities.
@@ -2613,19 +3480,12 @@ export class RunnerRuntime {
       const attachmentDirectory = attachmentRoot
         ? join(attachmentRoot, context.threadId)
         : undefined;
-      const attachmentContext =
-        attachmentRoot && attachmentDirectory ? { attachmentDirectory, attachmentRoot } : {};
+      const attachmentContext = attachmentDirectory ? { attachmentDirectory } : {};
       this.#requireInputAttachments(command.inputs, attachments);
       this.#requireInputAttachments(command.reports.messages, attachments);
-      // Shared Messaging must not trigger native discovery of the owner's home instructions.
-      const workingDirectory = context.personalContext
-        ? workspace.path
-        : join(
-            await (this.#messagingWorkRoot ??= mkdtemp(join(tmpdir(), "opensteer-messaging-"))),
-            context.providerSessionId,
-          );
-      if (!context.personalContext) await mkdir(workingDirectory, { recursive: true, mode: 0o700 });
-      const writableRoots = [...new Set([workspace.path, workingDirectory])];
+      const folders = await this.#runFolders(context, workspace);
+      active.folders = folders;
+      const { workingDirectory, writableRoots } = folders;
       // Once taken, the idle engine remains this Run’s to reuse or retire.
       warmEngine = await this.#warm.take(context.threadId);
       // An engine that failed or was recycled while it waited serves no Run.
@@ -2647,10 +3507,10 @@ export class RunnerRuntime {
         threadId: context.threadId,
       });
       plugins = runSkills;
-      const homeSkills = context.personalContext
-        ? await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration)
+      const homeSkills = folders.agentHome
+        ? await this.#scanAgentHomeSkills(folders.agentHome, context.bindingGeneration)
         : { skills: [], warnings: [], digest: "personal-context-disabled" };
-      if (context.personalContext) await this.#readAgentHomeSettings(workspace.path);
+      if (folders.agentHome) await this.#readAgentHomeSettings(folders.agentHome);
       for (const warning of new Set(homeSkills.warnings)) {
         this.#logger?.info(warning, {
           runId: context.runId,
@@ -2685,11 +3545,12 @@ export class RunnerRuntime {
         machineAccessPlan && isMachineAccessRoutes(machineAccessPlan)
           ? machineAccessPlan
           : undefined;
-      const { instructions = null, path: workspacePath } = workspace;
+      const { instructions = null } = workspace;
+      const workspacePath = workingDirectory;
       const warmKeyFor = (providerSessionReference: string | null, machineAccessLaunch: string) =>
         warmEngineKey({
           warmSelection: adapter.capabilities.warmSelection,
-          attachmentRoot: attachmentRoot ?? null,
+          attachmentDirectory: attachmentDirectory ?? null,
           baseEnvironment,
           context,
           instructions,
@@ -2697,7 +3558,6 @@ export class RunnerRuntime {
           providerSessionReference,
           skills,
           homeSkillsDigest: homeSkills.digest,
-          runtimeBoundary: this.#harnessRuntimeBoundary.kind,
           workspacePath,
           writableRoots,
         });
@@ -2717,8 +3577,10 @@ export class RunnerRuntime {
       if (this.#uncontainedThreads.has(context.threadId)) {
         throw new OpensteerError({
           code: "conflict",
-          message: "The Thread's previous engine is still stopping",
-          retryable: true,
+          message:
+            "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+          reason: "previous-stop-unconfirmed",
+          retryable: false,
         });
       }
       if (warmEngine) {
@@ -2785,18 +3647,6 @@ export class RunnerRuntime {
       active.credentialProxy = credentialProxy;
       const warmScope = warmEngine?.scope ?? (warmKey ? `warm-${randomUUID()}` : undefined);
       if (warmScope) active.containmentScope = warmScope;
-      // Everything the sandbox must expose is known before the harness starts;
-      // only the machine-access launch directory arrives during setup.
-      const sandboxPlan = {
-        ...(attachmentDirectory ? { attachmentDirectory } : {}),
-        environment: baseEnvironment,
-        pluginCacheDirectories: runSkills.directories,
-        providerState,
-        threadStateDirectory,
-        ...(context.voiceCall ? { threadStateWritable: true as const } : {}),
-        workspacePath: workingDirectory,
-        writableRoots,
-      } satisfies Omit<HarnessSandboxRunPlan, "launchDirectory">;
       let machineAccessUnavailable: MachineAccessUnavailableReason | undefined =
         machineAccessPlan && !isMachineAccessRoutes(machineAccessPlan)
           ? machineAccessPlan.reason
@@ -2811,7 +3661,6 @@ export class RunnerRuntime {
             ...attachmentContext,
             environment: baseEnvironment,
             providerState,
-            runtimeBoundary: this.#harnessRuntimeBoundary,
             workspacePath: workingDirectory,
             writableRoots,
           },
@@ -2821,7 +3670,6 @@ export class RunnerRuntime {
           ...(this.#logger ? { logger: this.#logger } : {}),
           plan: machineAccessRoutes,
           privateStateRoot: this.#dataDirectory,
-          runtimeBoundary: this.#harnessRuntimeBoundary,
           ...(machineAccess.validationHook ? { validationHook: machineAccess.validationHook } : {}),
           transport: {
             controlCaPath: machineAccess.controlCaPath,
@@ -2832,11 +3680,7 @@ export class RunnerRuntime {
           // proves is what the harness finds.
           workspacePath: workingDirectory,
           wrapModelCommand,
-          wrapProcessLaunch: async (launchDirectory) =>
-            this.#containment.wrap(
-              active.containmentScope,
-              await this.#wrapProcessLaunch({ ...sandboxPlan, launchDirectory }),
-            ),
+          wrapProcessLaunch: this.#containment.wrap(active.containmentScope, (launch) => launch),
         });
         if (isMachineAccessSetup(outcome)) machineAccessSetup = outcome;
         else machineAccessUnavailable = outcome.reason;
@@ -2847,11 +3691,10 @@ export class RunnerRuntime {
       // every process it starts carries this Run's scope.
       const wrapProcessLaunch = this.#containment.wrap(
         active.containmentScope,
-        launch?.wrapProcessLaunch ??
-          (await this.#wrapProcessLaunch({ ...sandboxPlan, launchDirectory: undefined })),
+        launch?.wrapProcessLaunch ?? ((input) => input),
       );
       const runVariables = {
-        OPENSTEER_AGENT_WORKSPACE: workspace.path,
+        OPENSTEER_AGENT_WORKSPACE: workingDirectory,
         OPENSTEER_BROWSER_CDP_WS: browserCdpUrl,
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
       };
@@ -2866,9 +3709,10 @@ export class RunnerRuntime {
         ...runVariables,
         [executionScopeVariable]: this.#containment.scope(active.containmentScope),
       });
-      const sharedEngine = this.#harnessSandbox
-        ? undefined
-        : await this.#sharedEngineLaunch(context.harnessInstanceId, baseEnvironment);
+      const sharedEngine = await this.#sharedEngineLaunch(
+        context.harnessInstanceId,
+        baseEnvironment,
+      );
       const machineAccessContext = context.machineAccess;
       if (context.voiceCall && !adapter.capabilities.voiceCalls)
         throw new OpensteerError({
@@ -2876,6 +3720,8 @@ export class RunnerRuntime {
           reason: "voice-engine-unsupported",
           message: "This engine does not support voice calls.",
         });
+      active.environment = environment;
+      active.proxiedSecret = proxied.secret;
       const sessionContext = {
         ...(active.voiceCall ? { voiceCall: active.voiceCall } : {}),
         ...attachmentContext,
@@ -2908,9 +3754,9 @@ export class RunnerRuntime {
                 },
                 machineAccessUnavailable,
               ),
-        machineAccessPlatform: launch?.machineAccessPlatform,
-        machineAccessRelaySocket: launch?.machineAccessRelaySocket,
         modelSelection: context.modelSelection,
+        personalContext: context.personalContext,
+        personLineage: context.personLineage,
         imageStore: this.#imageStore,
         platformGuide: [
           context.agentTools.instructions,
@@ -2919,8 +3765,7 @@ export class RunnerRuntime {
           .filter(Boolean)
           .join("\n\n"),
         providerState,
-        runtimeBoundary: this.#harnessRuntimeBoundary,
-        ...(sharedEngine ? { sharedEngine } : {}),
+        sharedEngine,
         signal: engineLifetime.signal,
         skills,
         threadId: context.threadId,
@@ -2935,10 +3780,11 @@ export class RunnerRuntime {
         warmEngine.session.rebind?.(sessionContext);
         active.session = warmEngine.session;
       } else {
+        opening = context.providerSessionReference
+          ? adapter.resumeSession(context.providerSessionReference, sessionContext)
+          : adapter.startSession(sessionContext);
         active.session = await Promise.race([
-          context.providerSessionReference
-            ? adapter.resumeSession(context.providerSessionReference, sessionContext)
-            : adapter.startSession(sessionContext),
+          opening,
           halted.then(() => Promise.reject(active.abort.signal.reason)),
         ]);
         if (warmKey && warmScope && warmLifetime) {
@@ -3042,7 +3888,6 @@ export class RunnerRuntime {
           ...(context.maintenance ? { maintenance: context.maintenance } : {}),
           attachments,
           context: {
-            teamTurnContext: context.teamTurnContext,
             assignment: context.assignment,
             startedAt: new Date().toISOString(),
             threadState: context.threadState,
@@ -3081,21 +3926,36 @@ export class RunnerRuntime {
       // Runner could not take broke the harness protocol.
       terminal = consumptionError
         ? failureEvent(
-            safeMessage(consumptionError, safeMessageOptions),
+            this.#safeRunError(active, consumptionError),
             consumptionError instanceof EventBufferOverflowError
               ? "harness_event_budget_exceeded"
               : "harness_protocol_error",
           )
         : active.abort.signal.aborted
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
-          : failureEvent(safeMessage(error, safeMessageOptions), "runner_execution_error");
+          : error instanceof EngineUnavailableForTaskError
+            ? failureEvent(
+                this.#scrubRunText(active, error.message),
+                "forbidden",
+                this.#scrubRunText(active, error.ownerMessage),
+              )
+            : failureEvent(
+                this.#safeRunError(active, error),
+                error instanceof OpensteerError && error.reason === "previous-stop-unconfirmed"
+                  ? runTerminationUnprovenCode
+                  : // A refusal reaches the Home as one, not as an execution error.
+                    error instanceof OpensteerError && error.code === "forbidden"
+                    ? "forbidden"
+                    : "runner_execution_error",
+              );
     } finally {
-      if (workspace && this.#skillObserver) {
+      // A Run without personal context had no Agent home: nothing of it is scanned after.
+      if (workspace && this.#skillObserver && active.folders?.agentHome) {
         await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration).catch(
           () => undefined,
         );
       }
-      if (workspace && context.personalContext) await this.#readAgentHomeSettings(workspace.path);
+      if (active.folders?.agentHome) await this.#readAgentHomeSettings(active.folders.agentHome);
       // Naming owns another process in this containment scope. It must exit
       // before stop, the single-tree warm check, or credential teardown.
       active.settling = true;
@@ -3104,28 +3964,42 @@ export class RunnerRuntime {
       // Run's authority may stay lent while its engine's reuse is weighed.
       const machineAccessRelay = active.machineAccessRelay;
       delete active.machineAccessRelay;
-      await withinStopGrace(machineAccessRelay?.suspend());
+      if (machineAccessRelay) {
+        await settleBy(
+          machineAccessRelay.suspend().catch(() => undefined),
+          Date.now() + executionStopGraceMs,
+        );
+      }
       active.fileAbort.abort();
-      await withinStopGrace(Promise.allSettled(active.fileTasks));
-      await withinStopGrace(Promise.allSettled(active.steerTasks));
+      await settleBy(Promise.allSettled(active.fileTasks), Date.now() + executionStopGraceMs);
+      await settleBy(Promise.allSettled(active.steerTasks), Date.now() + executionStopGraceMs);
       // A refresh still on its way changes nothing once the execution is over.
       active.credentialLifetime.abort();
       // A warm engine the Run released waits for the Thread's next Run, on
       // proof that nothing of this Run lives on in it.
       const kept = warmEngine ? await this.#keepWarmEngine(active, warmEngine, terminal) : false;
       let termination: TerminationProof = "proven";
+      let engineStopping: Promise<void> | undefined;
+      let engineLastResort: (() => Promise<void>) | undefined;
       if (warmEngine && !kept) {
-        // Everything the engine held ends with it; an unproven end holds the Thread.
-        await this.#retireWarmEngine(warmEngine);
+        // Everything the engine held ends with it; an unproven end holds the Thread once below.
+        const ended = await this.#retireWarmEngine(warmEngine, { holdThread: false });
+        termination = ended.termination;
+        engineStopping = ended.proven ? undefined : ended.engineStopping;
+        engineLastResort = ended.proven ? undefined : ended.lastResort;
       } else if (!kept) {
         // Whatever the engine left running ends with its Run, including what
         // it orphans as it stops. The Thread takes no new execution until all
         // of it is proven gone.
-        termination = await this.#containment
-          .terminate(active.containmentScope, () =>
-            withinStopGrace(active.session?.stop().catch(() => undefined)),
-          )
-          .catch(() => "unknown" as const);
+        const ended = await this.#endEngineSession({
+          opening,
+          scope: active.containmentScope,
+          session: active.session,
+          sharedEngineProcess,
+        });
+        termination = ended.termination;
+        engineStopping = ended.proven ? undefined : ended.engineStopping;
+        engineLastResort = ended.proven ? undefined : ended.lastResort;
         await plugins?.cleanup().catch(() => undefined);
         await browserCdpRelay?.close().catch(() => undefined);
         await credentialProxy?.close().catch(() => undefined);
@@ -3139,16 +4013,70 @@ export class RunnerRuntime {
           threadId: internalBinding.threadId,
         });
       }
-      delete active.agentHome;
+      delete active.folders;
       terminal ??= failureEvent("Runner execution ended unexpectedly", "runner_internal_error");
       await this.#settleLiveStreams(active).catch(() => undefined);
       if (active.interrupted)
         terminal = { data: { status: "interrupted" }, type: "run.interrupted" };
+      // A Run whose engine the kernel killed for lack of memory says so, whatever
+      // its engine's driver made of the loss. What it did until then stands. The
+      // count is the whole Runner's: only a Run whose own engine a SIGKILL its
+      // supervisor did not send ended may claim one of the kills counted since it started.
+      // Known limit: an engine SIGKILLed by anything else (nothing else kills one so) in a Run in
+      // which some other process was killed for memory is told it ran out of memory too; the
+      // exact evidence, a cgroup per engine, is far more machinery than these words are worth.
+      // A warm engine's reused scope is the same limit.
+      if (
+        terminal.type === "run.failed" &&
+        this.#memoryKills &&
+        this.#engineKilled(this.#containment.scope(warmEngine?.scope ?? active.containmentScope)) &&
+        this.#memoryKills.claimKill(memoryKillsSince)
+      ) {
+        terminal = failureEvent(
+          "The Run's engine was stopped by the kernel for lack of memory",
+          runOutOfMemoryCode,
+          "This Run ran out of memory and was stopped. What it did before then stays as it is.",
+        );
+      }
+      if (termination !== "proven") {
+        terminal = failureEvent(
+          "Stopping could not be confirmed. Something from this Run may still be running on that device.",
+          runTerminationUnprovenCode,
+        );
+        const key = `${context.runId}:${context.bindingGeneration}`;
+        this.#unverifiedRunEnds.set(key, {
+          ...(engineStopping ? { engineStopped: settledFlag(engineStopping) } : {}),
+          scope: warmEngine?.scope ?? active.containmentScope,
+          report: {
+            type: "runner.event",
+            event: PendingAgentEventV2Schema.parse({
+              type: "run.interrupted",
+              data: { status: "interrupted" },
+              runId: context.runId,
+              threadId: context.threadId,
+              environmentId: context.environmentId,
+              bindingGeneration: context.bindingGeneration,
+              ordinal: active.nextOrdinal + 1,
+              emittedAt: new Date().toISOString(),
+            }),
+          },
+        });
+        // Hold the thread BEFORE emitting the unproven terminal event so no
+        // follow-up Run, firing, or Watch can slip into the gap, and cover
+        // both "unknown" and "unverifiable" containment proofs (W2).
+        this.#holdUncontainedThread(
+          context.threadId,
+          context.runId,
+          warmEngine?.scope ?? active.containmentScope,
+          engineStopping,
+          engineLastResort,
+        );
+      } else this.#endedAttempts.set(`${context.runId}:${context.bindingGeneration}`, "ended");
       if (terminal.type === "run.failed") {
         // The logger names the line `message`; the reason is `detail`.
         this.#logger?.error("run.failed", {
           code: terminal.data.code,
-          detail: terminal.data.message,
+          detail: this.#scrubRunText(active, terminal.data.ownerMessage ?? terminal.data.message),
           driverKind: context.harness.driverKind,
           harnessInstanceId: context.harnessInstanceId,
           runId: context.runId,
@@ -3164,9 +4092,7 @@ export class RunnerRuntime {
           force: true,
         });
       this.#runs.delete(context.runId);
-      if (termination === "unknown") {
-        this.#holdUncontainedThread(context.threadId, context.runId, active.containmentScope);
-      }
+      this.#activityChanged();
       if (this.#threads.get(context.threadId) === context.runId) {
         this.#threads.delete(context.threadId);
       }
@@ -3222,21 +4148,30 @@ export class RunnerRuntime {
     return true;
   }
 
-  /** Ends a warm engine and everything it held, proving its processes gone. */
-  async #retireWarmEngine(engine: WarmEngine): Promise<void> {
-    const termination = await this.#containment
-      .terminate(engine.scope, () => {
-        engine.lifetime.abort(new Error("Warm engine retired"));
-        return withinStopGrace(engine.session.stop().catch(() => undefined));
-      })
-      .catch(() => "unknown" as const);
+  /** Ends a warm engine and everything it held, proving its end on evidence. */
+  async #retireWarmEngine(
+    engine: WarmEngine,
+    options?: { readonly holdThread?: boolean },
+  ): Promise<EngineSessionEndResult> {
+    const ended = await this.#endEngineSession({
+      abortLifetime: () => engine.lifetime.abort(new Error("Warm engine retired")),
+      scope: engine.scope,
+      session: engine.session,
+    });
     await engine.plugins.cleanup().catch(() => undefined);
     await engine.browserCdpRelay.close().catch(() => undefined);
     await engine.credentialProxy.close().catch(() => undefined);
     await engine.machineAccess?.close().catch(() => undefined);
-    if (termination === "unknown") {
-      this.#holdUncontainedThread(engine.threadId, null, engine.scope);
+    if (!ended.proven && options?.holdThread !== false) {
+      this.#holdUncontainedThread(
+        engine.threadId,
+        null,
+        engine.scope,
+        ended.engineStopping,
+        ended.lastResort,
+      );
     }
+    return ended;
   }
 
   async #consumeHarnessEvents(
@@ -3256,9 +4191,46 @@ export class RunnerRuntime {
         }
         return event;
       }
+      if (event.type === "tool.completed") {
+        for (const image of event.data.output.images ?? []) this.#publishStoredImage(image);
+      }
       await this.#emitDurable(active, event);
     }
     return undefined;
+  }
+
+  #publishStoredImage(image: ToolOutputImage): void {
+    if (
+      dirname(image.path) !== this.#imageStore.directory ||
+      this.#publishingImages.has(image.path) ||
+      this.#publishingImages.size >= 8
+    )
+      return;
+    const lifetime = this.#imagePublishLifetime.signal;
+    this.#publishingImages.add(image.path);
+    void (async () => {
+      try {
+        for (let attempt = 0; attempt < 2 && !lifetime.aborted; attempt++) {
+          const connection = this.#connection;
+          if (!connection?.publishOutputImage) return;
+          const publishing = new AbortController();
+          const signal = AbortSignal.any([lifetime, publishing.signal]);
+          try {
+            await withTimeout(connection.publishOutputImage(image, signal), 15_000, {
+              signal,
+              timeoutError: () => new Error("Output image publishing timed out"),
+            });
+            return;
+          } catch {
+            // The transcript can read the Runner's stored image.
+          } finally {
+            publishing.abort();
+          }
+        }
+      } finally {
+        this.#publishingImages.delete(image.path);
+      }
+    })();
   }
 
   /**
@@ -3379,7 +4351,7 @@ export class RunnerRuntime {
         // One stream that cannot be recorded must not cost the others, nor the
         // terminal event that follows; the reader keeps the live text it drew.
         this.#logger?.error("Runner could not record an unfinished stream", {
-          error: safeMessage(error, safeMessageOptions),
+          error: safeMessage(error, this.#safeMessageOptions),
           runId: active.command.context.runId,
           stream: item.stream,
         });
@@ -3392,16 +4364,23 @@ export class RunnerRuntime {
     // The terminal event is a Run's last: an engine still reporting after the
     // Runner ended it for its stop is not heard.
     if (active.revoked || active.journal.terminal) return;
-    if (original.type === "run.retry" && !this.#hostSupportsRunRetry) return;
+    if (original.type === "run.retry" && (!this.#hostSupportsRunRetry || active.interruptionCause))
+      return;
     if (active.shutdown && terminalEventTypes.has(original.type)) return;
     const outcome: HarnessDurableEvent =
-      active.interruptionCause && terminalEventTypes.has(original.type)
+      active.interruptionCause &&
+      terminalEventTypes.has(original.type) &&
+      !(original.type === "run.failed" && original.data.code === runTerminationUnprovenCode)
         ? {
             type: "run.interrupted",
             data: { status: "interrupted", cause: active.interruptionCause },
           }
         : original;
-    const event = fittedDurableEvent(outcome);
+    const redaction =
+      outcome.type === "run.failed" || outcome.type === "run.retry"
+        ? this.#runRedactionContext(active)
+        : undefined;
+    const event = fittedDurableEvent(outcome, redaction);
     const { context } = active.command;
     const pending = PendingAgentEventV2Schema.parse({
       bindingGeneration: context.bindingGeneration,
@@ -3475,8 +4454,28 @@ export class RunnerRuntime {
   async #interrupt(
     runId: RunId,
     threadId: ThreadId,
+    sink: RunnerMessageSink,
     bindingGeneration?: number,
   ): Promise<CommandDecision> {
+    if (bindingGeneration !== undefined) {
+      const key = `${runId}:${bindingGeneration}`;
+      const pending = this.#unverifiedRunEnds.get(key);
+      if (pending) {
+        if (pending.report.event.threadId !== threadId)
+          return reject("forbidden", "Interrupt targets a different thread", false);
+        const proof = await this.#containment.terminate(pending.scope).catch(() => "unknown");
+        if (proof !== "proven" || pending.engineStopped?.done === false)
+          return reject("conflict", "Run containment could not be verified", true);
+        this.#unverifiedRunEnds.delete(key);
+        const report = {
+          ...pending.report,
+          event: { ...pending.report.event, emittedAt: new Date().toISOString() },
+        };
+        this.#rememberEndReceipt(report);
+        void sink.send(report).catch(() => undefined);
+        return { status: "accepted" };
+      }
+    }
     const active = this.#runs.get(runId);
     const existingThreadId = active?.command.context.threadId;
     if (existingThreadId && existingThreadId !== threadId) {
@@ -3540,12 +4539,18 @@ export class RunnerRuntime {
     schedule(afterMs);
   }
 
-  #interruptTrigger(occurrenceId: TriggerOccurrenceId): CommandDecision {
-    // Cancellation is idempotent so a retried Host security effect can always
-    // converge even if the program completed between observation and delivery.
-    this.#triggerPrograms
-      .get(occurrenceId)
-      ?.abort.abort(new Error("Trigger execution authority was revoked"));
+  #interruptTrigger(
+    occurrenceId: TriggerOccurrenceId,
+    executionGeneration?: number,
+  ): CommandDecision {
+    const active = this.#triggerPrograms.get(occurrenceId);
+    if (
+      active &&
+      (executionGeneration === undefined ||
+        active.command.context.executionGeneration === executionGeneration)
+    ) {
+      active.abort.abort(new Error("Trigger execution authority was revoked"));
+    }
     return { status: "accepted" };
   }
 
@@ -3579,8 +4584,67 @@ export class RunnerRuntime {
       await session.resolveRequest(requestId, response);
       return { status: "accepted" };
     } catch (error) {
-      return reject("not_found", safeMessage(error, safeMessageOptions), false);
+      return reject("not_found", this.#safeRunError(active, error), false);
     }
+  }
+
+  #runRedactionContext(active: ActiveRun): RunDiagnosticRedaction {
+    const rawEnvironment = active.environment;
+    const proxiedSecret = active.proxiedSecret;
+    const agentToolsToken = active.credentials?.agentTools;
+    if (
+      active.redaction &&
+      active.redaction.environment === rawEnvironment &&
+      active.redaction.proxiedSecret === proxiedSecret &&
+      active.redaction.agentToolsToken === agentToolsToken
+    ) {
+      return active.redaction.value;
+    }
+    const environment = rawEnvironment ?? process.env;
+    const tokens = [
+      proxiedSecret ?? "",
+      agentToolsToken ?? "",
+      active.command.context.agentTools.token,
+    ].filter(Boolean);
+    const shortSecrets = [
+      ...new Set([
+        ...shortNamedSecrets(environment, 4),
+        ...shortNamedSecrets(process.env, 4),
+        ...tokens.filter((token) => token.length > 0 && token.length < 4),
+      ]),
+    ].sort((left, right) => right.length - left.length);
+    const secrets = [
+      ...new Set([
+        ...this.#safeMessageOptions.secrets,
+        ...engineDiagnosticSecrets(process.env, 4),
+        ...engineDiagnosticSecrets(environment, 4),
+        ...tokens.filter((token) => token.length >= 4),
+      ]),
+    ].sort((left, right) => right.length - left.length);
+    const value: RunDiagnosticRedaction = { secrets, shortSecrets };
+    active.redaction = {
+      agentToolsToken,
+      environment: rawEnvironment,
+      proxiedSecret,
+      value,
+    };
+    return value;
+  }
+
+  #scrubRunText(
+    active: ActiveRun,
+    text: string,
+    suppressedMessage = suppressedRunFailureMessage,
+  ): string {
+    return sanitizeRunDiagnosticText(text, this.#runRedactionContext(active), suppressedMessage);
+  }
+
+  #safeRunError(active: ActiveRun, error: unknown): string {
+    const redaction = this.#runRedactionContext(active);
+    const message = safeMessage(error, { ...this.#safeMessageOptions, secrets: redaction.secrets });
+    return redaction.shortSecrets.some((secret) => message.includes(secret))
+      ? suppressedRunFailureMessage
+      : message;
   }
 
   async #steer(
@@ -3626,9 +4690,9 @@ export class RunnerRuntime {
       });
     } catch (error) {
       if (error instanceof HarnessSteerDeliveryUnknownError) {
-        return { message: safeMessage(error, safeMessageOptions), status: "uncertain" };
+        return { message: this.#safeRunError(active, error), status: "uncertain" };
       }
-      return reject("conflict", safeMessage(error, safeMessageOptions), false);
+      return reject("conflict", this.#safeRunError(active, error), false);
     }
     try {
       await this.#emit(active, {
@@ -3638,7 +4702,7 @@ export class RunnerRuntime {
     } catch (error) {
       // The provider already accepted the message. Losing the durable receipt
       // cannot be presented as a refusal or cause the input to run again.
-      return { message: safeMessage(error, safeMessageOptions), status: "uncertain" };
+      return { message: this.#safeRunError(active, error), status: "uncertain" };
     }
     return { status: "accepted" };
   }
@@ -3678,14 +4742,13 @@ export class RunnerRuntime {
 
   /**
    * Everything the Runner needs to resolve one profile's private storage. The
-   * environment is part of it because a `native-user` Runner's store is the
-   * ambient provider home, which the harness environment may relocate.
+   * environment is part of it because a driver-shared store is the ambient
+   * provider home, which the harness environment may relocate.
    */
   async #providerStateOptions(driverKind: HarnessId): Promise<HarnessProviderStateOptions> {
     return {
       environment: await this.#harnessEnvironment(driverKind),
       privateStateRoot: this.#dataDirectory,
-      runtimeBoundary: this.#harnessRuntimeBoundary,
       stateDirectory: this.#privateStateDirectory,
       storeScope: this.#harnesses.providerStoreScope(driverKind),
     };
@@ -3707,15 +4770,6 @@ export class RunnerRuntime {
       workingDirectory,
       wrapProcessLaunch: this.#containment.wrap(`engine-${harnessInstanceId}`, (launch) => launch),
     };
-  }
-
-  /**
-   * The Runner's one decision about where a Run's harness process tree runs.
-   * With a sandbox it is the sandbox's plan for this Run; without one the
-   * launch is returned as the driver built it.
-   */
-  async #wrapProcessLaunch(plan: HarnessSandboxRunPlan): Promise<HarnessProcessLaunchWrapper> {
-    return this.#harnessSandbox ? this.#harnessSandbox.plan(plan) : (launch) => launch;
   }
 
   async #harnessEnvironment(driverKind: HarnessId): Promise<Readonly<Record<string, string>>> {
@@ -3743,7 +4797,9 @@ export function harnessProcessEnvironment(
         "LC_ALL",
         "LOCALAPPDATA",
         "LOGNAME",
-        "NODE_EXTRA_CA_CERTS",
+        // How the engine reaches the network, for every task: it is transport,
+        // not the person's configuration.
+        ...networkEnvironmentNames,
         "PATH",
         "SHELL",
         "TERM",
@@ -3766,10 +4822,11 @@ export function harnessProcessEnvironment(
 export function errorCatalog(
   definition: Pick<HarnessInstanceDefinition, "driverKind" | "id">,
   error: unknown,
+  messageOptions = safeMessageOptions,
 ): HarnessInstanceCatalog {
   return HarnessInstanceCatalogSchema.parse({
     connections: [],
-    detail: safeMessage(error, safeMessageOptions).slice(0, 500),
+    detail: safeMessage(error, messageOptions).slice(0, 500),
     driverKind: definition.driverKind,
     harnessInstanceId: definition.id,
     models: [],
@@ -3778,8 +4835,22 @@ export function errorCatalog(
   });
 }
 
-function reject(code: ProtocolError["code"], message: string, retryable: boolean): CommandDecision {
-  return { error: { code, message: message.slice(0, 2_000), retryable }, status: "rejected" };
+function reject(
+  code: ProtocolError["code"],
+  message: string,
+  retryable: boolean,
+  options?: { readonly reason?: string; readonly secrets?: readonly string[] },
+): CommandDecision {
+  const secrets = options?.secrets ?? safeMessageOptions.secrets;
+  return {
+    error: {
+      code,
+      message: redactNetworkCredentials(message, secrets).slice(0, 2_000),
+      ...(options?.reason ? { reason: options.reason } : {}),
+      retryable,
+    },
+    status: "rejected",
+  };
 }
 
 /**
@@ -3787,19 +4858,49 @@ function reject(code: ProtocolError["code"], message: string, retryable: boolean
  * executable and native filesystem helper are resolved before the runtime
  * exists, so their absence here is a composition bug rather than a runtime condition.
  */
-function programExecutorFor(
+export function scriptEventFromTriggerEvent(
+  context: Extract<RunnerCommand, { readonly type: "trigger.execute" }>["context"],
+): AutomationScriptEvent {
+  const { event } = context;
+  const base = {
+    automationId: context.triggerId,
+    firedAt: event.receivedAt,
+    firingId: context.occurrenceId,
+    kind: event.source.kind,
+    taskId: event.trigger.anchorThreadId,
+    ...(event.payload !== undefined ? { payload: event.payload } : {}),
+  } as const;
+  if (event.source.kind === "schedule") {
+    return { ...base, kind: "schedule", scheduledFor: event.source.scheduledFor };
+  }
+  if (event.source.kind === "webhook") {
+    return {
+      ...base,
+      kind: "webhook",
+      request: {
+        headers: event.source.headers,
+        method: event.source.method,
+        path: event.source.path ?? "/hooks/v1",
+        query: event.source.query ?? {},
+      },
+    };
+  }
+  return base;
+}
+
+function scriptExecutorFor(
   options: Pick<RunnerRuntimeOptions, "nativeFsHelperBinary" | "nodeExecutable">,
   privateStateDirectory: string,
-): TriggerProgramExecutor {
+): AutomationScriptExecutor {
   if (!options.nodeExecutable || !options.nativeFsHelperBinary) {
     throw new TypeError(
-      "RunnerRuntime requires a verified nodeExecutable and nativeFsHelperBinary for Trigger programs",
+      "RunnerRuntime requires a verified nodeExecutable and nativeFsHelperBinary for automation scripts",
     );
   }
-  return new TriggerProgramExecutor({
+  return new AutomationScriptExecutor({
     nativeFsHelperBinary: options.nativeFsHelperBinary,
     nodeExecutable: options.nodeExecutable,
-    privateDirectory: resolve(privateStateDirectory, "trigger-programs"),
+    privateDirectory: resolve(privateStateDirectory, "automation-scripts"),
   });
 }
 
@@ -3812,17 +4913,78 @@ function leaseLeadMs(leaseMs: number): number {
 }
 
 /** Waits for `work`, but no longer than a stopped Run's grace. */
-async function withinStopGrace(work: Promise<unknown> | undefined): Promise<void> {
-  if (!work) return;
+const boundPassed = Symbol("bound passed");
+
+/**
+ * Retires ONLY the shared engine process that a failing session or open
+ * attached to. If no scoped retirement is available, or retirement itself
+ * fails, the promise stays unsettled so the Run's end stays unknown.
+ */
+function retireSessionEngineOrNever(
+  retireEngine: ((reason: string) => Promise<void>) | undefined,
+  reason: string,
+): Promise<void> {
+  if (!retireEngine) return new Promise<void>(() => undefined);
+  return retireEngine(reason).catch(() => new Promise<void>(() => undefined));
+}
+
+function retireOpenFailureOrNever(error: unknown, reason: string): Promise<void> {
+  const retire = error instanceof HarnessStopUnprovenError ? error.retireEngine : undefined;
+  return retireSessionEngineOrNever(retire, reason);
+}
+
+/**
+ * A session's stop, settling once it has. On a shared engine the stop is the
+ * only evidence the session's work ended; if it fails, the Runner retires ONLY
+ * that session's shared engine and waits for its process to exit, or keeps the
+ * end unknown if scoped retirement is unavailable or fails.
+ */
+function stopEvidence(session: HarnessSession): Promise<void> {
+  const stopping = session.stop();
+  return session.engineProcess === "shared"
+    ? stopping.catch(() =>
+        retireSessionEngineOrNever(
+          session.retireEngine ? (reason) => session.retireEngine!(reason) : undefined,
+          "A stopped session on the shared engine did not settle cleanly, so its engine was ended",
+        ),
+      )
+    : stopping.catch(() => undefined);
+}
+
+/** The work's value if it settles by `deadline`, or `boundPassed`. */
+async function settleBy<T>(work: Promise<T>, deadline: number): Promise<T | typeof boundPassed> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
-    work.catch(() => undefined),
-    new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, executionStopGraceMs);
-      timer.unref?.();
-    }),
-  ]);
-  clearTimeout(timer);
+  try {
+    return await Promise.race([
+      work,
+      new Promise<typeof boundPassed>((resolve) => {
+        timer = setTimeout(() => resolve(boundPassed), Math.max(0, deadline - Date.now()));
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Whether `work` has settled, read without waiting. */
+function settledFlag(work: Promise<unknown>): {
+  readonly done: boolean;
+  readonly settled: Promise<void>;
+} {
+  const flag = {
+    done: false,
+    settled: Promise.resolve(),
+  };
+  flag.settled = work.then(
+    () => {
+      flag.done = true;
+    },
+    () => {
+      flag.done = true;
+    },
+  );
+  return flag;
 }
 
 /**
@@ -3850,7 +5012,26 @@ const reasoningCompletedMaxLength = 300_000;
  * work, so the text is cut to fit, saying it was cut. Every engine's events
  * pass through here.
  */
-function fittedDurableEvent(event: HarnessDurableEvent): HarnessDurableEvent {
+interface RunDiagnosticRedaction {
+  readonly secrets: readonly string[];
+  readonly shortSecrets: readonly string[];
+}
+
+function sanitizeRunDiagnosticText(
+  text: string,
+  redaction: RunDiagnosticRedaction,
+  suppressedMessage: string,
+): string {
+  const redacted = redactNetworkCredentials(text, redaction.secrets);
+  return redaction.shortSecrets.some((secret) => redacted.includes(secret))
+    ? suppressedMessage
+    : redacted;
+}
+
+function fittedDurableEvent(
+  event: HarnessDurableEvent,
+  redaction?: RunDiagnosticRedaction,
+): HarnessDurableEvent {
   switch (event.type) {
     case "node.message": {
       const text = fittedHead(
@@ -3875,7 +5056,8 @@ function fittedDurableEvent(event: HarnessDurableEvent): HarnessDurableEvent {
         : { ...event, data: { ...event.data, content } };
     }
     case "tool.started": {
-      const args = createToolArguments(event.data.arguments);
+      const redacted = redactToolArgumentsForStorage(event.data.arguments, event.data.tool);
+      const args = createToolArguments(redacted);
       return args === event.data.arguments
         ? event
         : { ...event, data: { ...event.data, arguments: args } };
@@ -3887,12 +5069,45 @@ function fittedDurableEvent(event: HarnessDurableEvent): HarnessDurableEvent {
         data: { request: { ...request, presentation: fittedPresentation(request.presentation) } },
       };
     }
+    case "run.retry": {
+      const redacted = redaction
+        ? sanitizeRunDiagnosticText(event.data.message, redaction, suppressedRunRetryMessage)
+        : event.data.message;
+      const message = utf8Prefix(redacted, runRetryMessageMaxLength);
+      return message === event.data.message
+        ? event
+        : { ...event, data: { ...event.data, message } };
+    }
     case "run.failed":
       return {
         ...event,
         data: {
           ...event.data,
-          message: fittedText(event.data.message, runFailureMessageMaxLength),
+          // An engine's error can quote a proxy address or Run-scoped secret.
+          message: fittedText(
+            redaction
+              ? sanitizeRunDiagnosticText(
+                  event.data.message,
+                  redaction,
+                  suppressedRunFailureMessage,
+                )
+              : event.data.message,
+            runFailureMessageMaxLength,
+          ),
+          ...(event.data.ownerMessage !== undefined
+            ? {
+                ownerMessage: fittedText(
+                  redaction
+                    ? sanitizeRunDiagnosticText(
+                        event.data.ownerMessage,
+                        redaction,
+                        suppressedRunFailureMessage,
+                      )
+                    : event.data.ownerMessage,
+                  runFailureMessageMaxLength,
+                ),
+              }
+            : {}),
         },
       };
     default:
@@ -4051,11 +5266,19 @@ function fittedTail(text: string, truncated: boolean, maxBytes: number): string 
   return `…${text.slice(start).toWellFormed()}`;
 }
 
-function failureEvent(message: string, code: string): HarnessDurableEvent {
+/** Whether a supervisor reported a SIGKILL it did not send of a process of this scope. */
+function engineKilledBySignal(scope: string): boolean {
+  return killedSupervisedProcesses().some(
+    (killed) => killed.environment[executionScopeVariable] === scope,
+  );
+}
+
+function failureEvent(message: string, code: string, ownerMessage?: string): HarnessDurableEvent {
   return {
     data: {
       code,
       message,
+      ...(ownerMessage ? { ownerMessage } : {}),
       retryable: false,
       status: "failed",
     },
@@ -4063,9 +5286,35 @@ function failureEvent(message: string, code: string): HarnessDurableEvent {
   };
 }
 
+function scrubbingLogger(logger: RunnerLogger, secrets: readonly string[]): RunnerLogger {
+  const scrubDetails = (
+    details: Readonly<Record<string, unknown>> | undefined,
+  ): Readonly<Record<string, unknown>> | undefined =>
+    details
+      ? Object.fromEntries(
+          Object.entries(details).map(([key, value]) => [
+            key,
+            typeof value === "string" ? redactNetworkCredentials(value, secrets) : value,
+          ]),
+        )
+      : undefined;
+  return {
+    error: (message, details) =>
+      logger.error(redactNetworkCredentials(message, secrets), scrubDetails(details)),
+    info: (message, details) =>
+      logger.info(redactNetworkCredentials(message, secrets), scrubDetails(details)),
+  };
+}
+
+const suppressedRunFailureMessage =
+  "This Run failed; details were withheld because the error contained a credential.";
+const suppressedRunRetryMessage =
+  "Retrying after an error; details were withheld because the message contained a credential.";
+
 const safeMessageOptions = {
   fallback: "Runner operation failed",
   maximumLength: Number.MAX_SAFE_INTEGER,
+  secrets: engineDiagnosticSecrets(process.env, 4),
 } as const;
 
 function boundedPositiveInteger(

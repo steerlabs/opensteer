@@ -6,9 +6,10 @@ import type {
   NativeSettingsStep,
   NativeSettingsTone,
 } from "./native-settings-page.types.js";
+import { addressDetail } from "../ui/sentence-parts.js";
 
 /**
- * "Use from anywhere" on a phone. What it says and offers is the shared
+ * "Remote access" on a phone. What it says and offers is the shared
  * `RemoteAccessView`, word for word the same as on the computer; this file only
  * lays it out as native rows. The phone adds two things the view leaves to each
  * surface: re-reading after a failed read, and the sheet for typing a private
@@ -64,7 +65,7 @@ export function remoteAccessSections(
       kind: "status",
       tone: tone(view),
       label: view.title,
-      ...(view.address === null ? {} : { detail: view.address }),
+      ...(view.address === null ? {} : addressDetail(view.address)),
       ...(view.steps === null
         ? {}
         : {
@@ -120,10 +121,9 @@ export function remoteAccessSections(
             kind: "button" as const,
             label:
               view.state === "on-private" ? "Private network address" : "Use a private network",
-            detail:
-              view.state === "on-private"
-                ? (view.address ?? "")
-                : "Your own VPN or network, instead of your Opensteer Account",
+            ...(view.state === "on-private"
+              ? addressDetail(view.address ?? "")
+              : { detail: "Your own VPN or network, instead of your Opensteer account" }),
             onPress: () => act({ kind: "private" }),
           },
         ]
@@ -140,7 +140,7 @@ export function remoteAccessSections(
   return [
     {
       key: "remote",
-      title: `${input.computer} · Use from anywhere`,
+      title: `${input.computer} · Remote access`,
       rows,
       footer: {
         text: view.sentence,

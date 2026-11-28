@@ -13,8 +13,11 @@ journey() {
       OPENSTEER_RUN_CHROME_BACKGROUND_JOURNEYS=1 OPENSTEER_CHROME_JOURNEY="$selection" bash native/computer-use/Tests/Fixtures/ChromeBackgroundJourney/run-vm.sh ;;
     windows)
       true
-      OPENSTEER_WINDOW_GROUP_CASES=current,settle,cancellation,video,receipt-switch bash scripts/test-computer-use-window-groups.sh ;;
+      OPENSTEER_WINDOW_GROUP_CASES=current,settle,cancellation,video,receipt-switch,read-only bash scripts/test-computer-use-window-groups.sh ;;
     launch) pnpm -w test:gui ;;
+    # Sign in → On this Mac → the phone step, against the real account service code: see
+    # tests/first-run/journey.ts for what is real, what stands in, and what stays unverified.
+    first-run) pnpm exec tsx ../../tests/first-run/journey.ts ;;
     remote-input) bash scripts/test-viewer-clipboard.sh && pnpm test:electron-display:run && bash ../web/scripts/run-display-editing-viewer-checks.sh ;;
     # Its bundle is rebuilt here: the smoke bundle step above clears .electron-smoke.
     native-browser)
@@ -29,19 +32,29 @@ journey() {
       export OPENSTEER_DOWNLOADS_E2E_ARTIFACT_DIR="$out/downloads"
       export OPENSTEER_PROFILE_RESTORE_ARTIFACT_DIR="$out/profile-restore"
       export OPENSTEER_HOST_TRANSPORT_E2E_ARTIFACT_DIR="$out/host-transport"
+      export OPENSTEER_LEAVE_HOME_E2E_ARTIFACT_DIR="$out/leave-home"
       export OPENSTEER_SHARED_BROWSER_E2E_ARTIFACT_DIR="$out/browser"
       export OPENSTEER_BROWSER_FOLLOW_E2E_ARTIFACT_DIR="$out/browser"
       export OPENSTEER_BROWSER_E2E_ARTIFACT_DIR="$out/idle"
       export OPENSTEER_QUIT_E2E_ARTIFACT_DIR="$out/quit"
+      export OPENSTEER_MENU_BAR_E2E_ARTIFACT_DIR="$out/menu-bar"
       export OPENSTEER_STATE_IMPORT_E2E_ARTIFACT_DIR="$out/cookies"
       export OPENSTEER_PASSKEY_POLICY_E2E_ARTIFACT_DIR="$out/passkeys"
       export OPENSTEER_USB_E2E_ARTIFACT_DIR="$out/usb"
+      export OPENSTEER_SYSTEM_CA_E2E_ARTIFACT_DIR="$out/system-ca"
       export OPENSTEER_EXTENSIONS_E2E_ARTIFACT_DIR="$out/extensions"
-      for smoke in cdp-boundary passwords attachments downloads profile-restore focus host-transport browser idle quit cookies passkeys usb extensions; do
+      # OPENSTEER_ELECTRON_SMOKES names the smokes to run, in order (one may repeat); all by default.
+      for smoke in ${OPENSTEER_ELECTRON_SMOKES:-cdp-boundary passwords attachments downloads focus host-transport leave-home browser idle quit menu-bar passkeys usb profile-restore cookies system-ca extensions}; do
         mkdir -p "$out/$smoke"
         smoke_start=$SECONDS
         smoke_code=0
         if [[ "$smoke" == quit ]]; then
+          # A repeated quit signs a new copy of its app, which may not read the Safe Storage
+          # item an earlier copy left in the guest's keychain: that item goes first.
+          if [[ -n "${quit_ran:-}" ]]; then
+            security delete-generic-password -s "opensteer-quit-smoke Safe Storage" > /dev/null 2>&1 || true
+          fi
+          quit_ran=1
           pnpm test:electron-quit:run --tab-restore > "$out/$smoke.log" 2>&1 || smoke_code=$?
         else
           pnpm "test:electron-$smoke:run" > "$out/$smoke.log" 2>&1 || smoke_code=$?

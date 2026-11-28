@@ -60,8 +60,21 @@ import {
 import { RunnerWorkerSecretsMessageSchema } from "./runner-worker-secrets.js";
 
 const temporaryDirectories: string[] = [];
+const createdFixtures: {
+  readonly service: LocalRunnerService;
+  readonly children: FakeUtilityProcess[];
+}[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
+  for (const entry of createdFixtures.splice(0)) {
+    entry.service.dispose();
+    const stopping = entry.service.shutdown().catch(() => undefined);
+    for (const child of entry.children) {
+      if (!child.exited) child.emit("exit", 0);
+    }
+    await stopping;
+  }
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -1606,6 +1619,145 @@ describe("LocalRunnerService", () => {
     await restoring;
   });
 
+  it("restarts a Device in the saved mode and reports missing shutdown evidence", async () => {
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://first.opensteer.test");
+    let stoppedSince: string | null = null;
+    const running = fixture(
+      await configuration(await temporaryDirectory()),
+      targets,
+      undefined,
+      undefined,
+      {
+        agentsStoppedSince: () => stoppedSince,
+      },
+    );
+    const starting = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const first = childAt(running.children, 0);
+    connect(first);
+    await starting;
+
+    stoppedSince = "2026-11-20T09:00:00.000Z";
+    const transition = running.service.restartForAgentMode();
+    const checked = expect(transition).rejects.toThrow(
+      "Couldn't confirm that one device connection",
+    );
+    await eventually(() =>
+      first.messages.some((message) => JSON.stringify(message).includes("runner.worker.stop")),
+    );
+    first.emit("exit", 0);
+    await eventually(() => running.children.length === 2);
+    const replacement = childAt(running.children, 1);
+    replacement.emit("message", {
+      type: "runner.worker.ready",
+      control: {
+        port: 32123,
+        token: "390e4dab-300a-4cce-8703-6db1f627463c",
+        earlierBootsContained: true,
+      },
+    });
+    connect(replacement);
+    await checked;
+  });
+
+  it("reports an uncontained earlier boot from the first restored stopped worker", async () => {
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://first.opensteer.test");
+    const mode = "2026-11-20T09:00:00.000Z";
+    const onUncontainedBoot = vi.fn();
+    const running = fixture(
+      await configuration(await temporaryDirectory()),
+      targets,
+      undefined,
+      undefined,
+      {
+        agentsStoppedSince: () => mode,
+        onUncontainedBoot,
+      },
+    );
+    const starting = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const first = childAt(running.children, 0);
+    first.emit("message", {
+      type: "runner.worker.ready",
+      control: { port: 32123, token: crypto.randomUUID(), earlierBootsContained: false },
+    });
+    connect(first);
+    await starting;
+    expect(onUncontainedBoot).toHaveBeenCalledExactlyOnceWith(mode);
+    running.service.dispose();
+  });
+
+  it("includes a crashed expected Device in Stop proof even after its worker exited", async () => {
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://first.opensteer.test");
+    let stoppedSince: string | null = null;
+    const running = fixture(
+      await configuration(await temporaryDirectory()),
+      targets,
+      () => 60_000,
+      undefined,
+      { agentsStoppedSince: () => stoppedSince },
+    );
+    const starting = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const first = childAt(running.children, 0);
+    connect(first);
+    await starting;
+    first.emit("exit", 1);
+    expect(running.children).toHaveLength(1);
+
+    stoppedSince = "2026-11-20T09:00:00.000Z";
+    const transition = running.service.restartForAgentMode();
+    const checked = expect(transition).rejects.toThrow(
+      "Couldn't confirm that one device connection",
+    );
+    await eventually(() => running.children.length === 2);
+    const replacement = childAt(running.children, 1);
+    replacement.emit("message", {
+      type: "runner.worker.ready",
+      control: {
+        port: 32123,
+        token: "390e4dab-300a-4cce-8703-6db1f627463c",
+        earlierBootsContained: true,
+      },
+    });
+    connect(replacement);
+    await checked;
+    running.service.dispose();
+  });
+
+  it("invalidates update holds when a new Device starts connecting", async () => {
+    const targets = mutableTargetAuthority();
+    const first = targets.add("https://first.opensteer.test");
+    const second = targets.add("https://second.opensteer.test");
+    const running = fixture(await configuration(await temporaryDirectory()), targets);
+    const control = { port: 32123, token: crypto.randomUUID(), earlierBootsContained: true };
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    try {
+      const starting = running.service.start(startInput(first.deploymentId));
+      await eventually(() => running.children.length === 1);
+      const child = childAt(running.children, 0);
+      child.emit("message", { type: "runner.worker.ready", control });
+      connect(child);
+      await starting;
+      const hold = await running.service.holdIdleForUpdate();
+      expect(hold?.current()).toBe(true);
+      const next = running.service.start(startInput(second.deploymentId));
+      expect(hold?.current()).toBe(false);
+      await hold?.release();
+      await eventually(() => running.children.length === 2);
+      connect(childAt(running.children, 1));
+      await next;
+    } finally {
+      fetch.mockRestore();
+      running.service.dispose();
+    }
+  });
+
   it("does not disturb either Runner when only the viewed Deployment changes", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -1621,6 +1773,7 @@ describe("LocalRunnerService", () => {
     await Promise.all(starts);
 
     targets.notify();
+    await running.service.reconcile();
     await expect(
       readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8").then(JSON.parse),
     ).resolves.toMatchObject({
@@ -1758,6 +1911,50 @@ describe("LocalRunnerService", () => {
     await shutdown;
 
     await expect(running.service.hasEnrolledRunners()).resolves.toBe(true);
+  });
+
+  it("starts its Runner trusting this computer's certificates and none the app's environment names", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://home.opensteer.test");
+    await mkdir(path.join(directory, "runner", "deployments", target.deploymentId), {
+      recursive: true,
+    });
+    writeTestIdentity(path.join(directory, "runner", "deployments", target.deploymentId), true);
+    await writeFile(
+      path.join(directory, "runner", "desktop-runner.json"),
+      `${JSON.stringify({
+        runners: { [target.deploymentId]: { enabled: true, runnerName: "Office Mac" } },
+        version: 3,
+      })}\n`,
+      { mode: 0o600 },
+    );
+    // Whatever the environment this app was started in carries, as if the
+    // login-shell allowlist had let it through.
+    const leaking = {
+      async resolve(): Promise<Readonly<Record<string, string>>> {
+        return {
+          ...(await testUserEnvironment(directory).resolve()),
+          ...untrustedTrustInputs,
+        };
+      },
+    };
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      userEnvironment: leaking,
+    });
+
+    const restoring = running.service.startIfEnabled();
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await restoring;
+
+    expect(child.environment.NODE_USE_SYSTEM_CA).toBe("1");
+    for (const name of Object.keys(untrustedTrustInputs).filter(
+      (name) => name !== "NODE_USE_SYSTEM_CA",
+    ))
+      expect(child.environment).not.toHaveProperty(name);
+    expect(child.environment.HOME).toBe(directory);
   });
 
   it("keeps a computer added by an earlier release running agents", async () => {
@@ -2546,6 +2743,100 @@ describe("LocalRunnerService", () => {
     await expect(running.service.hasEnrolledRunners()).resolves.toBe(false);
   });
 
+  it("posts one notice to each running worker and continues past a worker that has exited", async () => {
+    const targets = mutableTargetAuthority();
+    const first = targets.add("https://first.opensteer.test");
+    const second = targets.add("https://second.opensteer.test");
+    const running = fixture(await configuration(await temporaryDirectory()), targets);
+    const fork = running.fork.getMockImplementation()!;
+    async function start(target: DesktopLocalRunnerTarget) {
+      const spawned = Promise.withResolvers<FakeUtilityProcess>();
+      running.fork.mockImplementationOnce((...args) => {
+        const child = fork(...args);
+        spawned.resolve(running.children.at(-1)!);
+        return child;
+      });
+      const started = running.service.start(startInput(target.deploymentId, "Studio Mac"));
+      const child = await spawned.promise;
+      connect(child);
+      await started;
+      return child;
+    }
+    const firstWorker = await start(first);
+    const secondWorker = await start(second);
+    try {
+      expect(running.service.notifySleeping()).toBeUndefined();
+      for (const worker of [firstWorker, secondWorker]) {
+        expect(
+          worker.messages.filter(
+            (message) =>
+              message &&
+              typeof message === "object" &&
+              "type" in message &&
+              message.type === "runner.worker.power.sleeping",
+          ),
+        ).toHaveLength(1);
+      }
+
+      vi.spyOn(firstWorker, "postMessage").mockImplementationOnce(() => {
+        throw new Error("worker exited");
+      });
+      expect(running.service.notifyAwake()).toBeUndefined();
+      expect(secondWorker.messages.at(-1)).toEqual({ type: "runner.worker.power.awake" });
+    } finally {
+      const shutdown = running.service.shutdown();
+      firstWorker.emit("exit", 0);
+      secondWorker.emit("exit", 0);
+      await shutdown;
+    }
+  });
+
+  it("shows each Runner's work through an outage", async () => {
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://activity.opensteer.test");
+    const running = fixture(await configuration(await temporaryDirectory()), targets);
+    const start = running.service.start(startInput(target.deploymentId, "Studio Mac"));
+    const worker = await vi.waitFor(() => childAt(running.children, 0));
+    connect(worker);
+    await start;
+    const changed = vi.fn();
+    running.service.subscribe(changed);
+    const run = {
+      runId: "run_01JQ5Z8M4C6Y0Q2R3S4T5V6W7X",
+      startedAt: "2026-11-20T09:00:00.000Z",
+      purpose: "task",
+      engine: "Claude Code",
+    } as const;
+    try {
+      worker.emit("message", { runs: [run], type: "runner.worker.activity" });
+      await vi.waitFor(() =>
+        expect(running.service.localActivity()).toEqual([
+          { ...run, deploymentId: target.deploymentId },
+        ]),
+      );
+      expect(changed).toHaveBeenCalled();
+
+      // The Home went out of reach; the Runner keeps working and stays listed.
+      worker.emit("message", { type: "runner.worker.reconnecting" });
+      await vi.waitFor(() =>
+        expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
+          runner: { state: "starting" },
+        }),
+      );
+      expect(running.service.localActivity()).toHaveLength(1);
+
+      worker.emit("message", { runs: [], type: "runner.worker.activity" });
+      await vi.waitFor(() => expect(running.service.localActivity()).toEqual([]));
+      worker.emit("message", { runs: [run], type: "runner.worker.activity" });
+      await vi.waitFor(() => expect(running.service.localActivity()).toHaveLength(1));
+    } finally {
+      const shutdown = running.service.shutdown();
+      worker.emit("exit", 0);
+      await shutdown;
+    }
+    expect(running.service.localActivity()).toEqual([]);
+  });
+
   it("follows a running computer through a disconnect and back to running", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -2714,6 +3005,69 @@ describe("LocalRunnerService", () => {
     expect(status.runner.detail).toContain("Last output: runner: authorization failed for");
     expect(status.runner.detail).toContain("Bearer [redacted]");
     expect(status.runner.detail).not.toContain("abcdefghijklmnop");
+  });
+
+  it("keeps the worker's own log in runner.log next to its data, without its credentials", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://runner-log.opensteer.test");
+    const running = fixture(await configuration(directory), targets, () => 10_000);
+
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+
+    const enrollmentToken = startInput(target.deploymentId).enrollmentToken;
+    child.stdout.write(
+      `${JSON.stringify({ level: "info", message: "Computer app inspection failed" })}\n`,
+    );
+    child.stderr.write(`enrolling with ${enrollmentToken} and Bearer abcdefghijklmnop\n`);
+    const logPath = path.join(child.dataDirectory, "runner.log");
+    await eventually(
+      () => existsSync(logPath) && readFileSync(logPath, "utf8").includes("enrolling"),
+    );
+    const written = readFileSync(logPath, "utf8");
+    expect(written).toMatch(
+      / stdout \{"level":"info","message":"Computer app inspection failed"\}\n/u,
+    );
+    expect(written).toContain(" stderr enrolling with [redacted] and Bearer [redacted]");
+    expect(written).not.toContain(enrollmentToken);
+    expect(written).not.toContain("abcdefghijklmnop");
+  });
+
+  it("scrubs the worker's own proxy credentials from its last output", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://diagnostics.opensteer.test");
+    const proxy = "http://alice:p@ss/word@proxy.invalid:8080";
+    const running = fixture(await configuration(directory), targets, () => 10_000, undefined, {
+      userEnvironment: {
+        resolve: async () => ({
+          ...(await testUserEnvironment(directory).resolve()),
+          https_proxy: proxy,
+        }),
+      },
+    });
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+
+    await new Promise<void>((resolvePromise) => {
+      child.stderr.write(`runner: network error via ${proxy}\n`, () => resolvePromise());
+    });
+    child.emit("exit", 1);
+    await eventually(
+      async () => (await running.service.status(target.deploymentId)).runner.state === "failed",
+    );
+
+    const status = await running.service.status(target.deploymentId);
+    expect(status.runner.detail).toContain(
+      "runner: network error via http://[REDACTED]@proxy.invalid:8080",
+    );
   });
 
   it("does not restart a crashed worker once this Mac is removed", async () => {
@@ -2938,6 +3292,9 @@ function fixture(
     /** A worker that answers neither the stop message nor the kill. */
     readonly stubborn?: boolean;
     readonly stopTimeouts?: LocalRunnerServiceDependencies["stopTimeouts"];
+    readonly agentsStoppedSince?: LocalRunnerServiceDependencies["agentsStoppedSince"];
+    readonly onUncontainedBoot?: LocalRunnerServiceDependencies["onUncontainedBoot"];
+    readonly userEnvironment?: LocalRunnerServiceDependencies["userEnvironment"];
   } = {},
 ) {
   const children: FakeUtilityProcess[] = [];
@@ -2964,40 +3321,41 @@ function fixture(
     ...(options.currentSession ? { currentSession: options.currentSession } : {}),
     ...(options.bindReply ? { bindReply: options.bindReply } : {}),
   });
+  const service = new LocalRunnerService(config, {
+    ...(options.assertAccountSource ? { assertAccountSource: options.assertAccountSource } : {}),
+    hostApi: host.api,
+    ...(options.leaveFetch ? { leaveFetch: options.leaveFetch } : {}),
+    ...(options.fenceDeployment ? { fenceDeployment: options.fenceDeployment } : {}),
+    ...(options.clearDeploymentSession
+      ? { clearDeploymentSession: options.clearDeploymentSession }
+      : {}),
+    ...(browser ? { browser } : {}),
+    computerName: async () => "Studio Mac",
+    ...(options.profileErasure ? { profileErasure: options.profileErasure } : {}),
+    ...(options.computerUse ? { computerUse: options.computerUse } : {}),
+    fork,
+    inspectIdentity: async (dataDirectory: string) => readTestIdentity(dataDirectory),
+    homeDirectory: config.dataDirectory,
+    ...(restartDelayMs ? { restartDelayMs } : {}),
+    runtimeRelease: testRuntimeRelease(config.dataDirectory),
+    ...(options.stopTimeouts ? { stopTimeouts: options.stopTimeouts } : {}),
+    ...(options.agentsStoppedSince ? { agentsStoppedSince: options.agentsStoppedSince } : {}),
+    confirmShutdown: async (_dataDirectory, proof) => proof !== undefined,
+    ...(options.onUncontainedBoot ? { onUncontainedBoot: options.onUncontainedBoot } : {}),
+    targets,
+    userEnvironment: options.userEnvironment ?? testUserEnvironment(config.dataDirectory),
+  });
+  createdFixtures.push({ service, children });
   return {
     children,
     fork,
     host,
-    service: new LocalRunnerService(config, {
-      ...(options.assertAccountSource ? { assertAccountSource: options.assertAccountSource } : {}),
-      hostApi: host.api,
-      ...(options.leaveFetch ? { leaveFetch: options.leaveFetch } : {}),
-      ...(options.fenceDeployment ? { fenceDeployment: options.fenceDeployment } : {}),
-      ...(options.clearDeploymentSession
-        ? { clearDeploymentSession: options.clearDeploymentSession }
-        : {}),
-      ...(browser ? { browser } : {}),
-      computerName: async () => "Studio Mac",
-      ...(options.profileErasure ? { profileErasure: options.profileErasure } : {}),
-      ...(options.computerUse ? { computerUse: options.computerUse } : {}),
-      fork,
-      inspectIdentity: async (dataDirectory: string) => readTestIdentity(dataDirectory),
-      homeDirectory: config.dataDirectory,
-      ...(restartDelayMs ? { restartDelayMs } : {}),
-      runtimeRelease: testRuntimeRelease(config.dataDirectory),
-      ...(options.stopTimeouts ? { stopTimeouts: options.stopTimeouts } : {}),
-      targets,
-      userEnvironment: testUserEnvironment(config.dataDirectory),
-    }),
+    service,
   };
 }
 
 function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
-  add(
-    hostUrl: string,
-    kind?: "personal" | "team",
-    mayRunAgents?: boolean,
-  ): DesktopLocalRunnerTarget;
+  add(hostUrl: string, kind?: "personal", mayRunAgents?: boolean): DesktopLocalRunnerTarget;
   changeRoute(deploymentId: DeploymentId, hostUrl: string): void;
   notify(): void;
   restore(target: DesktopLocalRunnerTarget): void;
@@ -3020,18 +3378,15 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
         },
         keys,
       );
-      const accessRoute =
-        kind === "personal"
-          ? signTestPersonalAccessRoute(
-              {
-                authority: { ...authority.document, deploymentShape: { kind: "personal" } },
-                documentVersion: 2,
-                purpose: "opensteer-personal-access-route",
-                route: { generation: 1, kind: "private", origin: hostUrl },
-              },
-              keys,
-            )
-          : null;
+      const accessRoute = signTestPersonalAccessRoute(
+        {
+          authority: { ...authority.document, deploymentShape: { kind: "personal" } },
+          documentVersion: 2,
+          purpose: "opensteer-personal-access-route",
+          route: { generation: 1, kind: "private", origin: hostUrl },
+        },
+        keys,
+      );
       const target: DesktopLocalRunnerTarget = {
         devicesAvailable: true,
         authority,
@@ -3184,6 +3539,7 @@ class FakeUtilityProcess extends EventEmitter implements UtilityProcessLike {
   readonly stdout = new PassThrough();
   /** A worker that does not die when asked, so a test can time its exit. */
   readonly stubborn: boolean;
+  exited = false;
   kills = 0;
 
   constructor(
@@ -3195,6 +3551,9 @@ class FakeUtilityProcess extends EventEmitter implements UtilityProcessLike {
     this.dataDirectory = dataDirectory;
     this.environment = environment;
     this.stubborn = stubborn;
+    this.once("exit", () => {
+      this.exited = true;
+    });
   }
 
   kill(): boolean {
@@ -3238,9 +3597,11 @@ async function configuration(directory: string): Promise<DesktopConfiguration> {
     chmod(node, 0o700),
   ]);
   return {
+    accountCertificateKey: null,
     accountUrl: null,
     browser: null,
     dataDirectory: directory,
+    extraCertificateAuthorities: null,
     hostUrl: null,
     localExecution: {
       dataDirectory: path.join(directory, "runner"),
@@ -3262,6 +3623,7 @@ async function configuration(directory: string): Promise<DesktopConfiguration> {
         hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
       },
     },
+    trial: null,
   };
 }
 
@@ -3275,6 +3637,16 @@ function testRuntimeRelease(
     nodeExecutable: path.join(directory, "node"),
   });
 }
+
+/** Every environment name that would change what a Runner trusts. */
+const untrustedTrustInputs = {
+  NODE_EXTRA_CA_CERTS: "/tmp/inspection-root.pem",
+  NODE_OPTIONS: "--use-openssl-ca",
+  NODE_USE_SYSTEM_CA: "0",
+  OPENSSL_CONF: "/tmp/openssl.cnf",
+  SSL_CERT_DIR: "/tmp/certs",
+  SSL_CERT_FILE: "/tmp/cert.pem",
+} as const;
 
 function testUserEnvironment(directory: string) {
   return {

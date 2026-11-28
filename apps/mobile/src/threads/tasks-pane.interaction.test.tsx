@@ -2,14 +2,16 @@
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
+import { phoneSentence, type SentencePart } from "@opensteer/client/host";
+import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 
 vi.mock("react-native-reanimated", async () => ({
   default: { FlatList: (await import("react-native")).FlatList },
 }));
 vi.mock("../ui/motion.js", () => ({ move: undefined }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-vi.mock("@opensteer/client/react", () => ({
+vi.mock("@opensteer/client/react", async (load) => ({
+  ...(await load<typeof import("@opensteer/client/react")>()),
   useClientConnection: () => ({ readyRevision: 1 }),
   useHostSnapshot: (client: { getSnapshot: () => unknown }) => ({
     snapshot: client.getSnapshot(),
@@ -51,7 +53,12 @@ vi.mock("../ui/screen.js", () => ({ useListContentInsets: () => ({ paddingHorizo
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("./task-row.js", () => ({
   setTaskDone: vi.fn(),
-  TaskRowView: ({ row }: { row: { title: string } }) => <span data-task>{row.title}</span>,
+  TaskRowView: ({ row, origin }: { row: { title: string }; origin?: readonly SentencePart[] }) => (
+    <span data-task>
+      {row.title}
+      {origin ? <span data-origin>{phoneSentence(origin)}</span> : null}
+    </span>
+  ),
   taskTextInset: 12,
   taskTime: () => "",
 }));
@@ -156,6 +163,35 @@ it("moves a task only when a person asks it for something", async () => {
       "Older",
       "Newer",
     ]);
+  } finally {
+    await act(async () => root.unmount());
+    client.dispose();
+  }
+});
+
+it("keeps direct tasks out of Tasks, keeps them searchable, and names a person's task origin", async () => {
+  const seeded = mockConnectedAgents("seeded");
+  const client = new MockHostClient({ ...seeded, latencyMs: 0 });
+  client.mockAgentWork({ livePanel: "three" });
+  const claude = seeded.connections.find(({ label }) => label === "Claude")!;
+  client.mockStartedTask(claude.id, "Summarize the reading");
+  const node = document.createElement("div");
+  const root = createRoot(node);
+  const draw = (query: string) =>
+    act(async () =>
+      root.render(
+        <TasksPane deploymentId="test" hostClient={client} query={query} onOpenTask={() => {}} />,
+      ),
+    );
+  try {
+    await draw("");
+    await vi.waitFor(() =>
+      expect(node.querySelector("[data-origin]")?.textContent).toBe("started by Claude"),
+    );
+    expect(node.textContent).toContain("Summarize the reading");
+    expect(node.textContent).not.toContain("Find flights to Lisbon");
+    await draw("Find flights to Lisbon");
+    expect(node.textContent).toContain("Find flights to Lisbon");
   } finally {
     await act(async () => root.unmount());
     client.dispose();

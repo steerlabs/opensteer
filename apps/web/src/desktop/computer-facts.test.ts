@@ -8,7 +8,6 @@ const said = (needsYou: number): ComputerFacts => ({
   homeName: null,
   needsYou,
   unread: false,
-  teams: [],
 });
 
 function deferred() {

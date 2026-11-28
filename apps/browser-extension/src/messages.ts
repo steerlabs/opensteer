@@ -14,6 +14,8 @@ export const UiRequestSchema = z.discriminatedUnion("type", [
   z.object({ site: BrowserSiteSchema, sourceId, type: z.literal("ui.site.stop") }),
   z.object({ site: BrowserSiteSchema, sourceId, type: z.literal("ui.site.share") }),
   z.object({ sourceId, type: z.literal("ui.budget.reset") }),
+  z.object({ sourceId, tabId: z.number().int().nonnegative(), type: z.literal("ui.tab.share") }),
+  z.object({ sourceId, shareId: z.uuid(), type: z.literal("ui.tab.stop") }),
   z.object({ sourceId, type: z.literal("ui.retry") }),
   z.object({ sourceId, type: z.literal("ui.disconnect") }),
 ]);
@@ -43,6 +45,10 @@ export const ConnectionViewSchema = z.object({
   deploymentName: z.string(),
   name: z.string(),
   origin: z.string(),
+  canShareTab: z.boolean().default(false),
+  sharedTabs: z
+    .array(z.object({ shareId: z.uuid(), title: z.string(), url: z.string() }))
+    .default([]),
   sites: z.array(
     z.object({
       lastSharedAt: z.number(),
@@ -92,14 +98,42 @@ export const ConnectResultSchema = z.object({
 });
 export type ConnectResult = z.infer<typeof ConnectResultSchema>;
 
+const TabShareProblemCodeSchema = z.enum([
+  "untrusted-request",
+  "invalid-request",
+  "worker-unavailable",
+  "invalid-response",
+  "unsupported",
+  "home-offline",
+  "tab-unavailable",
+  "unsupported-page",
+  "shared-elsewhere",
+  "detach-unconfirmed",
+  "capacity",
+  "target-unavailable",
+  "unexpected",
+]);
+export type TabShareProblemCode = z.infer<typeof TabShareProblemCodeSchema>;
+
 const ProblemSchema = z.object({
   code: ConnectProblemCodeSchema,
+  tabShareReason: TabShareProblemCodeSchema.optional(),
   deploymentName: z.string().nullable(),
   ok: z.literal(false),
   origin: z.string().nullable(),
 });
 export type UiProblem = z.infer<typeof ProblemSchema>;
 export type UiResponse<T> = { ok: true; value: T } | UiProblem;
+
+export function uiFailure(tabShareReason?: TabShareProblemCode): UiProblem {
+  return {
+    code: "failed",
+    deploymentName: null,
+    ok: false,
+    origin: null,
+    ...(tabShareReason ? { tabShareReason } : {}),
+  };
+}
 
 /** Asks the service worker and validates its answer against the expected shape. */
 export async function askWorker<T>(
@@ -110,12 +144,12 @@ export async function askWorker<T>(
   try {
     raw = await chrome.runtime.sendMessage(request);
   } catch {
-    return { code: "failed", deploymentName: null, ok: false, origin: null };
+    return uiFailure(request.type === "ui.tab.share" ? "worker-unavailable" : undefined);
   }
   const problem = ProblemSchema.safeParse(raw);
   if (problem.success) return problem.data;
   const answer = z.object({ ok: z.literal(true), value: schema }).safeParse(raw);
   return answer.success
     ? { ok: true, value: answer.data.value }
-    : { code: "failed", deploymentName: null, ok: false, origin: null };
+    : uiFailure(request.type === "ui.tab.share" ? "invalid-response" : undefined);
 }

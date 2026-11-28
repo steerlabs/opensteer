@@ -142,6 +142,7 @@ type Event =
   | { readonly kind: "done"; readonly result: typeof ExecuteResult.Type };
 type Run = {
   readonly id: string;
+  readonly onDrained?: () => void;
   readonly transport: PendingTransport;
   readonly approval: ApprovalMode;
   readonly scheduling: ReturnType<typeof programScheduler>;
@@ -295,8 +296,11 @@ export const makeExecutions = (
       runs.delete(run);
       return true;
     };
-    const stop = (run: Run) =>
-      Effect.suspend(() => (detach(run) ? Scope.close(run.scope, Exit.void) : Effect.void));
+    const close = (run: Run) =>
+      Scope.close(run.scope, Exit.void).pipe(
+        Effect.tap(() => Effect.sync(() => run.onDrained?.())),
+      );
+    const stop = (run: Run) => Effect.suspend(() => (detach(run) ? close(run) : Effect.void));
     // Closing a run interrupts its unfinished tools and waits for their cancellation. A result
     // or a caller's cancellation never waits for that: the host scope owns it, shutting the host
     // down still waits for it, and closing runs count toward the execution limit until done.
@@ -306,9 +310,7 @@ export const makeExecutions = (
         closing.add(run);
         return Effect.forkIn(
           Effect.uninterruptible(
-            Scope.close(run.scope, Exit.void).pipe(
-              Effect.ensuring(Effect.sync(() => closing.delete(run))),
-            ),
+            close(run).pipe(Effect.ensuring(Effect.sync(() => closing.delete(run)))),
           ),
           hostScope,
         ).pipe(Effect.asVoid);
@@ -754,6 +756,11 @@ export const makeExecutions = (
             ? release(pending.run)
             : Effect.void;
         }),
+      drain: (caller: string, executionId: string): Effect.Effect<void> =>
+        Effect.suspend(() => {
+          const active = [...runs].find((run) => run.id === executionId && run.caller === caller);
+          return active ? release(active) : Effect.void;
+        }),
       /**
        * Start one program or batch of direct calls. Policy consent and tool input return the same
        * pending-interaction union.
@@ -764,6 +771,11 @@ export const makeExecutions = (
         work: Program,
         transport: PendingTransport,
         approval: ApprovalMode = "ask",
+        witness?: {
+          readonly id: string;
+          readonly onAdmitted: () => void;
+          readonly onDrained: () => void;
+        },
       ): Effect.Effect<McpExecutionResult, ExecutionRejected> =>
         Effect.gen(function* () {
           const admitted = () => runs.size + closing.size < defaultMcpRuntimeLimits.maxExecutions;
@@ -772,7 +784,8 @@ export const makeExecutions = (
             return { status: "capacity-exceeded" };
           }
           const run: Run = {
-            id: crypto.randomUUID(),
+            id: witness?.id ?? crypto.randomUUID(),
+            ...(witness ? { onDrained: witness.onDrained } : {}),
             transport,
             approval,
             caller,
@@ -792,6 +805,7 @@ export const makeExecutions = (
             return { status: "capacity-exceeded" };
           }
           runs.add(run);
+          witness?.onAdmitted();
           yield* Effect.annotateCurrentSpan("pluginEngine.execution.id", run.id);
           // Ends at once, so it is exported even when the process dies while the program runs.
           yield* Effect.withSpan(Effect.void, "mcp.execution.started", {

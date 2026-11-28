@@ -50,13 +50,16 @@ export function deriveSurface(
       ? ("requester" as const)
       : null;
 
-  const textRole: SurfaceTextRole = denied
-    ? "message"
-    : isQuestionRequest(request)
-      ? "answer"
-      : request.mode === "live" && request.presentation.kind === "form"
-        ? "hidden"
-        : "message";
+  // A command an agent proposed is answered only by its card's buttons: whatever is typed below it
+  // is a message, never an answer (an answer to it would decline it).
+  const textRole: SurfaceTextRole =
+    denied || request.command
+      ? "message"
+      : isQuestionRequest(request)
+        ? "answer"
+        : request.mode === "live" && request.presentation.kind === "form"
+          ? "hidden"
+          : "message";
 
   const waiting = pending.filter((candidate) => candidate.id !== request.id);
   return {

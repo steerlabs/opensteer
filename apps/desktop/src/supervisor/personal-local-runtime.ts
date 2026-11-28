@@ -15,6 +15,8 @@ export interface PersonalLocalBrowserHandle {
   readonly signIn: boolean;
   readonly personFill: boolean;
   readonly url: URL;
+  prepareRunnerRestart?(): void;
+  drainRunnerAttachments?(): Promise<boolean>;
   stop(signal?: AbortSignal): Promise<void>;
 }
 

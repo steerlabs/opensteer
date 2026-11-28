@@ -6,7 +6,7 @@ const tabsHeightKey = "opensteer.sidebar-tabs-height";
  * Tabs' height in pixels, as this device keeps it, and the commit that keeps a
  * new one. Null until the person moves the line: Tabs then fits its rows, up to
  * the stylesheet's default. Tabs owns its height, so neither its rows nor what
- * shows above it (Tasks, Done, a team) move it.
+ * shows above it (Tasks, Done) move it.
  */
 export function useTabsHeight() {
   const [height, setHeight] = useState(readTabsHeight);

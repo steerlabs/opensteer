@@ -1,4 +1,6 @@
-import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseHostConfig } from "@opensteer/config";
 import {
   createId,
@@ -12,10 +14,11 @@ import {
 import { createDatabase, migrateToLatest } from "@opensteer/database";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import {
+  agentHomeFilesCapability,
   HarnessInstanceCatalogSchema,
   hostApiVersionHeader,
+  RunnerAgentHomeReportSchema,
   RunnerAuxiliaryChallengeSchema,
   RunnerAuxiliaryWelcomeSchema,
   RunnerBootIdSchema,
@@ -31,6 +34,7 @@ import {
   type RunnerConnectionFence,
   type RunnerDescriptor,
   type RunnerProof,
+  agentSessionGuardsCapability,
 } from "@opensteer/protocol";
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import type { PersonalResourceKind } from "@opensteer/protocol/resources";
@@ -57,7 +61,6 @@ import { execFile, spawn } from "node:child_process";
 import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 import { vi } from "vitest";
@@ -90,6 +93,36 @@ export const builtPluginEngine = {
   processEntry: new URL("../../dist/plugin-engine.js", import.meta.url),
   bridge: fileURLToPath(new URL("../../dist/plugin-engine-bridge.json", import.meta.url)),
 };
+/** Prebuilt REPL worker emitted by the integration launcher, avoiding cold tsx startup per Host. */
+const builtReplWorkerPath = fileURLToPath(
+  new URL("../../dist/computer-repl-worker.js", import.meta.url),
+);
+export function builtReplWorkerEntry(builtPath = builtReplWorkerPath): URL | undefined {
+  const manifestPath = `${builtPath}.inputs.json`;
+  if (!existsSync(builtPath) || !existsSync(manifestPath)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+  const inputs =
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "inputs" in parsed &&
+    Array.isArray(parsed.inputs)
+      ? parsed.inputs
+      : null;
+  if (!inputs || inputs.length === 0) return undefined;
+  const builtMtimeMs = statSync(builtPath).mtimeMs;
+  const baseDir = dirname(builtPath);
+  for (const input of inputs) {
+    if (typeof input !== "string") return undefined;
+    const inputPath = resolve(baseDir, input);
+    if (!existsSync(inputPath) || statSync(inputPath).mtimeMs > builtMtimeMs) return undefined;
+  }
+  return pathToFileURL(builtPath);
+}
 export async function startMachineAccessWireHost(
   databaseUrl: string,
   options: {
@@ -142,6 +175,7 @@ export async function startMachineAccessWireHost(
       }
     };
     try {
+      const replWorkerEntry = builtReplWorkerEntry();
       const created = await createHostRuntime(config, {
         ...(options.logger ? { logger: options.logger } : {}),
         ...(options.phoneUpdateRelease ? { phoneUpdateRelease: options.phoneUpdateRelease } : {}),
@@ -149,10 +183,11 @@ export async function startMachineAccessWireHost(
           ? { runCapabilityLifetimeSeconds: options.runCapabilityLifetimeSeconds }
           : {}),
         ...(options.executionClock ? { executionClock: options.executionClock } : {}),
+        ...(replWorkerEntry ? { replWorkerEntry } : {}),
         pluginEngine: { ...builtPluginEngine, ...options.pluginEngine },
       });
       if (created.kind !== "personal")
-        throw new Error("Personal wire fixture constructed a team Host");
+        throw new Error("Personal wire fixture constructed another kind of Host");
       runtime = created;
       await runtime.listen();
       const claimed = await runtime.app.inject({
@@ -473,7 +508,6 @@ export async function connectTargetMachine(
                 environmentIds: [environment],
                 harnessDrivers: [],
                 maxConcurrentRuns: 2,
-                providerStateModes: ["isolated"],
               },
             }
           : {}),
@@ -710,6 +744,8 @@ export interface CallerMachine {
   readonly harnessInstanceId: string;
   readonly primary: PrimaryConnection;
   readonly runnerId: RunnerId;
+  /** Reports Agent home as the hosting Runner does once it has created and canonicalized it. */
+  reportAgentHome(): void;
   close(): Promise<void>;
 }
 
@@ -740,6 +776,12 @@ export async function connectCallerMachine(
     readonly computerTool?: 1;
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
+    readonly runFileProof?: boolean;
+    /**
+     * Connects with the Agent home files capability but leaves Agent home unreported, as a
+     * real hosting Runner is while it creates the folder, until `reportAgentHome()`.
+     */
+    readonly holdAgentHomeReport?: boolean;
     readonly runnerKind?: "local" | "main";
     /** Accepts Trigger programs, so the Host's coordinator dispatches them here. */
     readonly triggerPrograms?: boolean;
@@ -756,6 +798,8 @@ export async function connectCallerMachine(
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
     capabilities: [
+      // This release's Runner, which reads a connected agent session's guarded fields.
+      agentSessionGuardsCapability,
       "filesystem",
       "network-egress",
       "native-session-continuation-v1",
@@ -769,7 +813,8 @@ export async function connectCallerMachine(
       "run-events-v2",
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
-      ...(input.triggerPrograms ? ["trigger-program-v5"] : []),
+      ...(input.runFileProof || input.holdAgentHomeReport ? [agentHomeFilesCapability] : []),
+      ...(input.triggerPrograms ? ["automation-script-v1"] : []),
     ],
     modules: {
       ...(input.integrations ? { integrations: input.integrations } : {}),
@@ -801,7 +846,6 @@ export async function connectCallerMachine(
           },
         ],
         maxConcurrentRuns: input.maxConcurrentRuns ?? 4,
-        providerStateModes: ["ambient", "isolated"],
       },
     },
     name: input.name,
@@ -813,6 +857,19 @@ export async function connectCallerMachine(
     ? { privateKey: input.previous.primary.privateKey }
     : { token: input.token };
   const primary = await connectPrimary(host.hostPort, descriptor, credentials, socket);
+  const reportAgentHome = () =>
+    primary.socket.send(
+      JSON.stringify(
+        RunnerAgentHomeReportSchema.parse({
+          ...primary.fence,
+          environmentId,
+          path: host.agentHome.path,
+          rootIdentity: { kind: "posix", fileId: "1", volumeId: "1" },
+          type: "runner.agent-home.report",
+        }),
+      ),
+    );
+  if (input.runFileProof && !input.holdAgentHomeReport) reportAgentHome();
   // Every dispatched command is acknowledged, including the ones this Runner
   // has nothing to do about: a command the Host waits on and never hears back
   // ejects the whole connection fifteen seconds later.
@@ -923,6 +980,7 @@ export async function connectCallerMachine(
     environmentId,
     harnessInstanceId,
     primary,
+    reportAgentHome,
     runnerId,
   };
 }
@@ -1357,11 +1415,10 @@ export async function setUpCallerLaunchDirectory(
     environment,
     plan,
     privateStateRoot,
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     transport: { controlCaPath: undefined, hostUrl: new URL(host.origin), mode: "development" },
     workspacePath,
     wrapModelCommand: (launch) => launch,
-    wrapProcessLaunch: async () => (launch) => launch,
+    wrapProcessLaunch: (launch) => launch,
   });
   if (!isMachineAccessSetup(setup)) {
     throw new Error(`The Run's machine access was not set up: ${setup.reason}.`);

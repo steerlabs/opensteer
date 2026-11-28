@@ -1,3 +1,4 @@
+import { homeFailureText } from "./failure-text.js";
 import type {
   PersonalRemoteAdministrationIntent,
   PersonalRemoteAdministrationOperation,
@@ -9,7 +10,7 @@ import { HostClientRequestError, isHostRefusal } from "./client.js";
 import { remoteAccessDisconnectWarning } from "./personal-remote-access.js";
 
 /**
- * "Use from anywhere": what to show and what to do next, for every surface.
+ * "Remote access": what to show and what to do next, for every surface.
  *
  * `remoteAccessView` is the whole presentation, read from live state each
  * time, so web, desktop and mobile say the same words. `RemoteAccessRunner`
@@ -17,6 +18,13 @@ import { remoteAccessDisconnectWarning } from "./personal-remote-access.js";
  * The Host carries every change it accepted: the runner never waits on one,
  * and the view reads its progress and outcome from the Host.
  */
+
+/**
+ * The one switch for O3: a person signed in to their Opensteer account who starts Opensteer on
+ * their Mac gets Remote access turned on in the same step, so their phone and connected agents
+ * reach it at once. They can turn it off in Settings. Flip to false to leave it off.
+ */
+export const remoteAccessOnWhenSignedInStart: boolean = true;
 
 /** The Account link as the computer's own app sees it; absent where only the Host is known. */
 export type RemoteAccessLink = DesktopPersonalAccountLinkStatus["status"];
@@ -340,9 +348,8 @@ function stepFailureSentence(step: RemoteAccessRunStep, name: string): string {
 
 /** The sentence a failure shows: the Host's or the port's own words, never a raw fault. */
 export function remoteAccessFailureMessage(error: unknown): string {
-  if (error instanceof HostClientRequestError) return error.message;
   if (error instanceof RemoteAccessPortError) return error.message;
-  return somethingWentWrong;
+  return homeFailureText(error, somethingWentWrong);
 }
 
 /** A port failure whose message is already written for a person. */

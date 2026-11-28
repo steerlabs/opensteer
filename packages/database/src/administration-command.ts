@@ -1,5 +1,11 @@
 import { withDatabaseTransaction } from "./connection.js";
-import { createId, type UserId } from "@opensteer/core";
+import { createId, OpensteerError, type UserId } from "@opensteer/core";
+import { commandFace, type Command } from "@opensteer/protocol/command-table";
+import {
+  assertCommandAdmitted,
+  type AuthoritySubject,
+  type CommandStoredFace,
+} from "./resource-access.js";
 import type { Kysely, Transaction } from "kysely";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
@@ -12,14 +18,80 @@ import {
   principalIdForUser,
 } from "./store-primitives.js";
 
-/** Optional for agent administration; ordinary person and reconciliation writes keep their behavior. */
-export interface AdministrationCommandIdentity {
+/**
+ * Who sent a command and how it is admitted where it commits. Optional: the person's own writes
+ * and reconciliation keep their behaviour. An agent's identity rechecks its live authority under
+ * the command's fence, before any write, and is the record of who sent it.
+ */
+export interface CommandIdentity {
   readonly output?: (result: unknown) => unknown | Promise<unknown>;
   readonly requestedBy: UserId;
   readonly idempotencyKey: string;
   readonly type: string;
   readonly request: Readonly<Record<string, unknown>>;
   readonly authoritySource: Readonly<Record<string, unknown>>;
+  /** Rechecks the agent's live authority under this command's fence, before any write. */
+  readonly admit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
+  /**
+   * For a command with two faces: the store reports what the command does against what it
+   * stores, inside the same transaction, and the agent must still be admitted on that face.
+   */
+  readonly face?: (
+    transaction: Transaction<DatabaseSchema>,
+    stored: CommandStoredFace,
+  ) => Promise<void>;
+  /**
+   * Whether the store reported the face in this transaction. Set for a command only the stored
+   * state can tell: such a command that reaches its commit without a reported face refuses.
+   */
+  readonly faced?: (transaction: Transaction<DatabaseSchema>) => boolean;
+  /**
+   * Settles what this command answers in the same transaction as its effect, once the effect is
+   * written: an approved command Request is marked fulfilled only if the effect commits.
+   */
+  readonly settle?: (transaction: Transaction<DatabaseSchema>, result: unknown) => Promise<void>;
+}
+/** The earlier name, kept for the stores that take it. */
+export type AdministrationCommandIdentity = CommandIdentity;
+
+/**
+ * How an agent's command is admitted where it commits: `admitCommand` under the connection's
+ * lock, on the face it was admitted on, and again on the face the store reports. A command only
+ * the stored state can tell is held to its strictest face until the store reports one, and fails
+ * closed if it reaches its commit without one.
+ */
+export function commandAdmission(input: {
+  readonly ownerUserId: UserId;
+  /**
+   * The subject the door admitted the command as (a connection's live direct session, or its
+   * credential's): read again here, never derived again from the caller.
+   */
+  readonly subject: AuthoritySubject;
+  readonly command: Command;
+}): Pick<CommandIdentity, "admit" | "face" | "faced"> &
+  Required<Pick<CommandIdentity, "admit" | "face">> {
+  const admitted = {
+    ownerUserId: input.ownerUserId,
+    subject: input.subject,
+    command: input.command,
+  };
+  // A caller never says which face it is: only the input, or the store's own report, can.
+  const storeDecides = commandFace(input.command) === undefined;
+  let reportedIn: Transaction<DatabaseSchema> | null = null;
+  return {
+    admit: (transaction) =>
+      assertCommandAdmitted(transaction, {
+        ...admitted,
+        ...(storeDecides ? { awaitingStore: true as const } : {}),
+      }),
+    face: async (transaction, stored) => {
+      await assertCommandAdmitted(transaction, { ...admitted, stored });
+      reportedIn = transaction;
+    },
+    ...(storeDecides
+      ? { faced: (transaction: Transaction<DatabaseSchema>) => reportedIn === transaction }
+      : {}),
+  };
 }
 
 const payloadSchema = z.object({
@@ -29,6 +101,17 @@ const payloadSchema = z.object({
 });
 
 export async function replayAdministrationCommand(
+  database: Kysely<DatabaseSchema>,
+  identity: AdministrationCommandIdentity,
+): Promise<{ readonly result: unknown; readonly output?: unknown } | undefined> {
+  if (!identity.admit) return readAdministrationCommand(database, identity);
+  return withDatabaseTransaction(database, async (transaction) => {
+    await lockAdministrationCommand(transaction, identity);
+    return readAdministrationCommand(transaction, identity);
+  });
+}
+
+async function readAdministrationCommand(
   database: Kysely<DatabaseSchema>,
   identity: AdministrationCommandIdentity,
 ): Promise<{ readonly result: unknown; readonly output?: unknown } | undefined> {
@@ -56,9 +139,17 @@ export async function administrationCommand<Result>(
 ): Promise<Result> {
   if (!identity) return mutate();
   await lockCommandIdempotency(transaction, identity.requestedBy, identity.idempotencyKey);
-  const replay = await replayAdministrationCommand(transaction, identity);
+  await identity.admit?.(transaction);
+  const replay = await readAdministrationCommand(transaction, identity);
   if (replay) return replay.result as Result;
   const result = await mutate();
+  if (identity.faced && !identity.faced(transaction))
+    throw new OpensteerError({
+      code: "forbidden",
+      reason: "authority-changed",
+      message: "This change can't be made until the Home has checked what it does.",
+    });
+  await identity.settle?.(transaction, result);
   await transaction
     .insertInto("commands")
     .values({
@@ -88,8 +179,9 @@ export async function lockAdministrationCommand(
   transaction: Transaction<DatabaseSchema>,
   identity: AdministrationCommandIdentity | undefined,
 ): Promise<void> {
-  if (identity)
-    await lockCommandIdempotency(transaction, identity.requestedBy, identity.idempotencyKey);
+  if (!identity) return;
+  await lockCommandIdempotency(transaction, identity.requestedBy, identity.idempotencyKey);
+  await identity.admit?.(transaction);
 }
 
 export function withAdministrationTransaction<Result>(

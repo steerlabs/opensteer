@@ -3,6 +3,7 @@ import { pageSiteLabel } from "./surfaces.js";
 import {
   imageGenerationToolName,
   isIntegrationGatewayTool,
+  runTerminationUnprovenCode,
   type AnsweredQuestion,
   type AssignmentSummary,
   type WaitingRequest,
@@ -100,7 +101,6 @@ export type ActivityFeedEntry = Exclude<
       | "assignment"
       | "assignment-return"
       | "delivery"
-      | "run-delivery"
       | "message"
       | "place"
       | "request-wait"
@@ -342,12 +342,7 @@ function computeGroupTranscriptEntries(
     // A withdrawn message left nothing to read, and an outcome whose message
     // is not loaded has nothing to sit on; their markers, and an open wait's,
     // only serve a page merge.
-    if (
-      entry.kind === "withdrawn" ||
-      entry.kind === "delivery" ||
-      entry.kind === "run-delivery" ||
-      entry.kind === "request-wait"
-    )
+    if (entry.kind === "withdrawn" || entry.kind === "delivery" || entry.kind === "request-wait")
       continue;
     if (entry.kind === "run" && entry.runId === null) continue;
     if (open === null || open.runId !== entry.runId) {
@@ -828,7 +823,6 @@ function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRow
       : hasRunOutcome(turn.run) || (turn.run.attempt ?? 1) > 1);
   return (
     reply !== null ||
-    (!turn.continued && turn.run?.delivery != null) ||
     turn.assignments.length > 0 ||
     ended ||
     (live && (composing || startHold !== null || atComputer(turn)))
@@ -1895,7 +1889,7 @@ function delegationHead(entry: DelegationEntry): ActivityStepHead {
   }
   if (entry.outcome === "failed") {
     return {
-      detail: entry.failure?.message ?? entry.resultPreview ?? "",
+      detail: entry.failure?.ownerMessage ?? entry.failure?.message ?? entry.resultPreview ?? "",
       detailKind: "prose",
       duration: null,
       errors: 1,
@@ -2285,29 +2279,13 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     ),
   ],
 
-  ["opensteer_team_read", said(["Reading team context", "Read team context"], "list")],
-  [
-    "opensteer_team_file_download",
-    said(["Downloading a team file", "Downloaded a team file"], "folder"),
-  ],
-  ["opensteer_team_search", said(["Searching team messages", "Searched team messages"], "search")],
-  ["opensteer_team_post", said(["Replying to the team", "Replied to the team"], "share")],
-  [
-    "opensteer_knowledge_topic_list",
-    said(["Looking up team topics", "Looked up team topics"], "list"),
-  ],
-  ["opensteer_knowledge_search", said(["Searching team notes", "Searched team notes"], "search")],
-  ["opensteer_knowledge_read", said(["Reading team notes", "Read team notes"], "list")],
-  [
-    "opensteer_knowledge_save",
-    (tool, args) =>
-      (stringField(args, "noteId") !== null
-        ? said(["Updating a team note", "Updated a team note"], "pencil")
-        : said(["Saving a team note", "Saved a team note"], "pencil"))(tool, args),
-  ],
-  ["opensteer_knowledge_remove", said(["Deleting a team note", "Deleted a team note"], "pencil")],
-
   ["opensteer_ai_account_list", said(["Looking up AI accounts", "Looked up AI accounts"], "list")],
+  [
+    "opensteer_commands",
+    said(["Looking up what it can change", "Looked up what it can change"], "list"),
+  ],
+  ["opensteer_command", said(["Changing Opensteer", "Changed Opensteer"], "pencil")],
+  ["opensteer_state", said(["Reading Opensteer's settings", "Read Opensteer's settings"], "list")],
   [
     "opensteer_ai_account_update",
     saidByAction(
@@ -2436,22 +2414,19 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     },
   ],
 
-  [
-    "opensteer_messaging_bridge_list",
-    said(["Looking up messaging bridges", "Looked up messaging bridges"], "share"),
-  ],
+  ["opensteer_messaging_bridge_list", said(["Looking up chats", "Looked up chats"], "share")],
   [
     "opensteer_messaging_bridge_update",
     saidByFlag(
       "paused",
-      ["Pausing a messaging bridge", "Paused a messaging bridge"],
-      ["Resuming a messaging bridge", "Resumed a messaging bridge"],
+      ["Pausing a chat", "Paused a chat"],
+      ["Resuming a chat", "Resumed a chat"],
       "share",
     ),
   ],
   [
     "opensteer_messaging_bridge_remove",
-    said(["Removing a messaging bridge", "Removed a messaging bridge"], "share"),
+    said(["Disconnecting a chat", "Disconnected a chat"], "share"),
   ],
 
   ["opensteer_plugin_list", said(["Looking up plugins", "Looked up plugins"], "puzzle")],
@@ -2500,6 +2475,11 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   [
     "browser_profile_save",
     said(["Saving the browser profile", "Saved the browser profile"], "browser"),
+  ],
+  ["browser_use", said(["Running a browser script", "Ran a browser script"], "browser")],
+  [
+    "browser_connect",
+    said(["Opening direct browser control", "Opened direct browser control"], "browser"),
   ],
   ["browser_session_close", said(["Closing the browser", "Closed the browser"], "browser")],
   ["browser_session_list", said(["Looking up browsers", "Looked up browsers"], "browser")],
@@ -3301,6 +3281,50 @@ function clipText(value: string): string {
   return value.length <= max ? value : `…${value.slice(value.length - max)}`;
 }
 
+export { runTerminationUnprovenCode };
+
+export function isRunTerminationUnproven(run: Pick<RunEntry, "error" | "status">): boolean {
+  return run.status === "failed" && run.error?.code === runTerminationUnprovenCode;
+}
+
+export function isRunEngineRetired(run: Pick<RunEntry, "interruptedCause" | "status">): boolean {
+  return run.status === "interrupted" && run.interruptedCause === "engine-retired";
+}
+
+export function runInterruptedTitle(
+  run: Pick<RunEntry, "interruptedCause" | "status">,
+  options?: { readonly conversation?: boolean | undefined; readonly mobile?: boolean | undefined },
+): string {
+  if (isRunEngineRetired(run)) return "Run cut short";
+  if (options?.conversation === true) return "Stopped.";
+  return options?.mobile === true ? "This run stopped." : "Run stopped.";
+}
+
+export function runInterruptedMessage(
+  run: Pick<RunEntry, "interruptedCause" | "status">,
+): string | null {
+  if (isRunEngineRetired(run)) {
+    return "This Run was cut short: Opensteer had to end its shared engine to make sure another task had stopped; it will start again when work next needs it. What it was doing at that moment may not have finished; send a message to continue.";
+  }
+  return null;
+}
+
+export function runOutcomeTitle(
+  run: Pick<RunEntry, "error" | "status">,
+  options?: { readonly conversation?: boolean | undefined; readonly mobile?: boolean | undefined },
+): string {
+  if (isRunTerminationUnproven(run)) return "Couldn’t confirm this stopped";
+  if (options?.conversation === true) return "Opensteer couldn’t finish";
+  return options?.mobile === true ? "This run failed" : "Run failed";
+}
+
+export function runOutcomeMessage(run: Pick<RunEntry, "error" | "status">): string | null {
+  if (isRunTerminationUnproven(run)) {
+    return "Stopping could not be confirmed. Something from this Run may still be running on that device.";
+  }
+  return run.error?.ownerMessage ?? run.error?.message ?? null;
+}
+
 interface ActivityFeedPresentation {
   detail: string;
   detailKind: "code" | "prose";
@@ -3311,11 +3335,20 @@ interface ActivityFeedPresentation {
 
 export function activityFeedPresentation(entry: ActivityFeedEntry): ActivityFeedPresentation {
   if (entry.kind === "run") {
+    if (entry.status === "interrupted") {
+      return {
+        detail: runInterruptedMessage(entry) ?? "",
+        detailKind: "prose",
+        icon: isRunEngineRetired(entry) ? "alert-circle" : "stop",
+        label: runInterruptedTitle(entry),
+        marker: "stopped",
+      };
+    }
     return {
-      detail: entry.error?.message ?? "",
+      detail: runOutcomeMessage(entry) ?? "",
       detailKind: "prose",
       icon: "alert-circle",
-      label: "Run failed",
+      label: runOutcomeTitle(entry),
       marker: "failed",
     };
   }
@@ -3337,14 +3370,4 @@ export function activityFeedPresentation(entry: ActivityFeedEntry): ActivityFeed
     label: head.label,
     marker: head.tone,
   };
-}
-
-export function teamDeliveryLabel(
-  delivery: NonNullable<RunEntry["delivery"]>,
-  channelName: string,
-): string {
-  if (delivery.state === "sent")
-    return `${delivery.via === "tool" ? "Replied in" : "Sent to"} #${channelName}`;
-  if (delivery.state === "sending") return "Sending…";
-  return `Not sent: ${delivery.reason ?? "Unavailable"}`;
 }

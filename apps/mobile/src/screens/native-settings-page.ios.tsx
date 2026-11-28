@@ -26,6 +26,7 @@ import {
   VStack,
 } from "@expo/ui/swift-ui";
 import {
+  accessibilityAddTraits,
   accessibilityHidden,
   accessibilityLabel,
   buttonBorderShape,
@@ -48,8 +49,11 @@ import {
   pickerStyle,
 } from "@expo/ui/swift-ui/modifiers";
 import { useNavigation } from "@react-navigation/native";
+import { setStringAsync } from "expo-clipboard";
 import { useEffect, type ReactNode } from "react";
 import { color } from "../theme.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
+import { addressWords } from "../ui/address-words.js";
 import { RowMarkIcon } from "../ui/integration-icon.js";
 import type {
   NativeSettingsPageProps,
@@ -62,6 +66,7 @@ import {
   IdentityMark,
   LineFooter,
   Lines,
+  linesAddress,
   PlaceholderRow,
   Tile,
 } from "./settings-form-primitives.ios.js";
@@ -89,23 +94,7 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
           : []),
       ]}
     >
-      {props.sections.map((section) => (
-        <Section
-          key={section.key}
-          title={section.collapsed ? "" : section.title}
-          {...(section.footer ? { footer: <LineFooter footer={section.footer} /> } : {})}
-        >
-          {section.collapsed ? (
-            <DisclosureGroup label={section.title}>
-              {section.rows.map((row) => (
-                <Row key={row.key} row={row} />
-              ))}
-            </DisclosureGroup>
-          ) : (
-            section.rows.map((row) => <Row key={row.key} row={row} />)
-          )}
-        </Section>
-      ))}
+      <NativeSettingsSections sections={props.sections} />
     </List>
   );
   return (
@@ -145,7 +134,34 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
     </Host>
   );
 }
+/** The sections of a page, for a form that draws its own header above them. */
+export function NativeSettingsSections(props: {
+  readonly sections: NativeSettingsPageProps["sections"];
+}): ReactNode {
+  return props.sections.map((section) => (
+    <Section
+      key={section.key}
+      title={section.collapsed ? "" : section.title}
+      {...(section.footer ? { footer: <LineFooter footer={section.footer} /> } : {})}
+    >
+      {section.collapsed ? (
+        <DisclosureGroup label={section.title}>
+          {section.rows.map((row) => (
+            <Row key={row.key} row={row} />
+          ))}
+        </DisclosureGroup>
+      ) : (
+        section.rows.map((row) => <Row key={row.key} row={row} />)
+      )}
+    </Section>
+  ));
+}
+
 function Row({ row }: { readonly row: NativeSettingsRow }) {
+  // At the largest sizes a row's mark takes a line of its own (`stacked-layout.ts`).
+  const stacked = useStackedLayout();
+  if (row.kind === "content")
+    return <RNHostView matchContents={{ vertical: true }}>{row.content}</RNHostView>;
   if (row.kind === "chips")
     return (
       <Picker
@@ -153,7 +169,9 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
         selection={row.value}
         onSelectionChange={row.onChange}
         // A few choices sit side by side; more than fit a row open as a menu.
-        modifiers={[pickerStyle(row.choices.length > 3 ? "menu" : "segmented")]}
+        modifiers={[
+          pickerStyle(row.menu === true || row.choices.length > 3 ? "menu" : "segmented"),
+        ]}
       >
         {row.choices.map((choice) => (
           <Text key={choice.value} modifiers={[tag(choice.value)]}>
@@ -164,14 +182,39 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
     );
   if (row.kind === "text")
     return row.initial === undefined ? (
-      <Lines detail={row.detail ?? null} title={row.label} />
+      <Lines
+        detail={row.detail ?? null}
+        title={row.label}
+        titleParts={row.labelParts}
+        {...linesAddress(row.addressIn)}
+      />
     ) : (
-      <HStack alignment="center" spacing={12}>
-        <IdentityMark circular initial={row.initial} />
-        <Lines detail={row.detail ?? null} title={row.label} />
-      </HStack>
+      (() => {
+        const mark = <IdentityMark circular initial={row.initial} />;
+        const lines = (
+          <Lines
+            detail={row.detail ?? null}
+            title={row.label}
+            titleParts={row.labelParts}
+            {...linesAddress(row.addressIn)}
+          />
+        );
+        // Above the address at the largest sizes, so the address has the row's whole width.
+        return stacked ? (
+          <VStack alignment="leading" spacing={8}>
+            {mark}
+            {lines}
+          </VStack>
+        ) : (
+          <HStack alignment="center" spacing={12}>
+            {mark}
+            {lines}
+          </HStack>
+        );
+      })()
     );
   if (row.kind === "status") return <StatusRow row={row} />;
+  if (row.kind === "choice") return <ChoiceRow row={row} />;
   if (row.kind === "primary")
     return (
       <Button
@@ -217,22 +260,27 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
         >
           <HStack alignment="center" modifiers={[contentShape(shapes.rectangle())]} spacing={12}>
             {row.symbol === undefined ? null : <Tile symbol={row.symbol} />}
-            <Lines detail={row.detail ?? null} title={row.label} />
+            <Lines
+              detail={row.detail ?? null}
+              title={row.label}
+              {...linesAddress(row.addressIn)}
+              {...(row.tone === "attention" ? { detailColor: color.amber } : {})}
+            />
             <Spacer />
             {row.opens === true ? <Chevron /> : null}
           </HStack>
         </Button>
       );
-    const button = row.mark ? (
-      <HStack spacing={12}>
-        <RNHostView matchContents>
-          <RowMarkIcon mark={row.mark} size={28} />
-        </RNHostView>
-        {plain}
-      </HStack>
-    ) : (
-      plain
-    );
+    const lead = row.mark ? <RowMarkIcon mark={row.mark} size={28} /> : (row.lead ?? null);
+    const button =
+      lead === null ? (
+        plain
+      ) : (
+        <HStack spacing={12}>
+          <RNHostView matchContents>{lead}</RNHostView>
+          {plain}
+        </HStack>
+      );
     if (!row.actions?.length) return button;
     const actions = row.actions.map((action) => (
       <Button
@@ -277,6 +325,33 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
   return <Input row={row} />;
 }
 
+/** One choice among several, each with its own line; the chosen ones carry a checkmark. */
+function ChoiceRow({ row }: { readonly row: Extract<NativeSettingsRow, { kind: "choice" }> }) {
+  return (
+    <Button
+      modifiers={[
+        accessibilityLabel(row.detail === undefined ? row.label : `${row.label}, ${row.detail}`),
+        accessibilityAddTraits(row.selected ? ["isSelected"] : []),
+        disabled(row.disabled ?? false),
+      ]}
+      onPress={row.onPress}
+    >
+      <HStack alignment="center" modifiers={[contentShape(shapes.rectangle())]} spacing={12}>
+        <Lines detail={row.detail ?? null} title={row.label} />
+        <Spacer />
+        {row.selected ? (
+          <Image
+            color={color.ember}
+            modifiers={[frame({ width: 20 })]}
+            size={15}
+            systemName="checkmark"
+          />
+        ) : null}
+      </HStack>
+    </Button>
+  );
+}
+
 /** A switch whose state never arrived: its track with no knob, never drawn as off. */
 function UnknownToggleRow({
   row,
@@ -316,7 +391,32 @@ function StatusRow({ row }: { readonly row: Extract<NativeSettingsRow, { kind: "
         />
         <Text modifiers={[font({ textStyle: "body", weight: "semibold" })]}>{row.label}</Text>
       </HStack>
-      {row.detail === undefined ? null : (
+      {row.detail === undefined ? null : row.addressIn === "detail" ? (
+        // An address is drawn with characters that are not the address, so it is never selected:
+        // Copy in the system's menu gives the address exactly.
+        <ContextMenu>
+          <ContextMenu.Trigger>
+            <Text
+              modifiers={[
+                font({ textStyle: "footnote", design: "monospaced" }),
+                foregroundStyle(color.textSoft),
+                accessibilityLabel(row.detail),
+              ]}
+            >
+              {addressWords(row.detail)}
+            </Text>
+          </ContextMenu.Trigger>
+          <ContextMenu.Items>
+            <Button
+              label="Copy"
+              onPress={() => {
+                if (row.detail !== undefined) void setStringAsync(row.detail);
+              }}
+              systemImage="doc.on.doc"
+            />
+          </ContextMenu.Items>
+        </ContextMenu>
+      ) : (
         <Text
           modifiers={[
             font({ textStyle: "footnote", design: "monospaced" }),

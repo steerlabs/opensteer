@@ -23,30 +23,6 @@ RUN curl --fail --location --show-error --connect-timeout 10 --max-time 300 \
     unzip -q /tmp/build-tools.zip -d /tmp/build-tools && mkdir -p build-tools && \
     mv /tmp/build-tools/android-16 build-tools/36.0.0 && rm /tmp/build-tools.zip
 
-FROM ${NODE_IMAGE} AS bubblewrap-build
-ARG BUBBLEWRAP_VERSION=0.11.2
-ARG BUBBLEWRAP_SHA256=69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
-RUN apt-get update && \
-    apt-get install --no-install-recommends --yes build-essential ca-certificates curl libcap-dev meson pkg-config xz-utils && \
-    rm -rf /var/lib/apt/lists/*
-WORKDIR /source
-RUN curl --connect-timeout 10 --fail --location --max-time 120 --show-error \
-      --output bubblewrap.tar.xz \
-      "https://github.com/containers/bubblewrap/releases/download/v${BUBBLEWRAP_VERSION}/bubblewrap-${BUBBLEWRAP_VERSION}.tar.xz" && \
-    echo "${BUBBLEWRAP_SHA256}  bubblewrap.tar.xz" | sha256sum --check --strict && \
-    tar --extract --file bubblewrap.tar.xz --strip-components=1 && \
-    meson setup build \
-      -Dbash_completion=disabled \
-      -Dman=disabled \
-      -Dselinux=disabled \
-      -Dsupport_setuid=false \
-      -Dtests=false \
-      -Dzsh_completion=disabled && \
-    meson compile -C build bwrap && \
-    install --directory /output && \
-    install --owner root --group root --mode 0555 build/bwrap /output/bwrap && \
-    install --owner root --group root --mode 0444 COPYING /output/COPYING
-
 FROM ${CADDY_IMAGE} AS caddy-capability-free
 USER root
 # The upstream binary carries cap_net_bind_service for ports below 1024. This
@@ -111,11 +87,12 @@ COPY apps/browser-runtime/package.json ./apps/browser-runtime/package.json
 COPY apps/channel-runtime/package.json ./apps/channel-runtime/package.json
 COPY apps/control-plane/package.json ./apps/control-plane/package.json
 COPY apps/desktop/package.json ./apps/desktop/package.json
+COPY apps/home-provisioner/package.json ./apps/home-provisioner/package.json
+COPY apps/pool-agent/package.json ./apps/pool-agent/package.json
 COPY apps/host/package.json ./apps/host/package.json
 COPY apps/marketing/package.json ./apps/marketing/package.json
 COPY apps/mobile/package.json ./apps/mobile/package.json
 COPY apps/runner/package.json ./apps/runner/package.json
-COPY apps/team-provisioner/package.json ./apps/team-provisioner/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY evals/agent-tools/package.json ./evals/agent-tools/package.json
 COPY packages/access/package.json ./packages/access/package.json
@@ -190,7 +167,8 @@ RUN pnpm --filter apps build && \
     pnpm --filter @opensteer/host deploy --legacy --prod /output/host && \
     node scripts/verify-deployed-package.cjs apps/host/package.json /output/host/package.json && \
     pnpm exec tsx scripts/plugin-engine/stage-container-host.ts /output/host && \
-    find /output/host -depth -name '*claude-agent-sdk-*' -exec rm -rf {} +
+    find /output/host -depth -name '*claude-agent-sdk-*' -exec rm -rf {} + && \
+    chmod -R a+rX,go-w /output/host
 
 
 FROM sources AS control-plane-build
@@ -200,11 +178,11 @@ RUN pnpm --filter @opensteer/control-plane build && \
     node scripts/verify-deployed-package.cjs apps/control-plane/package.json /output/control-plane/package.json
 
 
-FROM sources AS team-provisioner-build
-COPY apps/team-provisioner ./apps/team-provisioner
-RUN pnpm --filter @opensteer/team-provisioner build && \
-    pnpm --filter @opensteer/team-provisioner deploy --legacy --prod /output/team-provisioner && \
-    node scripts/verify-deployed-package.cjs apps/team-provisioner/package.json /output/team-provisioner/package.json
+FROM sources AS home-provisioner-build
+COPY apps/home-provisioner ./apps/home-provisioner
+RUN pnpm --filter @opensteer/home-provisioner build && \
+    pnpm --filter @opensteer/home-provisioner deploy --legacy --prod /output/home-provisioner && \
+    node scripts/verify-deployed-package.cjs apps/home-provisioner/package.json /output/home-provisioner/package.json
 
 
 FROM sources AS runner-build
@@ -239,7 +217,7 @@ COPY apps/control-plane/package.json /output/control-plane/package.json
 COPY apps/runner/package.json /output/runner/package.json
 COPY apps/browser-runtime/package.json /output/browser-runtime/package.json
 COPY apps/channel-runtime/package.json /output/channel-runtime/package.json
-COPY apps/team-provisioner/package.json /output/team-provisioner/package.json
+COPY apps/home-provisioner/package.json /output/home-provisioner/package.json
 ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
@@ -249,7 +227,7 @@ RUN node scripts/stamp-release-package.cjs /output/host/package.json && \
     node scripts/stamp-release-package.cjs /output/runner/package.json && \
     node scripts/stamp-release-package.cjs /output/browser-runtime/package.json && \
     node scripts/stamp-release-package.cjs /output/channel-runtime/package.json && \
-    node scripts/stamp-release-package.cjs /output/team-provisioner/package.json
+    node scripts/stamp-release-package.cjs /output/home-provisioner/package.json
 
 # Web assets contain no native dependencies; compile with the builder's Node.
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS web-assets
@@ -265,11 +243,12 @@ COPY apps/browser-runtime/package.json ./apps/browser-runtime/package.json
 COPY apps/channel-runtime/package.json ./apps/channel-runtime/package.json
 COPY apps/control-plane/package.json ./apps/control-plane/package.json
 COPY apps/desktop/package.json ./apps/desktop/package.json
+COPY apps/home-provisioner/package.json ./apps/home-provisioner/package.json
+COPY apps/pool-agent/package.json ./apps/pool-agent/package.json
 COPY apps/host/package.json ./apps/host/package.json
 COPY apps/marketing/package.json ./apps/marketing/package.json
 COPY apps/mobile/package.json ./apps/mobile/package.json
 COPY apps/runner/package.json ./apps/runner/package.json
-COPY apps/team-provisioner/package.json ./apps/team-provisioner/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY evals/agent-tools/package.json ./evals/agent-tools/package.json
 COPY packages/access/package.json ./packages/access/package.json
@@ -385,7 +364,8 @@ ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
 RUN node scripts/write-web-distribution-manifest.mjs \
       /source/apps/web/dist "${OPENSTEER_RELEASE_VERSION}" && \
     test -s /source/apps/web/dist/opensteer-web.json && \
-    test -s /source/apps/web/dist/browser-extension.zip
+    test -s /source/apps/web/dist/browser-extension.zip && \
+    chmod -R a+rX,go-w /source/apps/web/dist
 
 FROM ${NODE_IMAGE} AS sandbox-seccomp-profiles
 ARG TARGETARCH
@@ -411,16 +391,24 @@ RUN apt-get update && \
     install --directory --owner 10001 --group 10001 --mode 0700 /workspaces && \
     install --directory --owner root --group root --mode 0755 /usr/local/share/opensteer
 COPY --chmod=0555 deploy/container/opensteer-entrypoint.mjs /usr/local/bin/opensteer-entrypoint.mjs
+COPY --chmod=0444 deploy/container/opensteer-node-trust.mjs /usr/local/bin/opensteer-node-trust.mjs
 ENTRYPOINT ["tini", "--", "node", "/usr/local/bin/opensteer-entrypoint.mjs"]
 
 FROM node-runtime AS host
 WORKDIR /app
 ENV OPENSTEER_WEB_DISTRIBUTION_DIRECTORY=/usr/local/share/opensteer/web \
     OPENSTEER_WEB_DISTRIBUTION_MANIFEST=/usr/local/share/opensteer/web/opensteer-web.json
-COPY --from=host-build --chown=10001:10001 /output/host ./
-COPY --from=package-stamps --chown=10001:10001 /output/host/package.json ./package.json
+# The code tree is root's and readable by any uid: it does not depend on who runs it, and the
+# user it runs as (10001) cannot change it.
+COPY --from=host-build /output/host ./
+COPY --from=package-stamps /output/host/package.json ./package.json
 COPY --from=runner-native-fs-build --chmod=0555 /output/opensteer-native-fs ./native-fs-helper/opensteer-native-fs
-COPY --from=web-build --chown=10001:10001 /source/apps/web/dist /usr/local/share/opensteer/web
+COPY --from=web-build /source/apps/web/dist /usr/local/share/opensteer/web
+# host-build makes the staged runtime packages (sharp's staging makes 0700 directories) and
+# web-build the Web distribution readable by any uid; this only reads, so the release record
+# stays the image's last layer.
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    sh /tmp/assert-readable-tree.sh --root-owned /app /usr/local/share/opensteer
 ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
@@ -444,10 +432,10 @@ USER 10001:10001
 EXPOSE 4142
 CMD ["node", "dist/main.js"]
 
-FROM node-runtime AS team-provisioner
+FROM node-runtime AS home-provisioner
 WORKDIR /app
-COPY --from=team-provisioner-build --chown=10001:10001 /output/team-provisioner ./
-COPY --from=package-stamps --chown=10001:10001 /output/team-provisioner/package.json ./package.json
+COPY --from=home-provisioner-build --chown=10001:10001 /output/home-provisioner ./
+COPY --from=package-stamps --chown=10001:10001 /output/home-provisioner/package.json ./package.json
 ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
@@ -455,6 +443,24 @@ ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
 USER 10001:10001
 CMD ["node", "dist/main.js"]
+
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS claude-code
+ARG TARGETARCH
+ARG CLAUDE_CODE_VERSION=2.1.294
+RUN apt-get update && apt-get install --no-install-recommends --yes ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /output
+RUN case "$TARGETARCH" in \
+      amd64) platform=x64; checksum=3c64486241325f10cc728b2f92275603cd79637767126654ad377275a6d4ece3ec87409bc678fe7a3f3bb0716669638bce5a504e68b600c52c7441dfb21dc076 ;; \
+      arm64) platform=arm64; checksum=58106ad197a49681d706a53bfd19d685a39e2d729b83963a787d759915e02f2c46d789b1219f36bb273a9c4e30ae7c7aabe3e6dc3d41f837322e65ca5f92eb11 ;; \
+      *) exit 1 ;; \
+    esac && \
+    package="claude-code-linux-${platform}" && \
+    curl --fail --show-error --silent --location --connect-timeout 10 --max-time 300 \
+      "https://registry.npmjs.org/@anthropic-ai/${package}/-/${package}-${CLAUDE_CODE_VERSION}.tgz" -o claude.tgz && \
+    echo "$checksum  claude.tgz" | sha512sum --check --strict && \
+    tar --extract --file claude.tgz --strip-components=1 package/claude package/LICENSE.md && \
+    rm claude.tgz
 
 FROM node-runtime AS runner
 USER root
@@ -465,25 +471,31 @@ RUN apt-get update && \
     install --directory --owner root --group root --mode 0755 /opt/opensteer/control && \
     install --owner root --group root --mode 0555 \
       /usr/local/bin/opensteer-entrypoint.mjs \
-      /opt/opensteer/control/opensteer-entrypoint.mjs
-COPY --from=bubblewrap-build --chmod=0555 /output/bwrap /usr/local/bin/bwrap
-# bubblewrap is LGPL: its licence travels with the binary.
-COPY --from=bubblewrap-build --chmod=0444 /output/COPYING /usr/local/share/licenses/bubblewrap/COPYING
+      /opt/opensteer/control/opensteer-entrypoint.mjs && \
+    install --owner root --group root --mode 0444 \
+      /usr/local/bin/opensteer-node-trust.mjs \
+      /opt/opensteer/control/opensteer-node-trust.mjs
+COPY --from=claude-code --chmod=0555 /output/claude /usr/local/bin/claude
+COPY --from=claude-code --chmod=0444 /output/LICENSE.md /usr/local/share/licenses/claude-code/LICENSE.md
 COPY --from=sandbox-seccomp-profiles --chmod=0444 /runner-oci.json /usr/local/share/opensteer/runner-oci.json
 WORKDIR /app
 ENV OPENSTEER_BROWSER_HARNESS=/app/browser-harness/browser-harness.mjs \
+    OPENSTEER_CLI=/app/cli/opensteer-cli.mjs \
+    OPENSTEER_CLI_BIN_DIR=/app/bin \
     OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE=/app/process-supervisor/opensteer-process-supervisor
 COPY --from=runner-build --chown=10001:10001 /output/runner ./
 COPY --from=package-stamps --chown=10001:10001 /output/runner/package.json ./package.json
 COPY --from=runner-native-fs-build --chmod=0555 /output/opensteer-native-fs ./native-fs-helper/opensteer-native-fs
 COPY --from=process-supervisor-build --chmod=0555 /output/opensteer-process-supervisor ./process-supervisor/opensteer-process-supervisor
+COPY --chmod=0555 apps/runner/cli/opensteer-cli.mjs ./cli/opensteer-cli.mjs
+COPY --chmod=0555 apps/runner/bin/opensteer ./bin/opensteer
+COPY --chmod=0555 apps/runner/bin/opensteer /usr/local/bin/opensteer
 COPY --chmod=0555 apps/runner/browser-harness/browser-harness.mjs apps/runner/browser-harness/page.mjs apps/runner/browser-harness/page-functions.mjs apps/runner/browser-harness/keyboard-layout.mjs ./browser-harness/
 COPY --chmod=0444 apps/runner/browser-harness/LICENSE /usr/local/share/licenses/opensteer-browser-harness/LICENSE
 COPY --chmod=0444 apps/runner/browser-harness/PLAYWRIGHT-LICENSE /usr/local/share/licenses/opensteer-browser-harness/PLAYWRIGHT-LICENSE
-RUN test "$(bwrap --version)" = "bubblewrap 0.11.2" && \
-    test ! -u /usr/local/bin/bwrap && \
-    test "$("$OPENSTEER_BROWSER_HARNESS" --version)" = "0.5.0-opensteer" && \
-    node dist/verify-harness-runtimes-main.js && \
+RUN test "$("$OPENSTEER_BROWSER_HARNESS" --version)" = "0.5.0-opensteer" && \
+    opensteer --help >/dev/null 2>&1 && \
+    node dist/verify-harness-runtimes-main.js --require-claude-version 2.1.294 && \
     test -x /opt/opensteer/control/opensteer-entrypoint.mjs && \
     { "$OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE"; test $? -eq 64; }
 RUN install --directory --mode 0700 /tmp/opensteer-native-fs-probe
@@ -491,6 +503,8 @@ RUN printf '%s' '{"operation":"probe","root":"/tmp/opensteer-native-fs-probe","v
     ./native-fs-helper/opensteer-native-fs | \
     grep --fixed-strings '"binaryIdentity":"opensteer-native-fs"'
 RUN rmdir /tmp/opensteer-native-fs-probe
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    sh /tmp/assert-readable-tree.sh /app /usr/local/share/opensteer
 ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
@@ -503,6 +517,8 @@ FROM node-runtime AS browser-egress
 WORKDIR /app
 COPY --from=browser-runtime-build --chown=10001:10001 /output/browser-runtime ./
 COPY --from=package-stamps --chown=10001:10001 /output/browser-runtime/package.json ./package.json
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    sh /tmp/assert-readable-tree.sh /app /usr/local/share/opensteer
 ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
@@ -529,6 +545,8 @@ FROM node-runtime AS channel-runtime
 WORKDIR /app
 COPY --from=channel-runtime-build --chown=10001:10001 /output/channel-runtime ./
 COPY --from=package-stamps --chown=10001:10001 /output/channel-runtime/package.json ./package.json
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    sh /tmp/assert-readable-tree.sh /app /usr/local/share/opensteer
 ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
@@ -552,6 +570,7 @@ RUN ln -sf /usr/local/bin/node /usr/bin/node && \
 WORKDIR /app
 COPY --from=browser-runtime-build --chown=10001:10001 /output/browser-runtime ./
 COPY --chmod=0555 deploy/container/opensteer-entrypoint.mjs /usr/local/bin/opensteer-entrypoint.mjs
+COPY --chmod=0444 deploy/container/opensteer-node-trust.mjs /usr/local/bin/opensteer-node-trust.mjs
 # The host container supervisor extracts this exact profile before starting the
 # Runtime. Keeping the policy with the image prevents deployment drift between
 # the Chromium build and the syscalls its sandbox is allowed to use.
@@ -569,7 +588,11 @@ ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
     OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+USER root
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    sh /tmp/assert-readable-tree.sh /app /usr/local/share/opensteer
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+USER 10001:10001
 
 FROM ${CADDY_IMAGE} AS gateway
 COPY deploy/gateway/Caddyfile /etc/caddy/Caddyfile
@@ -579,13 +602,16 @@ COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/loc
 ENV OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
 EXPOSE 80 443
 
-FROM ${CADDY_IMAGE} AS team-gateway
-# Hosted pods run Caddy unprivileged on :8080 under no_new_privs, which refuses to exec a
-# binary carrying file capabilities; self-host runs it as root and needs none.
-RUN setcap -r /usr/bin/caddy
-COPY deploy/team/Caddyfile /etc/caddy/Caddyfile
-COPY --from=web-build /source/apps/web/dist /srv/opensteer-web
-COPY --from=opensteer-release-record --chmod=0755 /release/release.json /usr/local/share/opensteer/release.json
+FROM ${CADDY_IMAGE} AS home-gateway
+USER root
+COPY --from=caddy-capability-free /caddy /usr/bin/opensteer-home-caddy
+RUN install -d -o 1000 -g 1000 -m 0700 /data/caddy /config/caddy && \
+    install -d -m 0755 /usr/local/share/opensteer
+COPY deploy/home/Caddyfile /etc/caddy/Caddyfile
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    sh /tmp/assert-readable-tree.sh /etc/caddy /usr/bin/opensteer-home-caddy /usr/local/share/opensteer
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
-ENV OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
+USER 1000:1000
 EXPOSE 80 443
+ENTRYPOINT ["/usr/bin/opensteer-home-caddy"]
+CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

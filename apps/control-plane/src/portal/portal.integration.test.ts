@@ -14,6 +14,11 @@ import {
   HostDiscoveryEnvelopeSchema,
   hostDiscoverySigningBytes,
 } from "@opensteer/deployment-authority";
+import {
+  cloneTestDatabase,
+  ownTestDatabaseProducer,
+  type TestDatabase,
+} from "@opensteer/database/test-support/database";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -70,25 +75,30 @@ const config: ControlPlaneConfig = {
 };
 
 integration("Opensteer web portal", () => {
-  const database = createControlPlaneDatabase({
-    connectionString: databaseUrl ?? "postgresql://unconfigured",
-    maxConnections: 4,
-  });
-  const store = new ControlPlaneStore(database, publicOrigin, {
-    portalOrigin: new URL(`https://${testDomain}`),
-  });
-  const portalSessions = new PortalSessionStore(database);
-  const connectLifecycle = new ConnectLifecycleService(database, {
-    delete: async () => undefined,
-    ensure: async () => Promise.reject(new Error("Connect is not used by this test")),
-    readConnectorToken: async () => Promise.reject(new Error("Connect is not used by this test")),
-    rotateConnectorToken: async () => Promise.reject(new Error("Connect is not used by this test")),
-  });
+  let clone: TestDatabase | undefined;
+  let database: ReturnType<typeof createControlPlaneDatabase>;
+  let store: ControlPlaneStore;
+  let portalSessions: PortalSessionStore;
   let auth: ControlPlaneAuth;
   let server: Awaited<ReturnType<typeof createControlPlaneServer>>;
 
   beforeAll(async () => {
+    clone = await cloneTestDatabase("controlPlane");
+    const connectionString = clone.url;
+    ({ database } = await ownTestDatabaseProducer(connectionString, async () => {
+      const database = createControlPlaneDatabase({ connectionString, maxConnections: 4 });
+      return { database, close: () => database.destroy() };
+    }));
     await migrateControlPlaneToLatest(database);
+    store = new ControlPlaneStore(database, publicOrigin, { portalOrigin: config.portalOrigin });
+    portalSessions = new PortalSessionStore(database);
+    const connectLifecycle = new ConnectLifecycleService(database, {
+      delete: async () => undefined,
+      ensure: async () => Promise.reject(new Error("Connect is not used by this test")),
+      readConnectorToken: async () => Promise.reject(new Error("Connect is not used by this test")),
+      rotateConnectorToken: async () =>
+        Promise.reject(new Error("Connect is not used by this test")),
+    });
     auth = createControlPlaneAuth(database, config);
     server = await createControlPlaneServer({
       auth,
@@ -127,8 +137,11 @@ integration("Opensteer web portal", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await database.destroy();
+    try {
+      await server?.close();
+    } finally {
+      await clone?.drop();
+    }
   });
 
   it("updates the official portal callback and presentation on startup", async () => {
@@ -317,8 +330,8 @@ integration("Opensteer web portal", () => {
       url: "/",
     });
     expect(empty.statusCode).toBe(200);
-    expect(empty.body).toContain("Set up Opensteer");
-    expect(empty.body).toContain("Opensteers you set up or join show up here.");
+    expect(empty.body).toContain("Where should your Opensteer live?");
+    expect(empty.body).toContain("Free. Works while your Mac is awake.");
 
     const ready = await registerDeployment("First <Server>", "first-server");
     await publishPresence(ready);
@@ -336,7 +349,7 @@ integration("Opensteer web portal", () => {
     expect(listed.body).not.toContain(">Needs attention<");
     expect(listed.body).not.toContain(">Ready<");
     expect(listed.body).not.toContain("Open this deployment to check");
-    expect(listed.body).not.toContain("Set up Opensteer");
+    expect(listed.body).not.toContain("Where should your Opensteer live?");
   });
 
   it("signs out of the portal and of the Account session that proved it", async () => {
@@ -466,7 +479,7 @@ integration("Opensteer web portal", () => {
 
     it("names what it removes, then deletes the Account and ends the session", async () => {
       const cookie = await portalSessionCookie();
-      await registerDeployment("Team server", "team-server");
+      await registerDeployment("Design server", "design-server");
       const page = await server.inject({
         headers: portalHeaders({ cookie }),
         method: "GET",
@@ -474,7 +487,7 @@ integration("Opensteer web portal", () => {
       });
       expect(page.statusCode, page.body).toBe(200);
       expect(page.body).toContain("portal-owner@example.test");
-      expect(page.body).toContain("Team server");
+      expect(page.body).toContain("Design server");
 
       const forged = await post(cookie, publicOrigin.origin);
       expect(forged.statusCode).toBe(403);
@@ -584,7 +597,7 @@ integration("Opensteer web portal", () => {
       hostInstanceId,
       hostKey: { algorithm: "Ed25519" as const },
       deploymentShape: {
-        kind: "team" as const,
+        kind: "personal" as const,
       },
     };
     const authorityEnvelope = HostDiscoveryEnvelopeSchema.parse({

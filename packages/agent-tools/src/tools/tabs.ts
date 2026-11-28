@@ -1,3 +1,10 @@
+import { z } from "zod";
+import {
+  AgentOperationIdSchema,
+  RequestIdSchema,
+  TabViewSchema,
+  ThreadIdSchema,
+} from "@opensteer/core";
 import { defineAgentTool } from "../registry.js";
 import {
   TabCloseInputSchema,
@@ -11,15 +18,55 @@ import {
   TabOrganizeInputSchema,
   TabOrganizeResultSchema,
 } from "@opensteer/protocol";
+/** A connected agent's direct call: which of its tasks it belongs to, and why it is made. */
+export const directInput = {
+  operationId: AgentOperationIdSchema.optional().describe(
+    "Connected agents only: continue the same call with this ID and the same arguments.",
+  ),
+  operationKey: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Connected agents only: the key for retrying this call."),
+  taskId: ThreadIdSchema.optional().describe(
+    "Connected agents only: taskId from an earlier result.",
+  ),
+  reason: z
+    .string()
+    .trim()
+    .min(1)
+    .max(2_000)
+    .optional()
+    .describe("Connected agents only: why, shown to the person reviewing."),
+};
+/** What a connected agent's direct call reports beside the tool's own result. */
+export const directOutput = {
+  taskId: ThreadIdSchema.optional(),
+  operationId: AgentOperationIdSchema.optional(),
+  status: z.enum(["completed", "pending", "failed", "unknown"]).optional(),
+  requestId: RequestIdSchema.nullable().optional(),
+  next: z.string().max(500).optional(),
+  summary: z.record(z.string(), z.unknown()).nullable().optional(),
+};
+const AgentTabSchema = z.union([
+  TabViewSchema,
+  z.strictObject(TabViewSchema.shape).omit({ computer: true }),
+]);
+
 export const tab_list = defineAgentTool({
   name: "tab_list",
   title: "List tabs",
   description:
     "Find the person's page, window, phone and app tabs, including asleep and unavailable tabs. Query matches title, URL, group, profile, app or computer name. Results follow workspace order, 50 per page; keep query and kind when using nextCursor. Groups organize tabs and grant no access. Use tab_open to open a target, Browser Harness openPage(tabId) for pages, or computer_use tab(tabId) for windows and phones.",
-  input: TabListInputSchema,
-  output: TabListResultSchema,
+  input: TabListInputSchema.extend(directInput),
+  output: TabListResultSchema.partial().extend({
+    ...directOutput,
+    tabs: z.array(AgentTabSchema).max(50).optional(),
+  }),
   access: "read",
-  callers: ["run", "connection"] as const,
+  callers: ["run", "program", "connection"] as const,
   capability: "tabs",
 });
 export const tab_open = defineAgentTool({
@@ -27,10 +74,10 @@ export const tab_open = defineAgentTool({
   title: "Open a tab",
   description:
     "Open a website, exact desktop window, Agent Phone or iPhone screen, or published app in the person's shared tab list. A profile stays on its home computer; Guest defaults to the hosting computer. windowId comes from computer_use app.windows(); bundleId opens or launches that approved app and binds its chosen window. Phone and app targets reuse their one tab. Publishing an app alone does not open it. The returned tabId works with tab tools and show_to_person; opening does not move the person's selection.",
-  input: TabOpenInputSchema,
-  output: TabOpenResultSchema,
+  input: TabOpenInputSchema.extend(directInput),
+  output: TabOpenResultSchema.partial().extend({ ...directOutput, tab: AgentTabSchema.optional() }),
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "tabs",
 });
 export const tab_close = defineAgentTool({
@@ -38,10 +85,10 @@ export const tab_close = defineAgentTool({
   title: "Close tabs",
   description:
     "Remove these entries from the person's tab list. This does not quit a desktop app, stop a phone, stop agent work or stop an app server. Each ID is independent; closed lists successes and failed gives per-tab errors. Use app_stop to stop an app server.",
-  input: TabCloseInputSchema,
-  output: TabCloseResultSchema,
+  input: TabCloseInputSchema.extend(directInput),
+  output: TabCloseResultSchema.partial().extend(directOutput),
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "tabs",
 });
 export const tab_organize = defineAgentTool({
@@ -52,7 +99,7 @@ export const tab_organize = defineAgentTool({
   input: TabOrganizeInputSchema,
   output: TabOrganizeResultSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "tabs",
 });
 export const tab_group_update = defineAgentTool({
@@ -63,7 +110,7 @@ export const tab_group_update = defineAgentTool({
   input: TabGroupUpdateInputSchema,
   output: TabGroupUpdateResultSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "tabs",
 });
 export const tabTools = [tab_list, tab_open, tab_close, tab_organize, tab_group_update] as const;

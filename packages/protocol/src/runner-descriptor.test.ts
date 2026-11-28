@@ -61,7 +61,6 @@ function descriptor() {
         harnessDrivers: [driver],
 
         maxConcurrentRuns: 1,
-        providerStateModes: ["isolated", "future-state"],
 
         future: true,
       },
@@ -177,7 +176,6 @@ describe("the owning Runner descriptor reader", () => {
     expect(JSON.stringify(parsed)).not.toContain("future");
     expect(parsed.name).toBe("Runner");
     expect(parsed.modules.agents?.environmentIds).toEqual(wire.modules.agents.environmentIds);
-    expect(parsed.modules.agents?.providerStateModes).toEqual(["isolated"]);
     expect(parsed.modules.messaging?.capabilities[0]?.transportKinds).toEqual(["socket"]);
     expect(RunnerHarnessDriverViewSchema.parse(driver)).toEqual(
       RunnerHarnessDriverSchema.parse(driver),
@@ -273,16 +271,6 @@ describe("the owning Runner descriptor reader", () => {
     expect(parsed.modules.integrations?.macWindowVideoVersion).toBeUndefined();
   });
 
-  it("refuses unsupported and empty provider state modes", () => {
-    const wire = descriptor();
-    for (const providerStateModes of [["future-state"], []])
-      expect(
-        RunnerDescriptorSchema.safeParse({
-          ...wire,
-          modules: { ...wire.modules, agents: { ...wire.modules.agents, providerStateModes } },
-        }).success,
-      ).toBe(false);
-  });
   it("keeps known semantic refinements and required semantics validated", () => {
     const wire = descriptor();
     const invalid = [

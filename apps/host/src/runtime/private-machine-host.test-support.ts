@@ -1,4 +1,4 @@
-import { builtPluginEngine } from "./machine-access-protocol.test-support.js";
+import { builtPluginEngine, builtReplWorkerEntry } from "./machine-access-protocol.test-support.js";
 import { createDatabase } from "@opensteer/database";
 import { sql } from "kysely";
 import { parseHostConfig, type HostConfig } from "@opensteer/config";
@@ -28,6 +28,7 @@ import {
   type RunnerConnectionFence,
   type RunnerDescriptor,
   type RunnerProof,
+  agentSessionGuardsCapability,
 } from "@opensteer/protocol";
 import {
   createRunnerAuthenticationSignature,
@@ -83,7 +84,7 @@ export async function claimPrivateMachineOwner(runtime: PersonalHostRuntime, con
     url: "/v1/rpc/auth.setup.claim",
     headers: {
       origin: config.canonicalOrigin.origin,
-      ...apiVersionHeaders("personal"),
+      ...apiVersionHeaders(),
     },
     payload: { kind: "local-machine-owner", token: config.identity.localOwnerClaimToken },
   });
@@ -93,7 +94,7 @@ export async function claimPrivateMachineOwner(runtime: PersonalHostRuntime, con
     cookie: claimed.cookies.map((c) => `${c.name}=${c.value}`).join("; "),
     origin: config.canonicalOrigin.origin,
     // As every app states it: the oldest version it reads, and the one it speaks.
-    ...apiVersionHeaders("personal"),
+    ...apiVersionHeaders(),
   };
 }
 export async function startPrivateMachineHost(
@@ -112,6 +113,10 @@ export async function startPrivateMachineHost(
   > & {
     readonly remoteAccess?: boolean;
     readonly deploymentName?: string;
+    /** Points the built plugin engine elsewhere, such as at a fixture npm registry and catalog. */
+    readonly pluginEngine?: Partial<
+      NonNullable<NonNullable<Parameters<typeof createHostRuntime>[1]>["pluginEngine"]>
+    >;
     readonly canonicalOrigin?: URL;
     readonly webDistribution?: HostConfig["webDistribution"];
   } = {},
@@ -141,9 +146,11 @@ export async function startPrivateMachineHost(
   };
   try {
     const owned = await ownTestDatabaseProducer(databaseUrl, async () => {
+      const replWorkerEntry = builtReplWorkerEntry();
       const created = await createHostRuntime(config, {
         ...options,
-        pluginEngine: builtPluginEngine,
+        ...(replWorkerEntry ? { replWorkerEntry } : {}),
+        pluginEngine: { ...builtPluginEngine, ...options.pluginEngine },
       });
       if (created.kind !== "personal") {
         await created.close();
@@ -174,7 +181,6 @@ export async function startPrivateMachineHost(
             environmentIds: [config.personal!.environmentId],
             harnessDrivers: [],
             maxConcurrentRuns: 1,
-            providerStateModes: ["isolated"],
           },
         },
         name: "Hosting computer",
@@ -370,6 +376,31 @@ function primaryFence(message: RunnerConnectionFence): RunnerConnectionFence {
   };
 }
 
+/**
+ * Refuses, before admission, every Run sent to this computer that the test is not starting itself
+ * (a reminder's, a message's): a Run sent and never answered ends the computer's connection when
+ * its acknowledgement times out, and every answer after that would be a disconnected computer's.
+ */
+export function rejectRunsExcept(
+  primary: PrimaryConnection,
+  starting: (threadId: string) => boolean,
+): void {
+  primary.socket.on("message", (raw: WebSocket.RawData) => {
+    const message = JSON.parse(raw.toString()) as HostToRunnerMessage;
+    if (message.type !== "host.command" || message.command.type !== "run.execute") return;
+    if (starting(message.command.context.threadId)) return;
+    primary.socket.send(
+      JSON.stringify({
+        ...primaryFence(message),
+        commandId: message.command.commandId,
+        correlationId: message.command.correlationId,
+        error: { code: "internal", message: "This test does not run it", retryable: false },
+        type: "runner.command-rejected",
+      }),
+    );
+  });
+}
+
 export function acknowledgeCommands(
   primary: PrimaryConnection,
   accepts: (command: { readonly type: string }) => boolean,
@@ -415,14 +446,20 @@ export async function connectCallerMachine(
      * cannot steer mid-turn does.
      */
     readonly restartsRuns?: boolean;
+    /** Its engine takes a steered message into the running turn itself. */
+    readonly steers?: boolean;
     /**
      * Its engine shows a tool result's pictures and its model reads them, so
      * a computer-use observation reaches the agent with its screenshot.
      */
     readonly rendersImages?: boolean;
     readonly computerTool?: 1;
+    /** Its OpenAI source offers model settings, so a model's limits can be set. */
+    readonly modelSettings?: boolean;
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
+    /** It runs script automations (`automation-script-v1`). */
+    readonly automations?: boolean;
   } & (
     | { readonly token: string; readonly previous?: undefined }
     /** Reattach the same computer and disk after its Host restarts. */
@@ -436,6 +473,8 @@ export async function connectCallerMachine(
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
     capabilities: [
+      // This release's Runner, which reads a connected agent session's guarded fields.
+      agentSessionGuardsCapability,
       "filesystem",
       "network-egress",
       "native-session-continuation-v1",
@@ -449,6 +488,7 @@ export async function connectCallerMachine(
       runEventsCapability,
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
+      ...(input.automations ? ["automation-script-v1"] : []),
     ],
     modules: {
       ...(input.integrations ? { integrations: input.integrations } : {}),
@@ -467,6 +507,7 @@ export async function connectCallerMachine(
               : { longRequestHold: input.longRequestHold }),
             ...(input.rendersImages ? { mcpImageContent: true } : {}),
             readiness: "configured",
+            ...(input.steers ? { steering: true } : {}),
             sources: [
               {
                 fields: [],
@@ -475,12 +516,12 @@ export async function connectCallerMachine(
                 quota: "windows",
                 sourceId: "openai",
                 stateKinds: ["ambient", "isolated"],
+                ...(input.modelSettings ? { modelSettings: true } : {}),
               },
             ],
           },
         ],
         maxConcurrentRuns: input.maxConcurrentRuns ?? 4,
-        providerStateModes: ["ambient", "isolated"],
       },
     },
     name: input.name,
@@ -676,7 +717,8 @@ export async function dispatchCallerRun(
 ): Promise<CallerRun> {
   const threadId = input.threadId ?? (await createCallerThread(host, caller, input));
 
-  const executed = waitForExecute(caller.primary.socket);
+  // This task's Run: another Run the Host sends meanwhile (a reminder's, say) is not taken for it.
+  const executed = waitForExecute(caller.primary.socket, undefined, threadId);
   const turn = await testRpcData(
     host.origin,
     "commands.dispatch",
@@ -956,6 +998,7 @@ function executesFor(
 export function waitForExecute(
   socket: WebSocket,
   runId?: RunId,
+  threadId?: ThreadId,
 ): Promise<
   Extract<HostToRunnerMessage, { type: "host.command" }> & {
     readonly command: Extract<
@@ -973,6 +1016,7 @@ export function waitForExecute(
       const message = JSON.parse(frame.toString()) as HostToRunnerMessage;
       if (message.type !== "host.command" || message.command.type !== "run.execute") return;
       if (runId && message.command.context.runId !== runId) return;
+      if (threadId && message.command.context.threadId !== threadId) return;
       clearTimeout(timeout);
       socket.off("message", receive);
       resolve(message as Parameters<typeof resolve>[0]);

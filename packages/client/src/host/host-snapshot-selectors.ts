@@ -69,9 +69,6 @@ function sameThreadsIgnoringActivityTime(
       left.purpose !== right.purpose ||
       left.listed !== right.listed ||
       left.doneAt !== right.doneAt ||
-      left.teamOrigin?.teamId !== right.teamOrigin?.teamId ||
-      left.teamOrigin?.channelId !== right.teamOrigin?.channelId ||
-      left.teamOrigin?.threadRootId !== right.teamOrigin?.threadRootId ||
       left.runnerLabel !== right.runnerLabel ||
       left.status !== right.status ||
       left.title !== right.title ||

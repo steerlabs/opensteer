@@ -132,11 +132,15 @@ function fixture(
   });
   const native = {
     view: { webContents: pageContents },
+    // As the launcher does: the view joins the window at placement, then it reports.
     mount: vi.fn(
-      (_window: unknown, _stage: unknown, placed: (placement: NativePlacement) => void) =>
-        placed({ bounds: rect, crop: { right: false, bottom: false }, emulation: null }),
+      (_window: unknown, _stage: unknown, placed: (placement: NativePlacement) => void) => {
+        window.contentView.addChildView(native.view);
+        placed({ bounds: rect, crop: { right: false, bottom: false }, emulation: null });
+      },
     ),
     unmount: vi.fn(),
+    setParked: vi.fn(),
     setStage: vi.fn(),
     isFullscreen: () => false,
     inputOutstanding: vi.fn(() => false),
@@ -196,6 +200,72 @@ function fixture(
     humanInput: () => humanInput(),
   };
 }
+
+describe("a hidden window", () => {
+  it("parks the shown tab on hide and minimise, and brings it back on show and restore", async () => {
+    const f = fixture();
+    f.socket("admitted");
+    await f.manager.present(f.sender, f.request);
+    let visible = true;
+    let minimized = false;
+    Object.assign(f.window, { isVisible: () => visible, isMinimized: () => minimized });
+    visible = false;
+    f.window.emit("hide");
+    expect(f.native.setParked).toHaveBeenLastCalledWith(true);
+    visible = true;
+    f.window.emit("show");
+    expect(f.native.setParked).toHaveBeenLastCalledWith(false);
+    minimized = true;
+    f.window.emit("minimize");
+    expect(f.native.setParked).toHaveBeenLastCalledWith(true);
+    minimized = false;
+    f.window.emit("restore");
+    expect(f.native.setParked).toHaveBeenLastCalledWith(false);
+  });
+
+  it("never pulls a tab that got its first frame while hidden into the hidden window", async () => {
+    const f = fixture();
+    f.native.waitForPaint = () => Promise.resolve();
+    f.socket("admitted");
+    const target = await f.manager.present(f.sender, f.request);
+    await Promise.resolve();
+    const nextId = BrowserSurfaceIdSchema.parse("bsf_00000000-0000-4000-8000-000000000002");
+    const next = {
+      ...f.native,
+      view: {
+        webContents: Object.assign(new EventEmitter(), {
+          isCrashed: () => false,
+          stopFindInPage: vi.fn(),
+        }),
+      },
+      mount:
+        vi.fn<(window: unknown, stage: unknown, placed: (p: NativePlacement) => void) => void>(),
+      setParked: vi.fn(),
+      unmount: vi.fn(),
+      waitForPaint: () => new Promise<void>(() => {}),
+    };
+    f.source.presentSurface.mockImplementation(
+      () =>
+        ({
+          ...f.surface,
+          surfaceId: nextId,
+          page: { ...f.surface.page, native: next },
+          release: vi.fn(),
+        }) as unknown as PresentedSurface,
+    );
+    await f.manager.update(f.sender, { presentationId: target.presentationId, surfaceId: nextId });
+    Object.assign(f.window, { isVisible: () => false });
+    f.window.emit("hide");
+    expect(next.setParked).toHaveBeenLastCalledWith(true);
+    // The launcher keeps the parked view in its own host; its first frame arrives.
+    next.mount.mock.calls[0]![2]({
+      bounds: rect,
+      crop: { right: false, bottom: false },
+      emulation: null,
+    });
+    expect(f.window.contentView.children).not.toContain(next.view);
+  });
+});
 
 describe("native presentation authority (retired A01–A07)", () => {
   it("requires admitted control, rather than local membership, before exposing a page", async () => {
@@ -477,6 +547,7 @@ it("switches to an unplaced page without exposing it or keeping the old page's g
   expect(next.mount).toHaveBeenCalledOnce();
   expect(contentView.children).toEqual([appView, f.native.view]);
   expect(glass.update).toHaveBeenLastCalledWith(rect, null, true);
+  contentView.addChildView(next.view);
   next.mount.mock.calls[0]![2]({
     bounds: rect,
     crop: { right: false, bottom: false },
@@ -561,7 +632,11 @@ it("promotes a pending page when placement arrives after a paint timeout with no
   f.native.waitForPaint = vi.fn(() => paint.promise);
   let deliverPlacement!: (placement: NativePlacement) => void;
   f.native.mount = vi.fn((_window, _stage, placed) => {
-    deliverPlacement = placed;
+    deliverPlacement = (placement) => {
+      // As the launcher does: the view joins the window at placement, then it reports.
+      f.window.contentView.addChildView(f.native.view);
+      placed(placement);
+    };
   });
   f.socket("admitted");
   await f.manager.present(f.sender, f.request);

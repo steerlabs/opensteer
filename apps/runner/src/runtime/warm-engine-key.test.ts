@@ -1,11 +1,5 @@
 import { expect, it } from "vitest";
-import {
-  createId,
-  ModelIdSchema,
-  ModelSelectionSchema,
-  SequenceSchema,
-  TeamSourceSchema,
-} from "@opensteer/core";
+import { createId, ModelIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import { warmEngineKey } from "./warm-engine-pool.js";
 it("invalidates warm reuse for tool inventory, instructions, roots and discovered skills while preserving per-Run credential rebinding", () => {
   const context = {
@@ -31,44 +25,17 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
   } as unknown as Parameters<typeof warmEngineKey>[0]["context"];
   const input = {
     context,
-    attachmentRoot: null,
+    attachmentDirectory: null,
     baseEnvironment: {},
     instructions: "Agent home instructions",
     machineAccessLaunch: "",
     providerSessionReference: null,
-    runtimeBoundary: "native-user",
     skills: undefined,
     homeSkillsDigest: "home:folder",
     workspacePath: "/task",
     writableRoots: ["/task", "/agent-home"],
   };
   const before = warmEngineKey(input);
-  const teamTurnContext = {
-    kind: "team" as const,
-    asker: null,
-    source: TeamSourceSchema.parse({
-      teamId: createId("deployment"),
-      channelId: createId("teamChannel"),
-      threadRootId: "1",
-      messageId: "2",
-      audience: {
-        teamName: "Acme",
-        channelName: "Support",
-        channelKind: "public",
-        memberCount: 12,
-        peopleOnly: false,
-      },
-    }),
-    instructionsMarkdown: "Current channel configuration",
-    instructionsRevision: SequenceSchema.parse("1"),
-  };
-  const team = { ...input, context: { ...context, teamTurnContext } };
-  const privateTurn = {
-    ...input,
-    context: { ...context, teamTurnContext: { kind: "private" as const } },
-  };
-  expect(warmEngineKey(team)).toBe(warmEngineKey(privateTurn));
-  expect(warmEngineKey(team)).toBe(before);
   const selectionChanged = {
     ...input,
     context: {
@@ -102,23 +69,10 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
   ).not.toBe(
     warmEngineKey({ ...input, warmSelection: { model: true, options: ["effort", "fast"] } }),
   );
-  expect(
-    warmEngineKey({
-      ...team,
-      context: {
-        ...team.context,
-        teamTurnContext: {
-          ...teamTurnContext,
-          asker: { displayName: "Maya", actor: "agent" as const },
-        },
-      },
-    }),
-  ).toBe(before);
   context.agentTools.token = "rotated";
   expect(warmEngineKey(input)).toBe(before);
   for (const change of [
     { ...input, baseEnvironment: { MODE: "changed" } },
-    { ...input, runtimeBoundary: "isolated-service" },
     { ...input, providerSessionReference: "different-thread" },
     { ...input, context: { ...context, harnessInstanceId: createId("harnessInstance") } },
     {

@@ -143,6 +143,7 @@ export type PasswordsBrokerSignInProbeResult = z.infer<
 
 export const PasswordsBrokerSignInRequestParamsSchema = z.strictObject({
   ...PasswordSignInRequesterSchema.shape,
+  alwaysAsk: z.literal(true).optional(),
   protocolVersion: z.literal(10),
   permissionVersion: z.literal(6),
   expiresAt: z.iso.datetime({ offset: true }),

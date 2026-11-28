@@ -10,6 +10,23 @@ import XCTest
 final class WindowProtocolTests: XCTestCase {
 
   @WorkActor
+  func testNoLaunchRefusesAClosedAppWithoutOpeningIt() async {
+    let closed = HelperError(.appNotRunning, "The app is closed.")
+    do {
+      _ = try await SessionWindows.acquireProcess(
+        launching: false,
+        open: {
+          XCTFail("Observation tried to open the app.")
+          return AppLaunch.Result(processIdentifier: 123, launched: true, broughtForward: false)
+        },
+        verify: { throw closed })
+      XCTFail("The closed app must be refused.")
+    } catch {
+      XCTAssertEqual(error as? HelperError, closed)
+    }
+  }
+
+  @WorkActor
   func testPointRoutingRefusesGapsAndRevalidatesTheWholeMemberFrame() throws {
     let binding = ActionRunner.Binding(
       processIdentifier: 123, windowID: 1,

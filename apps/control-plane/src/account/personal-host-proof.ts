@@ -1,13 +1,18 @@
 import { createPublicKey, verify } from "node:crypto";
 import {
   PersonalHostAccessRouteEnvelopeSchema,
+  PersonalHostAccountAuthoritySchema,
   PersonalHostAccountLinkProofEnvelopeSchema,
+  isNetworkedPersonalAuthority,
   personalHostAccountLinkProofSigningBytes,
   type PersonalHostAccessRouteEnvelope,
   type PersonalHostAccountLinkProofEnvelope,
 } from "@opensteer/control-plane-protocol";
 import { sha256Base64Url } from "@opensteer/core/crypto";
-import { verifyPersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
+import {
+  HostDiscoveryEnvelopeSchema,
+  verifyPersonalHostAccessRouteEnvelope,
+} from "@opensteer/deployment-authority";
 import { ControlPlaneError } from "../server/errors.js";
 
 const invalidHostProof = () =>
@@ -66,4 +71,18 @@ function verifyHostEnvelope(
     if (error instanceof ControlPlaneError) throw error;
     throw invalidHostProof();
   }
+}
+
+/**
+ * Where clients reach a linked Personal Host: a Mac Home by its signed Remote
+ * access route, a Home on its own server at its canonical origin. Anything
+ * that is not a Personal authority answers `routed`, so it never matches a
+ * canonical row.
+ */
+export function personalReachability(authority: unknown): "canonical" | "routed" {
+  const envelope = HostDiscoveryEnvelopeSchema.safeParse(authority);
+  const parsed = PersonalHostAccountAuthoritySchema.safeParse(
+    envelope.success ? envelope.data.document : authority,
+  );
+  return parsed.success && isNetworkedPersonalAuthority(parsed.data) ? "canonical" : "routed";
 }

@@ -7,13 +7,19 @@ import {
 } from "@opensteer/browser-source-wire/frozen";
 import {
   browserSourceWireFloor,
+  browserSourceTabWire,
+  browserSourceTabDetachWire,
+  browserSourceTabDetachReplayWire,
+  browserSourceTabFrameBytes,
+  browserSourceTabBufferedBytes,
   readHostMessage,
-  browserSourceWireCurrent,
   maxBrowserSourceFrameBytes,
   type BrowserSourceClientFrame as BrowserSourceClientMessage,
   type BrowserSourceHostFrame as BrowserSourceHostMessage,
   type BrowserSourceStatus,
 } from "@opensteer/browser-source-wire/frames";
+import { extensionWire, liveTabsOnly } from "./variant.js";
+import { ChromeTabDebugger, TabShareProblem, type ChromeTabLink } from "./tab-debugger.js";
 import { readSiteCookies } from "./cookies.js";
 import {
   ConnectProblem,
@@ -28,11 +34,13 @@ import {
   type ConnectionState,
   type ConnectionView,
   type InvitationCheck,
+  uiFailure,
   type Status,
   type UiRequest,
 } from "./messages.js";
+import { reloadWhenReplaced } from "./reload-when-replaced.js";
 import {
-  storageBusy,
+  storageTurn,
   loadQuarantine,
   forgetQuarantine,
   addConnection,
@@ -55,19 +63,33 @@ interface Link {
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   socket: WebSocket | null;
   state: ConnectionState;
+  tabLink?: ChromeTabLink;
 }
 
 interface Handshake {
   /** The nonce this socket's challenge sent; the Host signs it before or instead of its proof. */
   nonce: string | null;
   proofAccepted: boolean;
+  wire: number;
 }
 
 type HeldState =
   "ended" | "route-changed" | "update-required" | "host-outdated" | "different-opensteer";
 
 const links = new Map<string, Link>();
+const liveTabs =
+  liveTabsOnly && chrome.debugger
+    ? new ChromeTabDebugger(
+        chrome.debugger,
+        chrome.tabs,
+        chrome.webNavigation,
+        chrome.declarativeNetRequest,
+        chrome.cookies,
+      )
+    : undefined;
 let pairingInProgress = false;
+/** Settles when the pairing in progress has ended. */
+let pairingEnded: Promise<void> = Promise.resolve();
 
 function link(sourceId: string): Link {
   let existing = links.get(sourceId);
@@ -119,6 +141,8 @@ function scheduleReconnect(current: Link): void {
 
 /** Fences the current socket off; late frames from it are ignored by generation. */
 function dropSocket(current: Link, state: ConnectionState, reason?: string): void {
+  liveTabs?.disconnect(current.sourceId);
+  delete current.tabLink;
   current.generation += 1;
   current.ready = false;
   current.state = state;
@@ -145,7 +169,7 @@ const retryingStates = new Set<ConnectionState>([
 function persistedState(connection: Connection): HeldState | null {
   const held = connection.held;
   if (!held || !persistedStates.has(held.state)) return null;
-  if (held.state === "update-required" && held.version !== browserSourceWireCurrent) return null;
+  if (held.state === "update-required" && held.version !== extensionWire) return null;
   return held.state;
 }
 
@@ -199,7 +223,7 @@ async function connectLink(current: Link): Promise<void> {
     return;
   }
   current.socket = socket;
-  const handshake: Handshake = { nonce: null, proofAccepted: false };
+  const handshake: Handshake = { nonce: null, proofAccepted: false, wire: 4 };
   const readyTimer = setTimeout(
     () => reject(current, generation, "Opensteer did not finish"),
     15_000,
@@ -230,6 +254,8 @@ async function connectLink(current: Link): Promise<void> {
   const onClosed = (): void => {
     clearTimeout(readyTimer);
     if (generation !== current.generation) return;
+    liveTabs?.disconnect(current.sourceId);
+    delete current.tabLink;
     current.generation += 1;
     current.socket = null;
     current.ready = false;
@@ -250,9 +276,13 @@ function send(current: Link, generation: number, frame: BrowserSourceClientMessa
     return false;
   }
   const payload = JSON.stringify(frame);
-  if (new TextEncoder().encode(payload).byteLength > maxBrowserSourceFrameBytes) {
+  const bytes = new TextEncoder().encode(payload).byteLength;
+  const tabFrame = frame.type.startsWith("tab.");
+  if (bytes > (tabFrame ? browserSourceTabFrameBytes : maxBrowserSourceFrameBytes)) {
     throw new RangeError("Frame too large");
   }
+  if (tabFrame && current.socket.bufferedAmount + bytes > browserSourceTabBufferedBytes)
+    return false;
   current.socket.send(payload);
   return true;
 }
@@ -274,7 +304,7 @@ async function hold(
   clearReconnect(current);
   dropSocket(current, state, "Stopped by Opensteer");
   const marker: Partial<Connection> = {
-    held: { state, ...(state === "update-required" ? { version: browserSourceWireCurrent } : {}) },
+    held: { state, ...(state === "update-required" ? { version: extensionWire } : {}) },
   };
   await updateConnection(
     connection.sourceId,
@@ -287,7 +317,7 @@ async function hold(
 function refusal(error: Extract<BrowserSourceHostMessage, { type: "source.error" }>): HeldState {
   if (error.code === "source-unauthorized") return "ended";
   if (error.code === "route-changed") return "route-changed";
-  return error.supportedVersion < browserSourceWireCurrent ? "host-outdated" : "update-required";
+  return error.supportedVersion < extensionWire ? "host-outdated" : "update-required";
 }
 
 async function receive(
@@ -304,7 +334,7 @@ async function receive(
     reject(current, generation, "Invalid frame");
     return;
   }
-  const message = readHostMessage(raw);
+  const message = readHostMessage(raw, handshake.wire);
   if (!message) {
     reject(current, generation, "Invalid frame");
     return;
@@ -357,19 +387,21 @@ async function receive(
     handshake.nonce = null;
     handshake.proofAccepted = true;
     const negotiated = message.wire ?? 4;
-    if (negotiated < browserSourceWireFloor) {
+    if (negotiated < (liveTabsOnly ? browserSourceTabWire : browserSourceWireFloor)) {
       pause(current, generation, "host-outdated");
       return;
     }
-    if (negotiated > browserSourceWireCurrent) {
+    if (negotiated > extensionWire) {
       await hold(connection, current, generation, "update-required");
       return;
     }
+    handshake.wire = negotiated;
     send(current, generation, {
       sourceId: connection.sourceId,
       token: connection.token,
       type: "source.hello",
       version: negotiated,
+      ...(liveTabsOnly ? { capability: "live-tabs" } : {}),
     });
     return;
   }
@@ -382,37 +414,90 @@ async function receive(
     return;
   }
   if (message.type === "source.ready") {
-    if (message.sourceId !== connection.sourceId) {
+    if (
+      message.sourceId !== connection.sourceId ||
+      (liveTabsOnly && message.capability !== "live-tabs")
+    ) {
       reject(current, generation, "Wrong connection");
+      return;
+    }
+    const replay = liveTabs && handshake.wire >= browserSourceTabDetachReplayWire;
+    const stored = replay && (await loadConnection(connection.sourceId));
+    if (current.generation !== generation) return;
+    if (replay && (!stored || stored.token !== connection.token)) {
+      reject(current, generation, "Chrome pairing changed");
       return;
     }
     current.ready = true;
     current.state = "connected";
     current.backoffAttempt = 0;
+    if (liveTabs && handshake.wire >= browserSourceTabWire) {
+      const record = async (shareId: string, detached: boolean) => {
+        await updateConnection(
+          connection.sourceId,
+          (entry) => {
+            const receipts = new Set(entry.chromeDetachReceipts);
+            if (detached) receipts.add(shareId);
+            else receipts.delete(shareId);
+            return { connection: { ...entry, chromeDetachReceipts: [...receipts] }, result: true };
+          },
+          connection.token,
+        );
+      };
+      current.tabLink = liveTabs.connect(
+        current.sourceId,
+        (frame) => send(current, generation, frame),
+        () => reject(current, generation, "Chrome tab transport overloaded"),
+        handshake.wire >= browserSourceTabDetachWire,
+        stored
+          ? {
+              pending: stored.chromeDetachReceipts ?? [],
+              record: (shareId) => record(shareId, true),
+              acknowledge: (shareId) => record(shareId, false),
+            }
+          : undefined,
+        // The Home this connection paired with: no shared tab an agent drives goes there.
+        connection.excludedOrigins,
+      );
+    }
     return;
   }
   if (!current.ready) {
     reject(current, generation, "Not ready");
     return;
   }
-  if (message.type === "source.inspect") {
-    const status = await inspectSite(connection.sourceId, message.site);
-    send(current, generation, {
-      operationId: message.operationId,
-      status,
-      type: "source.inspect.result",
-    });
+  if (message.type === "tab.detached") {
+    await liveTabs?.acknowledgeDetach(current.sourceId, message.shareId);
     return;
   }
-  if (message.type !== "source.export") return;
-  try {
-    await exportSite(connection, current, generation, message.site, message.operationId);
-  } catch {
-    send(current, generation, {
-      operationId: message.operationId,
-      result: { status: "unsupported" },
-      type: "source.export.result",
-    });
+  if (message.type === "tab.command") {
+    if (new TextEncoder().encode(raw).byteLength > browserSourceTabFrameBytes) {
+      reject(current, generation, "Chrome tab frame too large");
+      return;
+    }
+    current.tabLink?.read(message);
+    return;
+  }
+  if (!OPENSTEER_LIVE_TABS) {
+    if (message.type === "source.inspect") {
+      const status = await inspectSite(connection.sourceId, message.site);
+      send(current, generation, {
+        operationId: message.operationId,
+        status,
+        type: "source.inspect.result",
+      });
+      return;
+    }
+    if (message.type !== "source.export") return;
+    try {
+      await exportSite(connection, current, generation, message.site, message.operationId);
+    } catch {
+      send(current, generation, {
+        operationId: message.operationId,
+        result: { status: "unsupported" },
+        type: "source.export.result",
+      });
+    }
   }
 }
 
@@ -585,22 +670,23 @@ function parseShareNotification(id: string): { site: string; sourceId: string } 
   return sourceId && site ? { site, sourceId } : null;
 }
 
-chrome.notifications.onButtonClicked.addListener((id, buttonIndex) => {
-  const target = parseShareNotification(id);
-  if (!target || buttonIndex !== 0) return;
-  void (async () => {
-    const connection = await setSiteStopped(target.sourceId, target.site, true);
-    await chrome.notifications.clear(id);
-    if (!connection) return;
-    await chrome.notifications.create(`stopped\n${target.sourceId}\n${target.site}`, {
-      iconUrl: new URL("icons/icon-128.png", import.meta.url).href,
-      message: `Share it again from the Opensteer button in Chrome's toolbar.`,
-      priority: 0,
-      title: `Stopped sharing ${siteHost(target.site)} with ${connection.deploymentName}`,
-      type: "basic",
-    });
-  })().catch(() => undefined);
-});
+if (!OPENSTEER_LIVE_TABS)
+  chrome.notifications.onButtonClicked.addListener((id, buttonIndex) => {
+    const target = parseShareNotification(id);
+    if (!target || buttonIndex !== 0) return;
+    void (async () => {
+      const connection = await setSiteStopped(target.sourceId, target.site, true);
+      await chrome.notifications.clear(id);
+      if (!connection) return;
+      await chrome.notifications.create(`stopped\n${target.sourceId}\n${target.site}`, {
+        iconUrl: new URL("icons/icon-128.png", import.meta.url).href,
+        message: `Share it again from the Opensteer button in Chrome's toolbar.`,
+        priority: 0,
+        title: `Stopped sharing ${siteHost(target.site)} with ${connection.deploymentName}`,
+        type: "basic",
+      });
+    })().catch(() => undefined);
+  });
 
 // ---- UI requests ----
 
@@ -639,6 +725,8 @@ function view(connection: Connection): ConnectionView {
       }))
       .sort((left, right) => right.lastSharedAt - left.lastSharedAt),
     sourceId: connection.sourceId,
+    canShareTab: liveTabs?.canShare(connection.sourceId) ?? false,
+    sharedTabs: [...(liveTabs?.list(connection.sourceId) ?? [])],
     state: held ?? links.get(connection.sourceId)?.state ?? "connecting",
   };
 }
@@ -742,6 +830,10 @@ async function connect(
 ): Promise<ConnectResult> {
   if (pairingInProgress) throw new ConnectProblem("busy");
   pairingInProgress = true;
+  let endPairing = () => {};
+  pairingEnded = new Promise((resolve) => {
+    endPairing = resolve;
+  });
   try {
     const invitation = await readOpenedInvitation(text, tab);
     const existing = await existingFor(invitation);
@@ -797,6 +889,7 @@ async function connect(
     return { deploymentName: invitation.deploymentName, ready: state === "connected" };
   } finally {
     pairingInProgress = false;
+    endPairing();
   }
 }
 
@@ -811,6 +904,17 @@ async function handle(request: UiRequest, tab: ChromeTab | undefined): Promise<u
       return await checkInvitation(request.invitation, tab);
     case "ui.connect":
       return await connect(request.invitation, request.name, tab);
+    case "ui.tab.share": {
+      if (!liveTabs) throw new TabShareProblem("unsupported");
+      const tab = await chrome.tabs.get(request.tabId).catch((cause: unknown) => {
+        throw new TabShareProblem("tab-unavailable", { cause });
+      });
+      await liveTabs.share(request.sourceId, tab);
+      return await status();
+    }
+    case "ui.tab.stop":
+      liveTabs?.stop(request.sourceId, request.shareId);
+      return await status();
     case "ui.site.stop":
     case "ui.site.share":
       await setSiteStopped(request.sourceId, request.site, request.type === "ui.site.stop");
@@ -874,33 +978,40 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Only this extension's own top-level pages may drive it. connect.html is
   // reachable from the web, so a framed copy must not be able to pair.
   const extensionOrigin = chrome.runtime.getURL("");
+  const tabShare =
+    typeof request === "object" &&
+    request !== null &&
+    "type" in request &&
+    request.type === "ui.tab.share";
   if (
     sender.id !== chrome.runtime.id ||
     !sender.url?.startsWith(extensionOrigin) ||
     (sender.frameId !== undefined && sender.frameId !== 0)
   ) {
-    sendResponse({ code: "failed", deploymentName: null, ok: false, origin: null });
+    sendResponse(uiFailure(tabShare ? "untrusted-request" : undefined));
     return false;
   }
   const parsed = UiRequestSchema.safeParse(request);
   if (!parsed.success) {
-    sendResponse({ code: "failed", deploymentName: null, ok: false, origin: null });
+    sendResponse(uiFailure(tabShare ? "invalid-request" : undefined));
     return false;
   }
   void handle(parsed.data, sender.tab)
     .then((value) => sendResponse({ ok: true, value }))
-    .catch((error: unknown) =>
-      sendResponse(
-        error instanceof ConnectProblem
-          ? {
-              code: error.code,
-              deploymentName: error.deploymentName,
-              ok: false,
-              origin: error.origin,
-            }
-          : { code: "failed", deploymentName: null, ok: false, origin: null },
-      ),
-    );
+    .catch((error: unknown) => {
+      if (error instanceof ConnectProblem)
+        sendResponse({
+          code: error.code,
+          deploymentName: error.deploymentName,
+          ok: false,
+          origin: error.origin,
+        });
+      else if (error instanceof TabShareProblem) sendResponse(uiFailure(error.reason));
+      else {
+        if (tabShare) console.error("Chrome tab sharing failed", error);
+        sendResponse(uiFailure(tabShare ? "unexpected" : undefined));
+      }
+    });
   return true;
 });
 
@@ -922,22 +1033,30 @@ void (async () => {
 })().catch(() => undefined);
 
 async function checkForUpdate(): Promise<void> {
-  if (pairingInProgress || storageBusy()) return;
+  await reloadWhenReplaced({
+    self: import.meta.url,
+    replacement: workerOnDisk,
+    pairing: () => (pairingInProgress ? pairingEnded : null),
+    storageTurn,
+    reload: () => chrome.runtime.reload(),
+  });
+}
+
+/** The service worker the manifest on disk names, or null when it cannot be read. */
+async function workerOnDisk(): Promise<string | null> {
   try {
     const response = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
     const manifest: unknown = await response.json();
-    if (typeof manifest !== "object" || manifest === null || !("background" in manifest)) return;
+    if (typeof manifest !== "object" || manifest === null || !("background" in manifest))
+      return null;
     const background = manifest.background;
     if (typeof background !== "object" || background === null || !("service_worker" in background))
-      return;
-    if (
-      typeof background.service_worker === "string" &&
-      chrome.runtime.getURL(background.service_worker) !== import.meta.url &&
-      !pairingInProgress &&
-      !storageBusy()
-    )
-      chrome.runtime.reload();
+      return null;
+    return typeof background.service_worker === "string"
+      ? chrome.runtime.getURL(background.service_worker)
+      : null;
   } catch {
     /* A failed read leaves this worker running. */
+    return null;
   }
 }

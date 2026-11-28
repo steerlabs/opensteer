@@ -1,4 +1,5 @@
 import {
+  isolatedPlainSentence,
   tabGroupOf,
   matchSearch,
   placeSearchFields,
@@ -39,13 +40,15 @@ import { DeviceLabel } from "./computers/device-label.js";
 import { useScrollEdges } from "./workspace/scroll-edges.js";
 import { tabGroupStyle } from "./workspace/tab-group.js";
 import { TaskMark, TaskState } from "./workspace/task-mark.js";
-import { TeamSearchResults } from "../team/team-search-results.js";
+import { TaskOriginLine } from "./agent-work.js";
+import type { SentencePart } from "@opensteer/client/host";
 
 /** What search can find, as the sidebar holds it. */
 export interface SidebarSearchSources {
   /** Every task row the sidebar has loaded, in its order: Working, Ready, Done. */
   readonly tasks: readonly TaskRow[];
   readonly attention: ReadonlyMap<string, TaskAttention>;
+  readonly origins: ReadonlyMap<string, readonly SentencePart[]>;
   /** Where each task's harness and runner labels come from. */
   readonly snapshot: Pick<HostSnapshot, "tasks">;
 }
@@ -261,7 +264,6 @@ export function SidebarSearch({
         {showing ? (
           <section aria-label="Search results" className="side-results">
             <div className="side-results__scroll" data-scroll-edges="" ref={scrollRef}>
-              <TeamSearchResults onNavigate={onClose} query={query} />
               {results.length === 0 ? (
                 tabsSyncing ? (
                   loadingTabs ? (
@@ -305,6 +307,7 @@ export function SidebarSearch({
                             <TaskResult
                               key={result.key}
                               open={result.row.threadId === openThreadId}
+                              origin={sources.origins.get(result.row.originConnectionId ?? "")}
                               result={result}
                               {...row}
                             />
@@ -472,42 +475,47 @@ function optionProps({ id, selected, onChoose, onPoint }: ResultRow) {
 
 function TaskResult({
   open,
+  origin,
   result,
   ...row
 }: ResultRow & {
   readonly open: boolean;
+  readonly origin: readonly SentencePart[] | undefined;
   readonly result: Extract<Result, { kind: "task" }>;
 }) {
   const { ask, match, row: task } = result;
   const hint = match.hint;
+  const hintField = hint ? result.fields[hint.field] : undefined;
+  const description = hintField?.name === "ask" ? ask : (hintField?.text.source ?? ask);
+  const label = origin
+    ? [task.title, isolatedPlainSentence(origin), description].filter(Boolean).join(" — ")
+    : undefined;
   const quiet = task.quiet && !open;
   const classes = [
     "side-task",
     "side-result",
     `side-task--${task.tone}`,
-    ask || hint ? "has-ask" : "",
+    ask || hint || origin ? "has-ask" : "",
     open ? "is-filled" : quiet ? "is-quiet" : "",
     row.selected ? "is-selected" : "",
   ];
   return (
-    <div className={classes.filter(Boolean).join(" ")} {...optionProps(row)}>
+    <div aria-label={label} className={classes.filter(Boolean).join(" ")} {...optionProps(row)}>
       <span className="side-task__main">
         <TaskMark size={20} mark={taskMark(task)} quiet={quiet} />
         <span className="side-task__text">
           <span className="side-task__title">
             <Lit ranges={match.ranges} text={task.title} />
           </span>
+          <TaskOriginLine parts={origin} />
           {/* The line under the title says why it matched when the title does not. */}
-          {hint && result.fields[hint.field]!.name !== "ask" ? (
+          {hint && hintField && hintField.name !== "ask" ? (
             <span className="side-result__hint">
-              <Lit ranges={hint.ranges} text={result.fields[hint.field]!.text.source} />
+              <Lit ranges={hint.ranges} text={hintField.text.source} />
             </span>
           ) : ask ? (
             <span className="side-task__ask">
-              <Lit
-                ranges={hint && result.fields[hint.field]!.name === "ask" ? hint.ranges : []}
-                text={ask}
-              />
+              <Lit ranges={hint && hintField?.name === "ask" ? hint.ranges : []} text={ask} />
             </span>
           ) : null}
         </span>

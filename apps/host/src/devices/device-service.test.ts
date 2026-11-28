@@ -727,8 +727,16 @@ describe("DeviceService computer discovery", () => {
   );
 
   it.each([
+    // Offline: the device's own refusal says it, in the listing and the call alike.
     [false, false, null, "READY", null],
-    [true, false, null, "READY", null],
+    // Online, its integrations service not running: the listing says it, as the call does.
+    [
+      true,
+      false,
+      null,
+      "INTEGRATION_UNAVAILABLE",
+      "Opensteer's integrations service is unavailable on Studio Mac.",
+    ],
     [
       true,
       true,
@@ -741,7 +749,7 @@ describe("DeviceService computer discovery", () => {
       "Messages needs Full access on Studio Mac.",
     ],
   ] as const)(
-    "leaves an unreachable computer to the call in an agent's listing: connected=%s attached=%s",
+    "leaves only an offline computer to the device's refusal in a Run's listing: connected=%s attached=%s",
     async (runnerConnected, attached, status, expectedCode, expectedDetail) => {
       const callable = computerCallable("read");
       const runnerId = createId("runner");
@@ -1358,6 +1366,7 @@ describe("DeviceService computer use gateway", () => {
       readonly refusal?: ComputerUseError;
       readonly revoked?: () => boolean;
       readonly runnerConnected?: boolean;
+      readonly attached?: boolean;
       readonly settleRefusal?: ComputerUseError;
     } = {},
   ) {
@@ -1514,7 +1523,7 @@ describe("DeviceService computer use gateway", () => {
     const sent: unknown[] = [];
     const computerApps = {
       appStatus: vi.fn(() => null),
-      attached: vi.fn(() => true),
+      attached: vi.fn(() => input.attached ?? true),
       send: vi.fn(async () => {
         throw new Error("A gui tool never reaches the invoke path.");
       }),
@@ -1668,6 +1677,7 @@ describe("DeviceService computer use gateway", () => {
                     {
                       name: notes.displayName,
                       bundleId: notes.bundleId,
+                      teamId: notes.teamId,
                       connectionId: connection.id,
                       access: input.connectionAccess ?? "read-write",
                       status: "approved",
@@ -1739,6 +1749,24 @@ describe("DeviceService computer use gateway", () => {
   }
 
   const context = { runId: createId("run"), threadId: createId("thread") };
+
+  it("preserves a stopped device refusal when its computer-use stream is unavailable", async () => {
+    const f = guiFixture({ operation: "observe", attached: false });
+    const blocked = {
+      code: "computer_stopped",
+      message: "Agents are stopped on this device.",
+      next: "Wait until the person resumes them there.",
+    };
+    vi.spyOn(f.service.devices, "localDeviceAccessBlocked").mockResolvedValue(blocked);
+    try {
+      await expect(operate(f.service, f.callable, {}, runCaller(context))).rejects.toMatchObject({
+        blocked,
+      });
+      expect(f.prepared).toEqual([]);
+    } finally {
+      await f.service.close();
+    }
+  });
 
   it("explains a missing callable with the listing blocker and reuses its tool lookup", async () => {
     const f = guiFixture({ operation: "observe" });
@@ -2148,6 +2176,19 @@ describe("DeviceService computer use gateway", () => {
       message:
         "Computer use lost its connection to this Mac's helper. The actions may already have taken effect. Do not repeat them. Observe the app before deciding the next action.",
     });
+  });
+
+  it("sends a connected agent's copy, cut and paste chords in a Mac app like any other key", async () => {
+    for (const keys of ["cmd+v", "cmd+c", "cmd+x", "cmd+shift+v", "cmd+alt+c"]) {
+      const fixture = guiFixture({ operation: "act" });
+      await operate(
+        fixture.service,
+        fixture.callable,
+        { actions: [{ keys, type: "key" }], observationId: "obs-1" },
+        { ...runCaller(context), connectionWork: true },
+      );
+      expect(fixture.computerUse.sendAct, keys).toHaveBeenCalledOnce();
+    }
   });
 
   it("refuses act when the connection or the grant allows reading only", async () => {

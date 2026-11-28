@@ -7,10 +7,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import {
+  drainLegacyRunCdp,
   registerAgentCdpBridge,
   registerAgentPageBindingRoute,
   registerTriggerCdpBridge,
   registerWatchCdpBridge,
+  withLegacyRunCdpDrain,
 } from "./trigger-cdp-bridge.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import type { WatchCapabilityTokenService } from "../triggers/watch-capability.js";
@@ -74,9 +76,9 @@ async function agentBridge(
       openAgentSession: vi.fn(),
     } as unknown as BrowserService,
     {
-      authenticate: vi.fn(async () => ({
-        requestedBy,
-        runId: createId("run"),
+      authenticateExecution: vi.fn(async () => ({
+        claims: { requestedBy, runId: createId("run") },
+        lineage: null,
       })),
       reauthorize: vi.fn(async (scope: unknown) => scope),
     } as unknown as RunToolTokenService,
@@ -91,6 +93,66 @@ async function agentBridge(
 afterEach(async () => {
   await Promise.all(applications.splice(0).map((application) => application.close()));
 });
+
+it.each(["trigger", "watch"] as const)(
+  "cancels the actual pooled %s waiter when its client closes before it opens a session",
+  async (kind) => {
+    const app = Fastify();
+    applications.push(app);
+    await app.register(websocket);
+    const entered = Promise.withResolvers<void>();
+    const stopped = Promise.withResolvers<void>();
+    const attach = vi.fn();
+    const browser = {
+      usesPoolAdmission: true,
+      openAgentSession: async ({ signal }: { signal: AbortSignal }) => {
+        entered.resolve();
+        try {
+          await new Promise<never>((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        } finally {
+          stopped.resolve();
+        }
+      },
+      attachCdpForAgent: attach,
+      closeTriggerSessionsForBinding: vi.fn(async () => []),
+    } as unknown as BrowserService;
+    const userId = createId("user");
+    if (kind === "trigger")
+      registerTriggerCdpBridge(app, browser, {
+        authenticate: async () => ({
+          requestedBy: userId,
+          environmentId: createId("environment"),
+          occurrenceId: createId("triggerOccurrence"),
+        }),
+      } as unknown as TriggerControlTokenService);
+    else
+      registerWatchCdpBridge(app, browser, {
+        authenticate: async () => ({
+          createdBy: userId,
+          environmentId: createId("environment"),
+          activationId: "watch-activation",
+          exp: Math.ceil(Date.now() / 1000) + 60,
+        }),
+      } as unknown as WatchCapabilityTokenService<"opensteer-watch-browser-cdp">);
+    const port = await listen(app);
+    const { socket, closed } = await connect(
+      `ws://127.0.0.1:${port}/internal/v1/${kind}-cdp`,
+      "program-control-token-1234567890",
+    );
+    try {
+      await entered.promise;
+      socket.close();
+      await Promise.all([closed, stopped.promise]);
+      expect(attach).not.toHaveBeenCalled();
+      expect(browser.closeTriggerSessionsForBinding).not.toHaveBeenCalled();
+    } finally {
+      socket.terminate();
+      await closed;
+    }
+  },
+);
 
 describe("Trigger CDP bridge", () => {
   it("adapts standard CDP WebSocket frames to the Browser Runtime", async () => {
@@ -237,9 +299,198 @@ describe("Watch CDP bridge", () => {
       expect(closeTriggerSessionsForBinding).toHaveBeenCalledWith(`watch:${activationId}`);
     });
   });
+
+  it("refuses trigger and watch CDP upgrades when the caller lineage holds no browser grant (Y5)", async () => {
+    const occurrenceId = createId("triggerOccurrence");
+    const activationId = createId("triggerWatchActivation");
+    const ownerId = createId("user");
+    const environmentId = createId("environment");
+    const openAgentSession = vi.fn();
+    const hasBrowserProfiles = vi.fn(async () => false);
+    const app = Fastify();
+    applications.push(app);
+    await app.register(websocket);
+    const browser = {
+      attachCdpForAgent: vi.fn(),
+      closeTriggerSessionsForBinding: vi.fn(async () => []),
+      hasBrowserProfiles,
+      openAgentSession,
+    } as unknown as BrowserService;
+    registerTriggerCdpBridge(app, browser, {
+      authenticate: vi.fn(async () => ({
+        environmentId,
+        executionGeneration: 1,
+        occurrenceId,
+        requestedBy: ownerId,
+        runnerBootId: "boot-1",
+        runnerId: createId("runner"),
+        threadId: createId("thread"),
+      })),
+    } as unknown as TriggerControlTokenService);
+    registerWatchCdpBridge(app, browser, {
+      authenticate: vi.fn(async () => ({
+        activationId,
+        createdBy: ownerId,
+        environmentId,
+        exp: (Date.now() + 60_000) / 1_000,
+      })),
+    } as unknown as WatchCapabilityTokenService<"opensteer-watch-browser-cdp">);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("Test server did not bind");
+
+    for (const [path, bindingId] of [
+      ["/internal/v1/trigger-cdp", `trigger:${occurrenceId}`],
+      ["/internal/v1/watch-cdp", `watch:${activationId}`],
+    ] as const) {
+      const status = await new Promise<number>((resolve, reject) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${address.port}${path}`, {
+          headers: { authorization: "Bearer valid-token-1234567890" },
+        });
+        socket.once("unexpected-response", (_req, res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        socket.once("open", () => {
+          socket.close();
+          reject(new Error(`Expected 403 refusal for ${path}, but WebSocket opened`));
+        });
+        socket.once("error", () => undefined);
+      });
+      expect(status).toBe(403);
+      expect(hasBrowserProfiles).toHaveBeenCalledWith(ownerId, bindingId);
+    }
+    expect(openAgentSession).not.toHaveBeenCalled();
+  });
 });
 
 describe("Agent CDP bridge", () => {
+  it("refuses a legacy upgrade parked across the terminal drain snapshot", async () => {
+    const app = Fastify();
+    applications.push(app);
+    await app.register(websocket);
+    const runId = createId("run");
+    const requestedBy = createId("user");
+    const auth = {
+      claims: { runId, requestedBy, bindingGeneration: 3 },
+      lineage: { agentConnectionId: "connection", taskOriginConnectionId: null },
+    };
+    const upgradeParked = Promise.withResolvers<void>();
+    const resumeUpgrade = Promise.withResolvers<void>();
+    const detaching = Promise.withResolvers<void>();
+    const finishDetach = Promise.withResolvers<void>();
+    const committing = Promise.withResolvers<void>();
+    const finishCommit = Promise.withResolvers<void>();
+    const authenticateExecution = vi.fn(async () => auth);
+    const close = vi.fn();
+    const attachCdpForAgent = vi.fn(async () => ({
+      close,
+      dispatch: async ({ method }: { method: string }) => {
+        if (method === "Target.detachFromTarget") {
+          detaching.resolve();
+          await finishDetach.promise;
+        }
+        return { result: Promise.resolve({ sessionId: "page-channel" }) };
+      },
+    }));
+    const browser = { attachCdpForAgent } as unknown as BrowserService;
+    registerAgentCdpBridge(app, browser, {
+      authenticateExecution,
+      reauthorize: async () => auth.claims,
+    } as unknown as RunToolTokenService);
+    const port = await listen(app);
+    const url = `ws://127.0.0.1:${port}/internal/v1/browser-cdp/${createBrowserSessionId()}`;
+    const sockets: WebSocket[] = [];
+    const open = async () => {
+      const client = await connect(url, "agent-control-token-1234567890");
+      sockets.push(client.socket);
+      return client;
+    };
+    const early = await open();
+    let terminal: Promise<void> | undefined;
+    try {
+      const attachedPage = new Promise<void>((resolve) =>
+        early.socket.once("message", () => resolve()),
+      );
+      early.socket.send(JSON.stringify({ id: 1, method: "Target.attachToTarget" }));
+      await attachedPage;
+      expect(early.messages).toEqual([{ id: 1, result: { sessionId: "page-channel" } }]);
+      authenticateExecution.mockImplementationOnce(async () => {
+        upgradeParked.resolve();
+        await resumeUpgrade.promise;
+        return auth;
+      });
+      const late = open();
+      const refusal = expect(late).rejects.toThrow("Unexpected server response: 403");
+      await upgradeParked.promise;
+
+      terminal = withLegacyRunCdpDrain(browser, runId, 3, async () => {
+        committing.resolve();
+        await finishCommit.promise;
+      });
+      await detaching.promise;
+      resumeUpgrade.resolve();
+      await refusal;
+      await early.closed;
+
+      finishDetach.resolve();
+      await committing.promise;
+      await expect(open()).rejects.toThrow("Unexpected server response: 403");
+      finishCommit.resolve();
+      await terminal;
+      expect(attachCdpForAgent).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      resumeUpgrade.resolve();
+      finishDetach.resolve();
+      finishCommit.resolve();
+      for (const socket of sockets) socket.terminate();
+      await terminal;
+    }
+  });
+
+  it("does not attach a connected Run that settles during the post-upgrade check", async () => {
+    const app = Fastify();
+    applications.push(app);
+    await app.register(websocket);
+    const runId = createId("run");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const attached = Promise.withResolvers<never>();
+    const attachCdpForAgent = vi.fn(async () => {
+      attached.reject(new Error("Browser attachment began before authorization"));
+      throw new BrowserCdpConnectionEnded("Unexpected attachment");
+    });
+    void attached.promise.catch(() => undefined);
+    const browser = { attachCdpForAgent } as unknown as BrowserService;
+    registerAgentCdpBridge(app, browser, {
+      authenticateExecution: async () => ({
+        claims: { runId, requestedBy: createId("user"), bindingGeneration: 3 },
+        lineage: { agentConnectionId: "connection", taskOriginConnectionId: null },
+      }),
+      reauthorize: async () => {
+        entered.resolve();
+        await resume.promise;
+      },
+    } as unknown as RunToolTokenService);
+    const port = await listen(app);
+    const { closed, socket } = await connect(
+      `ws://127.0.0.1:${port}/internal/v1/browser-cdp/${createBrowserSessionId()}`,
+      "agent-control-token-1234567890",
+    );
+    try {
+      await Promise.race([entered.promise, attached.promise]);
+      const draining = drainLegacyRunCdp(browser, runId, 3);
+      resume.resolve();
+      await draining;
+      await closed;
+      expect(attachCdpForAgent).not.toHaveBeenCalled();
+    } finally {
+      resume.resolve();
+      socket.terminate();
+    }
+  });
+
   it("binds a connection to the session it names and never releases the Run's sessions", async () => {
     const requestedBy = createId("user");
 
@@ -266,7 +517,10 @@ describe("Agent CDP bridge", () => {
         openAgentSession,
       } as unknown as BrowserService,
       {
-        authenticate: vi.fn(async () => ({ requestedBy, runId })),
+        authenticateExecution: vi.fn(async () => ({
+          claims: { requestedBy, runId },
+          lineage: null,
+        })),
         reauthorize: vi.fn(async (scope: unknown) => scope),
       } as unknown as RunToolTokenService,
     );

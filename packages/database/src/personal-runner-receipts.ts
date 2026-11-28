@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   OpensteerError,
   nonTerminalRunStatuses,
+  runTerminationUnprovenCode,
   type EnvironmentId,
   type RunId,
   type RunnerId,
@@ -72,8 +73,6 @@ export interface RunnerStatementContext {
   /** Undefined when the Run has no active session or its requester is not the owner. */
   readonly binding: ExecutionBindingFacts | undefined;
   readonly threadAdmitted: boolean;
-  /** Whether queued Messaging inputs hold authority over this task. */
-  readonly channelInputs: boolean;
 }
 
 function isTerminal(status: string) {
@@ -152,7 +151,12 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     authority: Authority,
     context: RunnerStatementContext,
   ) => Promise<Exclude<Disposition, "terminal-noop">>,
-  options?: { readonly now: number; readonly allowExpiredLease: boolean },
+  options?: {
+    readonly now: number;
+    readonly allowExpiredLease: boolean;
+    readonly verifiedContainment?: boolean | undefined;
+    readonly onRunLoaded?: (run: RunnerStatementContext["run"]) => void;
+  },
 ): Promise<
   { readonly throughOrdinal: number; readonly replayed: boolean } | { readonly finishing: true }
 > {
@@ -183,6 +187,7 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     });
   const { receiptRunnerId, receiptRunnerBootId, receiptBindingGeneration, receiptDigest, ...run } =
     loaded;
+  options?.onRunLoaded?.(run);
   const digest = reportedDigest(statement);
   if (receiptDigest) {
     if (
@@ -263,16 +268,6 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
             .where("runners.revokedAt", "is", null),
         )
         .as("threadAdmitted"),
-      eb
-        .exists(
-          eb
-            .selectFrom("threadInputs")
-            .select(sql.lit(1).as("held"))
-            .where("threadInputs.threadId", "=", run.threadId)
-            .where("threadInputs.state", "in", ["pending", "claimed", "unknown"])
-            .where(sql<string>`thread_inputs.authority_source->>'kind'`, "=", "channel-ingress"),
-        )
-        .as("channelInputs"),
     ])
     .where("runAttempts.runId", "=", run.id)
     .where("runAttempts.bindingGeneration", "=", statement.bindingGeneration)
@@ -288,12 +283,17 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     bound.sessionBindingGeneration === statement.bindingGeneration
       ? { active: bound.sessionActive!, leaseExpiresAt: bound.sessionLeaseExpiresAt }
       : undefined;
+  const lateStopProof =
+    options?.verifiedContainment !== false &&
+    run.status === "failed" &&
+    run.failure?.code === runTerminationUnprovenCode &&
+    statement.type === "run.interrupted";
   if (
     !bound ||
-    !session ||
+    (!lateStopProof && !session) ||
     run.bindingGeneration !== statement.bindingGeneration ||
     (!terminal &&
-      (!session.active ||
+      (!session?.active ||
         !session.leaseExpiresAt ||
         (!options?.allowExpiredLease &&
           session.leaseExpiresAt.getTime() <= (options?.now ?? mutation.state.now.getTime())) ||
@@ -316,7 +316,6 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     sessionRunnerRevokedAt,
     agentHomeComputerId,
     threadAdmitted,
-    channelInputs,
     ...attempt
   } = bound;
   const context: RunnerStatementContext = {
@@ -343,12 +342,12 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
           }
         : undefined,
     threadAdmitted: Boolean(threadAdmitted),
-    channelInputs: Boolean(channelInputs),
   };
 
-  const disposition = terminal
-    ? "terminal-noop"
-    : await apply(digest, statement, { kind: attempt.status, attemptId: attempt.id }, context);
+  const disposition =
+    terminal && !lateStopProof
+      ? "terminal-noop"
+      : await apply(digest, statement, { kind: attempt.status, attemptId: attempt.id }, context);
   const receipt: Receipt = {
     runId: run.id,
     ordinal: statement.ordinal,

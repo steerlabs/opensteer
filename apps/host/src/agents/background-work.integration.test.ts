@@ -16,7 +16,7 @@ import {
   type RunId,
   type ThreadId,
 } from "@opensteer/core";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import {
   ClaudeHarnessDriver,
   type ClaudeAgentSdk,
@@ -117,7 +117,6 @@ integration("Background work", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
       runnerWire: {},
     });
@@ -476,7 +475,6 @@ integration("Background work", () => {
           );
           return registry;
         },
-        harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
         runTimeoutMs: 60_000,
       });
       const active = stack;
@@ -683,7 +681,7 @@ function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
           claude_code_version: harnessMinimumVersion("claude"),
           cwd: "/workspace",
           fast_mode_state: "off",
-          mcp_servers: [],
+          mcp_servers: [{ name: "opensteer", source: "dynamic", status: "connected" }],
           model: "claude-test-1",
           output_style: "default",
           permissionMode: "default",

@@ -72,6 +72,26 @@ describe("createMobileLifecycle", () => {
     lifecycle.dispose();
   });
 
+  it("says the app may be frozen as it goes to the background, and resumed as it returns", () => {
+    const appState = new FakeAppState();
+    const lifecycle = createMobileLifecycle({ appState, network: new FakeNetwork() });
+    const seen: string[] = [];
+    lifecycle.onFreeze?.(() => seen.push(`freeze:${lifecycle.getSnapshot().visibility}`));
+    lifecycle.onResume?.(() => seen.push(`resume:${lifecycle.getSnapshot().visibility}`));
+    lifecycle.onBackground(() => seen.push("background"));
+    lifecycle.onForeground(() => seen.push("foreground"));
+
+    // The switcher or a notification is not the background: nothing is frozen.
+    appState.change("inactive");
+    appState.change("active");
+    // In the background the system may suspend the app at any moment: no timer can be trusted.
+    appState.change("background");
+    appState.change("active");
+
+    expect(seen).toEqual(["background", "freeze:background", "resume:foreground", "foreground"]);
+    lifecycle.dispose();
+  });
+
   it("keeps iOS inactive in the preceding state, including an initially inactive app", () => {
     const appState = new FakeAppState();
     appState.currentState = "inactive";

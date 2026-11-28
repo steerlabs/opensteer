@@ -32,8 +32,7 @@ in when something might matter.
    activity view when you need tool or approval history, and use `opensteer_request_list` with
    `status: "pending"` when you need a view across all open Requests. If the wake says there are
    more, page `opensteer_task_list` as it says. Tasks linked from the open list are items you
-   raised: read them to see what was asked and how the person responded. A message from a team
-   carries `teamSource`, its channel and audience; keep it beside anything you repeat from it. Read
+   raised: read them to see what was asked and how the person responded. Read
    the owner's mail plugins and device Messages and Calendar from where your last handoff
    stopped. Find read tools with `plugin_search` (for example, "mail", "messages" or "calendar"),
    follow its `next` input when needed, and read with `plugin_call` in small pages. When nothing

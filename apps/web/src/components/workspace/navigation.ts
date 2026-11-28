@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useNavigationType, type To } from "react-router";
 import { z } from "zod";
 import {
@@ -6,9 +6,6 @@ import {
   type TabDestination as SurfaceDestination,
 } from "@opensteer/client/host";
 import { TabIdSchema, type TabId } from "@opensteer/core";
-import { teamEntryRefusalOutcome } from "@opensteer/protocol";
-import { useTeams } from "../../team/team-attachments.js";
-import type { SidebarSides } from "@opensteer/client/team";
 
 /**
  * The address has two axes and this module is the only thing that writes
@@ -293,101 +290,14 @@ export function isSetupPath(pathname: string): boolean {
   return pathname === setupPath;
 }
 
-/** The address owns the side; full-window and directory pages belong to neither. */
-export function workspaceSide(pathname: string): string | null {
-  const team = /^\/teams\/([^/]+)(?:\/|$)/u.exec(pathname);
-  if (team) {
-    try {
-      return decodeURIComponent(team[1]!);
-    } catch {
-      return null;
-    }
-  }
+/** Whether the address is on Tasks; full-window and directory pages are not. */
+export function workspaceSide(pathname: string): "tasks" | null {
   return pathname === "/" || /^\/(?:tasks|automations|voice)(?:\/|$)/u.test(pathname)
     ? "tasks"
     : null;
 }
 
-const SideBookmarkSchema = z.object({
-  pathname: z.string().startsWith("/").max(8192),
-  search: z.string().max(16384),
-  hash: z.string().max(8192),
-  startFrom: z.string().max(2048).nullable(),
-  viewer: z.string().nullable(),
-});
-const SideMemorySchema = z.object({
-  side: z.string(),
-  /** The team last shown, which keeps its name in the switch while on Tasks. */
-  recent: z.string().nullable().catch(null),
-  bookmarks: z.record(z.string(), SideBookmarkSchema),
-});
-type SideMemory = z.infer<typeof SideMemorySchema>;
-
-function sideMemoryKey(scope: PlaceMemoryScope): string | null {
-  return scope.deploymentId && scope.userId
-    ? `opensteer.workspace.sides.v1:${encodeURIComponent(scope.deploymentId)}:${encodeURIComponent(scope.userId)}`
-    : null;
-}
-
-function readSideMemory(key: string | null): SideMemory {
-  try {
-    const parsed = SideMemorySchema.safeParse(
-      JSON.parse(key ? (sessionStorage.getItem(key) ?? "null") : "null"),
-    );
-    if (parsed.success) {
-      const bookmarks = Object.fromEntries(
-        Object.entries(parsed.data.bookmarks).filter(
-          ([side, bookmark]) =>
-            !bookmark.pathname.startsWith("//") &&
-            workspaceSide(bookmark.pathname) === side &&
-            (!bookmark.search || bookmark.search.startsWith("?")) &&
-            (!bookmark.hash || bookmark.hash.startsWith("#")),
-        ),
-      );
-      return { side: parsed.data.side, recent: parsed.data.recent, bookmarks };
-    }
-  } catch {
-    /* The window still remembers when storage is unavailable. */
-  }
-  return { side: "tasks", recent: null, bookmarks: {} };
-}
-
-function useTeamViewers() {
-  const { teams, forgotten } = useTeams();
-  const cache = useRef<readonly { id: string; viewer: string | null; removed: boolean }[]>([]);
-  const subscribe = useCallback(
-    (listener: () => void) => {
-      const stops = teams.map((team) => team.client?.subscribe(listener));
-      return () => {
-        for (const stop of stops) stop?.();
-      };
-    },
-    [teams],
-  );
-  const read = useCallback(() => {
-    const next = teams.map((team) => {
-      const snapshot = team.client?.getSnapshot();
-      return {
-        id: team.teamId,
-        viewer: team.client?.scope.userId ?? null,
-        removed:
-          team.failure === "join" ||
-          team.link?.state === "revoked" ||
-          snapshot?.ended === "removed" ||
-          snapshot?.ended === "viewer-changed" ||
-          teamEntryRefusalOutcome(snapshot?.refusalReason) === "membership",
-      };
-    });
-    for (const id of forgotten) next.push({ id, viewer: null, removed: true });
-    if (JSON.stringify(next) !== JSON.stringify(cache.current)) cache.current = next;
-    return cache.current;
-  }, [teams, forgotten]);
-  return useSyncExternalStore(subscribe, read, read);
-}
-
 export interface WorkspaceNavigation {
-  readonly sides: SidebarSides;
-  readonly openSide: (side: string) => void;
   /** Changes on a place choice, including reselecting the current tab. */
   readonly placeOpening: number;
   readonly pendingPlace: string | null;
@@ -420,6 +330,11 @@ export interface WorkspaceNavigation {
       readonly subagent?: string;
       /** Takes the current entry's place in history: a hop between siblings. */
       readonly replace?: boolean;
+      /**
+       * Watch: the middle opens beside it, fresh, where the app the task's agent is using shows.
+       * Only the place survives the hop otherwise.
+       */
+      readonly watch?: boolean;
     },
   ) => void;
   /** Includes synchronous choices made since the last render. */
@@ -443,9 +358,10 @@ export interface WorkspaceNavigation {
   readonly leaveLauncher: (from: string | null) => void;
   /**
    * The place in the middle is no longer listed: its successor takes its
-   * history entry, or, with none, the start page does, opened fresh.
+   * history entry, or, with none, the start page does, opened fresh. A choice
+   * already made away from the ended place, not yet rendered, stands.
    */
-  readonly succeedPlace: (successor: SurfaceDestination | null) => void;
+  readonly succeedPlace: (successor: SurfaceDestination | null, ended?: SurfaceDestination) => void;
   /** The monitor button: the last place chosen, or the launcher. */
   readonly showComputer: (available: (destination: SurfaceDestination) => boolean) => void;
   readonly hideComputer: () => void;
@@ -463,6 +379,9 @@ export interface WorkspaceNavigation {
     readonly replace?: boolean;
   }) => ((destination: SurfaceDestination) => void) & {
     readonly launcher: (options: { address: string; open: boolean }) => void;
+    readonly watch: () => void;
+    /** Whether the answer would still land: no newer choice, and the same conversation open. */
+    readonly standing: () => boolean;
   };
 }
 
@@ -486,63 +405,17 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     operation: number;
     epoch: number;
   } | null>(null);
-  const { surface } = useTeams();
-  const viewers = useTeamViewers();
-  const scopeKey = sideMemoryKey(scope);
-  const memory = useRef<{ key: string | null; value: SideMemory } | null>(null);
-  memory.current ??= { key: scopeKey, value: readSideMemory(scopeKey) };
   const identity = useRef(scope);
   const placeEpoch = useRef(0);
   const operation = useRef(0);
-  if (memory.current.key !== scopeKey) {
-    memory.current = { key: scopeKey, value: readSideMemory(scopeKey) };
-    placeEpoch.current += 1;
-  }
   if (identity.current.deploymentId !== deploymentId || identity.current.userId !== userId) {
     placeEpoch.current += 1;
     identity.current = scope;
   }
-  const bookmarks = memory.current.value;
-  const previousViewers = useRef(viewers);
-  for (const team of viewers) {
-    const bookmark = bookmarks.bookmarks[team.id];
-    if (team.removed || (team.viewer && bookmark?.viewer && bookmark.viewer !== team.viewer))
-      delete bookmarks.bookmarks[team.id];
-    if (team.removed && bookmarks.side === team.id) bookmarks.side = "tasks";
-    if (team.removed && bookmarks.recent === team.id) bookmarks.recent = null;
-    const previous = previousViewers.current.find((held) => held.id === team.id);
-    if (previous && (team.viewer !== previous.viewer || team.removed !== previous.removed))
-      placeEpoch.current += 1;
-  }
-  if (previousViewers.current.some((previous) => !viewers.some((team) => team.id === previous.id)))
-    placeEpoch.current += 1;
-  previousViewers.current = viewers;
   // Includes choices made synchronously since the last router render.
   const latest = useRef<Address>(location);
   const seen = useRef(location);
   const settingsReturn = useRef<Address>({ pathname: "/", search: "" });
-  const remember = useCallback(
-    (address: Address) => {
-      const side = workspaceSide(address.pathname);
-      if (side === null) return;
-      const team = viewers.find((viewer) => viewer.id === side);
-      if (team?.removed) return;
-      bookmarks.side = side;
-      if (side !== "tasks") bookmarks.recent = side;
-      if (side !== "tasks" && !team?.viewer) return;
-      // An opening still under way finishes only on the address it started from.
-      const params = new URLSearchParams(address.search);
-      const search = params.toString();
-      bookmarks.bookmarks[side] = {
-        pathname: address.pathname,
-        search: search ? `?${search}` : "",
-        hash: address.hash ?? "",
-        startFrom: startPageOrigin(address.state),
-        viewer: team?.viewer ?? null,
-      };
-    },
-    [bookmarks, viewers],
-  );
   if (seen.current !== location) {
     if (
       (latest.current.search !== location.search ||
@@ -558,17 +431,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     seen.current = location;
     latest.current = location;
   }
-  remember(location);
-  const side = workspaceSide(location.pathname) ?? bookmarks.side;
-  const recent = bookmarks.recent;
-  const sides = useMemo<SidebarSides>(() => ({ side, recent }), [side, recent]);
-  useEffect(() => {
-    try {
-      if (scopeKey) sessionStorage.setItem(scopeKey, JSON.stringify(bookmarks));
-    } catch {
-      /* Navigation works without storage. */
-    }
-  }, [bookmarks, location, scopeKey, viewers]);
   useEffect(
     () => () => {
       placeEpoch.current += 1;
@@ -590,27 +452,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       latest.current = { ...to, state };
     },
     [navigate],
-  );
-  const openSide = useCallback(
-    (targetSide: string) => {
-      if (surface === "team-web" && targetSide === "tasks") return;
-      remember(latest.current);
-      if (workspaceSide(latest.current.pathname) === targetSide) return;
-      const target = bookmarks.bookmarks[targetSide];
-      const viewer = viewers.find((candidate) => candidate.id === targetSide);
-      const restored =
-        target && (targetSide === "tasks" || (viewer?.viewer === target.viewer && !viewer.removed));
-      go(
-        restored
-          ? target
-          : {
-              pathname: targetSide === "tasks" ? "/" : `/teams/${encodeURIComponent(targetSide)}/`,
-              search: "",
-            },
-        restored && target.startFrom !== null ? { startFrom: target.startFrom } : undefined,
-      );
-    },
-    [surface, remember, bookmarks, viewers, go],
   );
   const choosePlace = useCallback(
     (
@@ -660,6 +501,18 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     (path, options) => {
       // A path may carry its own query (All tasks' filter); the place shown stays beside it.
       const [pathname = path, query = ""] = path.split("?", 2);
+      if (options?.watch) {
+        // An entry of its own, even at the address already shown (a start page opened in this
+        // task): the person's Watch always lands on the picture, never on that start page.
+        choosePlace({ kind: "launcher" }, pathname, {
+          replace: options.replace === true,
+          state: {
+            watch: true,
+            ...(options.focusRequest ? { focusRequest: options.focusRequest } : {}),
+          },
+        });
+        return;
+      }
       const params = placeOnly(latest.current.search);
       for (const [key, value] of new URLSearchParams(query)) params.set(key, value);
       if (options?.messageId) params.set("messageId", options.messageId);
@@ -676,7 +529,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
         options?.replace,
       );
     },
-    [go],
+    [choosePlace, go],
   );
   const placeSearch = useCallback(
     (destination: SurfaceDestination) => {
@@ -733,7 +586,8 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     [choosePlace],
   );
   const succeedPlace = useCallback(
-    (successor: SurfaceDestination | null) => {
+    (successor: SurfaceDestination | null, ended?: SurfaceDestination) => {
+      if (ended && new URLSearchParams(latest.current.search).get("tab") !== ended.tabId) return;
       if (successor)
         choosePlace({ kind: "place", destination: successor }, undefined, { replace: true });
       else showLauncher({ replace: true });
@@ -762,6 +616,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
         options.address === undefined ? null : { address: options.address, operation: mine, epoch },
       );
       const current = () => operation.current === mine && placeEpoch.current === epoch;
+      const pathname = latest.current.pathname;
       return Object.assign(
         (destination: SurfaceDestination) => {
           if (!current()) return;
@@ -771,11 +626,19 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
           });
         },
         {
+          watch: () => {
+            if (current())
+              choosePlace({ kind: "launcher" }, undefined, {
+                replace: true,
+                state: { watch: true },
+              });
+          },
           launcher: (failure: { address: string; open: boolean }) => {
             if (!current()) return;
             setPending(null);
             showLauncher({ ...failure, replace: true });
           },
+          standing: () => current() && latest.current.pathname === pathname,
         },
       );
     },
@@ -790,8 +653,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   return useMemo(
     () => ({
       address,
-      sides,
-      openSide,
       placeOpening,
       pendingPlace,
       beginPlaceOperation,
@@ -812,8 +673,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     }),
     [
       address,
-      sides,
-      openSide,
       placeOpening,
       pendingPlace,
       beginPlaceOperation,

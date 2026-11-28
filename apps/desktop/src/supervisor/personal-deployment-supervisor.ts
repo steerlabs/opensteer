@@ -1,3 +1,13 @@
+import { nodeTrustEnvironment } from "../../../../deploy/container/opensteer-node-trust.mjs";
+import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
+import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
+import {
+  confirmRunnerShutdown,
+  RunnerShutdownProofSchema,
+  DesktopRunnerReadySchema,
+  holdDesktopRunnerIdle,
+} from "@opensteer/runner";
+import { readFile, rm } from "node:fs/promises";
 import type { ResolvedConnection, VerifiedHostEndpoint } from "@opensteer/client/connections";
 import { computerName } from "./computer-name.js";
 import { personFullName } from "./person-name.js";
@@ -34,7 +44,7 @@ import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import { RestartPolicy } from "@opensteer/shared/restartPolicy";
 import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import path from "node:path";
 import { syncBrowserExtensionDirectory } from "./browser-extension-directory.js";
@@ -64,6 +74,7 @@ import {
 import type { ComputerUseRunnerTargetResult } from "./local-runner-authority.js";
 import {
   PersonalHostAuthorityMismatchError,
+  PersonalHostBootstrapRefusedError,
   PersonalOwnerClaimRequiredError,
   type PersonalHostBootstrapResult,
   type PersonalHostControlPort,
@@ -108,10 +119,27 @@ const defaultMaximumRestartBackoffMs = 30_000;
 const defaultRestartResetAfterMs = 5 * 60_000;
 
 interface PersonalDeploymentSupervisorOptions {
+  /**
+   * Where this app saves the person's Stop for this Mac. The hosting Runner
+   * receives the saved mode at spawn, so no agent work starts here while it
+   * says stopped, and the Home keeps that work queued until Resume.
+   */
+  readonly agentsStoppedSince?: () => string | null;
+  readonly onContainedBoot?: (mode: string) => void;
+  readonly onUncontainedBoot?: (mode: string) => void;
+  readonly stopProofPollMs?: number;
+  readonly stopProofMaxPollMs?: number;
   readonly userDataDirectory?: string;
   readonly syncExtensionDirectory?: typeof syncBrowserExtensionDirectory;
   readonly dataReset?: PersonalDataReset;
   readonly accountIssuer?: URL | string | null;
+  /** `NODE_EXTRA_CA_CERTS` from the app's own environment: the Host gets it, and nothing else does. */
+  readonly extraCertificateAuthorities?: string | null;
+  /**
+   * A trial's own Agent home (`config.ts`). Null otherwise: the Home then keeps the one a
+   * released app has always used, `~/Opensteer`.
+   */
+  readonly agentHome?: string | null;
   readonly allocatePort?: () => Promise<number>;
   readonly baseEnvironment?: Readonly<Record<string, string>>;
   readonly catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
@@ -130,6 +158,7 @@ interface PersonalDeploymentSupervisorOptions {
       owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
     ): Promise<{ readonly token: string; readonly url: URL } | null>;
     stopForSlot(deploymentId: string): Promise<void>;
+    workerDisconnected?(deploymentId: string): Promise<boolean>;
   };
   readonly credentials: PersonalDeploymentCredentialPort;
   readonly files: PersonalDeploymentFilesystemPort;
@@ -162,6 +191,7 @@ interface RunningChild {
   readonly exit: Promise<ChildExit>;
   readonly logs: BoundedPersonalLog;
   readonly stderr: BoundedPersonalLog;
+  readonly runnerReceipt?: { readonly file: string; readonly directory: string };
   expectedExit: boolean;
 }
 
@@ -225,9 +255,16 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     "userDataDirectory" | "syncExtensionDirectory"
   >;
   readonly #accountIssuer: string | null;
+  readonly #extraCertificateAuthorities: string | null;
+  readonly #agentHome: string | null;
   readonly #allocatePort: () => Promise<number>;
   readonly #passkeys: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
+  readonly #agentsStoppedSince: (() => string | null) | undefined;
+  readonly #onContainedBoot: PersonalDeploymentSupervisorOptions["onContainedBoot"];
+  readonly #onUncontainedBoot: PersonalDeploymentSupervisorOptions["onUncontainedBoot"];
+  #runnerSpec: PersonalProcessSpec | null = null;
+  #runnerShutdownUnconfirmed = false;
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
   readonly #computerName: () => Promise<string>;
   readonly #personFullName: () => Promise<string | null>;
@@ -249,6 +286,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #messagingRestartPolicy: RestartPolicy;
   readonly #shutdownTimeoutMs: number;
   readonly #startupTimeoutMs: number;
+  readonly #stopProofPollMs: number;
+  readonly #stopProofMaxPollMs: number;
   readonly #userEnvironment: PersonalUserEnvironmentPort;
   #abort: AbortController | undefined;
   #browser: PersonalLocalBrowserHandle | null = null;
@@ -287,9 +326,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#accountIssuer = options.accountIssuer
       ? new URL(String(options.accountIssuer)).origin
       : null;
+    this.#extraCertificateAuthorities = options.extraCertificateAuthorities ?? null;
+    this.#agentHome = options.agentHome ?? null;
     this.#allocatePort = options.allocatePort ?? allocateLoopbackPort;
     this.#passkeys = options.passkeys === true;
     this.#baseEnvironment = options.baseEnvironment ?? filterUserEnvironment(process.env);
+    this.#agentsStoppedSince = options.agentsStoppedSince;
+    this.#onContainedBoot = options.onContainedBoot;
+    this.#onUncontainedBoot = options.onUncontainedBoot;
     this.#userEnvironment =
       options.userEnvironment ??
       (options.baseEnvironment
@@ -318,6 +362,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#shutdownTimeoutMs = boundedDuration(
       options.shutdownTimeoutMs ?? defaultShutdownTimeoutMs,
       "Personal shutdown timeout",
+    );
+    this.#stopProofPollMs = boundedDuration(
+      options.stopProofPollMs ?? 250,
+      "Stop proof poll interval",
+    );
+    this.#stopProofMaxPollMs = Math.max(
+      this.#stopProofPollMs,
+      boundedDuration(options.stopProofMaxPollMs ?? 5_000, "Stop proof max poll interval"),
     );
     const restartBackoffMs = boundedDuration(
       options.restartBackoffMs ?? defaultRestartBackoffMs,
@@ -825,23 +877,39 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       const userEnvironment = await environmentStart;
       const computerUse = await computerUseStart;
       throwIfAborted(signal, "Personal setup was cancelled.");
-      const runner = this.#spawn(
-        runnerSpec(
-          release,
-          manifest,
-          paths,
-          bootstrap.runnerEnrollmentToken,
-          userEnvironment,
-          {
-            bridgeToken: browser.bridgeToken,
-            runtimeId: browser.runtimeId,
-            signIn: browser.signIn,
-            personFill: browser.personFill,
-            url: browser.url,
-          },
-          computerUse,
-        ),
+      this.#runnerSpec = runnerSpec(
+        release,
+        manifest,
+        paths,
+        bootstrap.runnerEnrollmentToken,
+        userEnvironment,
+        {
+          bridgeToken: browser.bridgeToken,
+          runtimeId: browser.runtimeId,
+          signIn: browser.signIn,
+          personFill: browser.personFill,
+          url: browser.url,
+        },
+        computerUse,
       );
+      const runner = this.#spawn(this.#runnerSpec);
+      const stoppedMode = this.#agentsStoppedSince?.();
+      if (
+        stoppedMode &&
+        runner.runnerReceipt &&
+        (this.#onContainedBoot || this.#onUncontainedBoot)
+      ) {
+        void waitForRunnerBoot(runner.runnerReceipt.file).then(
+          (contained) => {
+            if (contained) this.#onContainedBoot?.(stoppedMode);
+            else this.#onUncontainedBoot?.(stoppedMode);
+          },
+          () => this.#onUncontainedBoot?.(stoppedMode),
+        );
+      }
+      // A Runner that never reports Agent home leaves a fresh Home not ready; the
+      // start-up deadline still ends the wait, and the failure says what was missing.
+      let agentHomePending = false;
       await this.#startupStep("runner", () =>
         this.#raceChild(
           runner,
@@ -851,9 +919,17 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
             manifest.environmentId as EnvironmentId,
             manifest.runnerId,
             signal,
+            (pending) => {
+              agentHomePending = pending === "agent-home";
+            },
           ),
           signal,
           "Runner",
+          undefined,
+          () =>
+            agentHomePending
+              ? "This computer did not finish preparing its Agent home folder."
+              : undefined,
         ),
       );
       if (enrolled) this.#setStatus({ step: "preparing-agent-home" });
@@ -985,6 +1061,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         this.#passkeys,
         extensionDirectory,
         await this.#personFullName(),
+        this.#extraCertificateAuthorities,
+        this.#agentHome,
       ),
       (line) => {
         const stage = line.startsWith(`${personalUpgradeProgressLine}: `)
@@ -1394,12 +1472,132 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     });
   }
 
+  async holdIdleForUpdate() {
+    if (this.#runnerShutdownUnconfirmed) return null;
+    const vacant = () => !this.#desiredRunning && this.#children.size === 0;
+    if (vacant()) return { current: vacant, release: async () => {} };
+    const runner = this.#children.get("runner");
+    const receipt = runner?.runnerReceipt;
+    if (!runner || !receipt) return null;
+    const control = await readFile(receipt.file, "utf8")
+      .then((raw) => DesktopRunnerReadySchema.parse(JSON.parse(raw)))
+      .catch(() => null);
+    const hold = control && (await holdDesktopRunnerIdle(control));
+    return (
+      hold && {
+        release: hold.release,
+        current: () =>
+          this.#children.get("runner") === runner &&
+          !runner.expectedExit &&
+          !this.#runnerShutdownUnconfirmed &&
+          hold.current(),
+      }
+    );
+  }
+
+  restartForAgentMode(): Promise<void> {
+    return this.#mutations.run(async () => {
+      const spec = this.#runnerSpec;
+      if (!spec || this.#shutdownRequested) return;
+      const errors: unknown[] = [];
+      const bridgeDrained = this.#computerUseSlotId
+        ? this.#computerUse?.workerDisconnected?.(this.#computerUseSlotId)
+        : undefined;
+      const receipt = this.#children.get("runner")?.runnerReceipt;
+      if (receipt)
+        await replacePrivateFileAtomically(receipt.file, "restarting").catch((error: unknown) =>
+          errors.push(error),
+        );
+      this.#browser?.prepareRunnerRestart?.();
+      await this.#stopProcesses(["runner"], errors);
+      if (bridgeDrained && !(await bridgeDrained)) errors.push(new Error(hostedStopProblem));
+      if (this.#children.has("runner")) throw new AggregateError(errors, hostedStopProblem);
+      if (this.#browser?.drainRunnerAttachments && !(await this.#browser.drainRunnerAttachments()))
+        errors.push(new Error(hostedStopProblem));
+      const child = this.#spawn(spec);
+      if (child.runnerReceipt) {
+        const { file } = child.runnerReceipt;
+        const earlierBootsContained = await this.#raceChild(
+          child,
+          waitForRunnerBoot(file),
+          AbortSignal.timeout(10_000),
+          "Runner",
+        );
+        if (!earlierBootsContained) errors.push(new Error(hostedStopProblem));
+      }
+      this.#setStatus({
+        components: componentState(this.#status.components, "runner", "ready"),
+      });
+      if (errors.length) throw new AggregateError(errors, hostedStopProblem);
+    });
+  }
+
+  /**
+   * Polls whatever Home this Mac currently hosts until it proves plugin agent
+   * work is stopped for `stoppedSince`, keeping up across transient faults and
+   * Home restarts, doubling poll intervals up to `#stopProofMaxPollMs`.
+   * Resolves `true` when proved or when this Mac hosts no Home (nothing more to
+   * prove), `false` when cancelled or shutting down, and throws on permanent
+   * Home refusal.
+   */
+  async waitForStopProof(stoppedSince: string, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted || this.#shutdownRequested) return false;
+    const check = this.#host.checkPluginAgentWorkStopped;
+    if (!check) return true;
+    let waitMs = this.#stopProofPollMs;
+    for (;;) {
+      if (signal.aborted || this.#shutdownRequested) return false;
+      const manifest = await this.#files.load().catch(() => null);
+      if (signal.aborted || this.#shutdownRequested) return false;
+      if (!manifest) return true;
+      const runtime = this.#runtime;
+      if (runtime) {
+        try {
+          const confirmed = await check.call(
+            this.#host,
+            runtime.localOrigin,
+            manifest.deploymentId,
+            manifest.environmentId as EnvironmentId,
+            manifest.runnerId,
+            stoppedSince,
+            signal,
+          );
+          if (confirmed) return true;
+        } catch (error: unknown) {
+          if (signal.aborted || this.#shutdownRequested) return false;
+          if (error instanceof PersonalHostBootstrapRefusedError) throw error;
+        }
+      }
+      await delay(waitMs, signal).catch(() => undefined);
+      waitMs = Math.min(this.#stopProofMaxPollMs, waitMs * 2);
+    }
+  }
+
   #spawn(spec: PersonalProcessSpec, onLine?: (line: string) => void): RunningChild {
     if (this.#shutdownRequested) throw new Error("Personal deployment is stopping.");
     if (this.#children.has(spec.component)) {
       throw new Error(`Personal ${spec.component} process is already running.`);
     }
-    const child = this.#processes.spawn(spec);
+    const mode = spec.component === "runner" ? this.#agentsStoppedSince?.() : undefined;
+    const runnerReceipt =
+      mode === undefined
+        ? undefined
+        : {
+            file: path.join(spec.cwd, "private", `desktop-${randomUUID()}.json`),
+            directory: spec.cwd,
+          };
+    const child = this.#processes.spawn(
+      runnerReceipt
+        ? {
+            ...spec,
+            environment: {
+              ...spec.environment,
+              OPENSTEER_RUNNER_AGENTS_STOPPED_SINCE: mode ?? "",
+              OPENSTEER_RUNNER_SHUTDOWN_RECEIPT: runnerReceipt.file,
+            },
+          }
+        : spec,
+    );
     this.#diagnosticLogs.delete(spec.component);
     const logs = new BoundedPersonalLog(undefined, processSensitiveValues(spec), onLine);
     const stderr = new BoundedPersonalLog(16 * 1_024, processSensitiveValues(spec));
@@ -1417,7 +1615,15 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         resolvePromise(value);
       };
     });
-    running = { child, component: spec.component, exit, expectedExit: false, logs, stderr };
+    running = {
+      child,
+      component: spec.component,
+      exit,
+      expectedExit: false,
+      logs,
+      stderr,
+      ...(runnerReceipt ? { runnerReceipt } : {}),
+    };
     this.#children.set(spec.component, running);
     void exit.then((result) => {
       logs.flush();
@@ -1426,6 +1632,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       if (this.#children.get(spec.component) === running) {
         this.#children.delete(spec.component);
       }
+      if (!running.expectedExit && runnerReceipt)
+        void rm(runnerReceipt.file, { force: true }).catch(() => undefined);
       if (running.expectedExit || !this.#desiredRunning) return;
       if (spec.component === "messaging") {
         // Restarting the stack for messaging would trade a Deployment that
@@ -1449,6 +1657,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     signal: AbortSignal,
     label: string,
     refreshOn?: (refresh: () => void) => () => void,
+    /** Says what the child was still waiting for when the start-up deadline passed. */
+    timeoutDetail?: () => string | undefined,
   ): Promise<T> {
     this.#assertExpectedStack(target.component);
     let result: T;
@@ -1462,7 +1672,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
             new Error(
               label === "Host" && this.#status.step === "upgrading-database"
                 ? "The Personal database upgrade stopped making progress."
-                : `${label} did not become ready.`,
+                : [`${label} did not become ready.`, timeoutDetail?.()].filter(Boolean).join(" "),
             ),
         }),
         // Messaging is still running during a Host-only restart, but nothing
@@ -1602,6 +1812,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   }
 
   async #stopChildren(signal?: AbortSignal): Promise<void> {
+    this.#runnerSpec = null;
     this.#ownerClaim = null;
     this.#hostLaunch = null;
     this.#messagingIssue = null;
@@ -1612,7 +1823,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     // Keep the backoff across failed starts; only healthy uptime resets it.
     this.#restartPolicy.dispose();
     this.#messagingRestartPolicy.dispose();
-    const errors: unknown[] = [];
+    const errors: unknown[] = this.#runnerShutdownUnconfirmed ? [new Error(hostedStopProblem)] : [];
     // Reverse start order, so messaging leaves before the Host it attaches to.
     await this.#stopProcesses(["messaging"], errors);
     const browser = this.#browser;
@@ -1642,8 +1853,12 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       });
     }
     // Keep the relay and Host alive until the browser's final profile commit.
-    await this.#stopProcesses(["runner"], errors);
     const computerUseSlotId = this.#computerUseSlotId;
+    const bridgeDrained = computerUseSlotId
+      ? this.#computerUse?.workerDisconnected?.(computerUseSlotId)
+      : undefined;
+    await this.#stopProcesses(["runner"], errors);
+    if (bridgeDrained && !(await bridgeDrained)) errors.push(new Error(hostedStopProblem));
     this.#computerUseSlotId = null;
     if (computerUseSlotId) {
       try {
@@ -1669,6 +1884,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       if (!running) continue;
       running.expectedExit = true;
       let stopped = false;
+      let forced = false;
       this.#setStatus({
         components: componentState(this.#status.components, component, "stopping"),
       });
@@ -1685,6 +1901,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         );
         stopped = true;
       } catch (error) {
+        forced = true;
         try {
           await runShutdownStep(
             this.#log,
@@ -1701,6 +1918,18 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
           errors.push(new AggregateError([error, killError], `${component} could not stop.`));
         }
       } finally {
+        if (stopped && running.runnerReceipt) {
+          const { file, directory } = running.runnerReceipt;
+          const proof = await readFile(file, "utf8")
+            .then((raw) => RunnerShutdownProofSchema.parse(JSON.parse(raw)))
+            .catch(() => undefined);
+          const confirmed = await confirmRunnerShutdown(directory, proof).catch(() => false);
+          await rm(file, { force: true }).catch(() => undefined);
+          if (!confirmed || forced) {
+            this.#runnerShutdownUnconfirmed = true;
+            errors.push(new Error(hostedStopProblem));
+          }
+        }
         if (stopped && this.#children.get(component) === running) this.#children.delete(component);
         this.#setStatus({
           components: componentState(
@@ -1993,6 +2222,17 @@ class PersonalReadinessError extends Error {
   }
 }
 
+/**
+ * A Home service or Runner this app starts trusts Node's certificate
+ * authorities and this computer's, and nothing the app's own environment names:
+ * any program running as the person could have set that, and none of it needs
+ * the password a keychain trust setting does. A development app is started
+ * the same way, as it already took nothing from its environment.
+ */
+function desktopNodeTrust(environment: Readonly<Record<string, string>>): Record<string, string> {
+  return nodeTrustEnvironment(environment, { environmentInputs: "drop" });
+}
+
 function postgresSpec(
   release: VerifiedPersonalRuntimeRelease,
   manifest: PersonalDeploymentManifest,
@@ -2026,7 +2266,8 @@ function postgresSpec(
   };
 }
 
-function hostSpec(
+/** The Host's process as this supervisor starts it: its environment is all it is given. */
+export function hostSpec(
   release: VerifiedPersonalRuntimeRelease,
   manifest: PersonalDeploymentManifest,
   paths: PersonalDeploymentPreparedPaths,
@@ -2037,6 +2278,10 @@ function hostSpec(
   passkeys: boolean,
   extensionDirectory: string | null,
   ownerNameSeed: string | null,
+  /** `NODE_EXTRA_CA_CERTS`, when the app's own environment carried it; otherwise none. */
+  extraCertificateAuthorities: string | null = null,
+  /** A trial's own Agent home; otherwise none, and the Home uses its default. */
+  agentHome: string | null = null,
 ): PersonalProcessSpec {
   const fingerprint = HostKeyFingerprintSchema.parse(manifest.hostKeyFingerprint);
   const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -2045,37 +2290,42 @@ function hostSpec(
     component: "host",
     cwd: paths.hostDataDirectory,
     environment: {
-      LANG: "en_US.UTF-8",
-      OPENSTEER_BIND_ADDRESS: "127.0.0.1",
-      OPENSTEER_CANONICAL_ORIGIN: origin,
-      OPENSTEER_CREDENTIAL_KEY_PATH: paths.credentialKeyPath,
-      OPENSTEER_DEPLOYMENT_ID: manifest.deploymentId,
-      OPENSTEER_DEPLOYMENT_NAME: manifest.name,
-      OPENSTEER_DEPLOYMENT_KIND: "personal",
-      OPENSTEER_HOST_DATA_DIR: paths.hostDataDirectory,
-      OPENSTEER_RUNNER_DATA_DIR: paths.runnerDataDirectory,
-      OPENSTEER_HOST_INSTANCE_ID: manifest.hostInstanceId,
-      OPENSTEER_HOST_KEY_FINGERPRINT: fingerprint,
-      OPENSTEER_HOST_PRIVATE_KEY_PATH: paths.hostPrivateKeyPath,
-      OPENSTEER_HOST_PUBLIC_KEY_PATH: paths.hostPublicKeyPath,
-      OPENSTEER_HOST_RELEASE_VERSION: release.assets.webDistribution.hostVersion,
-      OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
-      OPENSTEER_PASSKEYS: passkeys ? "1" : "0",
-      OPENSTEER_HOSTING_ENVIRONMENT_ID: manifest.environmentId,
-      OPENSTEER_MODE: "production",
-      OPENSTEER_NATIVE_OAUTH_ENABLED: "false",
-      OPENSTEER_NATIVE_FS_HELPER: release.entrypoints.nativeFsHelper,
-      OPENSTEER_PORT: String(manifest.hostPort),
-      ...(extensionDirectory ? { OPENSTEER_BROWSER_EXTENSION_DIRECTORY: extensionDirectory } : {}),
-      // Not a secret: secret values are redacted wherever they appear in logs, and a short name
-      // would be redacted out of unrelated words.
-      ...(ownerNameSeed ? { OPENSTEER_OWNER_NAME_SEED: ownerNameSeed } : {}),
-      ...(accountIssuer ? { OPENSTEER_PERSONAL_ACCOUNT_ISSUER: accountIssuer } : {}),
-      ...(portalOrigin ? { OPENSTEER_PORTAL_ORIGIN: portalOrigin } : {}),
-      OPENSTEER_RUNTIME_ORIGIN: origin,
-      OPENSTEER_SIGNUP_POLICY: "closed",
-      OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: release.assets.webDistribution.directory,
-      OPENSTEER_WEB_DISTRIBUTION_MANIFEST: release.assets.webDistribution.manifestPath,
+      ...desktopNodeTrust({
+        LANG: "en_US.UTF-8",
+        ...(agentHome ? { OPENSTEER_AGENT_HOME: agentHome } : {}),
+        OPENSTEER_BIND_ADDRESS: "127.0.0.1",
+        OPENSTEER_CANONICAL_ORIGIN: origin,
+        OPENSTEER_CREDENTIAL_KEY_PATH: paths.credentialKeyPath,
+        OPENSTEER_DEPLOYMENT_ID: manifest.deploymentId,
+        OPENSTEER_DEPLOYMENT_NAME: manifest.name,
+        OPENSTEER_DEPLOYMENT_KIND: "personal",
+        OPENSTEER_HOST_DATA_DIR: paths.hostDataDirectory,
+        OPENSTEER_HOST_INSTANCE_ID: manifest.hostInstanceId,
+        OPENSTEER_HOST_KEY_FINGERPRINT: fingerprint,
+        OPENSTEER_HOST_PRIVATE_KEY_PATH: paths.hostPrivateKeyPath,
+        OPENSTEER_HOST_PUBLIC_KEY_PATH: paths.hostPublicKeyPath,
+        OPENSTEER_HOST_RELEASE_VERSION: release.assets.webDistribution.hostVersion,
+        OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
+        OPENSTEER_PASSKEYS: passkeys ? "1" : "0",
+        OPENSTEER_HOSTING_ENVIRONMENT_ID: manifest.environmentId,
+        OPENSTEER_MODE: "production",
+        OPENSTEER_NATIVE_OAUTH_ENABLED: "false",
+        OPENSTEER_PORT: String(manifest.hostPort),
+        ...(extensionDirectory
+          ? { OPENSTEER_BROWSER_EXTENSION_DIRECTORY: extensionDirectory }
+          : {}),
+        // Not a secret: secret values are redacted wherever they appear in logs, and a short name
+        // would be redacted out of unrelated words.
+        ...(ownerNameSeed ? { OPENSTEER_OWNER_NAME_SEED: ownerNameSeed } : {}),
+        ...(accountIssuer ? { OPENSTEER_PERSONAL_ACCOUNT_ISSUER: accountIssuer } : {}),
+        ...(portalOrigin ? { OPENSTEER_PORTAL_ORIGIN: portalOrigin } : {}),
+        OPENSTEER_RUNTIME_ORIGIN: origin,
+        OPENSTEER_SIGNUP_POLICY: "closed",
+        OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: release.assets.webDistribution.directory,
+        OPENSTEER_WEB_DISTRIBUTION_MANIFEST: release.assets.webDistribution.manifestPath,
+      }),
+      // Node's own way to add an authority: only when someone set it for the app on purpose.
+      ...(extraCertificateAuthorities ? { NODE_EXTRA_CA_CERTS: extraCertificateAuthorities } : {}),
     },
     executable: release.entrypoints.host,
     secretEnvironment: {
@@ -2106,7 +2356,7 @@ function messagingSpec(
     arguments: [],
     component: "messaging",
     cwd: paths.messagingDataDirectory,
-    environment: {
+    environment: desktopNodeTrust({
       LANG: "en_US.UTF-8",
       OPENSTEER_MESSAGING_BIND_ADDRESS: "127.0.0.1",
       OPENSTEER_MESSAGING_DATA_DIR: paths.messagingDataDirectory,
@@ -2114,7 +2364,7 @@ function messagingSpec(
       OPENSTEER_MESSAGING_NAME: "This computer's messaging",
       OPENSTEER_MESSAGING_PORT: String(port),
       OPENSTEER_MODE: "production",
-    },
+    }),
     executable: release.entrypoints.channelRuntime,
     secretInput: {
       OPENSTEER_RUNNER_ENROLLMENT_TOKEN: secrets.messagingEnrollmentToken,
@@ -2141,7 +2391,7 @@ function runnerSpec(
     arguments: [],
     component: "runner",
     cwd: paths.runnerDataDirectory,
-    environment: {
+    environment: desktopNodeTrust({
       ...baseEnvironment,
       OPENSTEER_AGENT_SKILLS_DIRECTORY: release.assets.agentSkills,
       OPENSTEER_BROWSER_BRIDGE_URL: browser.url.toString(),
@@ -2173,7 +2423,7 @@ function runnerSpec(
       OPENSTEER_RUNNER_ID: manifest.runnerId,
       OPENSTEER_RUNNER_KIND: "main",
       OPENSTEER_RUNNER_NAME: manifest.name,
-    },
+    }),
     executable: release.entrypoints.runner,
     // Never in the environment: every Runner credential travels on stdin,
     // which the Runner reads once, before it parses its configuration.
@@ -2428,7 +2678,7 @@ function childExitDetail(
   diagnostic = "",
 ): string {
   const summary = result.error
-    ? `${displayComponent(component)} failed to start: ${result.error.message}`
+    ? `${displayComponent(component)} failed to start: ${sanitizedErrorDetail(result.error)}`
     : `${displayComponent(component)} stopped unexpectedly (${result.signal ?? `exit ${result.code}`}).`;
   const tail = sanitizedErrorDetail(diagnostic.trim()).slice(-1_200);
   return tail ? `${summary} ${tail}` : summary;
@@ -2449,7 +2699,7 @@ function safeErrorDetail(error: unknown): string {
 function sanitizedErrorDetail(error: unknown): string {
   const message =
     error instanceof Error ? error.message : String(error || "Personal setup failed.");
-  return message
+  return redactNetworkCredentials(message, networkCredentialSecrets(process.env))
     .replace(/Bearer\s+[^\s]+/giu, "Bearer [redacted]")
     .replace(/(?:password|token|secret)=([^\s&]+)/giu, "credential=[redacted]")
     .replace(/(postgres(?:ql)?:\/\/[^:\s/]+:)[^@\s/]+@/giu, "$1[redacted]@")
@@ -2537,4 +2787,18 @@ function permanentStartFailure(error: unknown): boolean {
     error instanceof ProtectedStorageUnavailableError ||
     error instanceof ProtectedStateUnreadableError
   );
+}
+
+const hostedStopProblem = "Couldn't confirm that one task on this Mac's Home stopped.";
+
+async function waitForRunnerBoot(file: string): Promise<boolean> {
+  const deadline = AbortSignal.timeout(10_000);
+  while (!deadline.aborted) {
+    const value = await readFile(file, "utf8")
+      .then((raw) => DesktopRunnerReadySchema.parse(JSON.parse(raw)))
+      .catch(() => null);
+    if (value) return value.earlierBootsContained;
+    await delay(50, deadline);
+  }
+  return false;
 }

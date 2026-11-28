@@ -25,6 +25,15 @@ export class ViewerClipboard {
     let reject!: (reason: Error) => void;
     let canceled = false;
     let settled = false;
+    // Said only once there is something to write: a browser may refuse a write armed for a
+    // Space or Return before anything was copied, and a person who only typed was never asking.
+    let copied = false;
+    let failure: string | null = null;
+    const fail = (message: string) => {
+      if (canceled) return;
+      if (copied) this.#onError(message);
+      else failure = message;
+    };
     const payload = new Promise<readonly EditingClipboardPayloadItem[]>((yes, no) => {
       resolve = yes;
       reject = no;
@@ -52,14 +61,13 @@ export class ViewerClipboard {
         () => true,
         (error: unknown) => {
           // Classified by kind, never said in the browser's own words.
-          if (!canceled)
-            this.#onError(
-              error instanceof DOMException && error.name === "NotAllowedError"
-                ? "Allow clipboard access for this page in your browser, then copy again."
-                : error instanceof UnsupportedClipboard
-                  ? "This browser cannot write a remote clipboard from a gesture."
-                  : "The local clipboard could not be written.",
-            );
+          fail(
+            error instanceof DOMException && error.name === "NotAllowedError"
+              ? "Allow clipboard access for this page in your browser, then copy again."
+              : error instanceof UnsupportedClipboard
+                ? "This browser cannot write a remote clipboard from a gesture."
+                : "The local clipboard could not be written.",
+          );
           return false;
         },
       )
@@ -75,7 +83,9 @@ export class ViewerClipboard {
           this.#onError("Copy Image from streamed pages is not supported. Copy text instead.");
           return;
         }
+        copied = true;
         resolve(items);
+        if (failure) this.#onError(failure);
       },
       reject: () => {
         if (settled) return;

@@ -1,10 +1,25 @@
-import { actingOccupants, threadMark } from "@opensteer/client/host";
+import { agentSessionSlot } from "@opensteer/client/host";
+import { TabAgentStatus } from "../agent-work.js";
+import {
+  actingOccupants,
+  tabAskStep,
+  tabAsleepAfterAnswer,
+  tabViewerStands,
+  threadMark,
+  type TabAsk,
+} from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
 import type { HostClient, PlaceItem } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
-import { useHostSelector, usePlace, usePlaceActivity, usePlaceList } from "@opensteer/client/react";
+import { BrowserSurfaceIdSchema, type TabId } from "@opensteer/core";
+import {
+  useHostSelector,
+  useOwnerViewReconnect,
+  usePlace,
+  usePlaceActivity,
+  usePlaceList,
+} from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import {
   BrowserOpening,
@@ -13,12 +28,14 @@ import {
 } from "../browser/browser-view.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
-import { SidebarRestoreButton } from "../sidebar-chrome.js";
+import { ConnectedAgentsHeader, SidebarRestoreButton } from "../sidebar-chrome.js";
 import { TaskMark, TaskBadge } from "./task-mark.js";
 import { AppTab } from "./app-tab.js";
 import { useListedBrowserPresentations } from "./identity.js";
 import { OwnerView } from "./owner-view.js";
 import { StartPage } from "./start-page.js";
+import { TaskAppWatchPane } from "./task-app-watch.js";
+import { useWatchPlaceWait } from "./watch-follow.js";
 import {
   destinationPlaceKey,
   startPageLink,
@@ -102,7 +119,7 @@ function AppTabs({
       directory={directory}
       hostClient={hostClient}
       key={tabId}
-      leading={leading}
+      leading={tabId === selected ? leading : null}
       place={open.get(tabId)!}
       selected={tabId === selected}
       trailing={trailing}
@@ -131,6 +148,8 @@ function SelectedPlace({
   const toolbarRef = useToastToolbar();
   const presentations = useListedBrowserPresentations(hostClient);
   const pageVisible = usePageVisible();
+  const { pathname, state: entryState } = useLocation();
+  const watchPlaceWait = useWatchPlaceWait(hostClient, conversationAt(pathname));
   const known = useRef(new Map<string, PlaceItem>());
   const placeKey = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
   const live = usePlace(hostClient, placeKey) ?? null;
@@ -151,6 +170,8 @@ function SelectedPlace({
     readonly tabId: string;
     readonly state: "activating" | "failed";
     readonly message?: string;
+    /** The ask this state belongs to: only its own answer may end it. */
+    readonly request?: unknown;
   } | null>(null);
   const [retry, setRetry] = useState(0);
   // The person's Open of this tab: spent by its first activation, renewed by Try again or Reopen.
@@ -159,55 +180,117 @@ function SelectedPlace({
   if (open.current.tabId !== placeKey) open.current = { tabId: placeKey, wake: true };
   const tabState = live?.tab.state;
   const kind = live?.kind;
+  const reconnect = useOwnerViewReconnect(
+    hostClient,
+    pageVisible &&
+      (kind === "window" || kind === "phone") &&
+      (tabState !== "unavailable" || live?.tab.unavailableCode === "computer-offline")
+      ? placeKey
+      : null,
+  );
+  // V8: this device's last answered ask for the tab in the middle, with what its answer said of
+  // the tab and the Try again it answered. What comes next is decided by it and the tab's row.
+  const [ask, setAsk] = useState<{
+    readonly tabId: string;
+    readonly retry: number;
+    readonly answer: TabAsk;
+  } | null>(null);
+  const askOf = ask?.tabId === placeKey ? ask : null;
   // Selecting a tab opens (or wakes) this device's view of it; an unavailable tab says why instead.
-  const viewerReady =
-    viewer !== null &&
-    (viewer.kind === "app" ||
-      (viewer.kind === "page" && tabState === "open") ||
-      ((viewer.kind === "window" || viewer.kind === "phone") &&
-        viewer.view.state !== "closed" &&
-        viewer.view.state !== "expired"));
-  const needsActivation = placeKey !== null && !!kind && tabState !== "unavailable" && !viewerReady;
+  // A viewer this device's own ask did not answer stands as long as its tab is open.
+  const step =
+    viewer === null
+      ? ("ask-again" as const)
+      : askOf
+        ? tabAskStep(viewer, askOf.answer, live?.tab)
+        : tabViewerStands(viewer, tabState)
+          ? ("show" as const)
+          : ("ask-again" as const);
+  // A tab still asleep after its answer is asked for again only by Try again. Nothing asks while
+  // the page is hidden: the Home lets a tab nobody sees sleep, and asking would wake it again.
+  // The moment the page is seen, it asks.
+  const needsActivation =
+    pageVisible &&
+    placeKey !== null &&
+    !!kind &&
+    tabState !== "unavailable" &&
+    (step === "ask-again" || (step === "asleep" && askOf?.retry !== retry));
   // A re-render, StrictMode or a second opening while one activation is on its way joins it.
   const pendingActivation = useRef<{
     readonly tabId: string;
     readonly done: Promise<unknown>;
+    answeredState: TabAsk["answeredState"];
   } | null>(null);
   useLayoutEffect(() => {
-    if (!needsActivation || placeKey === null) return;
+    if (!needsActivation || placeKey === null || reconnect.getSnapshot() !== "idle") return;
     let cancelled = false;
-    setActivation({ tabId: placeKey, state: "activating" });
     let pending = pendingActivation.current;
     if (pending?.tabId !== placeKey) {
-      const done = hostClient.activateTab(placeKey, { wake: open.current.wake });
+      const asked: {
+        tabId: string;
+        done: Promise<unknown>;
+        answeredState: TabAsk["answeredState"];
+      } = { tabId: placeKey, done: Promise.resolve(), answeredState: null };
+      asked.done = hostClient.activateTab(placeKey, {
+        wake: open.current.wake,
+        answered: (tab) => {
+          asked.answeredState = tab.state;
+        },
+      });
+      const done = asked.done;
       open.current.wake = false;
-      pending = pendingActivation.current = { tabId: placeKey, done };
+      pending = pendingActivation.current = asked;
       const settled = () => {
         if (pendingActivation.current === pending) pendingActivation.current = null;
       };
       done.then(settled, settled);
     }
+    const answered = pending;
+    setActivation({ tabId: placeKey, state: "activating", request: answered });
+    // An activation this run began ends with its answer even when the run was left: a tab that
+    // turned unavailable on its way (its app quit) asks nothing more, and must not say Opening.
+    // Only its own: a newer ask of the same tab keeps saying Opening until its own answer.
+    const ended = () =>
+      setActivation((current) =>
+        current?.request === answered && current.state === "activating" ? null : current,
+      );
     pending.done.then(
       () => {
-        if (!cancelled) setActivation(null);
+        if (cancelled) {
+          ended();
+          return;
+        }
+        setActivation(null);
+        setAsk({
+          tabId: placeKey,
+          retry,
+          answer: {
+            answeredState: answered.answeredState,
+            rowAtAnswer: hostClient.getSnapshot().tabs.get(placeKey as TabId),
+          },
+        });
       },
       () => {
         // The tab's own fact; why the browser didn't start is never shown as raw text.
-        if (!cancelled)
+        if (cancelled) ended();
+        else
           setActivation({ tabId: placeKey, state: "failed", message: "This tab could not open." });
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [hostClient, needsActivation, placeKey, retry]);
+  }, [hostClient, needsActivation, placeKey, reconnect.getSnapshot, retry]);
   const activationError =
     activation?.tabId === placeKey && activation.state === "failed"
       ? (activation.message ?? null)
-      : null;
+      : step === "asleep" && !(activation?.tabId === placeKey && activation.state === "activating")
+        ? tabAsleepAfterAnswer
+        : null;
   const reopenView = useCallback(async () => {
+    reconnect.reset();
     if (placeKey !== null) await hostClient.activateTab(placeKey, { wake: true });
-  }, [hostClient, placeKey]);
+  }, [hostClient, placeKey, reconnect.reset]);
   if (live && placeKey) known.current.set(placeKey, live);
   // A tab just closed keeps its chrome until its successor takes the middle.
   const place = live ?? (placeKey ? (known.current.get(placeKey) ?? null) : null);
@@ -268,22 +351,78 @@ function SelectedPlace({
   }
   if (selection.kind === "talk") return null;
   if (selection.kind === "launcher") {
-    return (
+    if (watchPlaceWait && startPageOpening(entryState) === "") {
+      return (
+        <section aria-label="Watch" className="place place--page">
+          <div className="browser-toolbar surface-row">
+            {leading}
+            {trailing}
+          </div>
+          <div className="browser-stage">
+            <div className="place-state" role="status">
+              {watchPlaceWait === "waiting"
+                ? "Waiting for the agent’s page…"
+                : "The agent’s work ended before anything was available to watch."}
+            </div>
+          </div>
+        </section>
+      );
+    }
+    const startPage = (
       <section aria-label="New tab" className="place place--launcher">
         <StartPageSlot hostClient={hostClient} leading={leading} trailing={trailing} />
       </section>
+    );
+    // A start page the person asked for (New tab) is one. Otherwise a task whose agent is using
+    // a Mac app shows that app where the launcher would be: Watch, the monitor button, a reload.
+    if (startPageOpening(entryState) !== "") return startPage;
+    const threadId = conversationAt(pathname);
+    const slot = threadId ? agentSessionSlot(directory.snapshot, threadId) : null;
+    return (
+      <TaskAppWatchPane
+        agentName={slot?.connection.label ?? null}
+        agentSessionId={slot?.status === "active" ? slot.sessionId : null}
+        fallback={startPage}
+        hostClient={hostClient}
+        hostConnected={hostConnected}
+        leading={leading}
+        onTakeOver={(target) => {
+          // Their own view of the same window, as a tab of theirs; a later choice supersedes it.
+          const show = nav.beginPlaceOperation({ replace: true });
+          void hostClient
+            .openTab(target)
+            .then((tab) => show({ kind: "tab", tabId: tab.tabId }), onReportError);
+        }}
+        threadId={threadId}
+        trailing={trailing}
+        visible={pageVisible}
+      />
     );
   }
   const { destination } = selection;
   if (place?.kind === "app") return null;
   // The address is the person's to type; a tab id it names is checked before use.
   const tabId = BrowserSurfaceIdSchema.safeParse(destination.tabId).data ?? null;
+  // A connected agent's own task in this tab: who, for which task, and its Stop.
+  const sessionOccupant =
+    live?.occupants.find(
+      ({ threadId }) => agentSessionSlot(directory.snapshot, threadId) !== null,
+    ) ?? null;
   return (
     <section
       aria-label={place?.title ?? "Tab"}
       className={`place place--${place?.kind ?? "tab"}`}
       data-place-key={placeKey ?? ""}
     >
+      {tabId && sessionOccupant ? (
+        <TabAgentStatus
+          occupant={{
+            threadId: sessionOccupant.threadId,
+            title: directory.rows.get(sessionOccupant.threadId)?.title ?? "",
+          }}
+          tabId={tabId}
+        />
+      ) : null}
       {place?.kind === "window" || place?.kind === "phone" ? (
         <OwnerView
           hostClient={hostClient}
@@ -296,6 +435,7 @@ function SelectedPlace({
           opening={activation?.tabId === placeKey && activation.state === "activating"}
           phone={place.kind === "phone"}
           place={place}
+          reconnect={reconnect}
           source={
             (viewer?.kind === "window" || viewer?.kind === "phone") && viewer.view
               ? {
@@ -333,7 +473,10 @@ function SelectedPlace({
                   ) : null}
                 </>
               ) : (
-                <BrowserOpening address={place.title} />
+                <BrowserOpening
+                  address={place.asleep ? (place.tab.url ?? place.title) : place.title}
+                  waking={place.asleep}
+                />
               )}
             </div>
           </div>
@@ -428,21 +571,24 @@ export function DrawerButton({ countYield }: { readonly countYield?: number } = 
   const { openDrawer } = useWorkspace();
   const count = useWorkspaceAttention();
   return (
-    <button
-      aria-controls="app-sidebar"
-      aria-label={count > 0 ? `Open sidebar, ${count} need you` : "Open sidebar"}
-      className="drawer-btn"
-      onClick={openDrawer}
-      type="button"
-    >
-      <Icon name="panel" />
-      {count > 0 ? (
-        <span aria-hidden className="side-needs side-needs--inline" data-yield={countYield}>
-          <span className="side-needs__bang">!</span>
-          {count}
-        </span>
-      ) : null}
-    </button>
+    <>
+      <button
+        aria-controls="app-sidebar"
+        aria-label={count > 0 ? `Open sidebar, ${count} need you` : "Open sidebar"}
+        className="drawer-btn"
+        onClick={openDrawer}
+        type="button"
+      >
+        <Icon name="panel" />
+        {count > 0 ? (
+          <span aria-hidden className="side-needs side-needs--inline" data-yield={countYield}>
+            <span className="side-needs__bang">!</span>
+            {count}
+          </span>
+        ) : null}
+      </button>
+      <ConnectedAgentsHeader />
+    </>
   );
 }
 

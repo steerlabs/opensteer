@@ -16,8 +16,15 @@ import type {
   HostClient,
   HostSnapshot,
 } from "@opensteer/client/host";
-import { BrowserCursorStore, browserTabPicture } from "@opensteer/client/host";
+import {
+  BrowserCursorStore,
+  BrowserWatchStore,
+  browserTabPicture,
+  browserViewerGraceMs,
+  type WebSocketClient,
+} from "@opensteer/client/host";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
+import { mockBrowserPoolReport } from "@opensteer/client/mock";
 import {
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
@@ -42,28 +49,93 @@ const native = vi.hoisted(() => ({
   geometry: "side:page@0",
   /** Which presenter the installed binary offers: Image data URIs, or the native picture view. */
   presenter: "image" as "image" | "picture",
-  /** The native picture view's pending presentations and the generation it last cleared to. */
+  /**
+   * The native picture views' queues, as PictureQueue.swift holds each: per view, the delivery
+   * decoding first, then at most one waiting, each settled once.
+   */
   presented: [] as {
+    view: number;
     bytes: Uint8Array;
     metadata: PictureMetadata;
     settle: (outcome: PictureOutcome) => void;
   }[],
-  generation: -1,
+  /** Each mounted view's generation, by its tag: 0 when it is made. */
+  views: new Map<number, { generation: number }>(),
+  /** The view mounted last: the one a test reads the generation of. */
+  latest: 0,
+  get generation(): number {
+    return this.views.get(this.latest)?.generation ?? 0;
+  },
+  /** Whether Expo's component has its tag yet (componentDidMount): before, a call is refused. */
+  tagged: true,
+  /** Whether the native view exists yet: a call by its tag before then finds no view. */
+  mounted: true,
+  /** Whether the view is in its window with the app in front: one that is not drops pictures. */
+  showing: true,
   cleared: null as null | ((event: { nativeEvent: { generation: number } }) => void),
   /** The view's word that it can draw again, after leaving its window or the foreground. */
   shown: null as null | ((event: { nativeEvent: { generation: number } }) => void),
   renders: 0,
+  /** What the view told VoiceOver or TalkBack. */
+  announced: [] as string[],
 }));
 vi.mock("../ui/pane.js", () => ({ usePaneGeometry: () => native.geometry }));
 vi.mock("react-native-reanimated", () => ({
   default: { View: (props: { children?: ReactNode }) => <div>{props.children}</div> },
 }));
-vi.mock("../ui/motion.js", () => ({ dim: undefined, exit: undefined }));
+vi.mock("../ui/motion.js", () => ({ appear: undefined, dim: undefined, exit: undefined }));
 vi.mock("../ui/last-picture-chip.js", () => ({
-  LastPictureChip: () => <span>Last picture</span>,
+  LastPictureChip: ({ label }: { label?: string }) => <span>{label ?? "Last picture"}</span>,
 }));
+vi.mock("expo", () => ({ requireOptionalNativeModule: () => null }));
 vi.mock("../computers/phone-display-native.js", async () => {
   const React = await import("react");
+  const { viewFunctionsOf } = await import("../platform/view-functions.js");
+  let tags = 0;
+  // Drops every delivery of one view not yet shown, as its queue's clear and deinit do.
+  const dropAll = (tag: number) => {
+    for (const job of native.presented.filter((job) => job.view === tag)) {
+      native.presented.splice(native.presented.indexOf(job), 1);
+      job.settle("dropped");
+    }
+  };
+  // As PhoneDisplayModule.swift's clearForView and presentForView answer, with
+  // PictureQueue.swift's rules: no view yet, nothing cleared and the picture dropped; a view
+  // not showing drops the picture and keeps its generation; a stale clear changes nothing; an
+  // older generation is dropped and a newer one taken as its clear would have; one decoding and
+  // the newest waiting.
+  const clear = (tag: number, generation: number) => {
+    const view = native.views.get(tag);
+    if (view === undefined || generation < view.generation) return;
+    view.generation = generation;
+    dropAll(tag);
+  };
+  const byTag = {
+    viewTagFunctions: 1,
+    clearForView: async (tag: number, generation: number) => {
+      if (native.mounted) clear(tag, generation);
+    },
+    presentForView: (tag: number, bytes: Uint8Array, metadata: PictureMetadata) =>
+      new Promise<PictureOutcome>((settle) => {
+        const view = native.views.get(tag);
+        if (
+          view === undefined ||
+          !native.mounted ||
+          !native.showing ||
+          metadata.generation < view.generation
+        ) {
+          settle("dropped");
+          return;
+        }
+        if (metadata.generation > view.generation) clear(tag, metadata.generation);
+        const queued = native.presented.filter((job) => job.view === tag);
+        if (queued.length > 1) {
+          native.presented.splice(native.presented.indexOf(queued[1]!), 1);
+          queued[1]!.settle("dropped");
+        }
+        native.presented.push({ view: tag, bytes, metadata, settle });
+      }),
+  };
   const Picture = React.forwardRef(
     (
       props: {
@@ -76,25 +148,44 @@ vi.mock("../computers/phone-display-native.js", async () => {
       native.cleared = props.onCleared ?? null;
       native.shown = props.onShown ?? null;
       native.renders++;
-      React.useImperativeHandle(ref, () => ({
-        clear: async (generation: number) => {
-          native.generation = generation;
-          for (const { settle } of native.presented.splice(0)) settle("dropped");
+      // A native view of its own, made at generation 0 and gone with its deliveries.
+      const [tag] = React.useState(() => {
+        const made = ++tags;
+        native.views.set(made, { generation: 0 });
+        native.latest = made;
+        return made;
+      });
+      React.useLayoutEffect(
+        () => () => {
+          dropAll(tag);
+          native.views.delete(tag);
         },
-        present: (bytes: Uint8Array, metadata: PictureMetadata) =>
-          new Promise<PictureOutcome>((settle) => {
-            if (metadata.generation !== native.generation) settle("dropped");
-            else native.presented.push({ bytes, metadata, settle });
-          }),
+        [tag],
+      );
+      // Expo's component instance: its tag once mounted, and view functions iOS never calls.
+      React.useImperativeHandle(ref, () => ({
+        get nativeTag() {
+          return native.tagged ? tag : null;
+        },
+        clear: () => Promise.reject(new Error("called with the view as its argument")),
+        present: () => Promise.reject(new Error("called with the view as its argument")),
       }));
       // Something is on screen exactly while the view says what it shows.
       return props.accessibilityLabel ? <img alt={props.accessibilityLabel} /> : null;
     },
   );
-  return { nativePictureView: () => (native.presenter === "picture" ? Picture : null) };
+  return {
+    nativePictureView: () => (native.presenter === "picture" ? Picture : null),
+    // The app's adapter itself, over this binary's calls by tag.
+    pictureFunctions: (instance: unknown) =>
+      viewFunctionsOf(byTag, instance as never, ["clear", "present"]),
+  };
 });
 
 vi.mock("react-native", () => ({
+  AccessibilityInfo: {
+    announceForAccessibility: (words: string) => native.announced.push(words),
+  },
   Platform: { OS: "ios", Version: "26" },
   Image: ({
     accessibilityLabel,
@@ -161,10 +252,15 @@ afterEach(() => {
   native.geometry = "side:page@0";
   native.presenter = "image";
   native.presented = [];
-  native.generation = -1;
+  native.views.clear();
+  native.latest = 0;
+  native.tagged = true;
+  native.mounted = true;
+  native.showing = true;
   native.cleared = null;
   native.shown = null;
   native.renders = 0;
+  native.announced = [];
   document.body.replaceChildren();
   vi.useRealTimers();
 });
@@ -321,7 +417,12 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
     await act(async () => {
       const picture = native.presented.shift();
       if (!picture) throw new Error("The subscribed stream did not deliver a picture.");
-      picture.settle(outcome);
+      // As PictureQueue.complete: a waiting picture under another fence supersedes this one.
+      const superseded =
+        outcome === "presented" &&
+        native.presented[0] !== undefined &&
+        native.presented[0].metadata.fence !== picture.metadata.fence;
+      picture.settle(superseded ? "dropped" : outcome);
     });
   };
   return {
@@ -332,6 +433,8 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
     dropFeed,
     emit,
     hostClient,
+    /** The snapshot the client reads, so a test can say what the Home reports. */
+    listed,
     onTap,
     render,
     send,
@@ -346,6 +449,137 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
     },
     zoom,
   };
+}
+
+/** A viewer socket of the real targeted store, answered as the Home answers it. */
+class TargetSocket implements WebSocketClient {
+  binaryType: "arraybuffer" | "blob" = "blob";
+  readyState = 0;
+  readonly sent: string[] = [];
+  readonly #listeners = new Map<string, Set<(event: never) => void>>();
+  addEventListener(type: string, listener: (event: never) => void): void {
+    const listeners = this.#listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.#listeners.set(type, listeners);
+  }
+  close(code = 1000, reason = ""): void {
+    if (this.readyState === 3) return;
+    this.readyState = 3;
+    this.#emit("close", { code, reason });
+  }
+  open(): void {
+    act(() => {
+      this.readyState = 1;
+      this.#emit("open", {});
+    });
+  }
+  admit(): void {
+    act(() =>
+      this.#emit("message", {
+        data: JSON.stringify({
+          type: "browser.snapshot",
+          sessionId,
+          state: "ready",
+          access: "read-write",
+          targetedStreamingVersion: 1,
+          dialog: null,
+          surfaces: [{ id: surfaceId, active: true, title: "A page", url: "https://example.com" }],
+        }),
+      }),
+    );
+  }
+  picture(sequence: number): void {
+    const header = new TextEncoder().encode(
+      JSON.stringify({
+        ...frame().header,
+        frameId: sequence,
+        watchToken: `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`,
+      }),
+    );
+    const bytes = new Uint8Array(4 + header.length + 4);
+    new DataView(bytes.buffer).setUint32(0, header.length);
+    bytes.set(header, 4);
+    bytes.set([0xff, 0xd8, 0xff, 0xd9], 4 + header.length);
+    act(() => this.#emit("message", { data: bytes.buffer }));
+  }
+  send(data: string): void {
+    this.sent.push(data);
+  }
+  #emit(type: string, event: unknown): void {
+    for (const listener of this.#listeners.get(type) ?? []) listener(event as never);
+  }
+}
+
+/** The page over the client's own targeted store: its holds, sockets and pictures are real. */
+function realStore() {
+  const sockets: TargetSocket[] = [];
+  const store = new BrowserWatchStore(
+    () => {
+      const socket = new TargetSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    "control",
+    undefined,
+    () => 100,
+  );
+  const frames: BrowserFrameStore = {
+    invalidationKey: store.invalidationKey,
+    claim: (session, surface, token) => store.claim(session, surface, token),
+    accept: (session, surface, token) => store.accept(session, surface, token),
+    get: (session, surface) => store.get(session, surface).frame,
+    rasterDemand: (session, surface) => store.rasterDemand(session, surface),
+    subscribe: (session, listener, surface) => store.subscribe(session, surface!, listener),
+  };
+  const listed = {
+    tabs: tabStoreFixture([tabFixture({ tabId: surfaceId, title: "A page" })]),
+  } as unknown as HostSnapshot;
+  const hostClient: BrowserStreamProps["hostClient"] = {
+    acceptBrowserWatchFrame: (session, token, surface) => store.accept(session, surface, token),
+    getSnapshot: () => listed,
+    browserFrames: frames,
+    browserWatchFrames: frames,
+    retainBrowserViewer: (session, surface, options) => store.retain(session, surface, options),
+    retainBrowserWatch: () => () => undefined,
+    sendBrowserCommand: (session, command) => store.send(session, surfaceId, command),
+    browserViewerState: (session, surface) => store.status(session, surface),
+    subscribeBrowserViewer: (session, surface, listener) =>
+      store.subscribeStatus(session, surface, listener),
+    browserWatchState: () => ({ frame: null, status: "unavailable", error: null }),
+    subscribeBrowserWatch: () => () => undefined,
+  };
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  const render = (active: boolean) =>
+    act(() => {
+      root?.render(
+        <BrowserStream
+          active={active}
+          held
+          hostClient={hostClient}
+          interactive
+          label="A page, example.com"
+          session={session("synchronized")}
+          tabId={surfaceId}
+          zoom={{ value: 1 }}
+        />,
+      );
+    });
+  const decode = async () => {
+    if (native.presenter === "image")
+      return act(() => {
+        const image = [...container.querySelectorAll("img")].at(-1);
+        if (!image) throw new Error("The store delivered no image.");
+        image.dispatchEvent(new Event("load"));
+      });
+    await act(async () => {
+      const picture = native.presented.shift();
+      if (!picture) throw new Error("The store delivered no picture.");
+      picture.settle("presented");
+    });
+  };
+  return { container, decode, render, sockets, store };
 }
 
 const sessionId = session("synchronized").id;
@@ -492,6 +726,48 @@ describe.each(["image", "picture"] as const)(
       render("synchronized", false);
       expect(shown()).toBe(false);
       expect(viewerRelease).toHaveBeenCalledTimes(3);
+    });
+
+    it("lets go of its kept viewer once off screen past the grace, keeping the last picture through its return (real store)", async () => {
+      vi.useFakeTimers();
+      try {
+        const real = realStore();
+        const { container, render, sockets } = real;
+        const shown = () => container.querySelector('img[alt="A page, example.com"]') !== null;
+        render(true);
+        expect(sockets).toHaveLength(1);
+        sockets[0]!.open();
+        sockets[0]!.admit();
+        sockets[0]!.picture(1);
+        await real.decode();
+        expect(shown()).toBe(true);
+
+        // Another screen goes over the page: its picture stops, its pictureless viewer stays.
+        render(false);
+        act(() => {
+          vi.advanceTimersByTime(browserViewerGraceMs - 1);
+        });
+        expect(sockets[0]!.readyState, "a quick look at another screen reconnects nothing").toBe(1);
+        // Past the grace nobody can see it: the Home must not count it as a viewer any more.
+        act(() => {
+          vi.advanceTimersByTime(1);
+        });
+        expect(sockets.filter((socket) => socket.readyState !== 3)).toHaveLength(0);
+        expect(shown(), "the last picture stays while the page is off screen").toBe(true);
+
+        // Shown again: it takes its viewer at once, and shows the last picture until a new one.
+        render(true);
+        expect(sockets).toHaveLength(2);
+        expect(shown(), "the page came back blank instead of its last picture").toBe(true);
+        sockets[1]!.open();
+        sockets[1]!.admit();
+        expect(shown()).toBe(true);
+        sockets[1]!.picture(2);
+        await real.decode();
+        expect(shown()).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("drops a touch begun before the picture changed size, rather than aiming it at the old geometry", async () => {
@@ -918,6 +1194,142 @@ describe("native browser picture presenter", () => {
     expect(hostClient.browserFrames.claim).toHaveBeenCalledOnce();
   });
 
+  // The review's note 10: the view says it can show again while the page is hidden; the page
+  // shown later waits for a new delivery rather than drawing one it returned while hidden.
+  it("waits for a new delivery after the view could show again while the page was hidden", async () => {
+    const { decode, emit, render } = setup();
+    render("synchronized");
+    emit();
+    await decode();
+    // Hidden: not drawn, so a delivery is returned at once.
+    render("synchronized", false);
+    emit(surfaceId, { frameId: 2, watchToken: tokenB });
+    act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
+    render("synchronized");
+    expect(native.presented).toHaveLength(0);
+  });
+
+  // A page opened while the app comes to the foreground, or before its view has its window:
+  // the view drops the first picture, and a still page sends no other.
+  it("offers a picture the view dropped again once the view can show it", async () => {
+    native.presenter = "picture";
+    const { container, decode, emit, render } = setup();
+    render("synchronized");
+    emit();
+    await decode("dropped");
+    expect(container.textContent).toContain("Loading the page…");
+    act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
+    expect(native.presented.map(({ bytes }) => [...bytes])).toEqual([[0xff, 0xd8, 0xff]]);
+    await decode();
+    expect(container.textContent).not.toContain("Loading the page…");
+  });
+
+  // A walk cannot see why a page stays on "Loading the page…": a development build says.
+  it("traces every picture the view is offered and answers, and what a page waits for", async () => {
+    const { setPictureTraceSink } = await import("./picture-trace.js");
+    const lines: string[] = [];
+    const previous = setPictureTraceSink((line) => lines.push(line));
+    vi.useFakeTimers();
+    try {
+      native.presenter = "picture";
+      const { container, decode, emit, render } = setup();
+      render("synchronized");
+      emit();
+      await decode("dropped");
+      expect(lines).toEqual([
+        expect.stringMatching(
+          /^\[opensteer-picture\] offered surface=\S+ picture=1 size=800x600 bytes=3 generation=\d+$/u,
+        ),
+        expect.stringMatching(
+          /^\[opensteer-picture\] answered surface=\S+ picture=1 outcome=dropped$/u,
+        ),
+      ]);
+      expect(container.textContent).toContain("Loading the page…");
+      expect(container.textContent).not.toContain("development");
+      await act(async () => vi.advanceTimersByTimeAsync(4000));
+      expect(lines.at(-1)).toMatch(
+        /^\[opensteer-picture\] waiting surface=\S+ feed=live the view dropped every picture so far \(1\)$/u,
+      );
+      expect(container.textContent).toContain(
+        "Loading the page… (development: the view dropped every picture so far (1))",
+      );
+    } finally {
+      setPictureTraceSink(previous);
+    }
+  });
+
+  // Before Expo's component has its tag, a call by tag is refused before it reaches the view:
+  // the walk must read that as a dropped picture, and the picture must still appear.
+  it("counts a picture refused before its view has a tag as dropped, and offers it again", async () => {
+    const { setPictureTraceSink } = await import("./picture-trace.js");
+    const lines: string[] = [];
+    const previous = setPictureTraceSink((line) => lines.push(line));
+    vi.useFakeTimers();
+    try {
+      native.presenter = "picture";
+      native.tagged = false;
+      const { container, decode, emit, render } = setup();
+      render("synchronized");
+      emit();
+      await act(async () => undefined);
+      expect(native.presented).toHaveLength(0);
+      expect(lines).toContainEqual(
+        expect.stringMatching(
+          /^\[opensteer-picture\] answered surface=\S+ picture=1 outcome=dropped reason=refused$/u,
+        ),
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(4000));
+      expect(lines.at(-1)).toMatch(/the view dropped every picture so far \(1\)$/u);
+      native.tagged = true;
+      act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
+      expect(native.presented.map(({ bytes }) => [...bytes])).toEqual([[0xff, 0xd8, 0xff]]);
+      await decode();
+      expect(container.textContent).not.toContain("Loading the page…");
+    } finally {
+      setPictureTraceSink(previous);
+    }
+  });
+
+  it("says nothing of its pictures where it does not trace", async () => {
+    const { setPictureTraceSink } = await import("./picture-trace.js");
+    const previous = setPictureTraceSink(null);
+    vi.useFakeTimers();
+    try {
+      native.presenter = "picture";
+      const { container, decode, emit, render } = setup();
+      render("synchronized");
+      emit();
+      await decode("dropped");
+      await act(async () => vi.advanceTimersByTimeAsync(4000));
+      expect(container.textContent).toContain("Loading the page…");
+      expect(container.textContent).not.toContain("development");
+    } finally {
+      setPictureTraceSink(previous);
+    }
+  });
+
+  // The walk's page that never painted: the view's clear came before the view existed, so the
+  // view still stood at an older generation and said so when it joined its window.
+  it("paints once a view that missed its clear can show, taking the generation with the picture", async () => {
+    native.presenter = "picture";
+    native.mounted = false;
+    const { container, decode, emit, render } = setup();
+    render("synchronized");
+    emit();
+    // No view to take it: the picture is dropped at once.
+    await act(async () => undefined);
+    expect(native.presented).toHaveLength(0);
+    expect(container.textContent).toContain("Loading the page…");
+    expect(native.generation).toBe(0);
+    native.mounted = true;
+    act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
+    expect(native.presented).toHaveLength(1);
+    // The picture carries the generation the page is at, which the view takes.
+    expect(native.generation).toBe(native.presented[0]!.metadata.generation);
+    await decode();
+    expect(container.textContent).not.toContain("Loading the page…");
+  });
+
   it("draws its picture again when the view drops it and can show again in one batch", async () => {
     const { container, decode, emit, render } = setup();
     render("synchronized", true, { held: true });
@@ -1315,4 +1727,142 @@ it("discards queued iPad hover when the stage moves without resizing", async () 
     await vi.advanceTimersByTimeAsync(20);
   });
   expect(send.mock.calls.map(([, command]) => command.type)).toEqual(["cursor.reset"]);
+});
+
+describe("a browser without a pool", () => {
+  // Written against the commit before a Cloud Computer's browser could sleep; never rewritten.
+  it("draws its page and its last picture exactly as before", async () => {
+    const { container, decode, emit, render } = setup();
+    render("synchronized");
+    emit();
+    await decode();
+    const live = container.innerHTML;
+    render("connecting");
+    expect({ live, stale: container.innerHTML }).toMatchSnapshot();
+    expect(native.announced).toEqual([]);
+  });
+});
+
+describe("a Cloud Computer's browser waking", () => {
+  const report = (listed: HostSnapshot, scene: Parameters<typeof mockBrowserPoolReport>[0]) => {
+    const tab = listed.tabs.get(surfaceId as never);
+    if (tab?.kind !== "page") throw new Error("Not a page tab");
+    Object.assign(listed, {
+      browserPools: [mockBrowserPoolReport(scene, tab.computer.computerId, surfaceId)],
+    });
+  };
+
+  it("names a fresh start on the last picture at once, and says it aloud", async () => {
+    const { container, decode, emit, listed, render } = setup();
+    render("synchronized");
+    emit();
+    await decode();
+    report(listed, "starting");
+    render("connecting");
+    expect(container.textContent).toContain("Last picture · Starting browser…");
+    expect(native.announced).toEqual(["Last picture · Starting browser…"]);
+  });
+
+  it("keeps a waking picture as it was through the quiet moment", async () => {
+    const { container, decode, emit, listed, render } = setup();
+    render("synchronized");
+    emit();
+    await decode();
+    report(listed, "waking");
+    render("connecting");
+    expect(container.textContent).toContain("Last picture");
+    expect(container.textContent).not.toContain("Waking");
+    expect(native.announced).toEqual([]);
+  });
+
+  it("says nothing without a picture until the wait is worth a word, then one line", () => {
+    const { container, listed, render } = setup();
+    report(listed, "waking");
+    render("connecting");
+    // Not the connection's own words: the browser is waking, and under a moment says nothing.
+    expect(container.textContent).not.toContain("Connecting");
+    expect(container.textContent).not.toContain("Waking");
+    report(listed, "restarting");
+    render("connecting");
+    expect(container.textContent).toContain("Restarting browser…");
+    expect(native.announced).toEqual(["Restarting browser…"]);
+  });
+
+  it("shows an awake Cloud Computer browser exactly like any other", async () => {
+    const plain = setup();
+    plain.render("synchronized");
+    plain.emit();
+    await plain.decode();
+    plain.render("connecting");
+    const before = plain.container.innerHTML;
+    act(() => root?.unmount());
+    const pooled = setup();
+    report(pooled.listed, "awake");
+    pooled.render("synchronized");
+    pooled.emit();
+    await pooled.decode();
+    pooled.render("connecting");
+    expect(pooled.container.innerHTML).toBe(before);
+  });
+});
+
+/*
+ * The phone walk's page that stayed on "Loading the page…" while the mock Home reported a
+ * live picture: the mock Home's own feed, through the native picture view, as a phone opens it.
+ */
+describe("the mock Home's page through the native picture view", () => {
+  it("asks the view to present the tab's picture, and shows it once presented", async () => {
+    const { MockHostClient, mockConnectedAgents } = await import("@opensteer/client/mock");
+    native.presenter = "picture";
+    const host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("seeded") });
+    try {
+      host.mockAgentWork({ question: false });
+      await host.load();
+      const tabId = "mock-tab-1-0";
+      // The mock's session summaries carry the surfaces they hold.
+      const page = host
+        .getSnapshot()
+        .browserSessions.find((candidate) =>
+          (candidate as unknown as { surfaces?: readonly { id: string }[] }).surfaces?.some(
+            (surface) => surface.id === tabId,
+          ),
+        )!;
+      const container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      await act(async () =>
+        root!.render(
+          <BrowserStream
+            active
+            hostClient={host}
+            interactive
+            label="Travel"
+            session={page}
+            tabId={tabId}
+          />,
+        ),
+      );
+      await vi.waitFor(() => expect(native.presented.length).toBeGreaterThan(0));
+      const first = native.presented[0]!;
+      expect(first.metadata).toMatchObject({ height: 600, width: 960 });
+      const generation = native.generation;
+      await act(async () => first.settle("presented"));
+      await vi.waitFor(() => expect(container.textContent).not.toContain("Loading the page"));
+      // The mock world changes on: the page stays drawn, never cleared under it.
+      const thread = host.getSnapshot().threads[0]!;
+      const clears: number[] = [];
+      for (let step = 0; step < 5; step += 1) {
+        await act(async () => {
+          await host.renameThread(thread.id, `Renamed ${step}`);
+        });
+        for (const { settle } of native.presented.splice(0))
+          await act(async () => settle("presented"));
+        clears.push(native.generation);
+      }
+      expect(new Set(clears)).toEqual(new Set([generation]));
+      expect(container.textContent).not.toContain("Loading the page");
+    } finally {
+      host.dispose();
+    }
+  });
 });

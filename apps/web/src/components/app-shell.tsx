@@ -39,7 +39,6 @@ import {
   type ReactNode,
 } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
-import { receiveDesktopTeamLinks, teamLinkPath } from "../desktop/team-links.js";
 import {
   DesktopNotificationTargetSchema,
   DesktopUseComputerViewInputSchema,
@@ -99,6 +98,7 @@ import {
 } from "./composer-drafts.js";
 import { belongsToPreviousLogin, draftTaskStart, startTask } from "./home/task-start.js";
 import { SidebarChromeProvider } from "./sidebar-chrome.js";
+import { ConnectedAgentsProvider } from "./connected-agents-now.js";
 import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import {
@@ -139,11 +139,15 @@ import {
   usePersistedPaneSize,
   type PaneSizeRange,
 } from "./pane-resize-handle.js";
-import { AccountSignInDialog, type AddHarnessAccount } from "./account-sign-in-dialog.js";
+import {
+  AccountSignInAside,
+  AccountSignInDialog,
+  type AddHarnessAccount,
+} from "./account-sign-in-dialog.js";
 import { useToast } from "./toast.js";
-import { useTeams } from "../team/team-attachments.js";
 import { presentFailure } from "./use-action.js";
 import { openAppLink } from "./apps/app-links.js";
+import { thisComputerRunnerId } from "./this-computer.js";
 
 interface TaskStartDraft {
   readonly draftKey: string | null;
@@ -233,7 +237,7 @@ export function useShell(): ShellContext {
   return shell;
 }
 
-/** The personal shell, where there is one: a team's own web app has none. */
+/** The personal shell. */
 export function useOptionalShell(): ShellContext | null {
   return useContext(ShellContext);
 }
@@ -275,6 +279,9 @@ const selectNothing = () => null;
 /** Tasks that need the reader, each once: what the sidebar's count and the app's badge both say. */
 const selectAttentionCount = (snapshot: HostSnapshot) =>
   snapshot.needsYouCount ?? taskAttention(snapshot).length;
+
+/** Asks the shell to open with Needs you showing, as the Mac menu bar does. */
+export const needsYouSearchParam = "needs-you";
 
 export function AppShell({
   deploymentAccess = null,
@@ -339,14 +346,7 @@ export function AppShell({
     message: string;
     actions: WebLinkFailureActions;
   } | null>(null);
-  // Team pages the desktop opened (an invite, a channel, a message) land on Join, which resolves them.
   const navigateTo = useNavigate();
-  useEffect(() => {
-    if (!suppliedDesktopBridge) return;
-    return receiveDesktopTeamLinks(suppliedDesktopBridge, (url) => {
-      void navigateTo(teamLinkPath(url));
-    });
-  }, [navigateTo, suppliedDesktopBridge]);
   // The remembered place reopens once per viewer for the shell's life: Settings
   // unmounts the workspace's keys, and coming back from it is not a launch.
   const placeRestored = useRef<string | null>(null);
@@ -373,6 +373,8 @@ export function AppShell({
     readonly title: string;
     readonly whereLabel: string;
   } | null>(null);
+  /** The person is finishing this sign-in in a tab of the Home's browser. */
+  const [accountSignInAside, setAccountSignInAside] = useState(false);
   const [localExecutionStatus, setLocalExecutionStatus] =
     useState<DesktopLocalExecutionStatus | null>(null);
   const [localStatusFailed, setLocalStatusFailed] = useState(false);
@@ -427,7 +429,7 @@ export function AppShell({
       ? null
       : (snapshot.environments.find((environment) => environment.id === hostedEnvironmentId)
           ?.runnerId ?? null);
-  const thisMachineId = localRunnerId ?? hostingRunnerId;
+  const thisMachineId = thisComputerRunnerId({ hostingRunnerId, localRunnerId });
   webLinkHere.current = thisMachineId;
   const openWebLink = useCallback(
     (address: string) =>
@@ -564,7 +566,9 @@ export function AppShell({
         return open !== null && listedRowThreadId(hostClient.getSnapshot(), open) === threadId;
       };
       const next =
-        done && inView() ? taskAfter(taskList(hostClient.getSnapshot()), threadId) : undefined;
+        done && inView()
+          ? taskAfter(taskList(hostClient.getSnapshot(), { personTasksOnly: true }), threadId)
+          : undefined;
       await hostClient.setTaskDone(threadId, done);
       if (next !== undefined && inView()) openConversation(next === null ? "/" : threadPath(next));
     },
@@ -605,7 +609,7 @@ export function AppShell({
   const openHarnessAuthentication = useCallback(
     (placement: ThreadPlacementOption, options?: { readonly methodId?: string }) => {
       if (!harnessAuthenticationEnvironmentIds.has(placement.environmentId)) {
-        toast.error(`${placement.whereLabel} does not allow signing AI engines in from here.`);
+        toast.error(`${placement.whereLabel} does not allow signing agents in from here.`);
         return;
       }
       if (!placement.setupAvailable) {
@@ -621,6 +625,7 @@ export function AppShell({
         flow: startAccountSignIn({
           client: hostClient,
           errorMessage: signInFailureWords,
+          localRunnerId: thisMachineId,
           target: {
             environmentId: placement.environmentId,
             harnessInstanceId: placement.harnessInstanceId,
@@ -635,13 +640,14 @@ export function AppShell({
         whereLabel: placement.whereLabel,
       });
     },
-    [harnessAuthenticationEnvironmentIds, hostClient, toast],
+    [harnessAuthenticationEnvironmentIds, hostClient, thisMachineId, toast],
   );
   // The flow outlives a dialog closing but not the shell: leaving this
   // Deployment must not keep signing in, or leave an account half added, unseen.
   const accountSignInFlow = useRef<AccountSignInFlow | null>(null);
   useEffect(() => {
     accountSignInFlow.current = accountSignIn?.flow ?? null;
+    setAccountSignInAside(false);
   }, [accountSignIn]);
   useEffect(() => () => void accountSignInFlow.current?.cancel(), []);
   const addHarnessAccount = useCallback(
@@ -660,6 +666,7 @@ export function AppShell({
         flow: startAccountSignIn({
           client: hostClient,
           errorMessage: signInFailureWords,
+          localRunnerId: thisMachineId,
           target: { kind: "create", request },
           ...(selectMethod ? { selectMethod } : {}),
         }),
@@ -669,7 +676,7 @@ export function AppShell({
         whereLabel,
       });
     },
-    [hostClient],
+    [hostClient, thisMachineId],
   );
   const refreshHarnessCatalog = useCallback(
     async (placement: ThreadPlacementOption) => {
@@ -853,6 +860,22 @@ export function AppShell({
     openNotification(notificationTarget);
     onNotificationTargetOpened?.();
   }, [deploymentId, notificationTarget, onNotificationTargetOpened, openNotification]);
+  // The Mac menu bar's Needs you opens Home with Needs you showing.
+  useEffect(() => {
+    if (!deploymentId || !new URLSearchParams(location.search).has(needsYouSearchParam)) return;
+    setNeedsYouNotification({ deploymentId, id: `menu-bar:${location.key}` });
+    setSidebarCollapsed(false);
+    setMobileNavigationOpen(true);
+    void Promise.resolve(navigateTo(location.pathname, { replace: true })).catch(reportActionError);
+  }, [
+    deploymentId,
+    location.key,
+    location.pathname,
+    location.search,
+    navigateTo,
+    reportActionError,
+    setSidebarCollapsed,
+  ]);
 
   // ⌘N / Ctrl+N opens Home, where every new task starts.
   useEffect(() => {
@@ -871,13 +894,17 @@ export function AppShell({
   // person, as the collapsed sidebar does. Leaving this Deployment clears it.
   useEffect(() => {
     if (!localBridge) return;
-    const show = (count: number) =>
-      void localBridge.setBadgeCount({ count }).catch(() => {
-        // A badge the operating system will not draw changes nothing the app shows.
-      });
-    show(attention);
-    return () => show(0);
-  }, [attention, localBridge]);
+    // The count names the Home it is for, so the menu bar never credits it to
+    // another; clearing on the way out names none.
+    const show = (count: number, from: string | null) =>
+      void localBridge
+        .setBadgeCount({ count, ...(from ? { deploymentId: from } : {}) })
+        .catch(() => {
+          // A badge the operating system will not draw changes nothing the app shows.
+        });
+    show(attention, deploymentId ?? null);
+    return () => show(0, null);
+  }, [attention, deploymentId, localBridge]);
 
   useEffect(() => {
     if (!localBridge || !localExecutionDeploymentId) {
@@ -961,7 +988,8 @@ export function AppShell({
     navigationDrawerElement,
   );
   const overlayOpen =
-    accountSignIn !== null || (!fullWindow && mobileNavigation && mobileNavigationOpen);
+    (accountSignIn !== null && !accountSignInAside) ||
+    (!fullWindow && mobileNavigation && mobileNavigationOpen);
   const shellClassName = setupMode
     ? "app-shell app-shell--settings app-shell--setup"
     : fullWindow
@@ -1115,6 +1143,18 @@ export function AppShell({
               it, because it outlives navigation and every mutating control on
               those pages is disabled while it runs. */}
                   <DeploymentOperationBanner bridge={localBridge} snapshot={deploymentAccess} />
+                  {accountSignIn && accountSignInAside ? (
+                    <AccountSignInAside
+                      flow={accountSignIn.flow}
+                      onCancel={() => closeAccountSignIn(accountSignIn.flow)}
+                      onDone={(state) => {
+                        finishAccountSignIn(state.accountLabel, accountSignIn.added);
+                        accountSignIn.onAdded?.(state.harnessInstanceId);
+                      }}
+                      onReturn={() => setAccountSignInAside(false)}
+                      title={accountSignIn.title}
+                    />
+                  ) : null}
                   {thisDevice ? (
                     <FinishSetupBar
                       device={thisDevice}
@@ -1124,7 +1164,12 @@ export function AppShell({
                   ) : null}
                   <VoiceIsland ask={<VoiceAsk />} />
                   <SidebarChromeProvider
+                    hostClient={hostClient}
                     onRestore={toggleSidebar}
+                    showConnectedAgents={
+                      !fullWindow &&
+                      (mobileNavigation ? !(mobileNavigationOpen && drawerReady) : sidebarCollapsed)
+                    }
                     restoreVisible={!fullWindow && !mobileNavigation && sidebarCollapsed}
                   >
                     {fullWindow ? (
@@ -1146,7 +1191,7 @@ export function AppShell({
                   </SidebarChromeProvider>
                 </main>
 
-                {accountSignIn ? (
+                {accountSignIn && !accountSignInAside ? (
                   <AccountSignInDialog
                     continued={accountSignIn.continued}
                     flow={accountSignIn.flow}
@@ -1163,6 +1208,10 @@ export function AppShell({
                           }
                         : undefined
                     }
+                    onShowTab={(tabId) => {
+                      setAccountSignInAside(true);
+                      nav.showPlace({ kind: "tab", tabId });
+                    }}
                     title={accountSignIn.title}
                     whereLabel={accountSignIn.whereLabel}
                   />
@@ -1190,16 +1239,16 @@ export function AppShell({
   );
   return (
     <ShellContext value={shell}>
-      <ConnectionGateScope>{workspace}</ConnectionGateScope>
+      <ConnectionGateScope>
+        <ConnectedAgentsProvider hostClient={hostClient} readActivity={!fullWindow}>
+          {workspace}
+        </ConnectedAgentsProvider>
+      </ConnectionGateScope>
     </ShellContext>
   );
 }
 
-/**
- * The one pill, for the connection the screen in view is about: a team's own
- * on that team's pages, the person's computer everywhere else. Other
- * connections with trouble are listed in its details.
- */
+/** The one pill, for the connection to this Opensteer. */
 function ShellPill({
   desktopBridge,
   hostClient,
@@ -1209,8 +1258,6 @@ function ShellPill({
   readonly hostClient: HostClient;
   readonly onThisComputer: boolean;
 }) {
-  const { pathname } = useLocation();
-  const { teams } = useTeams();
   const personal = useMemo<ShellConnectionSource>(
     () => ({
       key: "personal",
@@ -1224,25 +1271,7 @@ function ShellPill({
     }),
     [desktopBridge, hostClient, onThisComputer],
   );
-  const teamSources = useMemo(
-    () =>
-      teams.flatMap((team): ShellConnectionSource[] =>
-        team.client
-          ? [{ key: `team:${team.teamId}`, connection: team.client.connection, mark: "users" }]
-          : [],
-      ),
-    [teams],
-  );
-  // A team route is about that team even before its connection exists; its gate explains then.
-  const teamId = /^\/teams\/([^/]+)/.exec(pathname)?.[1];
-  const current = teamId
-    ? (teamSources.find((source) => source.key === `team:${decodeURIComponent(teamId)}`) ?? null)
-    : personal;
-  const others = useMemo(
-    () => [personal, ...teamSources].filter((source) => source !== current),
-    [current, personal, teamSources],
-  );
-  return current ? <ShellConnectionPill current={current} others={others} /> : null;
+  return <ShellConnectionPill current={personal} others={[]} />;
 }
 
 function failureWords(error: unknown, label = "complete this action"): string {
@@ -1301,7 +1330,7 @@ function WorkspaceKeys({
     if (restored.current === viewer) return;
     restored.current = viewer;
     const opened = address.current;
-    // A remembered place belongs to Tasks; a team or full-window page keeps its own address.
+    // A remembered place belongs to Tasks; a full-window page keeps its own address.
     if (
       workspaceSide(opened.pathname) !== "tasks" ||
       new URLSearchParams(opened.search).has("panel")
@@ -1345,8 +1374,12 @@ function WorkspaceKeys({
   return null;
 }
 
+// Whether the remembered tab is still listed can be answered only once the whole tab list has
+// arrived; deciding earlier opened New tab and overwrote the memory on every launch.
 const selectBrowsersKnown = (snapshot: HostSnapshot) =>
-  snapshot.deploymentShape !== null && snapshot.connection === "connected";
+  snapshot.deploymentShape !== null &&
+  snapshot.connection === "connected" &&
+  snapshot.tabs.complete;
 const selectDeploymentId = (snapshot: HostSnapshot) => snapshot.deploymentId;
 const selectUserId = (snapshot: HostSnapshot) => snapshot.user?.id ?? null;
 

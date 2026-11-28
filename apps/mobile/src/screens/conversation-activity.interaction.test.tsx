@@ -64,6 +64,8 @@ vi.mock("react-native", () => {
     View: (props: Children & { readonly accessibilityLabel?: string }) => (
       <div aria-label={props.accessibilityLabel}>{props.children}</div>
     ),
+    // The window as a phone at the default text size reports it.
+    useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 3, width: 390 }),
   };
 });
 vi.mock("react-native-reanimated", () => ({
@@ -132,10 +134,7 @@ vi.mock("../ui/primitives.js", () => ({
   monoFontFamily: "monospace",
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../team/team-marks.js", async (load) => ({
-  ...(await load<typeof import("../team/team-marks.js")>()),
-  AgentOrb: () => <i data-chat-orb />,
-}));
+vi.mock("../ui/agent-orb.js", () => ({ AgentOrb: () => <i data-chat-orb /> }));
 vi.mock("../ui/icon-glyph.js", () => ({ IconGlyph: () => null }));
 vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { readonly text: string }) => <p>{text}</p>,

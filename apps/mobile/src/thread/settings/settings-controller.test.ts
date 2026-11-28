@@ -94,7 +94,6 @@ function thread(
     unread: false,
     updatedAt: "2026-09-16T12:00:00.000Z",
     purpose: "task",
-    teamOrigin: null,
     ...overrides,
   } as ThreadSummary;
 }

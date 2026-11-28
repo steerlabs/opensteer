@@ -142,15 +142,11 @@ public final class AppSessionState {
 @MainActor
 public final class HelperSession {
   public let sessionId: String
-  public var threadTitle: String?
   /// A session belongs to the connection that opened it and closes when that
   /// connection drops.
   let runId: String?
   public let connectionID: Int
   public private(set) var apps: [String: AppSessionState] = [:]
-  /// The access the latest call carried for each app, which is what the pill
-  /// reads as `Using` or `Viewing`.
-  public private(set) var access: [String: AppAccess] = [:]
   /// The process each app was last observed in, so the main actor can notice
   /// a quit app and forget its window observer without asking the work
   /// executor.
@@ -161,28 +157,21 @@ public final class HelperSession {
   /// so work that is mid-flight when the person presses `Stop` finds out.
   public let cancellation = SessionCancellation()
 
-  init(sessionId: String, connectionID: Int, threadTitle: String? = nil, runId: String? = nil) {
+  init(sessionId: String, connectionID: Int, runId: String? = nil) {
     self.runId = runId
-    self.threadTitle = threadTitle
     self.sessionId = sessionId
     self.connectionID = connectionID
   }
 
-  func add(_ state: AppSessionState, access: AppAccess) {
+  func add(_ state: AppSessionState) {
     apps[state.key] = state
-    self.access[state.key] = access
   }
 
   func remove(_ state: AppSessionState) {
     guard apps[state.key] === state else { return }
     state.focus.stop()
     apps[state.key] = nil
-    access[state.key] = nil
     processIdentifiers[state.key] = nil
-  }
-
-  func noteAccess(_ access: AppAccess, for state: AppSessionState) {
-    self.access[state.key] = access
   }
 
   public func app(_ bundleIdentifier: String) -> AppSessionState? {

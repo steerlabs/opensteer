@@ -1,861 +1,518 @@
+import AppKit
 import CoreGraphics
 import Foundation
+import QuartzCore
 import XCTest
 
 @testable import ComputerUseCore
+@testable import ComputerUseTestSupport
 
-/// What the person sees: every state the pill, the pointers, the steady
-/// outline can be in, and how they move from one to the next.
+/// What the person sees: one chip per held app with one dot, working or
+/// still, the amber notice and who may clear it, where the chip sits on its
+/// window, when it hides, what a press on it does, and that the chip is on
+/// an action's window before the action's first effect.
 final class OverlayModelTests: XCTestCase {
   private let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
-  private let notes = OverlayModel.App(
-    key: "com.apple.notes", name: "Notes", access: .readWrite,
-    path: "/System/Applications/Notes.app")
-  private let calendar = OverlayModel.App(
-    key: "com.apple.ical", name: "Calendar", access: .readWrite,
-    path: "/System/Applications/Calendar.app")
-  private let mail = OverlayModel.App(
-    key: "com.apple.mail", name: "Mail", access: .read, path: "/System/Applications/Mail.app")
+  private let safari = OverlayModel.App(key: "com.apple.safari", name: "Safari")
+  private let notes = OverlayModel.App(key: "com.apple.notes", name: "Notes")
 
   private func at(_ seconds: TimeInterval) -> Date { start + seconds }
 
-  private func read(_ app: OverlayModel.App) -> OverlayModel.App {
-    OverlayModel.App(key: app.key, name: app.name, access: .read, path: app.path)
+  private func session(_ id: String, _ apps: [OverlayModel.App]) -> OverlayModel.Session {
+    OverlayModel.Session(id: id, apps: apps)
   }
 
-  private func session(
-    _ id: String, _ title: String?, _ apps: [OverlayModel.App]
-  ) -> OverlayModel.Session {
-    OverlayModel.Session(id: id, threadTitle: title, apps: apps)
+  private func holder(_ id: String, _ app: OverlayModel.App) -> OverlayModel.Holder {
+    OverlayModel.Holder(session: id, app: app.key)
   }
 
-  private func pill(_ model: OverlayModel, _ seconds: TimeInterval) -> OverlayModel.Pill? {
-    model.presentation(at: at(seconds)).pill
+  private func look(_ model: OverlayModel, _ app: OverlayModel.App, _ seconds: TimeInterval)
+    -> OverlayModel.Chip.Look?
+  {
+    model.presentation(at: at(seconds)).chips[app.key]?.look
   }
 
-  private func icon(_ app: OverlayModel.App) -> OverlayModel.Pill.Icon {
-    OverlayModel.Pill.Icon(key: app.key, path: app.path)
+  /// A model whose Safari agent lost its connection mid-action, while a Notes
+  /// agent works on.
+  private func lostSafari() -> OverlayModel {
+    var model = OverlayModel()
+    model.update(sessions: [session("a", [safari]), session("b", [notes])], ending: .ended, at: at(0))
+    model.workStarted(holder("a", safari))
+    model.update(sessions: [session("b", [notes])], ending: .connectionLost, at: at(1))
+    return model
   }
 
-  // MARK: - Live sessions
+  // MARK: - The dot
 
   func testNothingShowsWithoutASession() {
     let model = OverlayModel()
-    XCTAssertEqual(
-      model.presentation(at: start),
-      OverlayModel.Presentation(pill: nil, cursors: [:], outlined: [], sweeping: []))
+    XCTAssertEqual(model.presentation(at: start), OverlayModel.Presentation(chips: [:]))
     XCTAssertNil(model.nextChange(after: start))
   }
 
-  func testAnOpenSessionWithNothingInFlightIsWaitingForTheAgent() {
+  func testASessionThatHoldsNoAppYetShowsNothing() {
     var model = OverlayModel()
-    model.update(sessions: [session("a", "Plan the trip", [])], ending: .ended, at: at(0))
+    model.update(sessions: [session("a", [])], ending: .ended, at: at(0))
+    XCTAssertEqual(model.presentation(at: at(0)).chips, [:])
+  }
+
+  func testAHeldAppShowsOneStillDotAndNoWords() {
+    var model = OverlayModel()
+    model.update(sessions: [session("a", [safari])], ending: .ended, at: at(0))
     XCTAssertEqual(
-      pill(model, 0),
-      OverlayModel.Pill(
-        status: "opensteer is waiting for the agent", compactStatus: "Waiting for agent",
-        detail: "Plan the trip",
-        controls: .session, icons: [], badge: .pointer, activity: .thinking, expanded: true))
+      model.presentation(at: at(0)).chips,
+      [safari.key: OverlayModel.Chip(app: safari, look: .agent(.still))])
   }
 
-  func testWorkOnAReadWriteAppIsUsingAndHoldsForAMomentAfter() {
+  func testWorkBreathesAndHoldsForAMomentAfter() {
     var model = OverlayModel()
-    model.update(sessions: [session("a", "Plan the trip", [notes])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    XCTAssertEqual(pill(model, 1)?.status, "opensteer is using Notes")
-    XCTAssertEqual(pill(model, 1)?.compactStatus, "Using Notes")
-    model.workEnded(app: notes.key, at: at(2))
-    XCTAssertEqual(pill(model, 2.29)?.status, "opensteer is using Notes")
+    model.update(sessions: [session("a", [safari])], ending: .ended, at: at(0))
+    model.workStarted(holder("a", safari))
+    XCTAssertEqual(look(model, safari, 1), .agent(.working))
+    XCTAssertNil(model.nextChange(after: at(1)), "Nothing changes by itself while work is in flight.")
+    model.workEnded(holder("a", safari), at: at(2))
+    XCTAssertEqual(look(model, safari, 2.1), .agent(.working))
     XCTAssertEqual(model.nextChange(after: at(2)), at(2) + OverlayModel.holdAfterWork)
-    XCTAssertEqual(pill(model, 2.31)?.status, "opensteer is waiting to use Notes")
-    XCTAssertEqual(pill(model, 2.31)?.compactStatus, "Waiting · Notes")
-    XCTAssertNil(model.nextChange(after: at(2.31)))
+    XCTAssertEqual(look(model, safari, 2 + OverlayModel.holdAfterWork), .agent(.still))
   }
 
-  func testAReadConnectionIsViewing() {
+  func testOverlappingWorkStaysWorkingUntilTheLastEnds() {
     var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [read(notes)])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    XCTAssertEqual(pill(model, 1)?.status, "opensteer is viewing Notes")
-    XCTAssertEqual(pill(model, 1)?.compactStatus, "Viewing Notes")
-    XCTAssertNil(pill(model, 1)?.detail)
+    model.update(sessions: [session("a", [safari])], ending: .ended, at: at(0))
+    model.workStarted(holder("a", safari))
+    model.workStarted(holder("a", safari))
+    model.workEnded(holder("a", safari), at: at(1))
+    XCTAssertEqual(look(model, safari, 5), .agent(.working))
+    model.workEnded(holder("a", safari), at: at(5))
+    XCTAssertEqual(look(model, safari, 6), .agent(.still))
   }
 
-  func testRaisingAccessTurnsViewingIntoUsing() {
+  func testEachHeldAppHasItsOwnChip() {
     var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [read(notes)])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(1))
-    XCTAssertEqual(pill(model, 1)?.status, "opensteer is using Notes")
+    model.update(sessions: [session("a", [safari]), session("b", [notes])], ending: .ended, at: at(0))
+    model.workStarted(holder("b", notes))
+    XCTAssertEqual(look(model, safari, 0), .agent(.still))
+    XCTAssertEqual(look(model, notes, 0), .agent(.working))
   }
 
-  func testTypingShowsOnlyWhileTheTypeActionRuns() {
+  func testWorkForAnAppNoSessionHoldsChangesNothing() {
     var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    model.typingStarted(app: notes.key)
-    XCTAssertEqual(pill(model, 1)?.status, "opensteer is typing in Notes")
-    XCTAssertEqual(pill(model, 1)?.compactStatus, "Typing in Notes")
-    model.typingEnded(app: notes.key)
-    XCTAssertEqual(pill(model, 1.5)?.status, "opensteer is using Notes")
+    model.update(sessions: [session("a", [safari])], ending: .ended, at: at(0))
+    model.workStarted(holder("a", notes))
+    model.workStarted(holder("b", safari))
+    XCTAssertEqual(look(model, safari, 0), .agent(.still))
+    XCTAssertNil(look(model, notes, 0))
   }
 
-  func testSeveralAppsInUseAreNamedTogetherWithTheirThreads() {
+  func testReleasingAnAppRemovesItsChipAtOnce() {
     var model = OverlayModel()
-    model.update(
-      sessions: [session("a", "Plan the trip", [notes]), session("b", "Book rooms", [calendar])],
-      ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    model.workEnded(app: notes.key, at: at(1.5))
-    model.workStarted(app: calendar.key, at: at(1.6))
-    let both = pill(model, 1.6)
-    // The most recently started app leads the status.
-    XCTAssertEqual(both?.status, "opensteer is using Calendar and Notes")
-    XCTAssertEqual(both?.compactStatus, "Using Calendar +1")
-    XCTAssertEqual(both?.detail, "Book rooms · Plan the trip")
-    // Once Notes has been quiet for the hold, only Calendar and its Thread.
-    XCTAssertEqual(pill(model, 1.85)?.status, "opensteer is using Calendar")
-    XCTAssertEqual(pill(model, 1.85)?.detail, "Book rooms")
+    model.update(sessions: [session("a", [safari, notes])], ending: .ended, at: at(0))
+    model.workStarted(holder("a", safari))
+    model.update(sessions: [session("a", [notes])], ending: .ended, at: at(1))
+    XCTAssertNil(look(model, safari, 1))
+    XCTAssertEqual(look(model, notes, 1), .agent(.still))
+    model.update(sessions: [session("a", [safari, notes])], ending: .ended, at: at(2))
+    XCTAssertEqual(look(model, safari, 2), .agent(.still), "A new claim starts still.")
   }
 
-  func testThreeAppsAndViewingOnlyWhenEveryAppIsRead() {
-    var model = OverlayModel()
-    model.update(
-      sessions: [session("a", "Plan the trip", [notes, calendar, mail])], ending: .ended, at: at(0))
-    model.workStarted(app: mail.key, at: at(1))
-    model.workStarted(app: calendar.key, at: at(2))
-    model.workStarted(app: notes.key, at: at(3))
-    XCTAssertEqual(pill(model, 3)?.status, "opensteer is using Notes, Calendar and Mail")
-    XCTAssertEqual(pill(model, 3)?.detail, "Plan the trip")
+  // MARK: - The amber notice
 
-    var viewing = OverlayModel()
-    viewing.update(
-      sessions: [session("a", nil, [read(notes)]), session("b", nil, [mail])], ending: .ended,
-      at: at(0))
-    viewing.workStarted(app: notes.key, at: at(1))
-    viewing.workStarted(app: mail.key, at: at(1))
-    XCTAssertEqual(pill(viewing, 1)?.status, "opensteer is viewing Notes and Mail")
-  }
-
-  func testWaitingNamesEveryOpenThreadOnceAndSkipsMissingTitles() {
-    var model = OverlayModel()
-    model.update(
-      sessions: [
-        session("a", "Plan the trip", []), session("b", nil, []), session("c", "  ", []),
-        session("d", "Plan the trip", []), session("e", "Book rooms", []),
-      ],
-      ending: .ended, at: at(0))
-    XCTAssertEqual(pill(model, 0)?.detail, "Plan the trip · Book rooms")
-  }
-
-  func testCompactWaitingNamesTheMostRecentlyUsedHeldApp() {
-    var model = OverlayModel()
-    model.update(
-      sessions: [session("a", nil, [notes]), session("b", nil, [calendar])],
-      ending: .ended, at: at(0))
-    XCTAssertEqual(pill(model, 0)?.compactStatus, "Waiting · Notes +1")
-    model.workStarted(app: calendar.key, at: at(1))
-    model.workEnded(app: calendar.key, at: at(1.1))
-    XCTAssertEqual(pill(model, 2)?.compactStatus, "Waiting · Calendar +1")
-  }
-
-  func testCompactWaitingKeepsTheTargetAppName() {
-    let slack = OverlayModel.App(
-      key: "com.tinyspeck.slackmacgap", name: "Slack", access: .readWrite,
-      path: "/Applications/Slack.app")
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [slack])], ending: .ended, at: at(0))
-    XCTAssertEqual(model.presentation(at: at(0)).pill?.compactStatus, "Waiting · Slack")
-  }
-
-  func testAnAppNoSessionHoldsIsNeverNamed() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    XCTAssertEqual(pill(model, 1)?.status, "opensteer is waiting for the agent")
-  }
-
-  // MARK: - The app and its badge
-
-  func testTheAppMostRecentlyWorkedInLeadsTheIconsAndCarriesTheBadge() {
-    var model = OverlayModel()
-    model.update(
-      sessions: [session("a", nil, [notes]), session("b", nil, [calendar])],
-      ending: .ended, at: at(0))
-    XCTAssertEqual(pill(model, 0)?.icons, [icon(notes), icon(calendar)])
-    XCTAssertEqual(pill(model, 0)?.activity, .thinking)
-    model.workStarted(app: calendar.key, at: at(1))
-    XCTAssertEqual(pill(model, 1)?.icons, [icon(calendar), icon(notes)])
-    XCTAssertEqual(pill(model, 1)?.badge, .pointer)
-    XCTAssertEqual(pill(model, 1)?.activity, .working)
-    model.workEnded(app: calendar.key, at: at(1.1))
-    // Between calls the app last worked in stays in front, its pointer resting.
-    XCTAssertEqual(pill(model, 2)?.icons, [icon(calendar), icon(notes)])
-    XCTAssertEqual(pill(model, 2)?.activity, .thinking)
-    XCTAssertEqual(pill(model, 2)?.compactStatus, "Waiting · Calendar +1")
-  }
-
-  func testAnAppTheAgentCanOnlySeeCarriesTheEyeNotThePointer() {
-    var model = OverlayModel()
-    model.update(
-      sessions: [session("a", nil, [read(notes), calendar])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    XCTAssertEqual(pill(model, 1)?.icons.first, icon(notes))
-    XCTAssertEqual(pill(model, 1)?.badge, .eye)
-    model.workStarted(app: calendar.key, at: at(2))
-    XCTAssertEqual(pill(model, 2)?.icons.first, icon(calendar))
-    XCTAssertEqual(pill(model, 2)?.badge, .pointer)
-  }
-
-  func testAtMostTwoAppsAreDrawn() {
-    var model = OverlayModel()
-    model.update(
-      sessions: [session("a", nil, [notes, calendar, mail])], ending: .ended, at: at(0))
-    model.workStarted(app: mail.key, at: at(1))
-    XCTAssertEqual(pill(model, 1)?.icons, [icon(mail), icon(notes)])
-  }
-
-  func testBeforeAnyAppIsHeldTheMarkCarriesThePointer() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    XCTAssertEqual(pill(model, 1)?.icons, [])
-    XCTAssertEqual(pill(model, 1)?.badge, .pointer)
-    XCTAssertEqual(pill(model, 1)?.activity, .thinking)
-  }
-
-  func testANoticeShowsTheAppsLastWorkedInFirst() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [notes, calendar])], ending: .ended, at: at(0))
-    model.workStarted(app: calendar.key, at: at(1))
-    model.workEnded(app: calendar.key, at: at(1.1))
-    model.update(sessions: [], ending: .ended, at: at(2))
-    XCTAssertEqual(pill(model, 2)?.icons, [icon(calendar), icon(notes)])
-    XCTAssertNil(pill(model, 2)?.badge)
-  }
-
-  // MARK: - Minimized, and revealed for a moment
-
-  func testThePillStartsExpanded() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(0))
-    XCTAssertEqual(pill(model, 0)?.expanded, true)
-    XCTAssertNil(model.nextChange(after: at(0)))
-  }
-
-  func testMinimizingLastsThroughNoticesAndLaterSessions() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(0))
-    model.toggleExpanded(at: at(1))
-    XCTAssertEqual(pill(model, 1)?.expanded, false)
+  func testAConnectionLostWithAnActionUnderWayTurnsThatAppsChipAmber() {
+    let model = lostSafari()
+    XCTAssertEqual(look(model, safari, 1), .connectionLost)
+    XCTAssertEqual(look(model, notes, 1), .agent(.still), "The other app keeps working.")
+    XCTAssertEqual(look(model, safari, 3_600), .connectionLost, "It does not time out.")
     XCTAssertNil(model.nextChange(after: at(1)))
-    // A notice always shows its words, and toggling it changes nothing.
-    model.update(sessions: [], ending: .stopped, at: at(2))
-    XCTAssertEqual(pill(model, 2)?.expanded, true)
-    model.toggleExpanded(at: at(2.5))
-    XCTAssertEqual(pill(model, 2.5)?.expanded, true)
-    XCTAssertNil(pill(model, 4))
-    // The next task is revealed for a moment, then minimized as the person left it.
-    model.update(sessions: [session("b", nil, [])], ending: .ended, at: at(10))
-    XCTAssertEqual(pill(model, 10)?.expanded, true)
-    XCTAssertEqual(model.nextChange(after: at(10)), at(10) + OverlayModel.revealDuration)
-    XCTAssertEqual(pill(model, 10 + OverlayModel.revealDuration)?.expanded, false)
+    XCTAssertEqual(model.shownApps, [safari.key, notes.key])
   }
 
-  func testANewTaskOrAppRevealsAMinimizedPillForAMoment() {
+  func testNothingWasUnderWaySoNothingTurnsAmber() {
     var model = OverlayModel()
-    model.update(sessions: [session("a", "Plan", [])], ending: .ended, at: at(0))
-    model.toggleExpanded(at: at(0))
-    // The first observe claims the app: a new app is worth a look.
-    model.update(sessions: [session("a", "Plan", [notes])], ending: .ended, at: at(5))
-    XCTAssertEqual(pill(model, 5)?.expanded, true)
-    XCTAssertEqual(pill(model, 7.99)?.expanded, true)
-    XCTAssertEqual(pill(model, 8)?.expanded, false)
-    // So is another task.
-    model.update(
-      sessions: [session("a", "Plan", [notes]), session("b", "Book", [])], ending: .ended,
-      at: at(20))
-    XCTAssertEqual(pill(model, 20)?.expanded, true)
-    // And an app passing to another task.
-    model.update(
-      sessions: [session("a", "Plan", []), session("b", "Book", [notes])], ending: .ended,
-      at: at(30))
-    XCTAssertEqual(pill(model, 30)?.expanded, true)
-    XCTAssertEqual(pill(model, 33)?.expanded, false)
-  }
-
-  func testWorkTypingTitlesAndRepeatsNeverReveal() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", "Plan", [notes])], ending: .ended, at: at(0))
-    model.toggleExpanded(at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    model.typingStarted(app: notes.key)
-    model.update(sessions: [session("a", "Plan", [notes])], ending: .ended, at: at(1))
-    model.update(sessions: [session("a", "Renamed", [notes])], ending: .ended, at: at(1))
-    model.update(sessions: [session("a", "Renamed", [read(notes)])], ending: .ended, at: at(1))
-    model.typingEnded(app: notes.key)
-    model.workEnded(app: notes.key, at: at(2))
-    XCTAssertEqual(pill(model, 1)?.expanded, false)
-    XCTAssertEqual(pill(model, 2)?.expanded, false)
-    XCTAssertEqual(model.nextChange(after: at(2)), at(2) + OverlayModel.holdAfterWork)
-  }
-
-  func testARevealWaitsForThePointerToLeave() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
-    model.toggleExpanded(at: at(0))
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(1))
-    model.pointerOverPill(true, at: at(2))
-    XCTAssertEqual(pill(model, 60)?.expanded, true)
-    XCTAssertNil(model.nextChange(after: at(2)), "Nothing to time while the pointer holds it.")
-    model.pointerOverPill(false, at: at(60))
-    XCTAssertEqual(pill(model, 60)?.expanded, true)
-    XCTAssertEqual(model.nextChange(after: at(60)), at(60) + OverlayModel.revealAfterPointer)
-    XCTAssertEqual(pill(model, 60 + OverlayModel.revealAfterPointer)?.expanded, false)
-  }
-
-  func testAPassingPointerNeverShortensAReveal() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
-    model.toggleExpanded(at: at(0))
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(1))
-    model.pointerOverPill(true, at: at(1.2))
-    model.pointerOverPill(false, at: at(1.4))
-    XCTAssertEqual(pill(model, 3.99)?.expanded, true)
-    XCTAssertEqual(pill(model, 4)?.expanded, false)
-  }
-
-  func testNoRevealStartsUnderThePointer() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
-    model.toggleExpanded(at: at(0))
-    model.pointerOverPill(true, at: at(1))
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(2))
-    XCTAssertEqual(pill(model, 2)?.expanded, false)
-    model.pointerOverPill(false, at: at(3))
-    XCTAssertEqual(pill(model, 3)?.expanded, false)
-    XCTAssertNil(model.nextChange(after: at(3)))
-  }
-
-  /// Just outside the minimized pill is still where the expanded one would
-  /// land.
-  func testNoRevealStartsWhereTheExpandedPillWouldCoverThePointer() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
-    model.toggleExpanded(at: at(0))
-    model.update(
-      sessions: [session("a", nil, [notes])], ending: .ended, at: at(1), pointerNear: true)
-    XCTAssertEqual(pill(model, 1)?.expanded, false)
-    model.update(
-      sessions: [session("a", nil, [notes]), session("b", nil, [])], ending: .ended, at: at(2))
-    XCTAssertEqual(pill(model, 2)?.expanded, true)
-  }
-
-  func testTheAppBeingTypedInLeadsTheIconsAndTheWords() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [notes, calendar])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    model.typingStarted(app: notes.key)
-    model.workStarted(app: calendar.key, at: at(2))
-    XCTAssertEqual(pill(model, 2)?.icons.first, icon(notes))
-    XCTAssertEqual(pill(model, 2)?.compactStatus, "Typing in Notes")
-    XCTAssertEqual(pill(model, 2)?.status, "opensteer is typing in Notes")
-  }
-
-  func testAFinishedRevealStaysFinishedWhenThePointerComesAndGoes() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
-    model.toggleExpanded(at: at(0))
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(1))
-    model.pointerOverPill(true, at: at(10))
-    XCTAssertEqual(pill(model, 10)?.expanded, false)
-    model.pointerOverPill(false, at: at(11))
-    XCTAssertEqual(pill(model, 11)?.expanded, false)
-    XCTAssertNil(model.nextChange(after: at(11)))
-  }
-
-  func testTogglingFlipsWhatIsShownAndAnExpandedPillNeverCollapsesByItself() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
-    model.toggleExpanded(at: at(0))
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(1))
-    XCTAssertEqual(pill(model, 1.5)?.expanded, true)
-    // Revealed, so a toggle minimizes it at once and ends the reveal.
-    model.toggleExpanded(at: at(1.5))
-    XCTAssertEqual(pill(model, 1.5)?.expanded, false)
-    XCTAssertNil(model.nextChange(after: at(1.5)))
-    model.toggleExpanded(at: at(2))
-    XCTAssertEqual(pill(model, 2)?.expanded, true)
-    model.update(
-      sessions: [session("a", nil, [notes]), session("b", nil, [calendar])], ending: .ended,
-      at: at(3))
-    XCTAssertEqual(pill(model, 100)?.expanded, true)
-    XCTAssertNil(model.nextChange(after: at(3)))
-  }
-
-  func testTheLastSessionEndingEndsItsReveal() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
-    model.toggleExpanded(at: at(0))
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(1))
-    model.update(sessions: [], ending: .ended, at: at(1.5))
-    XCTAssertEqual(model.nextChange(after: at(1.5)), at(1.5) + OverlayModel.noticeDuration)
-    XCTAssertNil(pill(model, 1.5 + OverlayModel.noticeDuration))
-    XCTAssertNil(model.nextChange(after: at(1.5 + OverlayModel.noticeDuration)))
-  }
-
-  // MARK: - Endings
-
-  func testStopWithNothingInFlightIsStoppedForTwoSeconds() {
-    var model = OverlayModel()
-    model.update(
-      sessions: [session("a", "Plan the trip", [notes]), session("b", "Book rooms", [calendar])],
-      ending: .ended, at: at(0))
-    // Stop ends every session at once and names every Thread it stopped.
-    model.update(sessions: [], ending: .stopped, at: at(5))
-    XCTAssertEqual(
-      model.presentation(at: at(5)),
-      OverlayModel.Presentation(
-        pill: OverlayModel.Pill(
-          status: "Computer use stopped", compactStatus: "Computer use stopped",
-          detail: "Plan the trip · Book rooms",
-          controls: .none, icons: [icon(notes), icon(calendar)], badge: nil,
-          activity: .thinking, expanded: true),
-        cursors: [:], outlined: [], sweeping: []))
-    XCTAssertEqual(model.nextChange(after: at(5)), at(7))
-    XCTAssertNotNil(pill(model, 6.99))
-    XCTAssertNil(pill(model, 7))
-  }
-
-  func testStopWaitsForWorkUnderWayThenShowsStopped() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", "Plan the trip", [notes])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    model.typingStarted(app: notes.key)
-    model.update(sessions: [], ending: .stopped, at: at(2))
-    XCTAssertEqual(
-      pill(model, 2),
-      OverlayModel.Pill(
-        status: "Stopping…", compactStatus: "Stopping…", detail: "Plan the trip",
-        controls: .none, icons: [icon(notes)], badge: nil, activity: .thinking,
-        expanded: true))
-    XCTAssertEqual(pill(model, 60)?.status, "Stopping…")
-    XCTAssertNil(model.nextChange(after: at(2)))
-    model.typingEnded(app: notes.key)
-    model.workEnded(app: notes.key, at: at(3))
-    XCTAssertEqual(pill(model, 3)?.status, "Computer use stopped")
-    XCTAssertEqual(pill(model, 3)?.detail, "Plan the trip")
-    XCTAssertNil(pill(model, 5))
-  }
-
-  func testTheLastSessionClosingIsEndedForTwoSeconds() {
-    var model = OverlayModel()
-    model.update(
-      sessions: [session("a", "Plan the trip", [notes]), session("b", "Book rooms", [calendar])],
-      ending: .ended, at: at(0))
-    // One of two sessions ending leaves the other live, with no notice.
-    model.update(sessions: [session("b", "Book rooms", [calendar])], ending: .ended, at: at(1))
-    XCTAssertEqual(pill(model, 1)?.status, "opensteer is waiting to use Calendar")
-    XCTAssertEqual(pill(model, 1)?.detail, "Book rooms")
-    model.update(sessions: [], ending: .ended, at: at(2))
-    XCTAssertEqual(
-      pill(model, 2),
-      OverlayModel.Pill(
-        status: "Computer use ended", compactStatus: "Computer use ended", detail: "Book rooms",
-        controls: .none, icons: [icon(calendar)], badge: nil, activity: .thinking,
-        expanded: true))
-    XCTAssertEqual(model.nextChange(after: at(2)), at(4))
-    XCTAssertNil(pill(model, 4))
-  }
-
-  func testConnectionLostStaysUntilDismissed() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", "Plan the trip", [notes])], ending: .ended, at: at(0))
+    model.update(sessions: [session("a", [safari])], ending: .ended, at: at(0))
+    model.workStarted(holder("a", safari))
+    model.workEnded(holder("a", safari), at: at(0.5))
     model.update(sessions: [], ending: .connectionLost, at: at(1))
-    let lost = OverlayModel.Pill(
-      status: "Connection lost · last action unconfirmed",
-      compactStatus: "Connection lost · last action unconfirmed", detail: "Plan the trip",
-      controls: .dismiss, icons: [icon(notes)], badge: nil, activity: .thinking,
-      expanded: true)
-    XCTAssertEqual(pill(model, 1), lost)
-    XCTAssertEqual(pill(model, 3_600), lost)
-    XCTAssertNil(model.nextChange(after: at(1)))
-    model.dismiss()
-    XCTAssertNil(pill(model, 3_600))
+    XCTAssertEqual(model.presentation(at: at(1)).chips, [:])
   }
 
-  func testDismissOnlyClearsConnectionLost() {
+  func testASessionClosedWithWorkUnderWayIsNotALostConnection() {
     var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
+    model.update(sessions: [session("a", [safari])], ending: .ended, at: at(0))
+    model.workStarted(holder("a", safari))
     model.update(sessions: [], ending: .ended, at: at(1))
-    model.dismiss()
-    XCTAssertEqual(pill(model, 1)?.status, "Computer use ended")
+    XCTAssertEqual(model.presentation(at: at(1)).chips, [:])
   }
 
-  func testANewSessionReplacesAnyEndingNotice() {
-    for ending in [OverlayModel.Ending.stopped, .ended, .connectionLost] {
-      var model = OverlayModel()
-      model.update(sessions: [session("a", "Old", [notes])], ending: .ended, at: at(0))
-      model.update(sessions: [], ending: ending, at: at(1))
-      model.update(sessions: [session("b", "New", [])], ending: .ended, at: at(1.5))
-      XCTAssertEqual(pill(model, 1.5)?.status, "opensteer is waiting for the agent", "\(ending)")
-      XCTAssertEqual(pill(model, 1.5)?.detail, "New")
-      model.update(sessions: [], ending: .ended, at: at(10))
-      XCTAssertEqual(pill(model, 10)?.status, "Computer use ended")
-      XCTAssertEqual(pill(model, 10)?.detail, "New")
-    }
+  func testOnlyItsOwnAppClearsTheNotice() {
+    var unrelated = lostSafari()
+    unrelated.update(
+      sessions: [session("b", [notes]), session("c", [notes]), session("d", [])],
+      ending: .ended, at: at(2))
+    XCTAssertEqual(look(unrelated, safari, 2), .connectionLost, "Sessions on other apps leave it.")
+    XCTAssertFalse(unrelated.clearNotice(app: notes.key), "Another app's recovery clears nothing.")
+    XCTAssertEqual(look(unrelated, safari, 2), .connectionLost)
+
+    var reclaimed = lostSafari()
+    reclaimed.update(sessions: [session("b", [notes]), session("new", [safari])], ending: .ended, at: at(2))
+    XCTAssertEqual(look(reclaimed, safari, 2), .agent(.still), "A live agent in that app replaces it.")
+
+    var cleared = lostSafari()
+    XCTAssertTrue(cleared.clearNotice(app: safari.key))
+    XCTAssertNil(look(cleared, safari, 2))
+    XCTAssertFalse(cleared.clearNotice(app: safari.key), "A second dismissal changes nothing.")
   }
 
-  /// What the runtime hands the overlay: sessions in the order they opened,
-  /// and only the apps each one has claimed.
+  // MARK: - What the runtime hands the overlay
+
+  @MainActor
+  private func app(_ bundleId: String, _ name: String) -> AppSessionState {
+    hostApp(
+      identity: AppIdentity(bundleId: bundleId, displayName: name, teamId: nil),
+      path: "/Applications/\(name).app")
+  }
+
+  /// Sessions in the order they opened, and only the apps each one has
+  /// claimed. The person's own viewing and typing is never among them.
   @MainActor
   func testTheRuntimeReportsOnlyHeldAppsInOpeningOrder() {
-    func app(_ bundleId: String, _ name: String) -> AppSessionState {
-      AppSessionState(
-        identity: AppIdentity(bundleId: bundleId, displayName: name, teamId: nil),
-        path: "/Applications/\(name).app")
-    }
-    let later = HelperSession(sessionId: "a-later", connectionID: 1, threadTitle: "Book rooms")
+    let later = HelperSession(sessionId: "a-later", connectionID: 1)
     later.openedAt = start + 10
-    later.add(app("com.apple.iCal", "Calendar"), access: .read)
-    let earlier = HelperSession(
-      sessionId: "z-earlier", connectionID: 1, threadTitle: "Plan the trip")
+    later.add(app("com.apple.iCal", "Calendar"))
+    let earlier = HelperSession(sessionId: "z-earlier", connectionID: 1)
     earlier.openedAt = start
-    earlier.add(app("com.apple.Notes", "Notes"), access: .readWrite)
-    earlier.add(app("com.apple.mail", "Mail"), access: .readWrite)
+    earlier.add(app("com.apple.Notes", "Notes"))
+    earlier.add(app("com.apple.mail", "Mail"))
 
     let reported = OverlayController.sessions(
       [later, earlier], owners: ["com.apple.notes": "z-earlier", "com.apple.ical": "a-later"])
     XCTAssertEqual(
       reported,
       [
-        session(
-          "z-earlier", "Plan the trip",
-          [
-            OverlayModel.App(
-              key: "com.apple.notes", name: "Notes",
-              access: .readWrite, path: "/Applications/Notes.app")
-          ]),
-        session(
-          "a-later", "Book rooms",
-          [
-            OverlayModel.App(
-              key: "com.apple.ical", name: "Calendar",
-              access: .read, path: "/Applications/Calendar.app")
-          ]),
+        session("z-earlier", [OverlayModel.App(key: "com.apple.notes", name: "Notes")]),
+        session("a-later", [OverlayModel.App(key: "com.apple.ical", name: "Calendar")]),
       ])
   }
 
-  // MARK: - Pointer and outline
+  /// A dismissal clears that app's notice once and stops nothing; `Stop`
+  /// needs a live chip that is showing; the person reaching one app clears
+  /// only that app's notice.
+  @MainActor
+  func testOnlyALiveChipStopsAndADismissalNeverDoes() {
+    var stopped: [String] = []
+    let overlay = OverlayController(drawsWindows: false, onStop: { stopped.append($0) })
+    let safariState = app("com.apple.Safari", "Safari")
+    let notesState = app("com.apple.Notes", "Notes")
+    let a = HelperSession(sessionId: "a", connectionID: 1)
+    a.add(safariState)
+    let b = HelperSession(sessionId: "b", connectionID: 2)
+    b.add(notesState)
+    let owners = [safari.key: "a", notes.key: "b"]
+    overlay.update(sessions: [a, b], owners: owners, ending: .ended)
+    overlay.press(.stop, app: notes.key)
+    XCTAssertEqual(stopped, [], "No chip is showing, so nothing is stopped.")
 
-  func testThePointerAppearsTravelsAndStaysWhileTheSessionHoldsTheApp() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    XCTAssertEqual(model.presentation(at: at(1)).cursors, [:], "No pointer before its first point.")
-
-    let first = model.movePointer(
-      app: notes.key, to: CGPoint(x: 100, y: 100), at: at(1), reduceMotion: false)
+    overlay.workStarted(on: safariState)
+    overlay.update(sessions: [b], owners: [notes.key: "b"], ending: .connectionLost)
+    XCTAssertEqual(overlay.presentation(at: Date()).chips[safari.key]?.look, .connectionLost)
+    overlay.connectionRestored(app: notes.key)
     XCTAssertEqual(
-      first,
-      OverlayModel.PointerMove(
-        kind: .appear, from: nil, to: CGPoint(x: 100, y: 100),
-        duration: OverlayModel.appearDuration))
-    let second = model.movePointer(
-      app: notes.key, to: CGPoint(x: 400, y: 500), at: at(1.2), reduceMotion: false)
-    XCTAssertEqual(second?.kind, .travel)
-    XCTAssertEqual(second?.from, CGPoint(x: 100, y: 100))
-    XCTAssertEqual(
-      second?.duration,
-      OverlayModel.travelDuration(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 400, y: 500)))
-    XCTAssertEqual(
-      model.presentation(at: at(1.2)).cursors,
-      [notes.key: OverlayModel.Cursor(point: CGPoint(x: 400, y: 500), activity: .working)])
-
-    // Thinking: the pointer stays where it was, for as long as the app is
-    // held, and only its activity changes.
-    model.workEnded(app: notes.key, at: at(2))
-    XCTAssertEqual(model.presentation(at: at(2.29)).cursors[notes.key]?.activity, .working)
-    XCTAssertEqual(
-      model.presentation(at: at(2.31)).cursors,
-      [notes.key: OverlayModel.Cursor(point: CGPoint(x: 400, y: 500), activity: .thinking)])
-    XCTAssertEqual(
-      model.presentation(at: at(600)).cursors[notes.key]?.point, CGPoint(x: 400, y: 500))
-    XCTAssertNil(model.nextChange(after: at(2.31)), "Thinking needs no clock.")
-
-    // The next action travels from there rather than appearing again.
-    model.workStarted(app: notes.key, at: at(700))
-    let again = model.movePointer(
-      app: notes.key, to: CGPoint(x: 10, y: 10), at: at(700), reduceMotion: false)
-    XCTAssertEqual(again?.kind, .travel)
-    XCTAssertEqual(again?.from, CGPoint(x: 400, y: 500))
+      overlay.presentation(at: Date()).chips[safari.key]?.look, .connectionLost,
+      "Reaching Notes again says nothing about Safari.")
+    overlay.press(.dismiss, app: safari.key)
+    XCTAssertNil(overlay.presentation(at: Date()).chips[safari.key])
+    overlay.press(.dismiss, app: safari.key)
+    overlay.press(.stop, app: safari.key)
+    XCTAssertEqual(stopped, [], "A duplicate press after dismissal never falls through to Stop.")
   }
 
-  func testReleasingTheAppRemovesItsPointerAtOnceAndANewClaimAppearsAgain() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    _ = model.movePointer(app: notes.key, to: .zero, at: at(1), reduceMotion: false)
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(1.1))
-    XCTAssertEqual(model.presentation(at: at(1.1)).cursors, [:])
-    XCTAssertEqual(model.presentation(at: at(1.1)).outlined, [])
-
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(2))
-    XCTAssertEqual(
-      model.movePointer(app: notes.key, to: .zero, at: at(2), reduceMotion: false)?.kind, .appear)
+  @MainActor
+  func testReachingTheAppAgainClearsItsNotice() {
+    let overlay = OverlayController(drawsWindows: false, onStop: { _ in })
+    let safariState = app("com.apple.Safari", "Safari")
+    let a = HelperSession(sessionId: "a", connectionID: 1)
+    a.add(safariState)
+    overlay.update(sessions: [a], owners: [safari.key: "a"], ending: .ended)
+    overlay.workStarted(on: safariState)
+    overlay.update(sessions: [], owners: [:], ending: .connectionLost)
+    overlay.connectionRestored(app: safari.key)
+    XCTAssertEqual(overlay.presentation(at: Date()).chips, [:])
   }
 
-  func testStopAndTheLastSessionEndingLeaveNoPointerOrOutline() {
-    for ending in [OverlayModel.Ending.stopped, .ended, .connectionLost] {
-      var model = OverlayModel()
-      model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(0))
-      model.workStarted(app: notes.key, at: at(1))
-      _ = model.movePointer(app: notes.key, to: .zero, at: at(1), reduceMotion: false)
-      model.update(sessions: [], ending: ending, at: at(1.5))
-      let presentation = model.presentation(at: at(1.5))
-      XCTAssertEqual(presentation.cursors, [:], "\(ending)")
-      XCTAssertEqual(presentation.outlined, [], "\(ending)")
+  /// The chip goes on an action's verified window before its first effect,
+  /// and the Stop check comes after it: a Stop already pressed stops the
+  /// action with the chip on the right window.
+  @WorkActor
+  func testTheChipIsOnTheActionsWindowBeforeTheStopCheck() async {
+    let overlay = await OverlayController(drawsWindows: false, onStop: { _ in })
+    let state = hostApp(
+      identity: AppIdentity(bundleId: "com.apple.Safari", displayName: "Safari", teamId: nil),
+      path: "/Applications/Safari.app")
+    await overlay.bind(app: state.key, window: 2)
+    let cancellation = SessionCancellation()
+    let context = hostContext(
+      app: state, cancellation: cancellation, monitor: WindowMonitor(), overlay: overlay,
+      budget: .unlimited)
+    let windowA = ActionRunner.Binding(
+      processIdentifier: getpid(), windowID: 1, windowFrame: CGRect(x: 0, y: 0, width: 400, height: 300))
+    try? await ActionRunner.showStop(on: windowA, context)
+    let afterFirst = await overlay.keyWindow(for: state.key)
+    XCTAssertEqual(afterFirst, 1, "Window A, not the window bound before it.")
+
+    cancellation.cancel(.stoppedByUser)
+    let windowB = ActionRunner.Binding(
+      processIdentifier: getpid(), windowID: 3, windowFrame: CGRect(x: 0, y: 0, width: 400, height: 300))
+    do {
+      try await ActionRunner.showStop(on: windowB, context)
+      XCTFail("The Stop check comes after the chip moves.")
+    } catch {
+      XCTAssertEqual((error as? HelperError)?.code, .stoppedByUser)
     }
+    let afterStop = await overlay.keyWindow(for: state.key)
+    XCTAssertEqual(afterStop, 3)
   }
 
-  func testAnAppNoSessionHoldsGetsNoPointer() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [])], ending: .ended, at: at(0))
-    XCTAssertNil(model.movePointer(app: notes.key, to: .zero, at: at(1), reduceMotion: false))
-    XCTAssertEqual(model.presentation(at: at(1)).cursors, [:])
+  // MARK: - Where it sits
+
+  /// A 1440 × 900 screen with a 33-point menu bar, and a second screen to its
+  /// right whose own menu bar is 24 points.
+  private let usable: [CGRect] = [
+    CGRect(x: 0, y: 33, width: 1440, height: 900 - 33),
+    CGRect(x: 1440, y: 24, width: 1920, height: 1080 - 24),
+  ]
+
+  private func anchor(_ window: CGRect) -> OverlayGeometry.ChipAnchor? {
+    OverlayGeometry.chipAnchor(window: window, usable: usable)
   }
 
-  func testHeldAppsKeepBordersWhileOnlyWorkingAppsSweep() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [notes, calendar])], ending: .ended, at: at(0))
-    XCTAssertEqual(model.presentation(at: at(0)).outlined, [notes.key, calendar.key])
-    XCTAssertEqual(model.presentation(at: at(0)).sweeping, [])
-    model.workStarted(app: notes.key, at: at(1))
-    XCTAssertEqual(model.presentation(at: at(1)).sweeping, [notes.key])
-    model.workStarted(app: calendar.key, at: at(1.1))
-    XCTAssertEqual(model.presentation(at: at(1.1)).outlined, [notes.key, calendar.key])
-    XCTAssertEqual(model.presentation(at: at(1.1)).sweeping, [notes.key, calendar.key])
-    model.workEnded(app: notes.key, at: at(2))
-    XCTAssertEqual(model.presentation(at: at(2.29)).sweeping, [notes.key, calendar.key])
-    XCTAssertEqual(model.presentation(at: at(2.31)).outlined, [notes.key, calendar.key])
-    XCTAssertEqual(model.presentation(at: at(2.31)).sweeping, [calendar.key])
-    // Two calls that overlap on one app end together.
-    model.workStarted(app: calendar.key, at: at(3))
-    model.workEnded(app: calendar.key, at: at(3.5))
-    XCTAssertEqual(model.presentation(at: at(4)).sweeping, [calendar.key], "One is still running.")
-    model.workEnded(app: calendar.key, at: at(4))
-    XCTAssertEqual(model.presentation(at: at(4.31)).outlined, [notes.key, calendar.key])
-    XCTAssertEqual(model.presentation(at: at(4.31)).sweeping, [])
-    XCTAssertEqual(model.presentation(at: at(600)).outlined, [notes.key, calendar.key])
+  func testTheChipSitsOnTheEdgeWhenItsUpperHalfClearsTheMenuBar() {
+    XCTAssertEqual(anchor(CGRect(x: 200, y: 44, width: 800, height: 600))?.placement, .edge)
+    XCTAssertEqual(anchor(CGRect(x: 200, y: 33 + 11, width: 800, height: 600))?.placement, .edge)
+    XCTAssertEqual(anchor(CGRect(x: 200, y: 33 + 10, width: 800, height: 600))?.placement, .notch)
+    XCTAssertEqual(anchor(CGRect(x: 200, y: 33, width: 800, height: 600))?.placement, .notch)
+    XCTAssertEqual(anchor(CGRect(x: 0, y: 0, width: 1440, height: 900))?.placement, .notch)
+    XCTAssertEqual(anchor(CGRect(x: 1600, y: 40, width: 800, height: 600))?.placement, .edge)
+    XCTAssertNil(anchor(CGRect(x: -3000, y: 200, width: 800, height: 600)), "On no screen.")
   }
 
-  func testAReadOnlyAppIsOutlinedWhileItIsViewed() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [mail])], ending: .ended, at: at(0))
-    model.workStarted(app: mail.key, at: at(1))
-    XCTAssertEqual(pill(model, 1)?.status, "opensteer is viewing Mail")
-    XCTAssertEqual(model.presentation(at: at(1)).outlined, [mail.key])
-    model.workEnded(app: mail.key, at: at(2))
-    XCTAssertEqual(pill(model, 3)?.status, "opensteer is waiting to view Mail")
-    XCTAssertEqual(model.presentation(at: at(3)).outlined, [mail.key])
-    XCTAssertEqual(model.presentation(at: at(3)).sweeping, [])
+  func testAWindowPartlyOffItsScreenKeepsItsChipOnTheVisiblePart() {
+    let left = anchor(CGRect(x: -600, y: 200, width: 800, height: 600))
+    XCTAssertEqual(left?.midX, 100, "The middle of the 200 visible points.")
+    XCTAssertEqual(left?.placement, .edge)
+    let raised = anchor(CGRect(x: 200, y: 0, width: 800, height: 600))
+    XCTAssertEqual(raised?.placement, .notch)
+    XCTAssertEqual(raised?.top, 33, "Below the menu bar, not under it.")
+    let narrow = OverlayGeometry.chipFrame(
+      anchor: try! XCTUnwrap(anchor(CGRect(x: -790, y: 200, width: 820, height: 600))),
+      size: CGSize(width: 28, height: 22), scale: 2)
+    XCTAssertEqual(narrow.minX, 1, "Centred in the visible 30 points.")
   }
 
-  func testAClaimTransferredToAnotherSessionDropsTheOldActivity() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", "Old", [notes])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    _ = model.movePointer(app: notes.key, to: .zero, at: at(1), reduceMotion: false)
-    model.update(sessions: [session("b", "New", [notes])], ending: .ended, at: at(2))
-    let newClaim = model.presentation(at: at(2))
-    XCTAssertEqual(newClaim.outlined, [notes.key])
-    XCTAssertEqual(newClaim.sweeping, [])
-    XCTAssertEqual(newClaim.cursors, [:])
-    XCTAssertEqual(newClaim.pill?.status, "opensteer is waiting to use Notes")
-    XCTAssertEqual(newClaim.pill?.detail, "New")
-    model.workEnded(app: notes.key, at: at(3))
-    XCTAssertEqual(model.presentation(at: at(3)).sweeping, [])
+  func testTheChipIsCentredOnTheTopEdgeOnWholePixels() {
+    let window = CGRect(x: 201, y: 100, width: 801, height: 600)
+    let edge = try! XCTUnwrap(anchor(window))
+    let size = CGSize(width: 28, height: 22)
+    let oneX = OverlayGeometry.chipFrame(anchor: edge, size: size, scale: 1)
+    XCTAssertEqual(oneX, CGRect(x: 588, y: 89, width: 28, height: 22), "Half above the edge.")
+    let twoX = OverlayGeometry.chipFrame(anchor: edge, size: size, scale: 2)
+    XCTAssertEqual(twoX.minX, 587.5, "Half a point is a whole pixel at 2x.")
+    XCTAssertEqual(twoX.midY, window.minY)
+    let notch = OverlayGeometry.chipFrame(
+      anchor: try! XCTUnwrap(anchor(CGRect(x: 201, y: 33, width: 801, height: 600))),
+      size: CGSize(width: 24, height: 9), scale: 2)
+    XCTAssertEqual(notch.minY, 33, "A notch hangs from the edge.")
   }
 
-  func testOneSessionEndingRemovesOnlyItsOwnOutline() {
-    var model = OverlayModel()
-    model.update(
-      sessions: [session("a", nil, [notes]), session("b", nil, [calendar])],
-      ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    model.workStarted(app: calendar.key, at: at(1))
-    model.update(sessions: [session("b", nil, [calendar])], ending: .ended, at: at(2))
-    XCTAssertEqual(model.presentation(at: at(2)).outlined, [calendar.key])
-    XCTAssertEqual(model.presentation(at: at(2)).sweeping, [calendar.key])
-  }
+  // MARK: - Never seen chasing the window
 
-  func testTravelStaysWithinItsDurations() {
-    XCTAssertEqual(OverlayModel.travelDuration(from: .zero, to: .zero), 0)
-    XCTAssertEqual(OverlayModel.travelDuration(from: .zero, to: CGPoint(x: 0.5, y: 0)), 0)
-    XCTAssertEqual(
-      OverlayModel.travelDuration(from: .zero, to: CGPoint(x: 1, y: 0)), 0.12,
-      accuracy: 1e-9)
-    XCTAssertEqual(
-      OverlayModel.travelDuration(from: .zero, to: CGPoint(x: 3_000, y: 3_000)), 0.34,
-      accuracy: 1e-9)
-    let distances: [CGFloat] = [20, 100, 300, 900]
-    let durations = distances.map {
-      OverlayModel.travelDuration(from: .zero, to: CGPoint(x: $0, y: 0))
+  func testTheChipHidesTheMomentItsWindowMovesAndReturnsOnceItSettles() {
+    var settling = ChipSettling()
+    var buttons = false
+    let still = CGRect(x: 100, y: 100, width: 800, height: 600)
+    let moved = still.offsetBy(dx: 30, dy: 0)
+    func step(_ frame: CGRect?, showing: Bool, _ time: CFTimeInterval)
+      -> (ChipSettling.Step, moved: Bool)
+    {
+      settling.step(frame: frame, showing: showing, at: time, buttonsDown: { buttons })
     }
-    XCTAssertLessThan(durations[0], 0.16, "A short hop should not feel like waiting.")
-    XCTAssertGreaterThan(durations[3], 0.3, "A long trip must remain easy to follow.")
-    XCTAssertTrue(zip(durations, durations.dropFirst()).allSatisfy { $0 < $1 })
+    XCTAssertTrue(step(still, showing: false, 0) == (.reveal, false), "At once the first time.")
+    XCTAssertTrue(step(still, showing: true, 0.25) == (.keep, false))
+    XCTAssertTrue(step(moved, showing: true, 0.5) == (.conceal, true), "Gone on the first move.")
+    let resting = moved.offsetBy(dx: 5, dy: 0)
+    XCTAssertTrue(step(resting, showing: false, 0.52) == (.wait, true))
+    XCTAssertTrue(step(resting, showing: false, 0.6) == (.wait, false))
+    XCTAssertTrue(
+      step(resting, showing: false, 0.52 + OverlayStyle.settleDelay) == (.reveal, false),
+      "Back once still.")
+    XCTAssertTrue(step(still, showing: false, 1) == (.wait, true))
+    buttons = true
+    XCTAssertTrue(step(still, showing: false, 2) == (.wait, false), "Held mid-drag.")
+    buttons = false
+    XCTAssertTrue(step(still, showing: false, 2.1) == (.reveal, false))
+    XCTAssertTrue(
+      step(CGRect(x: 100, y: 100, width: 700, height: 600), showing: true, 3) == (.conceal, true),
+      "A resize is a move too.")
+    XCTAssertTrue(step(nil, showing: true, 4) == (.conceal, false))
+    XCTAssertTrue(step(still, showing: false, 5) == (.reveal, false))
   }
 
-  func testPointerTravelSpreadsMotionAcrossItsDurationWithoutOvershooting() {
-    let duration = 0.3
-    XCTAssertEqual(OverlayModel.travelProgress(-1, duration: duration), 0)
-    XCTAssertEqual(OverlayModel.travelProgress(0, duration: duration), 0)
+  // MARK: - A press
+
+  /// What a press does is decided as it begins, from what the chip shows.
+  func testAPressThatBeginsBeforeStopIsShownOnlyOpensIt() {
+    var gesture = ChipGesture()
+    gesture.down(ChipGesture.action(look: .agent(.still), expansion: 0.6, inside: true))
+    XCTAssertEqual(gesture.up(inside: true), .open, "Still widening: it opens, it never stops.")
+    gesture.down(ChipGesture.action(look: .agent(.still), expansion: 0, inside: true))
+    XCTAssertEqual(gesture.up(inside: true), .open)
+  }
+
+  func testACleanClickOnTheShownStopStopsOnce() {
+    var gesture = ChipGesture()
+    gesture.down(ChipGesture.action(look: .agent(.working), expansion: 1, inside: true))
+    XCTAssertEqual(gesture.up(inside: true), .stop)
+    gesture.down(ChipGesture.action(look: .agent(.working), expansion: 1, inside: true))
+    XCTAssertEqual(gesture.up(inside: true), .nothing, "The second click of a double click.")
+  }
+
+  func testAPressThatLeavesTheChipDoesNothingEvenIfItComesBack() {
+    var gesture = ChipGesture()
+    gesture.down(ChipGesture.action(look: .agent(.still), expansion: 1, inside: true))
+    gesture.dragged(inside: false)
+    gesture.dragged(inside: true)
+    XCTAssertEqual(gesture.up(inside: true), .nothing)
+    gesture.down(ChipGesture.action(look: .agent(.still), expansion: 1, inside: true))
+    XCTAssertEqual(gesture.up(inside: false), .nothing, "Released outside.")
+    gesture.down(ChipGesture.action(look: .agent(.still), expansion: 1, inside: false))
+    XCTAssertEqual(gesture.up(inside: true), .nothing, "Began outside the shape.")
+  }
+
+  func testAPressTheChipLosesBeforeItsReleaseDoesNothing() {
+    var gesture = ChipGesture()
+    gesture.down(ChipGesture.action(look: .agent(.still), expansion: 1, inside: true))
+    gesture.reset()
+    XCTAssertEqual(gesture.up(inside: true), .nothing, "Concealed or moved to another window.")
+    gesture.down(ChipGesture.action(look: .agent(.still), expansion: 1, inside: true))
+    XCTAssertEqual(gesture.up(inside: true), .stop, "A new showing acts again.")
+  }
+
+  func testOneClickDismissesTheNoticeOnceAndNeverStops() {
+    var gesture = ChipGesture()
+    gesture.down(ChipGesture.action(look: .connectionLost, expansion: 0, inside: true))
+    XCTAssertEqual(gesture.up(inside: true), .dismiss, "At rest, one click.")
+    gesture.down(ChipGesture.action(look: .connectionLost, expansion: 0, inside: true))
+    XCTAssertEqual(gesture.up(inside: true), .nothing)
+    XCTAssertEqual(gesture.press(.connectionLost), .nothing)
+    var spoken = ChipGesture()
+    XCTAssertEqual(spoken.press(.agent(.still)), .stop, "VoiceOver presses the button it names.")
+    XCTAssertEqual(spoken.press(.agent(.still)), .nothing)
+  }
+
+  // MARK: - The chip's drawing
+
+  @MainActor
+  private func view(
+    _ look: OverlayModel.Chip.Look, placement: OverlayGeometry.ChipPlacement = .edge,
+    reduceMotion: Bool = false
+  ) -> ChipView {
+    let view = ChipView()
+    view.placement = placement
+    view.configure(OverlayModel.Chip(app: safari, look: look), reduceMotion: reduceMotion)
+    view.frame.size = view.chipSize(expansion: 0)
+    view.layoutSubtreeIfNeeded()
+    return view
+  }
+
+  @MainActor
+  func testAtRestAShortCapsuleThatWidensToShowStop() {
+    let chip = view(.agent(.still))
+    XCTAssertEqual(chip.chipSize(expansion: 0), CGSize(width: 28, height: 22), "Wider than tall.")
+    XCTAssertEqual(chip.word.opacity, 0, "No words at rest.")
+    let open = chip.chipSize(expansion: 1)
+    XCTAssertEqual(open.height, 22)
+    XCTAssertGreaterThan(open.width, 50)
+    XCTAssertEqual((chip.word.string as? NSAttributedString)?.string, "Stop")
+    chip.expansion = 1
+    chip.frame.size = open
+    chip.layoutSubtreeIfNeeded()
+    XCTAssertEqual(chip.word.opacity, 1)
+    XCTAssertEqual(chip.body.cornerCurve, .continuous)
+    XCTAssertEqual(chip.body.frame, chip.bounds, "The panel is the chip: no margin takes clicks.")
+  }
+
+  @MainActor
+  func testAWorkingDotBreathesAndAStillOneDoesNot() {
+    let working = view(.agent(.working))
+    XCTAssertEqual(working.dot.animation(forKey: "breath")?.duration, OverlayStyle.breathPeriod / 2)
+    let still = view(.agent(.still))
+    XCTAssertNil(still.dot.animation(forKey: "breath"))
+    XCTAssertEqual(still.dot.opacity, OverlayStyle.stillDotOpacity)
+    let reduced = view(.agent(.working), reduceMotion: true)
+    XCTAssertNil(reduced.dot.animation(forKey: "breath"))
+    XCTAssertGreaterThan(reduced.dot.opacity, still.dot.opacity, "Still bright under Reduce Motion.")
+  }
+
+  @MainActor
+  func testWithoutRoomAboveItIsASlimNotchThatOpensSidewaysAndShort() {
+    let notch = view(.agent(.still), placement: .notch)
+    XCTAssertEqual(notch.chipSize(expansion: 0), CGSize(width: 24, height: 9))
+    XCTAssertEqual(notch.chipSize(expansion: 1).height, 16, "As short as the word allows.")
+    XCTAssertGreaterThan(notch.chipSize(expansion: 1).width, 50)
+    XCTAssertEqual(notch.dot.frame.height, 6)
+    XCTAssertEqual(notch.body.maskedCorners, [.layerMinXMaxYCorner, .layerMaxXMaxYCorner])
+    XCTAssertTrue(notch.shape().contains(CGPoint(x: 1, y: 1)), "Square where it meets the edge.")
+    XCTAssertFalse(notch.shape().contains(CGPoint(x: 0.5, y: 8.5)), "Rounded below.")
+  }
+
+  @MainActor
+  func testTheNoticeKeepsTheDarkBodyWithAnAmberDotAndRim() {
+    let chip = view(.connectionLost)
+    XCTAssertEqual(chip.body.backgroundColor, OverlayStyle.surface.cgColor)
+    XCTAssertEqual(chip.dot.backgroundColor, OverlayStyle.amber.cgColor)
+    XCTAssertEqual(chip.body.borderColor, OverlayStyle.amber.withAlphaComponent(0.9).cgColor)
+    XCTAssertNil(chip.dot.animation(forKey: "breath"))
     XCTAssertEqual(
-      OverlayModel.travelProgress(duration / 2, duration: duration), 0.5, accuracy: 1e-9)
-    XCTAssertEqual(OverlayModel.travelProgress(duration, duration: duration), 1)
-    XCTAssertEqual(OverlayModel.travelProgress(1, duration: duration), 1)
-    XCTAssertEqual(OverlayModel.travelProgress(0, duration: 0), 1)
-    let values = (0...100).map {
-      OverlayModel.travelProgress(Double($0) / 100 * duration, duration: duration)
+      (chip.word.string as? NSAttributedString)?.string, OverlayModel.connectionLostSentence)
+    XCTAssertEqual(chip.accessibilityLabel(), OverlayModel.connectionLostSentence)
+  }
+
+  @MainActor
+  func testTheChipIsAPlainlyNamedButton() {
+    let chip = view(.agent(.still))
+    XCTAssertEqual(chip.accessibilityRole(), .button)
+    XCTAssertEqual(chip.accessibilityLabel(), "Stop the agent working in Safari")
+    var pressed = 0
+    chip.onPress = {
+      pressed += 1
+      return true
     }
-    XCTAssertTrue(values.allSatisfy { $0 >= 0 && $0 <= 1 })
-    XCTAssertTrue(zip(values, values.dropFirst()).allSatisfy { $0 <= $1 })
-    XCTAssertLessThan(values[10], 0.02, "The pointer should accelerate gently.")
-    XCTAssertGreaterThan(values[90], 0.98, "The pointer should settle gently.")
+    XCTAssertTrue(chip.accessibilityPerformPress())
+    XCTAssertEqual(pressed, 1)
   }
 
-  func testReduceMotionNeverTravels() {
-    var model = OverlayModel()
-    model.update(sessions: [session("a", nil, [notes])], ending: .ended, at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
+  // MARK: - The click ring
+
+  @MainActor
+  func testTheClickRingIsOnAndSpreadsAndFadesInHalfASecond() {
+    XCTAssertTrue(OverlayStyle.showsClickRing, "The one switch that removes it.")
+    let center = CGPoint(x: 24, y: 24)
+    let ring = ClickRing.animation(center: center, grows: true) as? CAAnimationGroup
+    XCTAssertEqual(ring?.duration, 0.5)
+    XCTAssertEqual(ring?.animations?.compactMap { ($0 as? CABasicAnimation)?.keyPath }, ["path", "opacity"])
     XCTAssertEqual(
-      model.movePointer(app: notes.key, to: .zero, at: at(1), reduceMotion: true),
-      OverlayModel.PointerMove(
-        kind: .appear, from: nil, to: .zero, duration: OverlayModel.crossfadeDuration))
+      (ClickRing.animation(center: center, grows: false) as? CAAnimationGroup)?.animations?.count, 1,
+      "Under Reduce Motion it only fades.")
     XCTAssertEqual(
-      model.movePointer(
-        app: notes.key, to: CGPoint(x: 900, y: 900), at: at(1), reduceMotion: true),
-      OverlayModel.PointerMove(
-        kind: .crossfade, from: .zero, to: CGPoint(x: 900, y: 900),
-        duration: OverlayModel.crossfadeDuration))
-  }
-
-  func testOnePointerPerAppAndNoneForAReleasedApp() {
-    var model = OverlayModel()
-    model.update(
-      sessions: [session("a", nil, [notes]), session("b", nil, [calendar])], ending: .ended,
-      at: at(0))
-    model.workStarted(app: notes.key, at: at(1))
-    _ = model.movePointer(app: notes.key, to: CGPoint(x: 1, y: 1), at: at(1), reduceMotion: false)
-    model.workEnded(app: notes.key, at: at(1.1))
-    model.workStarted(app: calendar.key, at: at(1.2))
-    _ = model.movePointer(
-      app: calendar.key, to: CGPoint(x: 2, y: 2), at: at(1.2), reduceMotion: false)
+      ClickRing.path(progress: 0, center: center).boundingBoxOfPath.width,
+      OverlayStyle.ringRadii.from * 2)
     XCTAssertEqual(
-      model.presentation(at: at(1.5)).cursors,
-      [
-        notes.key: OverlayModel.Cursor(point: CGPoint(x: 1, y: 1), activity: .thinking),
-        calendar.key: OverlayModel.Cursor(point: CGPoint(x: 2, y: 2), activity: .working),
-      ])
-
-    // Session a closes while Calendar still works: Notes' pointer goes at once.
-    model.update(sessions: [session("b", nil, [calendar])], ending: .ended, at: at(1.6))
-    XCTAssertEqual(
-      model.presentation(at: at(1.6)).cursors,
-      [calendar.key: OverlayModel.Cursor(point: CGPoint(x: 2, y: 2), activity: .working)])
+      ClickRing.path(progress: 1, center: center).boundingBoxOfPath.width,
+      OverlayStyle.ringRadii.to * 2)
   }
 
-  // MARK: - Pill corner
-
-  func testThePillSettlesInTheNearestCornerOfTheActiveScreen() {
-    let visible = CGRect(x: 0, y: 0, width: 1_000, height: 800)
-    XCTAssertEqual(PillCorner.nearest(to: CGPoint(x: 900, y: 700), in: visible), .topRight)
-    XCTAssertEqual(PillCorner.nearest(to: CGPoint(x: 100, y: 700), in: visible), .topLeft)
-    XCTAssertEqual(PillCorner.nearest(to: CGPoint(x: 900, y: 100), in: visible), .bottomRight)
-    XCTAssertEqual(PillCorner.nearest(to: CGPoint(x: 100, y: 100), in: visible), .bottomLeft)
-
-    let size = CGSize(width: 300, height: 44)
-    let screen = CGRect(x: 1_440, y: 0, width: 1_000, height: 800)
-    XCTAssertEqual(
-      PillCorner.topRight.frame(size: size, in: screen),
-      CGRect(x: 2_128, y: 744, width: 300, height: 44))
-    XCTAssertEqual(
-      PillCorner.bottomLeft.frame(size: size, in: screen),
-      CGRect(x: 1_452, y: 12, width: 300, height: 44))
-  }
-
-}
-
-/// The pure geometry and motion the overlay's windows are placed and moved
-/// by.
-final class OverlayGeometryTests: XCTestCase {
-  func testThePointerPanelPutsTheTipOnTheScreenPoint() {
-    // A 900-point-tall primary display: CoreGraphics (100, 200) is AppKit
-    // (100, 700), and the panel hangs from the tip.
-    let frame = OverlayGeometry.pointerPanelFrame(tip: CGPoint(x: 100, y: 200), primaryHeight: 900)
-    let tip = OverlayStyle.pointerTip
-    let size = OverlayStyle.pointerPanelSize
-    XCTAssertEqual(frame.size, size)
-    XCTAssertEqual(frame.minX + tip.x, 100)
-    XCTAssertEqual(frame.maxY - tip.y, 700)
-  }
-
-  func testThePointerKeepsItsPlaceInAWindowThatMoves() {
-    let offset = CGPoint(x: 40, y: 12)
-    let before = CGRect(x: 100, y: 100, width: 800, height: 600)
-    let after = before.offsetBy(dx: 250, dy: -40)
-    XCTAssertEqual(OverlayGeometry.tip(offset: offset, in: before), CGPoint(x: 140, y: 112))
-    XCTAssertEqual(OverlayGeometry.tip(offset: offset, in: after), CGPoint(x: 390, y: 72))
-  }
-
-  func testTheOutlinePanelHoldsTheWindowAndItsGlow() {
-    let window = CGRect(x: 100, y: 50, width: 800, height: 600)
-    let frame = OverlayGeometry.outlinePanelFrame(window: window, primaryHeight: 1_000)
-    let margin = OverlayStyle.outlineMargin
-    XCTAssertEqual(
-      frame,
-      CGRect(
-        x: 100 - margin, y: 1_000 - 650 - margin, width: 800 + margin * 2,
-        height: 600 + margin * 2))
-  }
-
-  func testTheWindowCornerFollowsTheMacOSRelease() {
-    XCTAssertEqual(OverlayStyle.windowCornerRadius(majorVersion: 15), 10)
-    XCTAssertEqual(OverlayStyle.windowCornerRadius(majorVersion: 26), 16)
-  }
-
-  func testTravelLeavesAtRestAndArrivesWithoutOvershoot() {
-    let duration = 0.3
-    XCTAssertEqual(Spring.critical(0, duration: duration), 0, accuracy: 1e-9)
-    var previous = 0.0
-    for step in 1...30 {
-      let value = Spring.critical(Double(step) / 100, duration: duration)
-      XCTAssertGreaterThanOrEqual(value, previous)
-      XCTAssertLessThanOrEqual(value, 1)
-      previous = value
-    }
-    XCTAssertGreaterThan(Spring.critical(duration * 0.99, duration: duration), 0.99)
-    XCTAssertEqual(Spring.critical(duration, duration: duration), 1)
-    // The first frame barely moves: it gathers speed rather than jumping.
-    XCTAssertLessThan(Spring.critical(1.0 / 120, duration: duration), 0.05)
-    XCTAssertEqual(
-      OverlayGeometry.interpolate(.zero, CGPoint(x: 100, y: -50), 0.5), CGPoint(x: 50, y: -25))
-  }
-
-  func testThePillSettlesWithASmallOvershoot() {
-    let values = (0...100).map { Spring.settle(Double($0) / 100 * 0.42, duration: 0.42) }
-    XCTAssertEqual(values.first ?? -1, 0, accuracy: 1e-9)
-    XCTAssertEqual(values.last, 1)
-    let peak = values.max() ?? 0
-    XCTAssertGreaterThan(peak, 1, "It overshoots a little…")
-    XCTAssertLessThan(peak, 1.05, "…and only a little.")
-  }
-
-  func testCornersKnowTheirSides() {
-    XCTAssertTrue(PillCorner.topRight.isTop && PillCorner.topRight.isRight)
-    XCTAssertTrue(PillCorner.topLeft.isTop && !PillCorner.topLeft.isRight)
-    XCTAssertTrue(!PillCorner.bottomRight.isTop && PillCorner.bottomRight.isRight)
-    XCTAssertTrue(!PillCorner.bottomLeft.isTop && !PillCorner.bottomLeft.isRight)
+  func testTheBreathTakesAboutOnePointSixSecondsAtALowFrameRate() {
+    let breath = Breath.animation(low: 0.4, high: 1)
+    XCTAssertEqual(breath.duration * 2, 1.6, accuracy: 0.001)
+    XCTAssertTrue(breath.autoreverses)
+    XCTAssertLessThanOrEqual(breath.preferredFrameRateRange.maximum, 15)
   }
 }

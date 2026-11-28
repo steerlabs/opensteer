@@ -8,7 +8,6 @@ import {
 } from "@opensteer/client/react";
 import { useOutboxTranscript } from "@opensteer/client/react";
 import { hostMessageOutbox, splitLocalMessages } from "@opensteer/client/host";
-import { useTaskSourceView } from "../team/team-attachments.js";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
 import type { PasswordsSetupOffer } from "@opensteer/client/host";
@@ -44,6 +43,7 @@ import {
   threadStartHold,
   threadStartsRunForMessage,
   threadStopTarget,
+  taskOriginEndedMessage,
   taskWaitingReason,
   usageLimitReached,
   visibleTranscript,
@@ -88,6 +88,7 @@ import { UsageNotice } from "./usage-notice.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote } from "./composer.js";
+import { SessionActivity, SessionTaskBar, useSessionTask } from "./agent-work.js";
 import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
@@ -317,7 +318,6 @@ const ThreadView = memo(function ThreadView({
   userId,
   voiceThread,
 }: ThreadViewProps) {
-  const teamSource = useTaskSourceView(thread.teamOrigin);
   const { dock: workspaceDock, nav, phone, selection, work } = useWorkspace();
   // A subagent opened from this conversation: in its column, or beside it when it stands alone and wide.
   const [searchParams] = useSearchParams();
@@ -409,6 +409,8 @@ const ThreadView = memo(function ThreadView({
   // composer: its draft, files and unsent message never follow the reader to
   // another one, and nothing that finishes late lands in the wrong one.
   const composerKey = `${deploymentId ?? ""}:${userId ?? ""}:${thread.id}`;
+  // A connected agent's own task: its activity in place of a transcript, no composer.
+  const sessionView = useSessionTask(hostClient, thread.id);
   useEffect(() => {
     setActivityView(null);
   }, [composerKey]);
@@ -568,7 +570,7 @@ const ThreadView = memo(function ThreadView({
           placement.environmentId === selection.environmentId &&
           placement.harnessInstanceId === selection.harnessInstanceId,
       );
-      if (!target) throw new Error("The selected AI engine is no longer available");
+      if (!target) throw new Error("The selected agent is no longer available");
       await applyThreadExecution({
         hostClient,
         recheck: () => reviewSelection(selection),
@@ -686,7 +688,10 @@ const ThreadView = memo(function ThreadView({
   // scroll before ResizeObserver, and a changed viewport, content height or
   // scroll owner does not mean the reader moved. Requests matter too: a docked
   // request grows the input surface and would otherwise push the newest
-  // activity out of view.
+  // activity out of view. Content that got shorter moves the position up by
+  // itself, by as much as it shrank (the browser clamps it, the list keeps its
+  // foot in its own commit), and the window can get shorter before this reads
+  // again: only a move further up than that is the reader's.
   const readScroller = (scrolled: boolean) => {
     const scroller = currentScroller();
     if (!scroller) return;
@@ -698,7 +703,10 @@ const ThreadView = memo(function ThreadView({
       before.viewport === scroller.clientHeight;
     const previous =
       before?.scroller === scroller
-        ? tailRef.current
+        ? {
+            ...tailRef.current,
+            offset: tailRef.current.offset - Math.max(0, before.height - scroller.scrollHeight),
+          }
         : { ...tailRef.current, offset: scroller.scrollTop };
     const { follows } = readTail(
       previous,
@@ -1148,9 +1156,8 @@ const ThreadView = memo(function ThreadView({
       [live, runQueue, thread],
     ),
   );
-  const composerPlaceholder = thread.teamOrigin
-    ? "Message your agent privately"
-    : threadComposerPlaceholder(conversation.length === 0);
+  const endedOriginMessage = thread.endedOrigin ? taskOriginEndedMessage(thread.endedOrigin) : null;
+  const composerPlaceholder = threadComposerPlaceholder(conversation.length === 0);
   // The field names whom it writes to: the task by its name.
   const recipient = useMemo(() => ({ lead: "Reply to", name: thread.title }), [thread.title]);
   // A fact about this task's own computer, never about this app's connection.
@@ -1365,7 +1372,7 @@ const ThreadView = memo(function ThreadView({
           transcript={projected}
           onError={reportActionError}
           paused={inputQueue?.paused ?? false}
-          resumable={thread.status !== "archived"}
+          resumable={thread.status !== "archived" && endedOriginMessage === null}
           threadId={thread.id}
           viewerUserId={userId}
         />
@@ -1373,6 +1380,7 @@ const ThreadView = memo(function ThreadView({
     [
       canRespond,
       conversational,
+      endedOriginMessage,
       hostClient,
       inputQueue?.paused,
       local.afterQueue,
@@ -1525,51 +1533,57 @@ const ThreadView = memo(function ThreadView({
                       {withOutbox.length === 0 &&
                       historyState === undefined &&
                       !transcriptUnknown &&
-                      !waiting?.length ? (
+                      !waiting?.length &&
+                      !sessionView ? (
                         <EmptyThread voice={voiceThread} />
                       ) : null}
-                      <AgentTranscript
-                        rowItemsRef={drawnRows}
-                        teamChannelName={teamSource?.channel.name ?? null}
-                        followTail={atTail}
-                        // Live work appends to the newest window of one cut; a page read does not.
-                        liveCut={detailCurrent && !loadingEarlier ? `${generation}:${cuts}` : null}
-                        pinnedMessageIds={pinnedMessageIds}
-                        pinnedRowKeys={pinnedRowKeys}
-                        revealMessage={revealMessage}
-                        scroller={transcriptScroller}
-                        key={thread.id}
-                        attachmentReader={hostClient}
-                        activity={activity}
-                        browserSessions={tabSource}
-                        browserUses={scope.browserUses}
-                        // A conversation (Opensteer, a direct message) reads as messages, each
-                        // turn's steps behind its reply; work keeps its whole trace in view.
-                        conversation={conversational}
-                        live={live}
-                        computers={computers}
-                        entries={local.transcript}
-                        afterQueue={local.afterQueue}
-                        waitingRequests={scope.waitingRequests}
-                        assignments={scope.assignments}
-                        inputQueuePaused={thread.inputQueuePaused}
-                        renderPasswordsSuggestion={renderPasswordsSuggestion}
-                        queued={queued}
-                        {...(conversational
-                          ? {
-                              activityOwner,
-                              onActivityAnchor: setActivityOwnerAnchor,
-                              onOpenActivity: openTurnActivity,
-                            }
-                          : {})}
-                        onReply={replyWith}
-                        renderTask={renderTaskRows}
-                        requestShown={dockedRequests.length > 0}
-                        startHold={startHold}
-                        subagentReader={scope}
-                        threadId={thread.id}
-                        viewerUserId={userId}
-                      />
+                      {sessionView ? (
+                        <SessionActivity view={sessionView} />
+                      ) : (
+                        <AgentTranscript
+                          rowItemsRef={drawnRows}
+                          followTail={atTail}
+                          // Live work appends to the newest window of one cut; a page read does not.
+                          liveCut={
+                            detailCurrent && !loadingEarlier ? `${generation}:${cuts}` : null
+                          }
+                          pinnedMessageIds={pinnedMessageIds}
+                          pinnedRowKeys={pinnedRowKeys}
+                          revealMessage={revealMessage}
+                          scroller={transcriptScroller}
+                          key={thread.id}
+                          attachmentReader={hostClient}
+                          activity={activity}
+                          browserSessions={tabSource}
+                          browserUses={scope.browserUses}
+                          // A conversation (Opensteer, a direct message) reads as messages, each
+                          // turn's steps behind its reply; work keeps its whole trace in view.
+                          conversation={conversational}
+                          live={live}
+                          computers={computers}
+                          entries={local.transcript}
+                          afterQueue={local.afterQueue}
+                          waitingRequests={scope.waitingRequests}
+                          assignments={scope.assignments}
+                          inputQueuePaused={thread.inputQueuePaused}
+                          renderPasswordsSuggestion={renderPasswordsSuggestion}
+                          queued={queued}
+                          {...(conversational
+                            ? {
+                                activityOwner,
+                                onActivityAnchor: setActivityOwnerAnchor,
+                                onOpenActivity: openTurnActivity,
+                              }
+                            : {})}
+                          onReply={replyWith}
+                          renderTask={renderTaskRows}
+                          requestShown={dockedRequests.length > 0}
+                          startHold={startHold}
+                          subagentReader={scope}
+                          threadId={thread.id}
+                          viewerUserId={userId}
+                        />
+                      )}
                       {missingMessage ? (
                         <Unavailable
                           backLabel="Dismiss"
@@ -1698,7 +1712,9 @@ const ThreadView = memo(function ThreadView({
               ) : null}
 
               <div className="composer-dock">
-                {voiceThread ? (
+                {sessionView ? (
+                  <SessionTaskBar threadId={thread.id} view={sessionView} />
+                ) : voiceThread ? (
                   <VoiceStart
                     dockHidden={phoneStage && !sheetOpen}
                     controls={
@@ -1716,7 +1732,11 @@ const ThreadView = memo(function ThreadView({
                     }
                   />
                 ) : null}
-                {voiceThread ? null : (
+                {voiceThread || sessionView ? null : endedOriginMessage !== null ? (
+                  <p className="notice thread-view__ended-notice" role="status">
+                    {endedOriginMessage}
+                  </p>
+                ) : (
                   <InputSurface
                     autoContext={false}
                     voice={false}
@@ -1774,6 +1794,7 @@ const ThreadView = memo(function ThreadView({
                                 reportActionError(error);
                               }
                             },
+                            startedByOther: thread.startedByOther,
                           }}
                           disabled={!canRespond || thread.status === "archived"}
                           onAuthenticate={openHarnessAuthentication ?? undefined}
@@ -1790,7 +1811,7 @@ const ThreadView = memo(function ThreadView({
                     }
                   />
                 )}
-                {dock.composerHidden ? null : (
+                {dock.composerHidden || sessionView || endedOriginMessage !== null ? null : (
                   <UsageNotice
                     action={
                       usageAlternative ? (

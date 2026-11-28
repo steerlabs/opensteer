@@ -55,6 +55,8 @@ interface ThreadNamingDependencies {
 /** Ephemeral jobs: no result survives its authenticated connection or Host boot. */
 export class ThreadNaming {
   readonly #pending = new Map<ThreadId, Promise<void>>();
+  /** Asked again while a job ran: that job read its input before, so it runs once more after. */
+  readonly #again = new Set<ThreadId>();
   readonly #inFlight = new Map<EnvironmentId, Set<Promise<unknown>>>();
   readonly #shutdown = new AbortController();
   readonly dependencies: ThreadNamingDependencies;
@@ -64,11 +66,19 @@ export class ThreadNaming {
 
   request(threadId: ThreadId): Promise<void> {
     const existing = this.#pending.get(threadId);
-    if (existing) return existing;
+    if (existing) {
+      // A Run's request while the last job is still out is not absorbed by it: that job may
+      // end unnamed, and the task would keep its provisional name until yet another Run.
+      this.#again.add(threadId);
+      return existing;
+    }
     if (this.#shutdown.signal.aborted) return Promise.resolve();
     const job = this.#name(threadId)
       .catch(this.dependencies.onError)
-      .finally(() => this.#pending.delete(threadId));
+      .finally(() => {
+        this.#pending.delete(threadId);
+        if (this.#again.delete(threadId)) void this.request(threadId);
+      });
     this.#pending.set(threadId, job);
     return job;
   }

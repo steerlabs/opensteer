@@ -39,7 +39,9 @@ beforeAll(async () => {
             namespace: "fixture",
           }));
           builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
+            resolveDir: import.meta.dirname,
             contents: `import { writeFileSync } from "node:fs";
+export { verifyInstalledClaudeVersion } from ${JSON.stringify(fileURLToPath(new URL("../apps/runner/src/harness/verify-harness-runtimes.ts", import.meta.url)))};
 export async function harnessRuntimeVersionMismatches() {
   writeFileSync(process.env.OPENSTEER_TEST_SHIPPED_VERSION_PROBE, "called");
   return [];

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Route, Routes } from "react-router";
 import type {
   DeploymentAccessSnapshot,
   DesktopAccountAuthStatus,
@@ -11,6 +12,8 @@ import { SignOutDialog } from "../../places/place-account.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 import { OwnerNameRow } from "./owner-name.js";
 import { RemoteAccessCard } from "./remote-access-card.js";
+import { HomeAccountLinkCard } from "./home-account-link-card.js";
+import { CloudComputerEntryRow, CloudComputerPage } from "./cloud-computer.js";
 
 /**
  * The Opensteer Account: the one thing in the product anybody signs in to,
@@ -18,6 +21,15 @@ import { RemoteAccessCard } from "./remote-access-card.js";
  * in lives in Devices.
  */
 export function AccountSection() {
+  return (
+    <Routes>
+      <Route index element={<AccountHome />} />
+      <Route path="cloud-computer" element={<CloudComputerPage />} />
+    </Routes>
+  );
+}
+
+function AccountHome() {
   const { deploymentAccess, desktopBridge, snapshot } = useShell();
   const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
   const signedIn = deploymentAccess?.account.status === "signed-in";
@@ -40,6 +52,10 @@ export function AccountSection() {
         )}
       </SettingsGroup>
       <RemoteAccessCard />
+      <HomeAccountLinkCard />
+      <SettingsGroup heading={null} headingId="settings-account-cloud">
+        <CloudComputerEntryRow />
+      </SettingsGroup>
       {desktopBridge && signedIn && portalOrigin ? (
         <p className="settings-footer-link">
           <a
@@ -95,7 +111,7 @@ function AccountSessionRow({
 
   const copy =
     account?.available === false && account.status === "signed-out"
-      ? { title: "Not signed in", detail: "Opensteer Account sign-in isn’t available yet." }
+      ? { title: "Not signed in", detail: "Opensteer account sign-in isn’t available yet." }
       : accountStateCopy[account?.status ?? "unknown"];
   return (
     <>
@@ -144,7 +160,7 @@ function BrowserAccountRow({ portalHref }: { readonly portalHref: string | null 
         ) : undefined
       }
       detail={portalHref ? "Open your Opensteer from any device" : "Account sign-in unavailable"}
-      title="Opensteer Account"
+      title="Opensteer account"
     />
   );
 }
@@ -161,7 +177,7 @@ const accountStateCopy: Readonly<
     title: "Signed out",
     detail: "Sign in again to see your other computers. They keep running.",
   },
-  "signed-in": { title: "Opensteer Account", detail: "Opensteer Account" },
+  "signed-in": { title: "Opensteer account", detail: "Opensteer account" },
   "signed-out": {
     title: "Not signed in",
     detail: "Sign in to open this computer from your phone and see your other computers.",

@@ -39,12 +39,14 @@ const RunnerApplicationEnvironmentSchema = z.object({
     .min(1)
     .refine(isAbsolute, "OPENSTEER_RUNNER_READINESS_PATH must be an absolute path")
     .optional(),
+  OPENSTEER_RUNNER_AGENTS_STOPPED_SINCE: z.union([z.iso.datetime(), z.literal("")]).optional(),
 });
 
 export interface RunnerApplicationConfig {
   readonly nativeFsHelperBinary: string;
   readonly opensslBinary: string;
   readonly readinessPath?: string;
+  readonly agentsStoppedSince?: string | null;
 }
 
 export function parseRunnerApplicationConfig(
@@ -57,6 +59,9 @@ export function parseRunnerApplicationConfig(
     ...(parsed.OPENSTEER_RUNNER_READINESS_PATH
       ? { readinessPath: parsed.OPENSTEER_RUNNER_READINESS_PATH }
       : {}),
+    ...(parsed.OPENSTEER_RUNNER_AGENTS_STOPPED_SINCE === undefined
+      ? {}
+      : { agentsStoppedSince: parsed.OPENSTEER_RUNNER_AGENTS_STOPPED_SINCE || null }),
   };
 }
 

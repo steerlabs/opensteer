@@ -1,6 +1,12 @@
 import { OpensteerError } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
-import type { Thread, ThreadId, UserId } from "@opensteer/core";
+import type {
+  AgentSessionEndReason,
+  AgentSessionId,
+  Thread,
+  ThreadId,
+  UserId,
+} from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { personalShellSettledTasks } from "@opensteer/protocol/personal-sync";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
@@ -11,6 +17,7 @@ import {
   threadPendingRequestsSelection,
   threadProviderSessionSelection,
   threadsFromRows,
+  threadStartedByOtherSelection,
   threadVisitSelection,
 } from "./thread-row-mappers.js";
 
@@ -34,14 +41,48 @@ const taskFields = [
   "revision",
   "pendingRequestCount",
   "lastReplyPreview",
+  "failureCode",
   "failurePreview",
+  "runStartHoldReason",
   "latestRunCompletedAt",
   "environmentId",
   "harnessInstanceId",
+  "originConnectionId",
 ] as const;
 
 /** A Run of this thread waits to start and none is executing (the task row's `runQueued`). */
 export const threadRunQueued = sql<boolean>`(exists (select 1 from runs where runs.thread_id = threads.id and runs.status = 'queued') and not exists (select 1 from runs where runs.thread_id = threads.id and runs.status in ('starting','running','waiting')))`;
+
+export interface TaskExternalWork {
+  readonly sessionId: AgentSessionId;
+  readonly status: "active" | "ended";
+  readonly endReason: AgentSessionEndReason | null;
+  readonly connection: {
+    readonly id: string;
+    readonly label: string;
+    readonly clientName: string;
+    readonly redirectUri: string | null;
+    readonly clientFingerprint: string | null;
+    readonly identityAtConsent: unknown;
+  };
+}
+
+export const taskExternalWorkSelection = sql<TaskExternalWork | null>`(
+  select json_build_object(
+    'sessionId', agent_sessions.id,
+    'status', agent_sessions.status,
+    'endReason', agent_sessions.end_reason,
+    'connection', json_build_object(
+      'id', agent_connections.id,
+      'label', agent_connections.label,
+      'clientName', agent_connections.client_name,
+      'redirectUri', agent_connections.redirect_uri,
+      'clientFingerprint', agent_connections.client_fingerprint,
+      'identityAtConsent', agent_connections.identity_at_consent))
+  from agent_sessions
+  join agent_connections on agent_connections.id = agent_sessions.connection_id
+  where agent_sessions.thread_id = threads.id
+)`.as("externalWork");
 
 /** Active provider retry on the earliest executing Run, or null (short-circuited for settled tasks). */
 export const threadProviderRetry = sql<
@@ -53,6 +94,7 @@ export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) 
     .selectFrom("threads")
     .select(taskFields)
     .select(threadRunQueued.as("runQueued"))
+    .select(taskExternalWorkSelection)
     .select(threadProviderRetry.as("retry"))
     .where("createdBy", "=", viewerId)
     .where("removedAt", "is", null);
@@ -80,6 +122,14 @@ function taskWindowQuery(
     .$if(input.window !== "done", (part) => part.where("doneAt", "is", null))
     .$if(input.window === "active", (part) =>
       part.where(sql<boolean>`status in ('running','waiting')`),
+    )
+    // Active rows also supply the connected agents' live work. Done and settled Tasks page
+    // only the person's tasks. Keep the session lookup correlated so it can probe the unique
+    // thread_id index as the bounded window reads, without building an anti-join hash table.
+    .$if(input.window !== "active", (part) =>
+      part.where(
+        sql<boolean>`not exists (select 1 from agent_sessions where agent_sessions.thread_id = threads.id offset 0)`,
+      ),
     )
     .$if(input.window === "done", (part) => part.where(sql<boolean>`status <> 'archived'`))
     // The shell lists every active task, so the open list beside it is the settled ones.
@@ -185,6 +235,7 @@ export function taskPageThreadSelections() {
     threadContinuationIdentitySelection,
     threadPendingRequestsSelection,
     threadProviderSessionSelection,
+    threadStartedByOtherSelection,
     threadVisitSelection,
   ] as const;
 }

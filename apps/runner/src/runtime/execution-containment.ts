@@ -1,7 +1,7 @@
+import { z } from "zod";
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
-import { setTimeout as delay } from "node:timers/promises";
+import { execFile, execFileSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { runningSupervisedProcesses, type HarnessProcessLaunchWrapper } from "@opensteer/harness";
 
@@ -27,19 +27,196 @@ const pollMs = 100;
  */
 export type TerminationProof = "proven" | "unknown" | "unverifiable";
 
+export const RunnerShutdownProofSchema = z.strictObject({
+  bootId: z.string().regex(/^rbt_[a-zA-Z0-9_-]+$/u),
+  termination: z.enum(["proven", "unknown", "unverifiable"]),
+  processIdentities: z.array(z.string()),
+  unconfirmedScopes: z.array(z.string()).default([]),
+});
+export type RunnerShutdownProof = z.infer<typeof RunnerShutdownProofSchema>;
+
+export async function confirmRunnerShutdown(
+  dataDirectory: string,
+  proof?: Pick<RunnerShutdownProof, "bootId" | "processIdentities">,
+  options?: { readonly terminationGraceMs?: number },
+): Promise<boolean> {
+  const containment = new ExecutionContainment({
+    bootId: proof?.bootId ?? "desktop",
+    dataDirectory,
+    ...(options?.terminationGraceMs !== undefined
+      ? { terminationGraceMs: options.terminationGraceMs }
+      : {}),
+  });
+  if (!proof) {
+    await containment.reapEarlierBoots();
+    return false;
+  }
+  return (await containment.reapBoot(proof.processIdentities)) === "proven";
+}
+
 /** One of the Runner user's processes, and the execution its environment names, if any. */
 interface ListedProcess {
   /** The pid and when the process started: a pid the system gave out again is another process. */
   readonly identity: string;
   readonly pid: number;
   readonly ppid: number;
+  readonly processGroupId?: number;
   readonly scope: string | null;
+  /** True when this process's start environment or identity could not be read. */
+  readonly unreadable?: boolean;
   /** How to signal it when that is not `process.kill`. */
   readonly signal?: (name: NodeJS.Signals) => void;
 }
 
+/** Result of one process scan; `incomplete` means the scanner knows it could have missed a member. */
+interface ProcessInventory {
+  readonly processes: readonly ListedProcess[];
+  readonly incomplete?: boolean;
+  readonly vanishedPids?: ReadonlySet<number>;
+}
+
 /** Every process of the Runner's user, with the marker each carries. */
-type ProcessLister = (variable: string) => Promise<readonly ListedProcess[]>;
+type ProcessLister = (variable: string) => Promise<readonly ListedProcess[] | ProcessInventory>;
+
+type ProcessProbe = (pid: number) => "alive" | "gone" | "unknown";
+
+function normalizeInventory(result: readonly ListedProcess[] | ProcessInventory): {
+  readonly processes: readonly ListedProcess[];
+  readonly incomplete: boolean;
+  readonly vanishedPids: ReadonlySet<number>;
+} {
+  if (Array.isArray(result)) {
+    return {
+      processes: result,
+      incomplete: false,
+      vanishedPids: new Set(),
+    };
+  }
+  const inventory = result as ProcessInventory;
+  return {
+    processes: inventory.processes,
+    incomplete: inventory.incomplete === true,
+    vanishedPids: inventory.vanishedPids ?? new Set(),
+  };
+}
+
+function ownRootPids(): ReadonlySet<number> {
+  const roots = new Set<number>([process.pid]);
+  for (const running of runningSupervisedProcesses()) {
+    if (running.pid > 0) roots.add(running.pid);
+  }
+  return roots;
+}
+
+/**
+ * An unreadable process entry (e.g. setuid EACCES on `/proc/<pid>/environ` or
+ * `hidepid` EPERM on `/proc/<pid>/stat`) makes a scope unverifiable only when
+ * that entry is a member or could be one: it is in the member/noted/Runner-or-
+ * supervisor set, or its parent chain reaches one of those without passing
+ * through a readable ancestor carrying a different execution's scope. An
+ * unreadable process whose parent chain reaches PID 1 through non-members says
+ * nothing about this execution.
+ */
+function findRelevantUnreadable(
+  processes: readonly ListedProcess[],
+  members: readonly ListedProcess[],
+  matches: (scope: string) => boolean,
+  found: ReadonlySet<string>,
+  roots: ReadonlySet<number>,
+  suspectUnreadable?: ReadonlySet<string>,
+): readonly ListedProcess[] {
+  let hasAnyUnreadable = false;
+  for (const proc of processes) {
+    if (proc.unreadable === true) {
+      hasAnyUnreadable = true;
+      break;
+    }
+  }
+  if (!hasAnyUnreadable) return [];
+  const byPid = new Map(processes.map((proc) => [proc.pid, proc]));
+  const memberPids = new Set(members.map((member) => member.pid));
+  const notedPids = new Set<number>();
+  for (const identity of found) {
+    const pid = pidFromIdentity(identity);
+    if (pid > 0) notedPids.add(pid);
+  }
+  const relevant: ListedProcess[] = [];
+  for (const proc of processes) {
+    if (proc.unreadable !== true) continue;
+    if (
+      suspectUnreadable?.has(proc.identity) ||
+      memberPids.has(proc.pid) ||
+      notedPids.has(proc.pid) ||
+      roots.has(proc.pid)
+    ) {
+      relevant.push(proc);
+      continue;
+    }
+    const visited = new Set<number>([proc.pid]);
+    let currentPpid = proc.ppid;
+    while (currentPpid > 1 && !visited.has(currentPpid)) {
+      visited.add(currentPpid);
+      if (memberPids.has(currentPpid) || notedPids.has(currentPpid) || roots.has(currentPpid)) {
+        relevant.push(proc);
+        break;
+      }
+      const parent = byPid.get(currentPpid);
+      if (!parent) break;
+      if (parent.scope !== null && !matches(parent.scope)) break;
+      currentPpid = parent.ppid;
+    }
+  }
+  return relevant;
+}
+
+function hasRelevantUnreadable(
+  processes: readonly ListedProcess[],
+  members: readonly ListedProcess[],
+  matches: (scope: string) => boolean,
+  found: ReadonlySet<string>,
+  roots: ReadonlySet<number>,
+): boolean {
+  return findRelevantUnreadable(processes, members, matches, found, roots).length > 0;
+}
+
+function hasVanishedMemberCandidate(
+  vanishedPids: ReadonlySet<number>,
+  members: readonly ListedProcess[],
+  found: ReadonlySet<string>,
+  roots: ReadonlySet<number>,
+): boolean {
+  if (vanishedPids.size === 0) return false;
+  for (const member of members) {
+    if (vanishedPids.has(member.pid)) return true;
+  }
+  for (const identity of found) {
+    const pid = pidFromIdentity(identity);
+    if (pid > 0 && vanishedPids.has(pid)) return true;
+  }
+  for (const root of roots) {
+    if (vanishedPids.has(root)) return true;
+  }
+  return false;
+}
+
+function defaultProbeAlive(pid: number): "alive" | "gone" | "unknown" {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return "unknown";
+  try {
+    process.kill(pid, 0);
+    return "alive";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === "ESRCH") return "gone";
+    if (code === "EPERM") return "alive";
+    return "unknown";
+  }
+}
+
+function pidFromIdentity(identity: string): number {
+  const prefix = identity.split("@", 1)[0];
+  const pid = Number(prefix);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : 0;
+}
 
 /**
  * Finds, stops and proves gone every process one execution started.
@@ -68,6 +245,8 @@ export class ExecutionContainment {
   readonly #bootId: string;
   readonly #installation: string;
   readonly #list: ProcessLister | undefined;
+  readonly #probeAlive: ProcessProbe | undefined;
+  readonly #terminationGraceMs: number;
   /** The processes noted for each execution before its engine was told to stop. */
   readonly #noted = new Map<string, Set<string>>();
 
@@ -76,14 +255,23 @@ export class ExecutionContainment {
     /** The Runner's data directory, which one Runner process holds at a time. */
     readonly dataDirectory: string;
     readonly listProcesses?: ProcessLister;
+    readonly probeAlive?: ProcessProbe;
     readonly platform?: NodeJS.Platform;
+    readonly terminationGraceMs?: number;
   }) {
     this.#bootId = options.bootId;
     this.#installation = createHash("sha256")
       .update(options.dataDirectory)
       .digest("base64url")
       .slice(0, 16);
-    this.#list = options.listProcesses ?? processListerFor(options.platform ?? process.platform);
+    const platform = options.platform ?? process.platform;
+    this.#list = options.listProcesses ?? processListerFor(platform);
+    this.#probeAlive =
+      options.probeAlive ??
+      (options.listProcesses === undefined && (platform === "linux" || platform === "darwin")
+        ? defaultProbeAlive
+        : undefined);
+    this.#terminationGraceMs = options.terminationGraceMs ?? terminationGraceMs;
   }
 
   scope(executionId: string): string {
@@ -103,19 +291,23 @@ export class ExecutionContainment {
    * stop: what the engine orphans as it exits is then still known to
    * `terminate`.
    */
-  async note(executionId: string): Promise<void> {
+  async note(
+    executionId: string,
+    processGroups: readonly number[] = [],
+  ): Promise<readonly string[]> {
     const list = this.#list;
-    if (!list) return;
+    if (!list) return [];
     const scope = this.scope(executionId);
     const noted = this.#noted.get(scope) ?? new Set<string>();
-    for (const { identity } of membersOf(
-      await list(executionScopeVariable),
-      (candidate) => candidate === scope,
-      noted,
-    )) {
+    const { processes } = normalizeInventory(await list(executionScopeVariable));
+    const groups = new Set(processGroups);
+    for (const process of processes)
+      if (process.processGroupId !== undefined && groups.has(process.processGroupId))
+        noted.add(process.identity);
+    for (const { identity } of membersOf(processes, (candidate) => candidate === scope, noted))
       noted.add(identity);
-    }
     this.#noted.set(scope, noted);
+    return [...noted];
   }
 
   /**
@@ -148,19 +340,53 @@ export class ExecutionContainment {
     const list = this.#list;
     if (!list) return "unverifiable";
     const scope = this.scope(executionId);
-    const members = membersOf(
-      await list(executionScopeVariable),
-      (candidate) => candidate === scope,
-      new Set(),
-    );
+    const matches = (candidate: string) => candidate === scope;
+    const scan = normalizeInventory(await list(executionScopeVariable));
+    if (scan.incomplete) return "unverifiable";
+    const members = membersOf(scan.processes, matches, new Set());
+    const roots = ownRootPids();
+    if (
+      hasRelevantUnreadable(scan.processes, members, matches, new Set(), roots) ||
+      hasVanishedMemberCandidate(scan.vanishedPids, members, new Set(), roots)
+    ) {
+      return "unverifiable";
+    }
     const pids = new Set(members.map(({ pid }) => pid));
     return members.filter(({ ppid }) => !pids.has(ppid)).length;
   }
 
   /** Reaps a stopped owner's boot without touching a replacement already running. */
-  async reapBoot(): Promise<TerminationProof> {
+  async reapBoot(processIdentities: readonly string[] = []): Promise<TerminationProof> {
     const prefix = `${this.#installation}.${this.#bootId}.`;
-    return this.#terminate((scope) => scope.startsWith(prefix));
+    return this.#terminate(
+      (scope) => scope.startsWith(prefix),
+      undefined,
+      new Set([...processIdentities, ...[...this.#noted.values()].flatMap((notes) => [...notes])]),
+    );
+  }
+
+  async shutdownProof(): Promise<RunnerShutdownProof> {
+    const prefix = `${this.#installation}.${this.#bootId}.`;
+    const observed = new Set([...this.#noted.values()].flatMap((notes) => [...notes]));
+    let remaining: readonly ListedProcess[] = [];
+    const termination = await this.#terminate(
+      (scope) => scope.startsWith(prefix),
+      undefined,
+      observed,
+      (processes) => {
+        remaining = processes;
+        for (const process of processes) observed.add(process.identity);
+      },
+    ).catch(() => "unknown" as const);
+    return {
+      bootId: this.#bootId,
+      processIdentities: [...observed],
+      termination,
+      unconfirmedScopes:
+        termination === "proven"
+          ? []
+          : [...new Set(remaining.map((process) => process.scope ?? process.identity))],
+    };
   }
 
   /** Stops what an earlier boot of this installation left running. */
@@ -174,6 +400,7 @@ export class ExecutionContainment {
     matches: (scope: string) => boolean,
     stopEngine?: () => Promise<unknown>,
     noted?: ReadonlySet<string>,
+    observe?: (members: readonly ListedProcess[]) => void,
   ): Promise<TerminationProof> {
     const list = this.#list;
     if (!list) {
@@ -181,48 +408,155 @@ export class ExecutionContainment {
       return "unverifiable";
     }
     // Followed until gone: a member whose parent dies is handed to init and
-    // is no longer below anything that carries the marker.
+    // is no longer below anything that carries the marker. Any previously seen
+    // member whose fate cannot be observed (incomplete scan or PID still alive
+    // outside the user listing) keeps termination unverifiable rather than proven.
     const found = new Set<string>(noted);
-    const remaining = async (): Promise<readonly ListedProcess[]> => {
-      const members = membersOf(await list(executionScopeVariable), matches, found);
+    const foundPids = new Map<string, number>();
+    for (const identity of found) {
+      const pid = pidFromIdentity(identity);
+      if (pid > 0) foundPids.set(identity, pid);
+    }
+    const suspectUnreadable = new Set<string>();
+    const remaining = async (): Promise<ScanResult> => {
+      const scan = normalizeInventory(await list(executionScopeVariable));
+      const members = membersOf(scan.processes, matches, found);
+      observe?.(members);
+      const presentIdentities = new Set(members.map(({ identity }) => identity));
+      const listedByPid = new Map(scan.processes.map((process) => [process.pid, process]));
+      let unobservedFate = false;
+      const nextFound = new Set<string>();
+      for (const member of members) {
+        nextFound.add(member.identity);
+        foundPids.set(member.identity, member.pid);
+      }
+      for (const previous of found) {
+        if (presentIdentities.has(previous)) continue;
+        if (scan.incomplete) {
+          nextFound.add(previous);
+          unobservedFate = true;
+          continue;
+        }
+        const pid = foundPids.get(previous) ?? pidFromIdentity(previous);
+        if (pid > 0) {
+          const currentAtPid = listedByPid.get(pid);
+          // A different readable start identity at the same PID proves PID reuse after exit.
+          if (currentAtPid && !currentAtPid.unreadable && currentAtPid.identity !== previous)
+            continue;
+          if (this.#probeAlive && this.#probeAlive(pid) !== "gone") {
+            nextFound.add(previous);
+            unobservedFate = true;
+          }
+        }
+      }
+      const roots = ownRootPids();
+      const relevantUnreadable = findRelevantUnreadable(
+        scan.processes,
+        members,
+        matches,
+        found,
+        roots,
+        suspectUnreadable,
+      );
+      const nextSuspectUnreadable = new Set<string>();
+      for (const proc of relevantUnreadable) nextSuspectUnreadable.add(proc.identity);
+      for (const previous of suspectUnreadable) {
+        if (nextSuspectUnreadable.has(previous)) continue;
+        if (scan.incomplete) {
+          nextSuspectUnreadable.add(previous);
+          unobservedFate = true;
+          continue;
+        }
+        const pid = pidFromIdentity(previous);
+        if (pid > 0) {
+          const currentAtPid = listedByPid.get(pid);
+          if (currentAtPid && !currentAtPid.unreadable && currentAtPid.identity !== previous)
+            continue;
+          if (this.#probeAlive && this.#probeAlive(pid) !== "gone") {
+            nextSuspectUnreadable.add(previous);
+            unobservedFate = true;
+          }
+        }
+      }
+      const unreadableRelevant = relevantUnreadable.length > 0;
+      const vanishedRelevant = hasVanishedMemberCandidate(scan.vanishedPids, members, found, roots);
       found.clear();
-      for (const { identity } of members) found.add(identity);
-      return members;
+      for (const identity of nextFound) found.add(identity);
+      suspectUnreadable.clear();
+      for (const identity of nextSuspectUnreadable) suspectUnreadable.add(identity);
+      return {
+        processes: members,
+        inconclusive: scan.incomplete || unobservedFate || unreadableRelevant || vanishedRelevant,
+      };
     };
-    let processes: readonly ListedProcess[];
     if (stopEngine) {
       // The engine is stopped whatever this first look finds or fails to.
       await remaining().catch(() => undefined);
       await stopEngine();
     }
-    processes = await remaining();
-    if (processes.length === 0) return "proven";
-    signal(processes, "SIGTERM");
-    processes = await waitUntilGone(remaining, terminationGraceMs);
-    if (processes.length === 0) return "proven";
-    processes = await waitUntilGone(remaining, killSettleMs, "SIGKILL");
-    return processes.length === 0 ? "proven" : "unknown";
+    // Keep Stop's total bound unchanged (terminationGraceMs + killSettleMs).
+    // An inconclusive pass (vanished member candidate, transient scan error,
+    // relevant unreadable entry, or briefly alive unobserved PID) retries within
+    // that bound until one pass completes cleanly with no members left (proven),
+    // a member appears (handled by SIGTERM -> SIGKILL), or the bound expires.
+    const overallDeadline = Date.now() + this.#terminationGraceMs + killSettleMs;
+    const remainingBudget = () => Math.max(0, overallDeadline - Date.now());
+    let current = await remaining();
+    if (current.processes.length === 0 && !current.inconclusive) return "proven";
+    if (current.processes.length === 0) {
+      current = await waitUntilSettled(remaining, Math.min(killSettleMs, remainingBudget()), {
+        initial: current,
+        stopOnMembers: true,
+      });
+      if (current.processes.length === 0) {
+        return current.inconclusive ? "unverifiable" : "proven";
+      }
+    }
+    signal(current.processes, "SIGTERM");
+    current = await waitUntilSettled(
+      remaining,
+      Math.min(this.#terminationGraceMs, remainingBudget()),
+    );
+    if (current.processes.length === 0 && !current.inconclusive) return "proven";
+    current = await waitUntilSettled(remaining, remainingBudget(), { resignal: "SIGKILL" });
+    if (current.processes.length > 0) return "unknown";
+    return current.inconclusive ? "unverifiable" : "proven";
   }
 }
 
+interface ScanResult {
+  readonly processes: readonly ListedProcess[];
+  readonly inconclusive: boolean;
+}
+
 /**
- * Polls until nothing remains, sending `resignal` to whatever each poll finds.
- * Its timers keep the process alive: a boot that reaps an earlier one's
- * processes has nothing else holding it open yet.
+ * Polls until one pass completes cleanly with nothing remaining (or until a live
+ * member appears when `stopOnMembers` is set), sending `resignal` to whatever
+ * each poll finds. Its timers keep the process alive: a boot that reaps an
+ * earlier one's processes has nothing else holding it open yet.
  */
-async function waitUntilGone(
-  remaining: () => Promise<readonly ListedProcess[]>,
+async function waitUntilSettled(
+  remaining: () => Promise<ScanResult>,
   withinMs: number,
-  resignal?: NodeJS.Signals,
-): Promise<readonly ListedProcess[]> {
+  options: {
+    readonly initial?: ScanResult;
+    readonly resignal?: NodeJS.Signals;
+    readonly stopOnMembers?: boolean;
+  } = {},
+): Promise<ScanResult> {
   const deadline = Date.now() + withinMs;
-  let processes = await remaining();
-  while (processes.length > 0 && Date.now() < deadline) {
-    if (resignal) signal(processes, resignal);
-    await delay(pollMs);
-    processes = await remaining();
+  let current = options.initial ?? (await remaining());
+  while (Date.now() < deadline) {
+    if (current.processes.length > 0) {
+      if (options.stopOnMembers) break;
+      if (options.resignal) signal(current.processes, options.resignal);
+    } else if (!current.inconclusive) {
+      break;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, pollMs));
+    current = await remaining();
   }
-  return processes;
+  return current;
 }
 
 /**
@@ -236,7 +570,13 @@ function membersOf(
   found: ReadonlySet<string>,
 ): readonly ListedProcess[] {
   const children = new Map<number, ListedProcess[]>();
+  const groups = new Map<number, ListedProcess[]>();
   for (const listed of processes) {
+    if (listed.processGroupId !== undefined) {
+      const group = groups.get(listed.processGroupId);
+      if (group) group.push(listed);
+      else groups.set(listed.processGroupId, [listed]);
+    }
     const siblings = children.get(listed.ppid);
     if (siblings) siblings.push(listed);
     else children.set(listed.ppid, [listed]);
@@ -248,7 +588,8 @@ function membersOf(
   for (let next = pending.pop(); next; next = pending.pop()) {
     if (members.has(next.pid)) continue;
     members.set(next.pid, next);
-    for (const child of children.get(next.pid) ?? []) {
+    const ownedGroup = next.processGroupId === next.pid ? groups.get(next.pid) : undefined;
+    for (const child of [...(children.get(next.pid) ?? []), ...(ownedGroup ?? [])]) {
       if (child.scope === null || matches(child.scope)) pending.push(child);
     }
   }
@@ -290,41 +631,181 @@ async function listSupervisedProcesses(variable: string): Promise<readonly Liste
   }));
 }
 
+const linuxProcSliceBudgetMs = 15;
+
 /** A process's start identity remains readable after it loses its start environment. */
-async function listLinuxProcesses(variable: string): Promise<readonly ListedProcess[]> {
+export async function listLinuxProcesses(
+  variable: string,
+  procRoot = "/proc",
+): Promise<ProcessInventory> {
+  const maxAttempts = 3;
+  let previousVanished: ReadonlySet<number> | undefined;
+  let last: ProcessInventory = {
+    processes: [],
+    incomplete: true,
+  };
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const scan = await scanLinuxProcOnce(variable, procRoot);
+    if (scan.incomplete) {
+      return { processes: scan.processes, incomplete: true, vanishedPids: scan.vanishedPids };
+    }
+    if (previousVanished) {
+      // A PID that stays listed and keeps failing with ENOENT/ESRCH across
+      // passes indicates an unstable or broken /proc listing, not a normal exit.
+      for (const pid of scan.vanishedPids) {
+        if (previousVanished.has(pid)) {
+          return { processes: scan.processes, incomplete: true, vanishedPids: scan.vanishedPids };
+        }
+      }
+    }
+    if (scan.vanishedPids.size === 0) {
+      return { processes: scan.processes, incomplete: false };
+    }
+    previousVanished = scan.vanishedPids;
+    // After retrying so any child forked before prior vanished PIDs exited is
+    // captured in a fresh readdirSync, strictly disjoint exits on a busy host
+    // do not poison containment unless a PID keeps vanishing or a member vanished.
+    last = { processes: scan.processes, incomplete: false, vanishedPids: scan.vanishedPids };
+  }
+  return last;
+}
+
+async function scanLinuxProcOnce(
+  variable: string,
+  procRoot: string,
+): Promise<{
+  readonly processes: readonly ListedProcess[];
+  readonly incomplete: boolean;
+  readonly vanishedPids: ReadonlySet<number>;
+}> {
+  let entries: string[];
+  try {
+    entries = readdirSync(procRoot);
+  } catch {
+    return {
+      processes: [],
+      incomplete: true,
+      vanishedPids: new Set(),
+    };
+  }
   const prefix = `${variable}=`;
   const found: ListedProcess[] = [];
-  for (const entry of await readdir("/proc")) {
+  const vanishedPids = new Set<number>();
+  let incomplete = false;
+  let sliceStart = performance.now();
+  // /proc entries are kernel-backed memory; yielding only when a slice reaches
+  // its wall-clock budget keeps normal scans fast and atomic while bounding
+  // event-loop stalls on large or heavily loaded hosts.
+  for (const entry of entries) {
     if (!/^[1-9][0-9]*$/u.test(entry)) continue;
+    if (performance.now() - sliceStart >= linuxProcSliceBudgetMs) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      sliceStart = performance.now();
+    }
     const pid = Number(entry);
     if (pid === process.pid) continue;
-    let environ = "";
-    try {
-      environ = await readFile(`/proc/${entry}/environ`, "latin1");
-    } catch {
-      // Linux removes a zombie's address space before its PID is reaped.
-      // Its start identity must remain listed even when environ returns ESRCH.
-    }
-    const scope = environ.split("\0").find((value) => value.startsWith(prefix));
     let stat: string;
     try {
-      stat = await readFile(`/proc/${entry}/stat`, "latin1");
-    } catch {
+      stat = readFileSync(`${procRoot}/${entry}/stat`, "latin1");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT" || code === "ESRCH") {
+        vanishedPids.add(pid);
+      } else if (code === "EACCES" || code === "EPERM") {
+        // Under hidepid, other users' /proc/<pid>/stat returns EACCES/EPERM.
+        // Mark the entry unreadable so only a previously noted or related PID
+        // affects containment instead of poisoning every Stop on the machine.
+        found.push({
+          identity: `${pid}@unreadable`,
+          pid,
+          ppid: 0,
+          scope: null,
+          unreadable: true,
+        });
+      } else {
+        incomplete = true;
+      }
       continue;
     }
     // The command name is parenthesized and may hold anything; after its
-    // closing parenthesis the parent pid is the second field and the start
-    // time, in clock ticks since boot, the twentieth.
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    // closing parenthesis the state is field 0, parent pid field 1, pgid field 2,
+    // and start time in clock ticks since boot field 19.
+    const close = stat.lastIndexOf(")");
+    if (close < 0) {
+      incomplete = true;
+      continue;
+    }
+    const fields = stat.slice(close + 2).split(" ");
+    const state = fields[0];
     const ppid = Number(fields[1]);
+    const processGroupId = Number(fields[2]);
+    const startTime = fields[19];
+    if (
+      !state ||
+      !Number.isSafeInteger(ppid) ||
+      !Number.isSafeInteger(processGroupId) ||
+      !startTime ||
+      !/^[0-9]+$/u.test(startTime)
+    ) {
+      incomplete = true;
+      continue;
+    }
+    // Linux kernel threads (kthreadd and its children) never belong to a user
+    // execution and never expose a readable /proc/<pid>/environ.
+    if (pid === 2 || ppid === 2) continue;
+    let environ = "";
+    try {
+      environ = readFileSync(`${procRoot}/${entry}/environ`, "latin1");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (
+        code === "ESRCH" ||
+        ((state === "Z" || state === "X") &&
+          (code === "ENOENT" || code === "EACCES" || code === "EPERM"))
+      ) {
+        // Linux clears a dying/zombie process's mm_struct before its parent reaps
+        // it, so /proc/<pid>/environ returns ESRCH or EACCES even for a direct child
+        // while its stat still shows Z/X. Keep its start identity listed so containment
+        // still tracks already-seen PIDs until reaped without falsely failing the scan.
+        found.push({
+          identity: `${pid}@${startTime}`,
+          pid,
+          ppid,
+          processGroupId,
+          scope: null,
+        });
+        continue;
+      }
+      if (code === "ENOENT") {
+        vanishedPids.add(pid);
+        continue;
+      }
+      if (code === "EACCES" || code === "EPERM") {
+        // Record the entry unreadable with its parent and process group so
+        // membership and ancestry decide whether it can belong to this scope.
+        found.push({
+          identity: `${pid}@${startTime}`,
+          pid,
+          ppid,
+          processGroupId,
+          scope: null,
+          unreadable: true,
+        });
+        continue;
+      }
+      incomplete = true;
+      continue;
+    }
+    const scope = environ.split("\0").find((value) => value.startsWith(prefix));
     found.push({
-      identity: `${pid}@${fields[19] ?? ""}`,
+      identity: `${pid}@${startTime}`,
       pid,
       ppid,
+      processGroupId,
       scope: scope ? scope.slice(prefix.length) : null,
     });
   }
-  return found;
+  return { processes: found, incomplete, vanishedPids };
 }
 
 /**
@@ -332,29 +813,85 @@ async function listLinuxProcesses(variable: string): Promise<readonly ListedProc
  * A scope holds no whitespace, so the first one after the variable's name ends
  * it.
  */
-async function listDarwinProcesses(variable: string): Promise<readonly ListedProcess[]> {
+async function listDarwinProcesses(variable: string): Promise<ProcessInventory> {
   const uid = process.getuid?.();
-  if (uid === undefined) return [];
-  const { stdout } = await execFileAsync(
-    "/bin/ps",
-    ["-E", "-ww", "-U", String(uid), "-o", "pid=,ppid=,lstart=,command="],
-    { maxBuffer: 64 * 1_024 * 1_024 },
-  );
+  if (uid === undefined) return { processes: [], incomplete: true };
+  let stdout: string;
+  let stderr: string;
+  try {
+    ({ stdout, stderr } = await execFileAsync(
+      "/bin/ps",
+      ["-E", "-ww", "-U", String(uid), "-o", "pid=,ppid=,pgid=,lstart=,command="],
+      { maxBuffer: 64 * 1_024 * 1_024 },
+    ));
+  } catch {
+    return { processes: [], incomplete: true };
+  }
+  let incomplete = stderr.trim().length > 0;
   const marker = ` ${variable}=`;
   const found: ListedProcess[] = [];
   for (const line of stdout.split("\n")) {
+    if (line.trim().length === 0) continue;
     // `lstart` is always five words: weekday, month, day, time and year.
-    const words = line.trimStart().split(/\s+/u, 7);
-    const [pid, ppid] = words.slice(0, 2).map(Number);
-    if (!Number.isSafeInteger(pid) || pid === process.pid || !Number.isSafeInteger(ppid)) continue;
+    const words = line.trimStart().split(/\s+/u, 9);
+    if (words.length < 8) {
+      incomplete = true;
+      continue;
+    }
+    const [pid, ppid, processGroupId] = words.slice(0, 3).map(Number);
+    const lstart = words.slice(3, 8);
+    if (
+      !Number.isSafeInteger(pid) ||
+      !Number.isSafeInteger(ppid) ||
+      !Number.isSafeInteger(processGroupId) ||
+      !/^\d{2}:\d{2}:\d{2}$/u.test(lstart[3] ?? "") ||
+      !/^\d{4}$/u.test(lstart[4] ?? "")
+    ) {
+      incomplete = true;
+      continue;
+    }
+    if (pid === process.pid) continue;
     const at = line.indexOf(marker);
     const scope = at < 0 ? null : line.slice(at + marker.length).split(/\s/u, 1)[0] || null;
     found.push({
-      identity: `${pid}@${words.slice(2, 7).join(" ")}`,
+      identity: `${pid}@${lstart.join(" ")}`,
       pid: pid!,
       ppid: ppid!,
+      processGroupId: processGroupId!,
       scope,
     });
   }
-  return found;
+  return { processes: found, ...(incomplete ? { incomplete: true } : {}) };
+}
+
+let cachedMachineBootId: string | null | undefined;
+
+/**
+ * Reads a stable identifier for the current OS boot (changes on machine reboot).
+ * Returns `undefined` when the platform cannot supply one so unknown stays unknown.
+ */
+export function readMachineBootId(
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (platform === process.platform && cachedMachineBootId !== undefined) {
+    return cachedMachineBootId ?? undefined;
+  }
+  let resolved: string | undefined;
+  try {
+    if (platform === "linux") {
+      const value = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      if (value) resolved = `linux:${value}`;
+    } else if (platform === "darwin") {
+      const output = execFileSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], {
+        encoding: "utf8",
+        timeout: 2_000,
+      });
+      const match = /sec\s*=\s*(\d+),\s*usec\s*=\s*(\d+)/u.exec(output);
+      if (match) resolved = `darwin:${match[1]}.${match[2]}`;
+    }
+  } catch {
+    resolved = undefined;
+  }
+  if (platform === process.platform) cachedMachineBootId = resolved ?? null;
+  return resolved;
 }

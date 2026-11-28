@@ -1,4 +1,6 @@
-import { unsupportedVersionCloseCode } from "@opensteer/protocol";
+import { homeFailureText } from "./failure-text.js";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { deviceAccess, unsupportedVersionCloseCode } from "@opensteer/protocol";
 import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import {
   clientScopeKey,
@@ -11,14 +13,18 @@ import {
   type ConnectionPresentation,
   probeAnsweredByFrames,
 } from "../connections/connection-controller.js";
-import { classifyClientFailure, ClientOperationError } from "../connections/operation-error.js";
+import {
+  classifyClientFailure,
+  ClientOperationError,
+  unrefTimer,
+} from "../connections/operation-error.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
 import { assertMessageLogin, disposeMessageOutbox } from "./message-outbox.js";
 import { nameConnectionFromHost } from "./host-connection.js";
 import type { TranscriptItem } from "@opensteer/protocol/transcript";
 import { MessageIdSchema, utf8ByteLength, type AuthSessionId } from "@opensteer/core";
 import type { PersonalStreamCache } from "./personal-stream-cache.js";
-import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
+import { needsYouEntryKey } from "./needs-you.js";
 import { withThreadState } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
@@ -56,6 +62,7 @@ import { familyAutomations } from "./task-family.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import type { NodeDetailSubscription, NodeDetailSnapshot } from "./node-detail.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
+import type { AgentWorkingIn } from "@opensteer/core";
 import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
@@ -74,10 +81,8 @@ import { computerViewMethods } from "./computer-views.js";
 import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
-  DeploymentIdSchema,
   ModelSelectionSchema,
   ExecutionNodeIdSchema,
-  TeamAgentRequestIdSchema,
   RequestIdSchema,
   type QuietTaskDays,
   type PersonName,
@@ -127,13 +132,13 @@ import type {
   EnvironmentSummary,
   HarnessSummary,
   HostSnapshot,
+  ComputerViewRemovedListener,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   HostClient as OwnerViewHostClient,
   TaskEntry,
   TaskListState,
   ThreadSummary,
-  TeamAskDecision,
   WaitingMessageEditor,
 } from "./client.js";
 import {
@@ -151,6 +156,7 @@ import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { RunPlaceStore } from "./run-place.js";
 import { heldThread } from "./task-list.js";
 import {
+  browserViewerGraceMs,
   type ClientLifecycle,
   type ClientNetworkState,
   type ClientVisibility,
@@ -162,6 +168,7 @@ import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { FencedReads, type FencedRead } from "./fenced-reads.js";
 import { threadStopTarget } from "./thread-activity.js";
 import { isThreadUnread } from "./thread-unread.js";
+import { BrowserRestartUnavailable } from "./browser-sleep.js";
 import { ThreadStateProjection } from "./thread-state.js";
 
 type HostCapability = AuthorityHostCapability;
@@ -271,6 +278,11 @@ export class HttpHostClient {
   readonly #attachmentCache = new Map<string, Blob>();
   #attachmentCacheBytes = 0;
   readonly #ownerViews = new OwnerViewRecords();
+  readonly #computerViewRemovedListeners = new Set<ComputerViewRemovedListener>();
+  subscribeComputerViewRemoved = (listener: ComputerViewRemovedListener): (() => void) => {
+    this.#computerViewRemovedListeners.add(listener);
+    return () => this.#computerViewRemovedListeners.delete(listener);
+  };
   #computerViews: { clear(): void; setConnected(connected: boolean): void } = {
     clear: () => undefined,
     setConnected: () => undefined,
@@ -566,9 +578,11 @@ export class HttpHostClient {
   }
   readonly #tabsClient = createTabsClient({
     store: this.#tabs,
-    dispatch: async (command) => {
+    dispatch: async (command, signal) => {
       const viewer = this.#viewer.generation;
-      const result = unwrapRpcResult(await this.rpc["commands.dispatch"](command));
+      const result = unwrapRpcResult(
+        await this.rpc["commands.dispatch"](command, signal ? { signal } : undefined),
+      );
       if (viewer !== this.#viewer.generation)
         throw new HostClientRequestError({
           code: "unauthorized",
@@ -597,6 +611,7 @@ export class HttpHostClient {
   readonly organizeTabs = this.#tabsClient.organizeTabs;
   readonly updateTabGroup = this.#tabsClient.updateTabGroup;
   readonly deleteTabGroup = this.#tabsClient.deleteTabGroup;
+  readonly closeTabGroup = this.#tabsClient.closeTabGroup;
   readonly listApps = this.#tabsClient.listApps;
   readonly getApp = this.#tabsClient.getApp;
   readonly renameApp = this.#tabsClient.renameApp;
@@ -703,6 +718,12 @@ export class HttpHostClient {
   readonly #lifecycleDisposers: (() => void)[] = [];
   #network: ClientNetworkState;
   #visibility: ClientVisibility;
+  /**
+   * The person cannot see this client and has not for `browserViewerGraceMs`: it is no longer a
+   * browser viewer. Set only by the grace's timer; cleared the moment it is seen again.
+   */
+  #unseen = false;
+  #unseenTimer: ReturnType<typeof setTimeout> | null = null;
 
   #disposed = false;
   #snapshot: HostSnapshot = emptySnapshot(this.#tabs);
@@ -929,8 +950,13 @@ export class HttpHostClient {
     this.#visibility = lifecycle?.visibility ?? "foreground";
     this.#stream.setBackground(this.#visibility === "background");
     this.#stream.shell.subscribe(() => this.#publishShell());
-    this.#targetedControl.suspend(this.#reconnectSuspended(), this.#network !== "offline");
-    this.#targetedWatch.suspend(this.#reconnectSuspended());
+    // A client that starts hidden has shown no picture to keep: it is unseen from the start.
+    this.#unseen = this.#visibility === "background";
+    this.#seen(this.#visibility === "foreground");
+    const platform = options.lifecycle;
+    if (platform?.onFreeze) this.#lifecycleDisposers.push(platform.onFreeze(() => this.#frozen()));
+    if (platform?.onResume)
+      this.#lifecycleDisposers.push(platform.onResume(() => this.#resumed(platform)));
     let observed = this.connection.getSnapshot();
     this.#lifecycleDisposers.push(
       this.connection.subscribe(() => {
@@ -1059,6 +1085,71 @@ export class HttpHostClient {
     this.#stream.flushCheckpoints();
   }
 
+  /**
+   * Sent only to a Home that reports this pooled browser; any other is refused here, and a
+   * Home's own refusal reads as the same fixed refusal. Nothing changed in either case.
+   */
+  async restartPooledBrowser(computerId: string): Promise<void> {
+    if (!this.#snapshot.browserPools?.some((pool) => pool.runnerId === computerId))
+      throw new BrowserRestartUnavailable();
+    try {
+      await this.dispatch({
+        type: "browser.pool.restart",
+        runnerId: computerId,
+        idempotencyKey: globalThis.crypto.randomUUID(),
+      });
+    } catch (error) {
+      const { code } = classifyClientFailure(error);
+      if (code === "not_found" || code === "forbidden") throw new BrowserRestartUnavailable();
+      throw error;
+    }
+  }
+
+  /**
+   * The person was shown a pooled browser's note: the Home is told, so it leaves the report for
+   * every client. Sent only for a note this Home's report carries; nothing otherwise.
+   */
+  async browserNoticeSeen(computerId: string, tabId: string, noticeId: string): Promise<void> {
+    const carried = this.#snapshot.browserPools?.some(
+      (pool) =>
+        pool.runnerId === computerId &&
+        pool.pages?.some((page) => page.surfaceId === tabId && page.noticeId === noticeId),
+    );
+    if (!carried) return;
+    await this.dispatch({
+      type: "browser.pool.notice.seen",
+      surfaceId: tabId,
+      noticeId,
+      idempotencyKey: globalThis.crypto.randomUUID(),
+    });
+  }
+
+  /**
+   * W15: removes an unconfirmed-closing replaced-browser session from the person's list without
+   * changing its closing state on the Home.
+   */
+  async dismissBrowserSession(sessionId: string): Promise<void> {
+    await this.dispatch({
+      type: "browser.session.dismiss",
+      sessionId,
+      idempotencyKey: globalThis.crypto.randomUUID(),
+    });
+    const browserSessions = this.#snapshot.browserSessions.filter(
+      (session) => session.id !== sessionId,
+    );
+    const browserPools = this.#snapshot.browserPools?.map((pool) => {
+      if (!pool.unconfirmedClosings?.some((entry) => entry.sessionId === sessionId)) return pool;
+      const remaining = pool.unconfirmedClosings.filter((entry) => entry.sessionId !== sessionId);
+      const { unconfirmedClosings: _dropped, ...rest } = pool;
+      return remaining.length ? { ...rest, unconfirmedClosings: remaining } : rest;
+    });
+    this.#update({
+      ...this.#snapshot,
+      browserSessions,
+      ...(browserPools ? { browserPools } : {}),
+    });
+  }
+
   async dispatch(
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
@@ -1155,10 +1246,6 @@ export class HttpHostClient {
         result.asOfSequence,
       );
       this.#update({ ...this.#snapshot, threads: upsertThread(this.#snapshot.threads, thread) });
-    }
-    if (result.type === "teams.ask.decide" && command.type === result.type) {
-      const needsYou = settleTeamAsk(this.#snapshot.needsYou, command.teamId, command.requestId);
-      if (needsYou !== this.#snapshot.needsYou) this.#update({ ...this.#snapshot, needsYou });
     }
     if (result.type === "execution.preferences.remember")
       this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
@@ -1535,7 +1622,17 @@ export class HttpHostClient {
           ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
           : compactThread(row);
         const thread = this.#threadState.reconcile(
-          row.retry === undefined ? detailSummary : { ...detailSummary, retry: row.retry },
+          {
+            ...detailSummary,
+            // The published revision: an open connected agent's task reads its activity again
+            // when it moves, as for an operation refused with nothing sent.
+            revision: row.revision,
+            agentSessionId: row.agentSessionId ?? null,
+            externalWork: row.externalWork ?? null,
+            ...(row.thread ? { endedOrigin: row.endedOrigin ?? null } : {}),
+            ...(row.originConnectionId ? { originConnectionId: row.originConnectionId } : {}),
+            ...(row.retry === undefined ? {} : { retry: row.retry }),
+          },
           SequenceSchema.parse(row.revision),
           undefined,
           row.thread ? undefined : row,
@@ -1906,7 +2003,12 @@ export class HttpHostClient {
       SequenceSchema.parse(row.revision),
       row,
     );
-    const entry = { thread, lastReply: row.lastReplyPreview, failure: row.failurePreview };
+    const entry = {
+      thread,
+      lastReply: row.lastReplyPreview,
+      failure: row.failurePreview,
+      failureCode: row.failureCode ?? null,
+    };
     this.#shellEntries.set(row, entry);
     return entry;
   }
@@ -1995,6 +2097,7 @@ export class HttpHostClient {
           this.#threadState.reconcile(
             {
               ...held,
+              revision: row.revision,
               title: row.title,
               status: row.status,
               doneAt: row.doneAt,
@@ -2002,6 +2105,11 @@ export class HttpHostClient {
               latestRunCompletedAt: row.latestRunCompletedAt,
               inputQueuePaused: row.inputQueuePaused ?? held.inputQueuePaused,
               runQueued: row.runQueued,
+              runStartHoldReason: row.runStartHoldReason ?? null,
+              failureCode: row.failureCode ?? null,
+              agentSessionId: row.agentSessionId ?? null,
+              externalWork: row.externalWork ?? null,
+              ...(row.originConnectionId ? { originConnectionId: row.originConnectionId } : {}),
               ...(row.retry === undefined ? {} : { retry: row.retry }),
             },
             SequenceSchema.parse(row.revision),
@@ -2014,10 +2122,13 @@ export class HttpHostClient {
     if (
       session &&
       (this.#snapshot.user?.id !== session.user.id ||
-        this.#snapshot.sessionId !== session.sessionId)
+        this.#snapshot.sessionId !== session.sessionId ||
+        this.#snapshot.role !== session.role)
     ) {
+      const { role: _previousRole, ...withoutRole } = this.#snapshot;
       this.#update({
-        ...this.#snapshot,
+        ...withoutRole,
+        ...(session.role ? { role: session.role } : {}),
         deploymentId: shell.deploymentId,
         deploymentShape: { kind: "personal" },
         user: session.user,
@@ -2312,8 +2423,24 @@ export class HttpHostClient {
         ...snapshot,
         environments: snapshot.environments.map((row) => this.#withEnvironmentCatalogs(row)),
       };
-    if (first.kind === "machine")
-      snapshot = { ...snapshot, machineRevision: this.#snapshot.machineRevision + 1 };
+    if (first.kind === "machine") {
+      // A list read can start before a switch's receipt. Keep the newer policy and
+      // take live details, including sessions, from the list that just arrived.
+      const previous = new Map(this.#snapshot.machines.map(({ id, access }) => [id, access]));
+      snapshot = {
+        ...snapshot,
+        machineRevision: this.#snapshot.machineRevision + 1,
+        machines: snapshot.machines.map((machine) => {
+          const access = previous.get(machine.id);
+          if (!access || !machine.access || machine.access.revision >= access.revision)
+            return machine;
+          return {
+            ...machine,
+            access: { ...machine.access, revision: access.revision, policy: access.policy },
+          };
+        }),
+      };
+    }
     if (snapshot !== this.#snapshot) this.#update(snapshot);
   }
 
@@ -2449,6 +2576,18 @@ export class HttpHostClient {
             data.placements,
             (row) => row.runnerId,
           ),
+          // A pooled browser's report, copied unchanged; absent from every other Home.
+          ...(data.pools
+            ? {
+                browserPools: mergeResourceRows(
+                  append ? (snapshot.browserPools ?? []) : [],
+                  data.pools,
+                  (row) => row.runnerId,
+                ),
+              }
+            : append
+              ? {}
+              : { browserPools: undefined }),
         };
       case "browser-home":
         return {
@@ -2836,8 +2975,7 @@ export class HttpHostClient {
     } catch (error) {
       if (!current()) return false;
       if (startedAt !== this.#browserUsageVersion(threadId)) return true;
-      const message =
-        error instanceof Error ? error.message : "Could not load this conversation’s browsers.";
+      const message = homeFailureText(error, "Could not load this conversation’s browsers.");
       if (error instanceof HostClientRequestError && [403, 404].includes(error.status)) {
         this.#replaceBrowserUsage(threadId, [], { runIds: null }, message);
       } else {
@@ -2952,6 +3090,35 @@ export class HttpHostClient {
       this.#browserUsageRunSources.set(threadId, sources);
       this.#ensureBrowserUsage(threadId, "missing");
     }
+  }
+
+  #dropWorkingIn(): void {
+    if (this.#snapshot.agentWorkingIn === undefined) return;
+    const { agentWorkingIn: _dropped, ...snapshot } = this.#snapshot;
+    this.#update(snapshot);
+  }
+
+  /** Where a task's connected agent works now; a session's end removes only its own record. */
+  #applyWorkingIn(notice: AgentWorkingIn): void {
+    const current = this.#snapshot.agentWorkingIn ?? {};
+    const held = current[notice.threadId];
+    if (notice.tabId === null && !notice.computerId) {
+      if (held?.sessionId !== notice.sessionId) return;
+      const { [notice.threadId]: _ended, ...rest } = current;
+      this.#update({ ...this.#snapshot, agentWorkingIn: rest });
+      return;
+    }
+    if (
+      held?.sessionId === notice.sessionId &&
+      held.tabId === notice.tabId &&
+      held.computerId === notice.computerId &&
+      canonicalJson(held.target ?? null) === canonicalJson(notice.target ?? null)
+    )
+      return;
+    this.#update({
+      ...this.#snapshot,
+      agentWorkingIn: { ...current, [notice.threadId]: notice },
+    });
   }
 
   /** Which apps an agent is acting in on the reader's Macs; patched in place. */
@@ -3145,9 +3312,14 @@ export class HttpHostClient {
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
       readonly rasterDemand?: boolean;
+      readonly connect?: boolean;
     },
   ): (() => void) => {
-    if (options?.picture === false && !this.#capabilities?.includes("browser-target-control-v1"))
+    if (
+      options?.picture === false &&
+      options.connect !== false &&
+      !this.#capabilities?.includes("browser-target-control-v1")
+    )
       throw new Error("This Host does not advertise browser-target-control-v1.");
     return this.#targetedControl.retain(sessionId, surfaceId, options);
   };
@@ -3535,16 +3707,6 @@ export class HttpHostClient {
     );
   }
 
-  async decideTeamAsk(input: TeamAskDecision): Promise<void> {
-    await this.dispatch({
-      decision: input.decision,
-      requestId: TeamAgentRequestIdSchema.parse(input.requestId),
-      teamId: DeploymentIdSchema.parse(input.teamId),
-      type: "teams.ask.decide",
-      ...(input.decision === "approve" ? { expectedRevision: input.expectedRevision } : {}),
-    });
-  }
-
   readonly #waitingMessageEditorPort: WaitingMessageEditorPort = {
     dispatch: (command) => this.dispatch(command),
     leases: this.#editLeases,
@@ -3599,6 +3761,18 @@ export class HttpHostClient {
       threadId,
       type: "thread.inputQueue.resume",
     });
+  }
+
+  async recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }> {
+    const result = await this.dispatch({
+      idempotencyKey: mutationIdempotencyKey("thread-stop-recheck"),
+      threadId,
+      type: "thread.stop.recheck",
+    });
+    if (result.type !== "thread.stop.recheck") {
+      throw new Error(`Unexpected thread.stop.recheck response: ${result.type}`);
+    }
+    return { proven: result.proven };
   }
 
   /**
@@ -3680,12 +3854,36 @@ export class HttpHostClient {
 
   async updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome> {
     const command = deviceAccessCommand(input, mutationIdempotencyKey("machine-access"));
+    const generation = this.#viewerGeneration;
+    const userId = this.#snapshot.user?.id;
     const result = await this.dispatch(command);
     if (result.type !== "machine.access.update") {
       throw new Error("Access settings command mismatch.");
     }
     if (result.outcome === "conflict") return { outcome: "conflict" };
-    await this.refresh();
+    if (this.#viewerStillCurrent(generation, userId)) {
+      const snapshot = this.#snapshot;
+      const existing = snapshot.machines.find(({ id }) => id === command.deviceId);
+      const access = existing?.access;
+      if (access?.revision === command.expectedRevision) {
+        const previous = deviceAccess(access.policy);
+        const policy = {
+          ...command.policy,
+          browser: command.policy.browser ?? previous.browser,
+          apps: command.policy.apps ?? previous.apps,
+        };
+        this.#update({
+          ...snapshot,
+          machineRevision: snapshot.machineRevision + 1,
+          machines: snapshot.machines.map((machine) =>
+            machine === existing
+              ? { ...machine, access: { ...access, policy, revision: result.revision } }
+              : machine,
+          ),
+        });
+      }
+      await this.refresh();
+    }
     return { outcome: "updated", revision: result.revision };
   }
 
@@ -3752,10 +3950,13 @@ export class HttpHostClient {
     this.#scopeReaders.clear();
     this.#clearViewerReads();
     for (const release of this.#lifecycleDisposers) release();
+    if (this.#unseenTimer) clearTimeout(this.#unseenTimer);
+    this.#unseenTimer = null;
     clearRunPageViews(this);
     clearRunPlacePictures(this);
     this.#clearAttachmentReads();
     this.#computerViews.clear();
+    this.#computerViewRemovedListeners.clear();
     this.#placeActivity.dispose();
     this.#runPlaces.dispose();
     this.#targetedControl.dispose();
@@ -4151,14 +4352,15 @@ export class HttpHostClient {
       if (this.#removedTasks.has(entry.thread.id)) return [];
       const row = rows.get(entry.thread.id);
       if (row && BigInt(row.revision) > asOf) return [this.#shellEntry(row)];
-      const thread = toThreadSummary(
-        entry.thread,
-        this.#snapshot.environments,
-        this.#snapshot.harnesses,
-      );
+      const { originConnectionId, externalWork, ...task } = entry;
+      const thread = {
+        ...toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+        ...(originConnectionId ? { originConnectionId } : {}),
+        ...(externalWork ? { externalWork } : {}),
+      };
       return [
         {
-          ...entry,
+          ...task,
           thread: this.#reconcilePageThread(
             // The queued-account reason and active retry ride beside the Thread on the page, as on the shell row.
             entry.runQueued === undefined && entry.retry === undefined
@@ -4301,7 +4503,10 @@ export class HttpHostClient {
   #reconcilePageThread(
     thread: ThreadSummary,
     sequence: Sequence,
-    compact?: { readonly inputQueuePaused?: boolean | undefined },
+    compact?: {
+      readonly inputQueuePaused?: boolean | undefined;
+      readonly retry?: ThreadSummary["retry"];
+    },
   ) {
     const reconciled = this.#threadState.reconcile(thread, sequence, undefined, compact);
     return reconciled.pendingRequests === thread.pendingRequests
@@ -4393,8 +4598,7 @@ export class HttpHostClient {
       this.#invalidateAttention();
       this.#resources.abort();
     }
-    this.#targetedControl.suspend(this.#reconnectSuspended(), state.network !== "offline");
-    this.#targetedWatch.suspend(this.#reconnectSuspended());
+    this.#seen(state.visibility === "foreground");
     if (state.pathRevision !== old.pathRevision) {
       this.#targetedControl.reconnect();
       this.#targetedWatch.reconnect();
@@ -4424,8 +4628,62 @@ export class HttpHostClient {
       for (const listener of this.#lifecycleListeners) listener("network");
   }
 
-  #reconnectSuspended() {
-    return this.#visibility === "background" || this.#network === "offline";
+  /**
+   * A client is a browser viewer only while the person can see the picture. Hidden, it keeps its
+   * viewer sockets for `browserViewerGraceMs`, so flipping between tabs does not reconnect, then
+   * lets go of every one, a control socket without a picture too: the Home counts each as a
+   * viewer, which keeps the browser awake. Seen again, it takes them at once. Only the viewers:
+   * the realtime connection, the tab list and the task stream follow the lifecycle as before.
+   * Offline, every socket is gone already, so they are let go at once.
+   */
+  #seen(seen: boolean): void {
+    if (seen) {
+      if (this.#unseenTimer) clearTimeout(this.#unseenTimer);
+      this.#unseenTimer = null;
+      this.#unseen = false;
+    } else if (!this.#unseen && !this.#unseenTimer && !this.#disposed) {
+      // The grace runs from when the picture was last seen, whatever happens to the sockets.
+      this.#unseenTimer = setTimeout(() => {
+        this.#unseenTimer = null;
+        this.#unseen = true;
+        this.#applyViewerPresence();
+      }, browserViewerGraceMs);
+      unrefTimer(this.#unseenTimer);
+    }
+    this.#applyViewerPresence();
+  }
+
+  /**
+   * The platform stops this page's timers (the web's Page Lifecycle `freeze`; a phone app the
+   * system may suspend): the grace's timer would never fire, while the platform may keep the
+   * sockets answering the Home. So the client lets go now, and is unseen until it is seen again.
+   */
+  #frozen(): void {
+    if (this.#unseenTimer) clearTimeout(this.#unseenTimer);
+    this.#unseenTimer = null;
+    this.#unseen = true;
+    this.#applyViewerPresence();
+  }
+
+  /** Running again: seen or not as the platform says now; a hidden page stays unseen. */
+  #resumed(lifecycle: ClientLifecycle): void {
+    if (lifecycle.getSnapshot().visibility === "foreground") this.#seen(true);
+  }
+
+  /**
+   * Seen: sockets open as views hold them. Hidden inside the grace: those already open stay, and
+   * nothing opens, not even a reconnect or a new hold, so a hidden client never wakes a browser.
+   * Unseen past the grace, frozen or offline: none.
+   */
+  #applyViewerPresence(): void {
+    const mode =
+      this.#unseen || this.#network === "offline"
+        ? "closed"
+        : this.#visibility === "background"
+          ? "keep"
+          : "open";
+    this.#targetedControl.presence(mode);
+    this.#targetedWatch.presence(mode);
   }
 
   openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
@@ -4594,6 +4852,8 @@ export class HttpHostClient {
         clearTimeout(waited);
         if (this.#socket !== socket) return;
         try {
+          // Where agents work is told again on this socket as it attaches: nothing older is kept.
+          this.#dropWorkingIn();
           this.#stream.attach((message) => socket.send(JSON.stringify(message)));
         } catch {
           this.#socketFailed();
@@ -4789,6 +5049,11 @@ export class HttpHostClient {
       case "host.computer-presence":
         this.#applyComputerPresence(message.sessions);
         break;
+      case "host.agent-working-in": {
+        const { type: _type, ...notice } = message;
+        this.#applyWorkingIn(notice);
+        break;
+      }
       case "host.computer-view.changed":
         this.#update({
           ...this.#snapshot,
@@ -4796,6 +5061,7 @@ export class HttpHostClient {
         });
         break;
       case "host.computer-view.removed":
+        for (const listener of this.#computerViewRemovedListeners) listener(message);
         this.#update({
           ...this.#snapshot,
           machines: [...this.#ownerViews.remove(this.#snapshot.machines, message)],
@@ -5226,6 +5492,7 @@ function compactThread(
 ): ThreadSummary {
   return {
     id: row.id,
+    revision: row.revision,
     title: row.title,
     askedAt: row.askedAt,
     createdAt: row.askedAt,
@@ -5246,13 +5513,17 @@ function compactThread(
     environmentId: row.environmentId,
     harnessInstanceId: row.harnessInstanceId,
     runQueued: row.runQueued,
+    runStartHoldReason: row.runStartHoldReason ?? null,
+    failureCode: row.failureCode ?? null,
+    agentSessionId: row.agentSessionId ?? null,
+    externalWork: row.externalWork ?? null,
+    ...(row.originConnectionId ? { originConnectionId: row.originConnectionId } : {}),
     ...(row.retry === undefined ? {} : { retry: row.retry }),
     modelSelection: unknownModelSelection,
     harnessLabel: "",
     modelLabel: "",
     runnerLabel: "",
     parentThreadId: null,
-    teamOrigin: null,
     icon: null,
     color: null,
   };
@@ -5288,13 +5559,13 @@ function toThreadSummary(
     pendingRequests: thread.pendingRequests,
     purpose: thread.purpose,
     runnerLabel: environment?.name ?? "Unavailable work location",
+    ...(thread.startedByOther ? { startedByOther: true } : {}),
     status: thread.status,
     title: thread.title,
     icon: thread.icon ?? null,
     color: thread.color ?? null,
     unread: false,
     updatedAt: thread.updatedAt,
-    teamOrigin: thread.teamOrigin,
   };
 }
 

@@ -3,8 +3,9 @@ import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFil
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { mkdir, open as openFile, realpath } from "node:fs/promises";
+import { mkdir, open as openFile, realpath, rm, stat, symlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   attachmentMaxBytes,
@@ -91,6 +92,11 @@ import {
   type HarnessSessionContext,
   type HarnessSteerInput,
   type ResolvedAttachment,
+  EngineUnavailableForTaskError,
+  assertEngineMayRun,
+  checkPiOthersAuthFile,
+  checkPiOthersHome,
+  engineConfiguration,
 } from "@opensteer/harness";
 import { z } from "zod";
 import { PiHarnessConfigSchema, TESTED_PI_VERSION, type PiHarnessConfig } from "./config.js";
@@ -240,9 +246,6 @@ const piDenialNoteMaxBytes = 20_000;
 const piLoginLineMaxBytes = 64 * 1_024;
 const primaryConnectionSlot = "primary";
 
-export const piIsolatedServiceDetail =
-  "Pi has no command sandbox of its own, so it runs only on a computer you own.";
-
 export interface PiHarnessDependencies {
   /** Pi's staged `dist/bundle/cli.js`, as the catalog's `script` runtime names it. */
   readonly executable: string;
@@ -365,9 +368,6 @@ export class PiHarnessDriver implements HarnessDriver {
   async inspect(context: HarnessInspectionContext): Promise<HarnessInspectionResult> {
     const config = PiHarnessConfigSchema.parse(context.config);
     const row = piSourceRow(context.sourceId);
-    if (context.runtimeBoundary.kind !== "native-user") {
-      return { detail: piIsolatedServiceDetail, status: "unavailable" };
-    }
     const environment = await piProcessEnvironment(context.environment, context.providerState);
     const version = await readPiVersion(
       this.#dependencies,
@@ -513,12 +513,31 @@ class PiHarnessAdapter implements HarnessAdapter {
     prompt,
     signal,
   }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
-    if (context.runtimeBoundary.kind !== "native-user")
-      return { ok: false, failure: "unavailable" };
+    if (context.providerState.kind !== "isolated") {
+      const piCheck = checkPiOthersHome({
+        environment: context.environment,
+        providerState: context.providerState,
+      });
+      if (!piCheck.ok) return { ok: false, failure: "unavailable" };
+    }
     return backgroundTextResult(signal, async () => {
-      const environment = await piProcessEnvironment(context.environment, context.providerState);
-      return withBackgroundTextDirectory(context, signal, (directory) =>
-        runTitleProcess(
+      const processEnvironment = await piProcessEnvironment(
+        context.environment,
+        context.providerState,
+      );
+      return withBackgroundTextDirectory(context, signal, async (directory) => {
+        // Background text never reads the person's ambient Pi agent folder.
+        const environment =
+          context.providerState.kind !== "isolated"
+            ? {
+                ...processEnvironment,
+                PI_CODING_AGENT_DIR: await piAgentDirectoryForOthersTasks(
+                  processEnvironment,
+                  join(directory, "pi-agent"),
+                ),
+              }
+            : processEnvironment;
+        return runTitleProcess(
           context,
           {
             executable: this.#dependencies.nodeExecutable,
@@ -550,13 +569,14 @@ class PiHarnessAdapter implements HarnessAdapter {
           },
           signal,
           prompt,
-        ),
-      );
+        );
+      });
     });
   }
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
+    assertEngineMayRun("pi", context);
     assertFreshProviderSessionContext(context);
     // Pi names the session file, so the reference only exists once the process
     // has answered `get_state`.
@@ -568,6 +588,7 @@ class PiHarnessAdapter implements HarnessAdapter {
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
     this.#sessions.assertOpen();
+    assertEngineMayRun("pi", context);
     const reference = validateProviderReference(providerSessionReference);
     return this.#sessions.open(reference, () => this.#open(context, { reference, type: "resume" }));
   }
@@ -695,12 +716,6 @@ class PiHarnessSession implements HarnessSession {
     onClose: (session: PiHarnessSession) => void,
     log?: HarnessLog,
   ): Promise<PiHarnessSession> {
-    if (context.runtimeBoundary.kind !== "native-user") {
-      // Pi has no sandbox, and the Runner's own sandbox binds the profile home
-      // and the Thread state directory into the harness process tree, so on a
-      // shared Runner a model-run command would read this profile's credentials.
-      throw new OpensteerError({ code: "harness_error", message: piIsolatedServiceDetail });
-    }
     if (context.signal.aborted) {
       throw new OpensteerError({
         code: "harness_error",
@@ -751,6 +766,7 @@ class PiHarnessSession implements HarnessSession {
       requestedBy: run.requestedBy,
       retry: new ProviderRetryTracker({
         publish: (event) => this.#publish(event),
+        secrets: engineDiagnosticSecrets(this.#context.environment),
         onBudgetExceeded: (record) => {
           if (active.terminal || active.interruptRequested) return;
           active.interruptRequested = true;
@@ -788,6 +804,7 @@ class PiHarnessSession implements HarnessSession {
     this.#settled = new Deferred<void>();
     const abort = () => {
       active.interruptRequested = true;
+      active.retry.dispose();
       void this.#interruptActive(active);
     };
     if (!run.signal.aborted) run.signal.addEventListener("abort", abort, { once: true });
@@ -795,6 +812,21 @@ class PiHarnessSession implements HarnessSession {
       if (run.signal.aborted) {
         this.#publishTerminal(active, "interrupted");
         return;
+      }
+      if (
+        engineConfiguration(this.#context) === "stripped" &&
+        this.#context.providerState.kind !== "isolated"
+      ) {
+        const authCheck = checkPiOthersAuthFile({
+          environment: this.#context.environment,
+          providerState: this.#context.providerState,
+        });
+        if (!authCheck.ok) {
+          const refusal = new EngineUnavailableForTaskError(authCheck.message);
+          this.#publisher.latchUnusable(refusal);
+          this.#publishFailure(active, refusal);
+          return;
+        }
       }
       const response = await this.#requireClient().command("prompt", { message, images });
       if (response.success !== true) {
@@ -825,6 +857,7 @@ class PiHarnessSession implements HarnessSession {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
     active.interruptRequested = true;
+    active.retry.dispose();
     await this.#interruptActive(active);
   }
 
@@ -832,6 +865,23 @@ class PiHarnessSession implements HarnessSession {
     this.#assertUsable();
     const active = this.#activeTurn;
     if (!active || active.terminal || active.interruptRequested) throw steerConflict();
+    if (
+      engineConfiguration(this.#context) === "stripped" &&
+      this.#context.providerState.kind !== "isolated"
+    ) {
+      const authCheck = checkPiOthersAuthFile({
+        environment: this.#context.environment,
+        providerState: this.#context.providerState,
+      });
+      if (!authCheck.ok) {
+        const refusal = new EngineUnavailableForTaskError(authCheck.message);
+        active.interruptRequested = true;
+        this.#publisher.latchUnusable(refusal);
+        this.#publishFailure(active, refusal);
+        void this.#interruptActive(active);
+        throw refusal;
+      }
+    }
     const client = this.#requireClient();
     const message = inputsToPiPrompt([input.input], null, input.attachments);
     // Preparing images sends nothing, so a failure here is a definite refusal.
@@ -910,7 +960,22 @@ class PiHarnessSession implements HarnessSession {
 
   async #initialize(mode: SessionMode): Promise<void> {
     const context = this.#context;
-    const environment = await piProcessEnvironment(context.environment, context.providerState);
+    const processEnvironment = await piProcessEnvironment(
+      context.environment,
+      context.providerState,
+    );
+    // An isolated profile's home is Opensteer's already; the person's own is
+    // not handed to a task a connected agent or a chat started.
+    const environment =
+      engineConfiguration(context) === "stripped" && context.providerState.kind !== "isolated"
+        ? {
+            ...processEnvironment,
+            PI_CODING_AGENT_DIR: await piAgentDirectoryForOthersTasks(
+              processEnvironment,
+              join(resolve(context.threadStateDirectory), "pi-agent"),
+            ),
+          }
+        : processEnvironment;
     if (context.providerState.kind === "isolated" && this.#row.sourceId === piCompatibleSourceId) {
       const apiKey = optionalString(
         (await readPiCredential(context.providerState, this.#row.authKey))?.key,
@@ -1580,6 +1645,7 @@ class PiHarnessSession implements HarnessSession {
     const active = this.#activeTurn;
     if (active && !active.terminal) {
       active.interruptRequested = true;
+      active.retry.dispose();
       await this.#interruptActive(active).catch(() => undefined);
     }
     await this.#cancelPendingRequests("run-ended").catch(() => undefined);
@@ -1662,10 +1728,14 @@ class PiHarnessSession implements HarnessSession {
     void this.#cancelPendingRequests("run-ended");
     try {
       this.#publishUsage(active);
+      const secrets = engineDiagnosticSecrets(this.#context.environment);
       this.#publish(
         runFailedEvent({
           code: piFailureCode(error),
-          message: error.message,
+          message: redactNetworkCredentials(error.message, secrets),
+          ...(error instanceof EngineUnavailableForTaskError
+            ? { ownerMessage: redactNetworkCredentials(error.ownerMessage, secrets) }
+            : {}),
           retryable: error.retryable,
         }),
       );
@@ -1965,7 +2035,10 @@ function accumulateUsage(usage: MutableUsage, value: unknown): void {
  * selection, which `set_model` then verifies exactly.
  */
 export function piProcessArguments(options: {
-  readonly context: Pick<HarnessSessionContext, "modelSelection">;
+  readonly context: Pick<
+    HarnessSessionContext,
+    "modelSelection" | "personalContext" | "personLineage"
+  >;
   readonly extensionPath: string;
   readonly instructionsPath: string;
   readonly sessionPath?: string;
@@ -1981,6 +2054,10 @@ export function piProcessArguments(options: {
     options.extensionPath,
     "--append-system-prompt",
     options.instructionsPath,
+    // Pi replaces its own system prompt with the person's `SYSTEM.md` unless
+    // one is given (Pi 0.87.1); an empty one keeps Pi's own. A task a
+    // connected agent or a chat started must not read the person's.
+    ...(engineConfiguration(options.context) === "stripped" ? ["--system-prompt", ""] : []),
     "--model",
     piModelSelectionId(options.context.modelSelection),
     ...(thinking ? ["--thinking", thinking] : []),
@@ -2128,6 +2205,48 @@ function piLaunch(dependencies: PiHarnessDependencies): PiLaunch {
  * reporting and provider attribution headers, and `PI_SKIP_VERSION_CHECK` stops
  * the latest-version request (pi-facts §1).
  */
+/**
+ * Pi's agent folder for a task that is not the person's own, on their own Pi
+ * home: a folder of Opensteer's holding only links to their existing
+ * `auth.json` and `models.json`, which are how Pi signs in. Their
+ * `settings.json` (a shell, a command prefix, packages), `SYSTEM.md`,
+ * `APPEND_SYSTEM.md`, `AGENTS.md`, prompts, sessions and the projects they
+ * trusted stay out. Pi 0.87.1 writes `auth.json` in place through the link
+ * (`writeFileSync`), so a refreshed sign-in updates the person's own file
+ * rather than copying or replacing it. Caveat: Pi's `FileAuthStorageBackend`
+ * locks with `proper-lockfile` `{ realpath: false }`, so a concurrent refresh
+ * from the person's own Pi and an others'-tasks Pi take separate lockfiles.
+ * Absent files are skipped so a missing `~/.pi/agent` does not leave dangling
+ * links that fail Pi's `ensureFileExists()`.
+ */
+export async function piAgentDirectoryForOthersTasks(
+  environment: Readonly<Record<string, string>>,
+  directory: string,
+): Promise<string> {
+  const check = checkPiOthersHome({ environment, providerState: { kind: "ambient" } });
+  if (!check.ok) {
+    throw new EngineUnavailableForTaskError(check.message);
+  }
+  if (check.mode !== "ambient") return directory;
+  const theirs = check.sourceDirectory;
+  await rm(directory, { force: true, recursive: true });
+  await mkdir(directory, { mode: 0o700, recursive: true });
+  // Keep `auth.json` symlinked so OAuth token refreshes write back through to
+  // the person's file; re-check it before every turn.
+  const authSource = join(theirs, "auth.json");
+  const authExists = await stat(authSource).then(
+    (info) => info.isFile(),
+    () => false,
+  );
+  if (authExists) await symlink(authSource, join(directory, "auth.json"));
+  // Write a checked private copy of `models.json` rather than symlinking it, so
+  // a `!` command added later cannot execute on a running others' task.
+  if (check.modelsJsonText !== undefined) {
+    await replacePrivateFileAtomically(join(directory, "models.json"), check.modelsJsonText);
+  }
+  return directory;
+}
+
 async function piProcessEnvironment(
   environment: Readonly<Record<string, string>>,
   providerState: HarnessProviderState,

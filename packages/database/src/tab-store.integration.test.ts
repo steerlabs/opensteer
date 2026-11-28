@@ -1,5 +1,4 @@
-import { DeviceIdSchema } from "@opensteer/core";
-import { TabIdSchema, WindowIdSchema } from "@opensteer/core";
+import { DeviceIdSchema, TabIdSchema, WindowIdSchema, createId } from "@opensteer/core";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
@@ -143,6 +142,138 @@ integration("workspace tabs", () => {
     await tabs.reopen(ownerId, a.id, "reopen");
     expect(tabLayoutIds((await tabs.snapshot(ownerId)).layout)).toEqual([c.id, a.id]);
   });
+  /** A group of `count` app tabs, opened in order, with one more tab outside it. */
+  async function groupOf(count: number) {
+    const f = await fixture();
+    const members = Array.from({ length: count }, () =>
+      f.write("app", { appId: `app_${randomUUID()}` }),
+    );
+    const outside = f.write("app", { appId: `app_${randomUUID()}` });
+    for (const [index, tab] of [...members, outside].entries())
+      await f.tabs.open(tab, `open-${index}`);
+    const grouped = await f.tabs.organize(
+      f.ownerId,
+      { tabIds: members.map((tab) => tab.id), group: { name: "Research", color: "blue" } },
+      "group",
+    );
+    const item = grouped.layout.items.find((item) => item.kind === "group");
+    if (item?.kind !== "group") throw new Error("The group was not made");
+    return { ...f, members, outside, groupId: item.group.groupId };
+  }
+  const groupIn = (layout: Awaited<ReturnType<TabStore["snapshot"]>>["layout"], groupId: string) =>
+    layout.items.find((item) => item.kind === "group" && item.group.groupId === groupId);
+
+  it("closes a group's members as they are when it closes, a tab back by Undo Close included, and the group with them", async () => {
+    const { tabs, ownerId, members, outside, groupId } = await groupOf(2);
+    // The person closes one member and brings it back: it returns to its group.
+    await tabs.close(ownerId, [members[0]!.id], "close-one");
+    await tabs.reopen(ownerId, members[0]!.id, "undo");
+    expect(groupIn((await tabs.snapshot(ownerId)).layout, groupId)).toMatchObject({
+      group: { tabIds: expect.arrayContaining([members[0]!.id, members[1]!.id]) },
+    });
+    const closed = await tabs.closeGroup(ownerId, groupId, "close-group");
+    expect([...closed.tabIds].sort()).toEqual(members.map((tab) => tab.id).sort());
+    expect(groupIn(closed.layout, groupId)).toBeUndefined();
+    expect(tabLayoutIds(closed.layout)).toEqual([outside.id]);
+    // A replay of the same key changes nothing and answers the same.
+    expect((await tabs.closeGroup(ownerId, groupId, "close-group")).tabIds.sort()).toEqual(
+      closed.tabIds.sort(),
+    );
+  });
+
+  it("closes a member the closing side never named: the group names its members, not the caller", async () => {
+    const { tabs, ownerId, members, groupId, write } = await groupOf(2);
+    // Another device moves a third tab into the group; the closing device never saw it.
+    const late = write("app", { appId: `app_${randomUUID()}` });
+    await tabs.open(late, "late");
+    await tabs.organize(ownerId, { tabIds: [late.id], group: { groupId } }, "join");
+    const closed = await tabs.closeGroup(ownerId, groupId, "close-group");
+    expect([...closed.tabIds].sort()).toEqual([...members.map((tab) => tab.id), late.id].sort());
+    expect(groupIn(closed.layout, groupId)).toBeUndefined();
+    for (const id of closed.tabIds) expect(await tabs.get(ownerId, id)).toBeNull();
+  });
+
+  it("closes the group only while it holds exactly the members the person was shown: a tab that joined since refuses it (D4)", async () => {
+    const { tabs, ownerId, members, groupId, write } = await groupOf(2);
+    const shown = members.map((tab) => tab.id);
+    // A third tab joins after the person read the card: the group changed, and nothing closes.
+    const late = write("app", { appId: `app_${randomUUID()}` });
+    await tabs.open(late, "late");
+    await tabs.organize(ownerId, { tabIds: [late.id], group: { groupId } }, "join");
+    await expect(
+      tabs.closeGroup(ownerId, groupId, "close-shown", undefined, undefined, shown),
+    ).rejects.toMatchObject({ code: "conflict" });
+    for (const id of [...shown, late.id])
+      expect(await tabs.get(ownerId, id)).toMatchObject({ closedAt: null });
+    // As shown, it closes whole.
+    const closed = await tabs.closeGroup(ownerId, groupId, "close-all", undefined, undefined, [
+      ...shown,
+      late.id,
+    ]);
+    expect([...closed.tabIds].sort()).toEqual([...shown, late.id].sort());
+    expect(groupIn(closed.layout, groupId)).toBeUndefined();
+  });
+
+  it("refuses a close of shown members when the group no longer holds them all", async () => {
+    const { tabs, ownerId, members, groupId } = await groupOf(2);
+    await tabs.organize(ownerId, { tabIds: [members[0]!.id], group: null } as never, "leave");
+    await expect(
+      tabs.closeGroup(
+        ownerId,
+        groupId,
+        "close-stale",
+        undefined,
+        undefined,
+        members.map((tab) => tab.id),
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await tabs.get(ownerId, members[1]!.id)).not.toBeNull();
+  });
+
+  it("removes a group that is already empty", async () => {
+    const { tabs, ownerId, members, outside, groupId } = await groupOf(2);
+    // Closing every member one by one keeps the empty group, for Undo.
+    await tabs.close(
+      ownerId,
+      members.map((tab) => tab.id),
+      "close-each",
+    );
+    expect(groupIn((await tabs.snapshot(ownerId)).layout, groupId)).toMatchObject({
+      group: { tabIds: [] },
+    });
+    const closed = await tabs.closeGroup(ownerId, groupId, "close-empty");
+    expect(closed.tabIds).toEqual([]);
+    expect(groupIn(closed.layout, groupId)).toBeUndefined();
+    expect(tabLayoutIds(closed.layout)).toEqual([outside.id]);
+  });
+
+  it("keeps the group with a member that may not close, and closes the rest", async () => {
+    const { tabs, ownerId, members, groupId } = await groupOf(3);
+    const kept = members[1]!.id;
+    const closed = await tabs.closeGroup(
+      ownerId,
+      groupId,
+      "close-refused",
+      undefined,
+      (row) => row.id !== kept,
+    );
+    expect([...closed.tabIds].sort()).toEqual([members[0]!.id, members[2]!.id].sort());
+    expect(groupIn(closed.layout, groupId)).toMatchObject({ group: { tabIds: [kept] } });
+    expect(await tabs.get(ownerId, kept)).toMatchObject({ id: kept });
+  });
+
+  it("brings a tab of a closed group back with Undo Close as an open tab of its own, without the group", async () => {
+    const { tabs, ownerId, members, outside, groupId } = await groupOf(2);
+    await tabs.closeGroup(ownerId, groupId, "close-group");
+    const reopened = await tabs.reopen(ownerId, members[1]!.id, "undo");
+    expect(groupIn(reopened.layout, groupId)).toBeUndefined();
+    expect(reopened.layout.items).toEqual([
+      { kind: "tab", tabId: outside.id },
+      { kind: "tab", tabId: members[1]!.id },
+    ]);
+    expect(await tabs.get(ownerId, members[1]!.id)).toMatchObject({ closedAt: null });
+  });
+
   it("inserts roots at a group's first-member boundary and appends whole group blocks without an anchor", async () => {
     const { tabs, write, ownerId } = await fixture();
     const [a, b, c, d] = Array.from({ length: 4 }, () =>
@@ -307,7 +438,11 @@ integration("workspace tabs", () => {
       }),
     ).toBe(true);
     const next = { ...binding, sessionId: later };
-    expect(await tabs.bindPage(ownerId, tabId, 1, binding, next)).toBe(true);
+    expect(await tabs.bindPage(ownerId, tabId, 1, binding, next)).toMatchObject({
+      id: tabId,
+      generation: 1,
+      pageBinding: next,
+    });
     expect(
       await tabs.updatePage(ownerId, tabId, 1, binding, {
         title: "Retired",
@@ -321,7 +456,7 @@ integration("workspace tabs", () => {
         url: "https://example.com/late",
       }),
     ).toBe(false);
-    expect(await tabs.bindPage(ownerId, tabId, 1, next, next)).toBe(false);
+    expect(await tabs.bindPage(ownerId, tabId, 1, next, next)).toBeNull();
     const automation = createBrowserSessionId();
     await store.createBrowserSession({
       id: automation,
@@ -345,6 +480,72 @@ integration("workspace tabs", () => {
       ),
     ).rejects.toMatchObject({ code: "conflict" });
     expect((await tabs.snapshot(ownerId)).rows).toEqual([]);
+  });
+  it("keeps a tab's title while a new document at its address loads untitled, and lets the loaded document decide", async () => {
+    const { tabs, legacy, database, ownerId, computerId } = await fixture();
+    const store = new OpensteerStore(legacy),
+      sessionId = createBrowserSessionId();
+    await store.createBrowserSession({
+      id: sessionId,
+      runnerId: computerId,
+      ownerId,
+      origin: "agent",
+      opener: { kind: "person", userId: ownerId },
+      placementKey: "test",
+      profileId: null,
+      runtimeId: "test",
+    });
+    await database
+      .updateTable("browserSessions")
+      .set({ createdAt: new Date("2100-01-01T00:00:00.000Z") })
+      .where("id", "=", sessionId)
+      .execute();
+    const tabId = id(),
+      binding = { lineageId: sessionId, sessionId, surfaceId: tabId },
+      address = "https://example.com/f1b";
+    await tabs.open(
+      {
+        id: tabId,
+        ownerId,
+        computerId: DeviceIdSchema.parse(computerId),
+        kind: "page",
+        title: "Restore /f1b",
+        url: address,
+        pageBinding: binding,
+        openedBy: "person",
+      },
+      "open",
+    );
+    const title = async () => (await tabs.get(ownerId, tabId))?.title;
+    // The restored page commits at the same address before its document names itself.
+    await tabs.updatePage(ownerId, tabId, 1, binding, { title: "", url: address, loading: true });
+    expect(await title(), "a loading document's empty title replaced the tab's").toBe(
+      "Restore /f1b",
+    );
+    // Its own title, once it has one, stands at once.
+    await tabs.updatePage(ownerId, tabId, 1, binding, {
+      title: "Recovered",
+      url: address,
+      loading: true,
+    });
+    expect(await title()).toBe("Recovered");
+    // A page that has loaded with no title has none: the last one does not stay for good.
+    await tabs.updatePage(ownerId, tabId, 1, binding, { title: "", url: address, loading: true });
+    expect(await title()).toBe("Recovered");
+    await tabs.updatePage(ownerId, tabId, 1, binding, { title: "", url: address, loading: false });
+    expect(await title()).toBe("");
+    // Another address never shows the last page's title beside it.
+    await tabs.updatePage(ownerId, tabId, 1, binding, {
+      title: "Page A",
+      url: address,
+      loading: false,
+    });
+    await tabs.updatePage(ownerId, tabId, 1, binding, {
+      title: "",
+      url: "https://example.com/b",
+      loading: true,
+    });
+    expect(await title()).toBe("");
   });
   it("removes open and closed app records inside the app deletion transaction without disturbing other kinds", async () => {
     const { tabs, database, ownerId, write } = await fixture();
@@ -399,5 +600,81 @@ integration("workspace tabs", () => {
     const snapshot = await tabs.snapshot(ownerId);
     expect(snapshot.rows).toHaveLength(1000);
     expect(snapshot.layout).toEqual({ revision: 1, items });
+  });
+
+  it("refuses opening a page tab when its session's profile was archived while the session is still ready, while keeping Guest sessions", async () => {
+    const { tabs, database, ownerId, computerId } = await fixture();
+    const profileId = createId("browserProfile");
+    await database
+      .insertInto("browserProfiles")
+      .values({
+        id: profileId,
+        ownerId,
+        homeRunnerId: computerId as never,
+        name: "Work",
+        archivedAt: null,
+      })
+      .execute();
+    const profileSessionId = createBrowserSessionId();
+    const guestSessionId = createBrowserSessionId();
+    await sql`insert into browser_sessions(id,tab_group_id,origin,profile_id,placement_key,runner_id,runtime_id,state)
+      values
+        (${profileSessionId},${profileSessionId},'person',${profileId},'personal',${computerId},'browser','ready'),
+        (${guestSessionId},${guestSessionId},'person',null,'guest',${computerId},'browser','ready')`.execute(
+      database,
+    );
+    // Archive commits while the session is still ready (before stop completes).
+    await database
+      .updateTable("browserProfiles")
+      .set({ archivedAt: new Date() })
+      .where("id", "=", profileId)
+      .execute();
+
+    const archivedTabId = TabIdSchema.parse(`${profileSessionId}-late`);
+    await expect(
+      tabs.open(
+        {
+          id: archivedTabId,
+          ownerId,
+          computerId: DeviceIdSchema.parse(computerId),
+          kind: "page",
+          title: "Late page",
+          url: "https://example.com/",
+          profileId,
+          profileName: "Work",
+          openedBy: "person",
+          pageBinding: {
+            lineageId: profileSessionId,
+            sessionId: profileSessionId,
+            surfaceId: archivedTabId,
+          },
+        },
+        "late-open-after-archive",
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await tabs.get(ownerId, archivedTabId, true)).toBeNull();
+
+    // Guest sessions (`profileId === null`) continue to open page tabs.
+    const guestTabId = TabIdSchema.parse(`${guestSessionId}-guest`);
+    await tabs.open(
+      {
+        id: guestTabId,
+        ownerId,
+        computerId: DeviceIdSchema.parse(computerId),
+        kind: "page",
+        title: "Guest page",
+        url: "https://example.com/",
+        profileId: null,
+        profileName: null,
+        openedBy: "person",
+        pageBinding: {
+          lineageId: guestSessionId,
+          sessionId: guestSessionId,
+          surfaceId: guestTabId,
+        },
+      },
+      "guest-open",
+    );
+    expect(await tabs.get(ownerId, guestTabId)).not.toBeNull();
   });
 });

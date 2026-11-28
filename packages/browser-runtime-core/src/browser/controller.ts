@@ -1,3 +1,5 @@
+import { answerTooLargeMessage, boundedJsonSize } from "@opensteer/browser-core/bounded-json";
+import { isExtensionUrl } from "@opensteer/shared/extensionUrl";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
   BrowserListTabsParametersSchema,
@@ -15,6 +17,7 @@ import {
   SessionCdpRouter,
   SessionCdpRouterError,
   type CdpCommand,
+  type StandardCdpAttachment,
   type CdpChannel,
 } from "@opensteer/browser-core";
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
@@ -102,6 +105,7 @@ import type {
 
 export interface BrowserControllerSink extends BrowserFrameSink {
   sendServer(message: BrowserRuntimeServerMessage): Promise<void>;
+  closeForPool?(): void;
 }
 
 interface BrowserControllerOptions {
@@ -176,6 +180,34 @@ interface ScriptRun {
 }
 
 /** Agent commands whose point is where a person's pointer would be. */
+/** TS11: how long an agent's wake waits for the woken page to load. */
+const resumeLoadedMs = 15_000;
+/** Z2: the one answer of a command a cancel ended. */
+const commandCancelled = () =>
+  new BrowserRuntimeError("conflict", "The browser command was cancelled.", {
+    reason: "browser-command-cancelled",
+  });
+/** Z2: `work`, unless `signal` ends first: the work goes on for others; this caller stops. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void work.catch(() => undefined);
+    return Promise.reject(commandCancelled());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(commandCancelled());
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
 const pointerInputMethods = new Set([
   "Input.dispatchMouseEvent",
   "Input.dispatchTouchEvent",
@@ -220,6 +252,8 @@ interface PointerGesture {
   /** Resize and departure may converge while CDP is acknowledging cleanup. */
   cleanup: Promise<void> | null;
   readonly buttons: Set<PointerButton>;
+  /** Buttons whose mouseReleased has already been dispatched to Chromium. */
+  readonly releasing: Set<PointerButton>;
   /** Released by anything other than the person's own pointer-up. */
   ended: boolean;
   readonly surfaceId: BrowserSurfaceId;
@@ -339,6 +373,8 @@ export class BrowserController {
   /** Pages the person is closing, until the ledger has let them go. */
   private readonly closingSurfaces = new Set<BrowserSurfaceId>();
   private readonly cdpRouter: SessionCdpRouter;
+  /** The browser refuses this Home's addresses from the ticket (G1). */
+  private readonly homeAddressesApplied: Promise<void>;
   private readonly agentCommands: CommandQueue = {
     pending: 0,
     overflowReported: false,
@@ -405,6 +441,25 @@ export class BrowserController {
   >();
   private readonly keyOwners = new Map<BrowserSurfaceId, string>();
   private readonly lanes = new Map<BrowserSurfaceId, BrowserInputLane>();
+  private readonly scriptCommands = new Map<
+    string,
+    {
+      message: Extract<BrowserClientMessage, { type: "cdp.command" }>;
+      started: boolean;
+      closing?: boolean;
+      stopNavigation?: () => Promise<unknown>;
+      /** V3: ends a wait the command started (a woken page's load) when the operation ends. */
+      cancel?: () => void;
+      /** Z2: a cancel that arrived after the command started; every later step checks it. */
+      cancelled?: boolean;
+    }
+  >();
+  private readonly cancelledScriptCommands = new WeakSet<BrowserClientMessage>();
+  /**
+   * A7: commands sent toward the page (or whose own effect began: a tab opening, a wake, a
+   * close). An error after this may come after the effect, and is not "unsent".
+   */
+  private readonly forwarded = new WeakSet<BrowserClientMessage>();
   private readonly canceledGenerations = new Map<string, number>();
   private readonly hoverOwners = new Map<BrowserSurfaceId, { owner: string; cdp: CdpChannel }>();
   private readonly cleanupReservations = new Set<string>();
@@ -450,6 +505,12 @@ export class BrowserController {
     });
     this.cdpRouter = options.cdpRouter;
     this.claims = options.claims;
+    // This Home's addresses, from its ticket, before any page of this attachment loads (G1):
+    // `start` waits for the browser to refuse them, and the first navigation waits for `start`.
+    this.homeAddressesApplied = options.claims.homeAddresses
+      ? this.cdpRouter.setHomeAddresses(options.claims.homeAddresses)
+      : Promise.resolve();
+    this.homeAddressesApplied.catch(() => undefined);
     this.editing =
       options.claims.editingVersion === 2 ||
       (options.claims.editingVersion === 1 && options.clipboard !== undefined);
@@ -554,7 +615,26 @@ export class BrowserController {
     return result;
   }
 
+  /**
+   * N1: to a connection a page on an extension's address is not an attached page session (a fill
+   * into it answers as one that is missing), whatever the router has yet learned of it.
+   */
+  #onExtensionPageForConnection(
+    message: { readonly connection?: true | undefined },
+    targetId: string,
+  ): boolean {
+    if (message.connection !== true) return false;
+    const surfaceId = this.ledger.surfaceIdForTarget(targetId);
+    // Its live address as well as the ledger's record, as resumeTab checks (P7).
+    return (
+      surfaceId !== undefined &&
+      (isExtensionUrl(this.ledger.toRecord(surfaceId)?.url) ||
+        isExtensionUrl(this.ledger.binding(surfaceId)?.page.url()))
+    );
+  }
+
   async start(): Promise<void> {
+    await this.homeAddressesApplied;
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser controller is closed.");
     this.rootSurfaceId = this.claims.initialSurfaceId ?? this.ledger.snapshot()[0]?.id;
     this.unsubscribeCdp = this.cdpRouter.onEvent(this.claims.sessionId, (event) => {
@@ -578,6 +658,75 @@ export class BrowserController {
     await this.publishSnapshot();
   }
 
+  openStandardCdp(
+    wholeContext: boolean,
+    onOverflow: () => void,
+    scope?: BrowserAttachTicketClaims["standardCdpLineage"],
+  ): StandardCdpAttachment {
+    const seed = scope ? this.ledger.binding(scope.seedSurfaceId) : undefined;
+    if (scope && !seed) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+    const client = this.cdpRouter.openStandardClient(this.claims.sessionId, {
+      wholeContext,
+      // The Home issues a lineage only for a connected agent's own direct work.
+      ...(scope ? { connection: true } : {}),
+      ...(scope && seed
+        ? { lineage: { attachmentId: scope.attachmentId, seedTargetId: seed.targetId } }
+        : {}),
+      adoptTarget: (id) => this.ledger.adoptTarget(id, scope?.attachmentId),
+      recoverUnadoptedTarget: (id) => this.ledger.retireUnadoptedTarget(id),
+      captureScreenshot: (id, parameters, signal) => {
+        const surfaceId = this.ledger.surfaceIdForTarget(id);
+        if (!surfaceId) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+        if (this.ledger.dialogOpen(surfaceId))
+          throw new BrowserRuntimeError(
+            "conflict",
+            "Answer the page's JavaScript dialog before taking a screenshot.",
+          );
+        const deadline = AbortSignal.any([signal, AbortSignal.timeout(screenshotTimeoutMs)]);
+        // Chromium restores emulation through the debugger session that owns it.
+        return this.ledger.withGeometry(surfaceId, (cdp) => {
+          deadline.throwIfAborted();
+          return withTimeout(
+            cdp.send("Page.captureScreenshot", { ...parameters }),
+            screenshotTimeoutMs,
+            {
+              signal: deadline,
+              timeoutError: () =>
+                new BrowserRuntimeError(
+                  "conflict",
+                  "The page did not answer a screenshot in time.",
+                ),
+            },
+          );
+        });
+      },
+      answerDialog: async (targetId, parameters) => {
+        const surfaceId = this.ledger.surfaceIdForTarget(targetId);
+        const dialog = surfaceId ? this.ledger.dialogOf(surfaceId) : undefined;
+        if (!dialog) throw new BrowserRuntimeError("conflict", "No dialog is showing.");
+        await this.ledger.answerDialog(
+          dialog.id,
+          parameters.accept === true,
+          typeof parameters.promptText === "string" ? parameters.promptText : undefined,
+        );
+        return {};
+      },
+      onOverflow,
+    });
+    return {
+      ...client,
+      send: async (command) => {
+        const targetId = command.sessionId ? client.attachedTargetId(command.sessionId) : null;
+        if (targetId) this.ledger.recordAgentCommand(targetId);
+        const send = () => client.send(command, (id) => this.#passkeys?.record(id, "agent"));
+        // As every command the Home relays: the tab is held for the command's whole duration,
+        // so it is never put to sleep under it (TS12). A sleep already under way is called off.
+        const surfaceId = targetId ? this.ledger.surfaceIdForTarget(targetId) : undefined;
+        return surfaceId ? this.ledger.use(surfaceId, send) : send();
+      },
+    };
+  }
+
   async reattach(sink: BrowserControllerSink): Promise<void> {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser controller is closed.");
     this.sink = sink;
@@ -596,6 +745,9 @@ export class BrowserController {
       state: "ready",
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
+      cdpReplyBudget: 1,
+      scriptAttachments: 1,
+      scriptCancellation: 1,
       ...(this.claims.surfaceState === 1 ? { surfaceState: 1 } : {}),
       ...(this.saveAuthority
         ? { personFillVersion: 2 }
@@ -730,9 +882,30 @@ export class BrowserController {
     this.releaseDisconnect();
   }
 
-  private closeReason: "retired" | undefined;
-  close(reason?: "retired"): Promise<void> {
-    if (!this.closePromise) this.closeReason = reason;
+  async drainForPool(): Promise<void> {
+    await Promise.all([this.agentCommands.tail, this.viewerCommands.tail]);
+    await Promise.all([...this.lanes.values()].map((lane) => lane.idle()));
+    await this.messageTail;
+  }
+
+  async detachForPool(): Promise<void> {
+    this.browserDisconnected();
+    await this.close("pooled");
+    this.sink.closeForPool?.();
+  }
+
+  private closeReason: "retired" | "pooled" | undefined;
+  private beforeClosed: (() => Promise<void>) | undefined;
+  /**
+   * `beforeClosed`: run after the session stops and before it says `closed` (a pooled runtime
+   * closes its pages there, so `closed` is said only once they are gone); when it fails,
+   * `closed` is not said.
+   */
+  close(reason?: "retired" | "pooled", beforeClosed?: () => Promise<void>): Promise<void> {
+    if (!this.closePromise) {
+      this.closeReason = reason;
+      this.beforeClosed = beforeClosed;
+    }
     for (const surfaceId of this.personOffers.keys()) this.withdrawPersonOffer(surfaceId);
     for (const [surfaceId, offer] of this.saveOffers) this.endPersonSave(surfaceId, offer, "ended");
     for (const entry of this.cursorHints.values()) {
@@ -785,7 +958,8 @@ export class BrowserController {
       this.disconnectPromise,
       delay(closeGraceMs),
     ]);
-    await this.send({ state: "closing", type: "browser.status" }).catch(() => undefined);
+    if (this.closeReason !== "pooled")
+      await this.send({ state: "closing", type: "browser.status" }).catch(() => undefined);
     if (!this.disconnected) {
       await Promise.race([
         this.screencast.close().catch(() => undefined),
@@ -794,6 +968,8 @@ export class BrowserController {
       ]);
     }
     this.terminated = true;
+    if (this.closeReason === "pooled") return;
+    await this.beforeClosed?.();
     await this.send({
       state: "closed",
       type: "browser.status",
@@ -802,6 +978,81 @@ export class BrowserController {
   }
 
   private enqueue(message: BrowserClientMessage): Promise<void> {
+    // A route change: the browser holds the new set from now on, ahead of any queued command (G1).
+    if (message.type === "home.addresses")
+      return this.cdpRouter.setHomeAddresses(message.homeAddresses);
+    if (!isCdpRequest(message)) return this.enqueueCommand(message);
+    if (message.command.method === browserHostMethods.cancelScriptCommand)
+      return this.cancelScriptCommand(message);
+    // An open, and a wake that waits for its page (V3), are cancellable without an attachment.
+    if (
+      !message.replyBudget ||
+      (!message.scriptAttachmentId &&
+        message.command.method !== browserHostMethods.openTab &&
+        message.command.method !== browserHostMethods.resumeTab)
+    )
+      return this.enqueueCommand(message);
+    if (
+      this.scriptCommands.has(message.requestId) ||
+      this.scriptCommands.size >= this.maxPendingCommands
+    )
+      return this.send({
+        type: "cdp.error",
+        requestId: message.requestId,
+        error: new BrowserRuntimeError(
+          "conflict",
+          "The browser command queue is full or the request ID is already active.",
+          { unsent: true },
+        ).toProtocolError(),
+      });
+    this.scriptCommands.set(message.requestId, { message, started: false });
+    return this.enqueueCommand(message).finally(() =>
+      this.scriptCommands.delete(message.requestId),
+    );
+  }
+
+  private async cancelScriptCommand(
+    message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
+  ): Promise<void> {
+    const requestId = message.command.parameters?.requestId;
+    const command = typeof requestId === "string" ? this.scriptCommands.get(requestId) : undefined;
+    if (
+      !command ||
+      command.message.scriptAttachmentId !== message.scriptAttachmentId ||
+      this.cancelledScriptCommands.has(command.message)
+    )
+      return;
+    if (command.started) {
+      // Z2: recorded the moment it arrives, whatever the command is doing: a step that has not
+      // wired its own cancel yet sees it before it starts, and nothing new starts after it.
+      command.cancelled = true;
+      command.cancel?.();
+      const stopNavigation = command.stopNavigation;
+      delete command.stopNavigation;
+      // The page lane still holds this navigation. Its original result settles independently.
+      void stopNavigation?.().catch(() => undefined);
+      return;
+    }
+    // A physical release is cleanup for an earlier command and has its own reservation.
+    if (isInputRelease(command.message)) return;
+    this.cancelledScriptCommands.add(command.message);
+    for (const lane of this.lanes.values()) lane.cancel((entry) => entry === command.message);
+    // Input-lane refusals and general queue cancellation use the same terminal acknowledgement.
+    await this.send({
+      type: "cdp.error",
+      requestId: command.message.requestId,
+      error: new BrowserRuntimeError(
+        "conflict",
+        "The browser command was cancelled before dispatch.",
+        {
+          reason: "browser-command-cancelled",
+          unsent: true,
+        },
+      ).toProtocolError(),
+    });
+  }
+
+  private enqueueCommand(message: BrowserClientMessage): Promise<void> {
     if (message.type === "session.state") {
       this.sessionState?.(message);
       return Promise.resolve();
@@ -845,10 +1096,13 @@ export class BrowserController {
         message.type === "clipboard.cut" ||
         message.type === "clipboard.paste-data" ||
         message.type === "clipboard.part")
-    )
-      return this.enqueueFailure(
-        new BrowserRuntimeError("forbidden", "The engine clipboard was not negotiated."),
+    ) {
+      return this.refuseClipboard(message).then(() =>
+        this.enqueueFailure(
+          new BrowserRuntimeError("forbidden", "The engine clipboard was not negotiated."),
+        ),
       );
+    }
     if (this.editing && message.type === "clipboard.part") {
       this.clipboardParts.part(message);
       return Promise.resolve();
@@ -906,15 +1160,15 @@ export class BrowserController {
       // write or a click included; an answer never waits behind what it frees.
       return this.run(message);
     }
+    // Closing a tab never waits behind a size write, input or navigation on
+    // its lane: a tab that cannot answer them would otherwise refuse to close.
     if (
       message.type === "cdp.command" &&
       message.command.method === "Target.closeTarget" &&
-      this.pageOf(message) &&
-      this.ledger.dialogOpen(this.pageOf(message)!)
+      this.pageOf(message)
     )
       return this.run(message, this.pageOf(message));
-    if (message.type === "surface.close" && this.ledger.dialogOpen(message.surfaceId))
-      return this.run(message, message.surfaceId);
+    if (message.type === "surface.close") return this.run(message, message.surfaceId);
     if (
       message.type === "navigation.stop" ||
       (message.type === "cdp.command" && message.command.method === "Page.stopLoading")
@@ -964,42 +1218,68 @@ export class BrowserController {
         });
     }
     const queue = isCdpRequest(message) ? this.agentCommands : this.viewerCommands;
+    if (queue.pending >= this.maxPendingCommands && isCdpRequest(message) && message.replyBudget)
+      return this.send({
+        type: "cdp.error",
+        requestId: message.requestId,
+        error: new BrowserRuntimeError("conflict", "The browser command queue is full.", {
+          unsent: true,
+        }).toProtocolError(),
+      });
     return this.enqueueOperation(queue, () => ({ done: this.run(message, surfaceId), surfaceId }));
   }
 
   private async detachAgent(
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
+    const request = this.scriptCommands.get(message.requestId);
+    if (request?.message === message) request.started = true;
     const producer = inputProducer(message);
     const cleanups = this.cancelProducerOperations({ type: "input.cancel", producerId: producer });
-    await Promise.all(cleanups.map(({ surfaceId, done }) => this.untilDialog(surfaceId, done)));
+    const completed = Promise.all(cleanups.map(({ done }) => done));
+    if (message.scriptAttachmentId) await completed;
+    else
+      await Promise.all(cleanups.map(({ surfaceId, done }) => this.untilDialog(surfaceId, done)));
     const holdsInput = () =>
-      [...this.gestures.values()].some((gesture) => gesture.owner === producer && !gesture.ended) ||
-      [...this.keyOwners.values()].includes(producer);
+      [...this.gestures.values()].some(
+        (gesture) =>
+          gesture.owner === producer &&
+          !gesture.ended &&
+          [...gesture.buttons].some((button) => !gesture.releasing.has(button)),
+      ) || [...this.keyOwners.values()].includes(producer);
     if (holdsInput()) {
-      // Keep the originating Input handler alive until cleanup finishes, then
-      // finish the requested detach without replying to the same request twice.
-      void Promise.all(cleanups.map(({ done }) => done))
-        .then(async () => {
-          if (!holdsInput())
-            await this.cdpRouter.send(this.claims.sessionId, {
-              method: message.command.method,
-              parameters: message.command.parameters ?? {},
-              ...(message.command.sessionId === undefined
-                ? {}
-                : { sessionId: message.command.sessionId }),
-            });
-        })
-        .catch(() => undefined);
+      if (!message.scriptAttachmentId) {
+        // Finish a legacy detach after dialog-held input releases.
+        void completed
+          .then(async () => {
+            if (!holdsInput())
+              await this.cdpRouter.send(this.claims.sessionId, {
+                method: message.command.method,
+                parameters: message.command.parameters ?? {},
+                ...(message.command.sessionId === undefined
+                  ? {}
+                  : { sessionId: message.command.sessionId }),
+              });
+          })
+          .catch(() => undefined);
+      }
       await this.send({
         type: "cdp.error",
         requestId: message.requestId,
+        // The detach itself was not done: the session stays attached.
         error: new BrowserRuntimeError(
           "conflict",
           "Browser input cleanup failed; the CDP session remains attached.",
+          { unsent: true },
         ).toProtocolError(),
       });
       return;
+    }
+    for (const gesture of this.gestures.values()) {
+      if (gesture.owner === producer && !gesture.ended) {
+        gesture.ended = true;
+        this.gestures.delete(gesture.surfaceId);
+      }
     }
     await this.run(message);
   }
@@ -1130,10 +1410,12 @@ export class BrowserController {
       if (reservation && !held && !pending) this.cleanupReservations.delete(reservation);
     }
     await this.refuseClipboard(message);
+    if (this.cancelledScriptCommands.has(message)) return;
+    // The lane refused it before it ran (overload, or cancelled while pending).
     const error = new BrowserRuntimeError(
       "conflict",
       "Browser input was not applied. Try the action again.",
-      { reason },
+      { reason, unsent: true },
     );
     if (isCdpRequest(message)) {
       await this.send({
@@ -1220,17 +1502,30 @@ export class BrowserController {
     message: BrowserClientMessage,
     surfaceId: BrowserSurfaceId | null = null,
   ): Promise<void> {
+    if (this.cancelledScriptCommands.has(message)) return;
+    const command = isCdpRequest(message) ? this.scriptCommands.get(message.requestId) : undefined;
+    if (command?.message === message) command.started = true;
     try {
       const target = surfaceId ?? this.pageOf(message);
       const lifecycle =
         message.type === "surface.close" ||
         (message.type === "cdp.command" && message.command.method === "Target.closeTarget");
+      // V7: a viewer subscribing while a tab wakes waits for its wake before claiming the lease
+      // (both before page creation and mid-wake while it navigates from about:blank).
+      if (target && message.type === "stream.subscribe")
+        await this.ledger.waking(target)?.catch(() => {});
+      // Z2: a cancel that came while the command waited for its tab ends it before it is sent.
       if (target && !lifecycle)
-        await this.ledger.use(target, () => this.dispatch(message, surfaceId));
+        await this.ledger.use(target, () => {
+          if (command?.message === message && command.cancelled) throw commandCancelled();
+          return this.dispatch(message, surfaceId);
+        });
       else await this.dispatch(message, surfaceId);
     } catch (error) {
       await this.refuseClipboard(message);
-      const normalized = normalizeControllerError(error);
+      const normalized = normalizeControllerError(error, isCdpRequest(message));
+      if (isCdpRequest(message) && message.replyBudget && normalized.code === "internal")
+        console.error("browser.script.runtime.failed", error);
       const reservation = surfaceId ? this.reservation(message, surfaceId) : null;
       if (
         reservation &&
@@ -1256,14 +1551,24 @@ export class BrowserController {
           }),
         );
       if (isCdpRequest(message)) {
+        // A7: before the command was sent toward the page nothing happened, and a refusal Chromium
+        // itself answered is one too; anything else may have come after its effect.
+        const unsent =
+          normalized.unsent ||
+          !this.forwarded.has(message) ||
+          normalized.reason === "browser-cdp-protocol-error";
         await this.send({
-          error: normalized.toProtocolError(),
+          error: { ...normalized.toProtocolError(), ...(unsent ? { unsent: true as const } : {}) },
           requestId: message.requestId,
           type: "cdp.error",
         });
         return;
       }
-      if (surfaceId && (this.closingSurfaces.has(surfaceId) || !this.ledger.stateOf(surfaceId))) {
+      const closingTarget = surfaceId ?? this.pageOf(message);
+      if (
+        closingTarget &&
+        (this.closingSurfaces.has(closingTarget) || !this.ledger.binding(closingTarget))
+      ) {
         return;
       }
       await this.send({
@@ -1295,7 +1600,11 @@ export class BrowserController {
         const targetId =
           sessionId === undefined
             ? null
-            : this.cdpRouter.attachedTargetId(this.claims.sessionId, sessionId);
+            : this.cdpRouter.attachedTargetId(
+                this.claims.sessionId,
+                sessionId,
+                message.scriptAttachmentId,
+              );
         return targetId ? (this.ledger.surfaceIdForTarget(targetId) ?? null) : null;
       }
       case "surface.activate":
@@ -1483,6 +1792,12 @@ export class BrowserController {
       message.command.method === "Target.closeTarget" &&
       typeof message.command.parameters?.targetId === "string"
     ) {
+      if (message.scriptAttachmentId)
+        this.cdpRouter.assertScriptTarget(
+          this.claims.sessionId,
+          message.scriptAttachmentId,
+          message.command.parameters.targetId,
+        );
       const id = this.ledger.surfaceIdForTarget(message.command.parameters.targetId);
       if (id) {
         await this.ledger.closeSurface(id, "agent-closed");
@@ -1516,8 +1831,12 @@ export class BrowserController {
       const targetId =
         message.command.sessionId === undefined
           ? null
-          : this.cdpRouter.attachedTargetId(this.claims.sessionId, message.command.sessionId);
-      if (!params.success || !targetId)
+          : this.cdpRouter.attachedTargetId(
+              this.claims.sessionId,
+              message.command.sessionId,
+              message.scriptAttachmentId,
+            );
+      if (!params.success || !targetId || this.#onExtensionPageForConnection(message, targetId))
         throw new BrowserRuntimeError(
           "bad_message",
           "fillCard requires a card reference, field and attached page session.",
@@ -1542,8 +1861,12 @@ export class BrowserController {
       const targetId =
         message.command.sessionId === undefined
           ? null
-          : this.cdpRouter.attachedTargetId(this.claims.sessionId, message.command.sessionId);
-      if (!params.success || !targetId) {
+          : this.cdpRouter.attachedTargetId(
+              this.claims.sessionId,
+              message.command.sessionId,
+              message.scriptAttachmentId,
+            );
+      if (!params.success || !targetId || this.#onExtensionPageForConnection(message, targetId)) {
         throw new BrowserRuntimeError(
           "bad_message",
           "fillLogin requires valid parameters and an attached page session.",
@@ -1678,7 +2001,6 @@ export class BrowserController {
       if (this.ledger.snapshot().length <= 1) {
         throw new BrowserRuntimeError("conflict", "The final browser surface cannot be closed.");
       }
-      if (!this.ledger.dialogOpen(message.surfaceId)) await this.prepareResize(message.surfaceId);
       this.closingSurfaces.add(message.surfaceId);
       try {
         await this.ledger.closeSurface(message.surfaceId, "person-closed");
@@ -1762,6 +2084,8 @@ export class BrowserController {
             message.type === "input.compose" ? message.composition : message.edit,
             message.type === "input.compose",
             () => this.recordPasskeyInput(message, active.surface.id),
+            message.producerId,
+            message.type === "input.text" && message.follows === true,
           ))
         )
           this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
@@ -1776,13 +2100,20 @@ export class BrowserController {
               (m) => this.send(m),
             ),
           );
-        await observer.input(() => {
-          this.recordPasskeyInput(message, active.surface.id);
-          return cdp.send(
-            "Input.dispatchKeyEvent",
-            editingCommandParameters(message.command, this.platform),
-          );
-        });
+        const applied = await observer.command(
+          message.contextId,
+          message.command,
+          () => {
+            this.recordPasskeyInput(message, active.surface.id);
+            return cdp.send(
+              "Input.dispatchKeyEvent",
+              editingCommandParameters(message.command, this.platform),
+            );
+          },
+          message.producerId,
+          message.follows === true,
+        );
+        if (!applied) this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
         return;
       }
       const outcome = (result: "refused" | "pasted" | "empty" | "too-large") =>
@@ -1797,9 +2128,21 @@ export class BrowserController {
         await outcome("refused");
         return;
       }
+      // CZ5, PH2, PH5: clipboard ops target the field they were made for, or nowhere: refused whole.
+      const follows = message.type === "clipboard.paste-data" && message.follows === true;
+      if (!observer.admitsInsertion(message.contextId, message.producerId, follows)) {
+        if (message.type === "clipboard.paste-data") this.clipboardParts.discard(message);
+        await outcome("refused");
+        return;
+      }
       const input =
         message.type === "clipboard.paste-data" ? await this.clipboardParts.take(message) : null;
       if (message.type === "clipboard.paste-data" && input === null) return;
+      // Focus may have moved while bytes arrived: checked again, and again live in page inside run().
+      if (!observer.admitsInsertion(message.contextId, message.producerId, follows)) {
+        await outcome("refused");
+        return;
+      }
       const command =
         message.type === "clipboard.paste-data"
           ? "paste"
@@ -1807,16 +2150,30 @@ export class BrowserController {
             ? "copy"
             : "cut";
       try {
-        const result = await this.clipboard!.run(active.page, input, () =>
-          observer.input(() => {
+        const result = await this.clipboard!.run(active.page, input, () => {
+          const dispatch = () => {
             this.recordPasskeyInput(message, active.surface.id);
             return cdp.send(
               "Input.dispatchKeyEvent",
               editingCommandParameters(command, this.platform),
             );
-          }),
-        );
-        if (command === "paste") await outcome("pasted");
+          };
+          if (message.type === "clipboard.paste-data")
+            return observer.paste(
+              message.contextId,
+              dispatch,
+              message.producerId,
+              message.follows === true,
+            );
+          return observer.copyOrCut(
+            message.contextId,
+            dispatch,
+            message.producerId,
+            command === "cut",
+          );
+        });
+        if (!result.result) await outcome("refused");
+        else if (command === "paste") await outcome("pasted");
         else
           await publishClipboardItems(
             {
@@ -2012,7 +2369,8 @@ export class BrowserController {
           ...resolved,
         });
       };
-      if (this.editing) await (await this.editingObserver(active.surface.id)).input(dispatch);
+      if (this.editing)
+        await (await this.editingObserver(active.surface.id)).input(dispatch, message.producerId);
       else await dispatch();
       if (message.action === "up") {
         keys.delete(message.code);
@@ -2033,10 +2391,20 @@ export class BrowserController {
     }
     if (message.type === "clipboard.paste") {
       if (message.surfaceId !== active.surface.id) return;
-      this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
-      this.ledger.recordViewerInput(message.surfaceId, message.producerId);
-      this.recordPasskeyInput(message, active.surface.id);
-      await cdp.send("Input.insertText", { text: message.text });
+      // CZ5, PH2: into the field it was made for, verified live in page, or nowhere.
+      const observer = await this.editingObserver(active.surface.id);
+      const applied = await observer.paste(
+        message.contextId,
+        () => {
+          this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
+          this.ledger.recordViewerInput(message.surfaceId, message.producerId);
+          this.recordPasskeyInput(message, active.surface.id);
+          return cdp.send("Input.insertText", { text: message.text });
+        },
+        message.producerId,
+        message.follows === true,
+      );
+      if (!applied) throw new BrowserRuntimeError("conflict", "The field changed. Paste again.");
       return;
     }
     if (message.type === "dialog.respond") {
@@ -2210,6 +2578,7 @@ export class BrowserController {
         cdp: binding.cdp,
         cleanup: null,
         buttons: new Set(),
+        releasing: new Set(),
         ended: false,
         surfaceId: message.surfaceId,
         owner: inputProducer(message),
@@ -2425,6 +2794,7 @@ export class BrowserController {
       if (gesture.cdp.cancelDragging) await gesture.cdp.cancelDragging();
       else await gesture.cdp.send("Input.cancelDragging");
       for (const button of gesture.buttons) {
+        if (gesture.releasing.has(button)) continue;
         const remaining = new Set(gesture.buttons);
         remaining.delete(button);
         // Keep ownership fenced until a live target actually acknowledges cleanup.
@@ -2461,7 +2831,7 @@ export class BrowserController {
     surfaceId: BrowserSurfaceId,
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
     command: CdpCommand,
-  ): () => void {
+  ): (succeeded?: boolean) => void {
     const { method, parameters: p } = message.command;
     if (method === "Input.dispatchMouseEvent") {
       const parsed = z
@@ -2485,21 +2855,29 @@ export class BrowserController {
           owner: inputProducer(message),
           generation: message.inputGeneration ?? 0,
           buttons: new Set(),
+          releasing: new Set(),
           ended: false,
           x,
           y,
         };
+        gesture.releasing.delete(button);
         gesture.buttons.add(button);
         this.gestures.set(surfaceId, gesture);
+      }
+      if (type === "mouseReleased" && button && button !== "none" && gesture?.buttons.has(button)) {
+        gesture.releasing.add(button);
       }
       if (gesture) {
         gesture.x = x;
         gesture.y = y;
       }
-      return () => {
+      return (succeeded = true) => {
         if (type === "mouseReleased" && button && button !== "none" && gesture) {
-          gesture.buttons.delete(button);
-          if (!gesture.buttons.size) this.gestures.delete(surfaceId);
+          gesture.releasing.delete(button);
+          if (succeeded) {
+            gesture.buttons.delete(button);
+            if (!gesture.buttons.size) this.gestures.delete(surfaceId);
+          }
         }
       };
     }
@@ -3196,6 +3574,14 @@ export class BrowserController {
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
     const requested = message.command;
+    if (message.scriptAttachmentId)
+      this.cdpRouter.assertScriptTarget(
+        this.claims.sessionId,
+        message.scriptAttachmentId,
+        typeof requested.parameters?.targetId === "string"
+          ? requested.parameters.targetId
+          : undefined,
+      );
     const inputSurface = this.pageOf(message);
     if (
       inputSurface &&
@@ -3207,21 +3593,46 @@ export class BrowserController {
       );
     const command: CdpCommand = {
       method: requested.method,
+      ...(message.replyBudget ? { replyBudget: message.replyBudget } : {}),
+      ...(message.scriptAttachmentId ? { scriptAttachmentId: message.scriptAttachmentId } : {}),
+      ...(message.connection ? { connection: true as const } : {}),
+      ...(message.manageExtensions ? { manageExtensions: true as const } : {}),
       ...(requested.parameters === undefined ? {} : { parameters: requested.parameters }),
       ...(requested.sessionId === undefined ? {} : { sessionId: requested.sessionId }),
     };
     const pageTargetId =
       command.sessionId === undefined
         ? null
-        : this.cdpRouter.attachedTargetId(this.claims.sessionId, command.sessionId);
+        : this.cdpRouter.attachedTargetId(
+            this.claims.sessionId,
+            command.sessionId,
+            command.scriptAttachmentId,
+          );
+    const pageSurfaceId = pageTargetId ? this.ledger.surfaceIdForTarget(pageTargetId) : undefined;
+    const navigation = async <T>(send: () => Promise<T>): Promise<T> => {
+      const request = this.scriptCommands.get(message.requestId);
+      const binding = pageSurfaceId ? this.ledger.binding(pageSurfaceId) : null;
+      if (!request || request.message !== message || !binding) return send();
+      if (request.closing)
+        throw new BrowserRuntimeError("conflict", "Browser script attachment ended.");
+      if (request.cancelled) throw commandCancelled();
+      if (command.parameters?.frameId !== undefined) return send();
+      request.stopNavigation = () => binding.cdp.send("Page.stopLoading");
+      try {
+        return await send();
+      } finally {
+        delete request.stopNavigation;
+      }
+    };
     if (message.navigationId && command.method === "Page.navigate" && pageTargetId) {
       this.cdpRouter.admitPageCommand(this.claims.sessionId, command);
-      const surfaceId = this.ledger.surfaceIdForTarget(pageTargetId);
-      if (!surfaceId) throw new BrowserRuntimeError("not_found", "The browser page closed.");
-      const result = await this.ledger.navigate(
-        surfaceId,
-        safeNavigationUrl(z.string().parse(command.parameters?.url)),
-        message.navigationId,
+      if (!pageSurfaceId) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+      const result = await navigation(() =>
+        this.ledger.navigate(
+          pageSurfaceId,
+          safeNavigationUrl(z.string().parse(command.parameters?.url)),
+          message.navigationId,
+        ),
       );
       await this.send({ type: "cdp.result", requestId: message.requestId, result });
       return;
@@ -3237,11 +3648,13 @@ export class BrowserController {
       this.cdpRouter.listOwnedTargets(this.claims.sessionId).includes(attachTargetId)
     ) {
       await this.ledger.settleTarget(attachTargetId);
+      // A cancel that came while the target settled ends the command before it attaches.
+      const request = this.scriptCommands.get(message.requestId);
+      if (request?.message === message && request.cancelled) throw commandCancelled();
     }
     // A new tab opens blank and loads its URL only once it has its size, so
     // the site's first layout already sees the person's size.
     const tabUrl = command.method === "Target.createTarget" ? this.admittedTabUrl(command) : null;
-    const pageSurfaceId = pageTargetId ? this.ledger.surfaceIdForTarget(pageTargetId) : undefined;
     const settleInput = pageSurfaceId
       ? this.trackAgentInput(pageSurfaceId, message, command)
       : () => undefined;
@@ -3254,7 +3667,16 @@ export class BrowserController {
         : null;
     // Anything but observation can let page script start a passkey ceremony.
     const agentActivity = (targetId: string) => this.#passkeys?.record(targetId, "agent");
+    const send = () =>
+      this.cdpRouter.send(
+        this.claims.sessionId,
+        tabUrl
+          ? { ...command, parameters: { ...command.parameters, url: "about:blank" } }
+          : command,
+        agentActivity,
+      );
     let result: unknown;
+    this.forwarded.add(message);
     try {
       result =
         pageTargetId &&
@@ -3267,17 +3689,16 @@ export class BrowserController {
               )
             : pageTargetId && command.method === "Page.captureScreenshot"
               ? await this.captureAgentViewport(command, pageSurfaceId)
-              : await this.cdpRouter.send(
-                  this.claims.sessionId,
-                  tabUrl
-                    ? { ...command, parameters: { ...command.parameters, url: "about:blank" } }
-                    : command,
-                  agentActivity,
-                );
+              : command.method === "Page.navigate"
+                ? await navigation(send)
+                : await send();
+    } catch (error) {
+      settleInput(false);
+      throw error;
     } finally {
       script?.stop();
     }
-    settleInput();
+    settleInput(true);
     if (
       command.method === "Target.closeTarget" &&
       typeof command.parameters?.targetId === "string"
@@ -3337,11 +3758,23 @@ export class BrowserController {
         pointer: this.moveAgentPointer(actorToken, activitySurfaceId, aimed),
       });
     }
+    const reply = this.withTargetMetadata(command, result, attachedActivity);
+    // A7: the command ran and its answer is here, over the caller's limit: a failure of the
+    // command that names the answer's size, never an unknown outcome.
+    if (message.replyBudget && boundedJsonSize(reply, message.replyBudget) === undefined)
+      throw new BrowserRuntimeError(
+        "bad_message",
+        answerTooLargeMessage(
+          reply,
+          message.replyBudget.maxBytes,
+          message.replyBudget,
+          command.method,
+        ),
+        { reason: "browser-reply-limit" },
+      );
     await this.send({
       requestId: message.requestId,
-      result: BrowserCdpResultSchema.parse(
-        this.withTargetMetadata(command, result, attachedActivity),
-      ),
+      result: BrowserCdpResultSchema.parse(reply),
       type: "cdp.result",
     });
   }
@@ -3419,6 +3852,7 @@ export class BrowserController {
       throw new BrowserRuntimeError(
         "bad_message",
         "Full-page capture would resize the page a person is watching. Scroll and capture each part, or read the page as text.",
+        { reason: "browser-full-page-capture", unsent: true },
       );
     if (fromSurface !== undefined && fromSurface !== true)
       throw new BrowserRuntimeError("bad_message", "A screenshot always comes from the surface.");
@@ -3439,7 +3873,14 @@ export class BrowserController {
       );
     const request = parsedCapture.data;
     const page = this.ledger.binding(surfaceId)?.page;
-    if (!page) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+    // A connection's picture of a page on an extension's address (its live address, or the
+    // ledger's): the same answer as a closed page (N1, P7).
+    if (
+      !page ||
+      (command.connection === true &&
+        (isExtensionUrl(page.url()) || isExtensionUrl(this.ledger.toRecord(surfaceId)?.url)))
+    )
+      throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const stop = new AbortController();
     const closed = () =>
       stop.abort(new BrowserRuntimeError("not_found", "The browser page closed."));
@@ -3460,12 +3901,20 @@ export class BrowserController {
           return late;
         },
       });
+    if (command.replyBudget)
+      return this.ledger
+        .withGeometry(surfaceId, (cdp, geometry) => {
+          ended.throwIfAborted();
+          this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
+          return this.lookAt(page, cdp, geometry, request, command.replyBudget, ended);
+        })
+        .finally(() => page.offClose(closed));
     return bounded(
       this.ledger.withGeometry(surfaceId, (cdp, geometry) => {
         ended.throwIfAborted();
         // Access may have changed while this waited, as `send` would recheck.
         this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
-        return bounded(this.lookAt(page, cdp, geometry, request, ended));
+        return bounded(this.lookAt(page, cdp, geometry, request, command.replyBudget, ended));
       }),
     ).finally(() => page.offClose(closed));
   }
@@ -3475,6 +3924,7 @@ export class BrowserController {
     cdp: CdpSession,
     geometry: PageGeometry | null,
     { clip, format, quality }: z.infer<typeof screenshotParameters>,
+    budget?: CdpCommand["replyBudget"],
     signal?: AbortSignal,
   ): Promise<ViewportCapture> {
     if (!geometry)
@@ -3493,6 +3943,7 @@ export class BrowserController {
         format,
         layout: pageViewport(geometry),
         pageScale,
+        ...(budget?.maxImageBytes === undefined ? {} : { maxImageBytes: budget.maxImageBytes }),
         ...(quality === undefined ? {} : { quality }),
         // CDP's clip is in document coordinates.
         ...(clip ? { clip: { ...clip, x: clip.x - pageX, y: clip.y - pageY } } : {}),
@@ -3505,7 +3956,7 @@ export class BrowserController {
       throw new BrowserRuntimeError("conflict", "The page changed during the screenshot.", {
         retryable: true,
       });
-    this.cdpRouter.admitPageResult(capture);
+    this.cdpRouter.admitPageResult(capture, budget);
     return capture;
   }
 
@@ -3513,13 +3964,49 @@ export class BrowserController {
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
     const parameters = message.command.parameters;
+    if (message.command.method === browserHostMethods.fenceTab) {
+      this.ledger.fenceDurableClose(BrowserSurfaceIdSchema.parse(parameters?.surfaceId));
+      await this.send({ type: "cdp.result", requestId: message.requestId, result: {} });
+      return;
+    }
+    if (message.command.method === browserHostMethods.closeScriptAttachment) {
+      if (!message.scriptAttachmentId)
+        throw new BrowserRuntimeError("bad_message", "Missing browser script attachment.");
+      for (const state of this.scriptCommands.values()) {
+        const pending = state.message;
+        if (pending.scriptAttachmentId !== message.scriptAttachmentId) continue;
+        state.closing = true;
+        await this.cancelScriptCommand({
+          ...message,
+          command: {
+            method: browserHostMethods.cancelScriptCommand,
+            parameters: { requestId: pending.requestId },
+          },
+        });
+      }
+      const cleanups = this.cancelProducerOperations({
+        type: "input.cancel",
+        producerId: message.scriptAttachmentId,
+      });
+      void this.cdpRouter.closeScriptAttachment(
+        this.claims.sessionId,
+        message.scriptAttachmentId,
+        Promise.allSettled(cleanups.map(({ done }) => done)),
+      );
+      await this.send({ type: "cdp.result", requestId: message.requestId, result: {} });
+      return;
+    }
     if (message.command.method === browserHostMethods.listTabs) {
       const parsed = BrowserListTabsParametersSchema.safeParse(parameters ?? {});
       if (!parsed.success) throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
       const ledger = this.ledger;
+      // N1: a connection is never told of a tab on an extension's page, nor that one opened a tab.
+      const connection = message.connection === true;
+      const hidden = (surfaceId: BrowserSurfaceId) =>
+        connection && isExtensionUrl(ledger.toRecord(surfaceId)?.url);
       const records = function* () {
         for (const record of ledger.policyRecords()) {
-          if (!record.announced) continue;
+          if (!record.announced || hidden(record.id)) continue;
           const row = ledger.toRecord(record.id)!;
           const dialog = ledger.dialogOf(record.id);
           const tab: AgentTab = {
@@ -3529,7 +4016,7 @@ export class BrowserController {
             title: row.title,
             url: row.url,
             order: record.order,
-            openerId: record.openerId,
+            openerId: record.openerId && hidden(record.openerId) ? null : record.openerId,
             userActivity: record.userActivity
               ? {
                   ...record.userActivity,
@@ -3559,24 +4046,118 @@ export class BrowserController {
       const parsed = BrowserResumeTabParametersSchema.safeParse(parameters);
       if (!parsed.success)
         throw new BrowserRuntimeError("bad_message", "Invalid tab-resume parameters.");
-      const reloaded = this.ledger.stateOf(parsed.data.surfaceId) === "suspended";
-      const binding = await this.ledger.wake(parsed.data.surfaceId);
-      if (reloaded) await this.drainTabs();
-      const dialog = this.ledger.dialogOf(parsed.data.surfaceId);
-      await this.send({
-        type: "cdp.result",
-        requestId: message.requestId,
-        result: {
-          surfaceId: parsed.data.surfaceId,
+      const surfaceId = parsed.data.surfaceId;
+      // Z2: the operation's cancel is wired before the wake; a cancel ends this command at once
+      // (the wake itself goes on for anyone else waiting on the tab) and nothing after it starts.
+      const request = this.scriptCommands.get(message.requestId);
+      const ours = request?.message === message ? request : undefined;
+      const cancelled = new AbortController();
+      if (ours) {
+        ours.cancel = () => cancelled.abort();
+        if (ours.cancelled) cancelled.abort();
+      }
+      const stopIfCancelled = () => {
+        if (cancelled.signal.aborted) throw commandCancelled();
+      };
+      try {
+        stopIfCancelled();
+        const state = this.ledger.stateOf(surfaceId);
+        // N1: to a connection a tab on an extension's page does not exist: the same answer as a
+        // closed tab, before the wake and again once its page has loaded, before any script
+        // attachment opens or any target is named.
+        const absent = () =>
+          new BrowserRuntimeError("not_found", "The browser tab closed.", { unsent: true });
+        const hiddenFromConnection = (page?: { url(): string }) =>
+          message.connection === true &&
+          (isExtensionUrl(this.ledger.toRecord(surfaceId)?.url) || isExtensionUrl(page?.url()));
+        if (state === undefined || hiddenFromConnection()) throw absent();
+        const reloaded = state === "suspended";
+        this.forwarded.add(message);
+        let binding = await untilAborted(this.ledger.wake(surfaceId), cancelled.signal);
+        stopIfCancelled();
+        // Z1, Z4: a wake's unfinished load is the ledger's fact, set when the wake began and
+        // ended by the events that end it; a retry waits for that same load.
+        const unfinished = this.ledger.wakeUnfinished(surfaceId);
+        if (reloaded) await this.drainTabs();
+        stopIfCancelled();
+        // TS11, V3: an agent acts on a woken page only once it has loaded, on every try (a retry
+        // waits for the same load the first try waited for); the wait ends with the operation.
+        if (parsed.data.loaded && unfinished) {
+          const loaded = await this.ledger.documentLoaded(
+            surfaceId,
+            resumeLoadedMs,
+            cancelled.signal,
+          );
+          if (loaded === "loading")
+            throw new BrowserRuntimeError(
+              "conflict",
+              "This tab is awake, but its page is still loading. Try again shortly.",
+              // A7: no page was handed over; the wake is the tab's own state, shown and kept.
+              { retryable: true, unsent: true },
+            );
+          // Only a binding read now, after its load was confirmed, is handed over.
+          const confirmed = loaded === "loaded" ? this.ledger.binding(surfaceId) : null;
+          if (!confirmed)
+            throw new BrowserRuntimeError(
+              "conflict",
+              "This tab went back to sleep before its page loaded. Wake it again.",
+              { reason: "target-suspended", retryable: true, unsent: true },
+            );
+          binding = confirmed;
+        }
+        stopIfCancelled();
+        // Z1: an agent that waited for a wake's load is told the page reloaded, also on the retry
+        // that saw it finish: no earlier try handed it this page.
+        const woke = reloaded || (parsed.data.loaded === true && unfinished);
+        const dialog = this.ledger.dialogOf(surfaceId);
+        const result = {
+          surfaceId,
           targetId: binding.targetId,
           documentId: binding.surface.documentId,
           dialog: dialog ? { id: dialog.id, message: dialog.message, type: dialog.type } : null,
           userActivity: this.ledger.targetActivity(binding.targetId) ?? null,
           pageResize: this.ledger.targetResize(binding.targetId) ?? null,
-          reloaded,
-        },
-      });
-      return;
+          reloaded: woke,
+          // V4: woken by opening it again at its address, not as itself.
+          ...(woke && this.ledger.toRecord(surfaceId)?.reopenedAt !== undefined
+            ? { reopened: true }
+            : {}),
+        };
+        // Rule 5: a page outside the connection reads exactly like a closed tab, decided before
+        // anything (its answer's size included) is said of it.
+        if (hiddenFromConnection(binding.page)) throw absent();
+        if (message.replyBudget && boundedJsonSize(result, message.replyBudget) === undefined)
+          throw new BrowserRuntimeError(
+            "bad_message",
+            answerTooLargeMessage(
+              result,
+              message.replyBudget.maxBytes,
+              message.replyBudget,
+              browserHostMethods.resumeTab,
+            ),
+            { reason: "browser-reply-limit" },
+          );
+        if (message.scriptAttachmentId && message.scriptEventBudget) {
+          const scriptRequest = this.scriptCommands.get(message.requestId);
+          if (scriptRequest?.closing)
+            throw new BrowserRuntimeError("conflict", "Browser script attachment ended.");
+          this.cdpRouter.openScriptAttachment(
+            this.claims.sessionId,
+            message.scriptAttachmentId,
+            binding.targetId,
+            message.scriptEventBudget,
+            (event) => {
+              void this.send({ event, type: "cdp.event" }).catch(() => undefined);
+            },
+            // A connected agent's script attachment, as the Home said when it opened it.
+            message.connection ? { connection: true } : {},
+          );
+        }
+        await this.send({ type: "cdp.result", requestId: message.requestId, result });
+        return;
+      } finally {
+        if (ours) delete ours.cancel;
+      }
     }
     if (
       ![
@@ -3587,6 +4168,8 @@ export class BrowserController {
     )
       throw new BrowserRuntimeError("bad_message", "Unsupported Opensteer method.");
     if (message.command.method === browserHostMethods.openTab) {
+      // An open must never check its replyBudget: the Host makes any `browser-reply-limit` a
+      // failure of the command (browser-service.ts), and an open that ran has made a tab.
       const fields = BrowserSessionTabOpenCommandSchema.omit({
         type: true,
         sessionId: true,
@@ -3605,6 +4188,15 @@ export class BrowserController {
       if (!parsed.success)
         throw new BrowserRuntimeError("bad_message", "Invalid tab-open parameters.");
       const { idempotencyKey, url: requestedUrl, viewport, operationAuthority } = parsed.data;
+      // Z2: the operation's cancel ends this open at every step, from before its first await.
+      const opening = new AbortController();
+      const operationSignal = opening.signal;
+      const openRequest = this.scriptCommands.get(message.requestId);
+      if (openRequest?.message === message) {
+        openRequest.cancel = () => opening.abort(commandCancelled());
+        if (openRequest.cancelled) opening.abort(commandCancelled());
+      }
+      if (operationSignal.aborted) throw commandCancelled();
       const started = Date.now();
       let remaining = 18_000;
       let origin: "agent" | "person" = "person";
@@ -3615,6 +4207,7 @@ export class BrowserController {
           this.verifyOpenAuthority(operationAuthority),
           remaining,
           {
+            signal: operationSignal,
             timeoutError: () =>
               new BrowserRuntimeError("conflict", "Browser opening authority timed out."),
           },
@@ -3637,8 +4230,7 @@ export class BrowserController {
       }
       if (remaining <= 0)
         throw new BrowserRuntimeError("conflict", "The browser opening authority expired.");
-      const opening = new AbortController();
-      const operationSignal = opening.signal;
+      if (operationSignal.aborted) throw commandCancelled();
       const url = requestedUrl === undefined ? undefined : safeNavigationUrl(requestedUrl);
       const fingerprint = createHash("sha256")
         .update(JSON.stringify({ url: requestedUrl, viewport }))
@@ -3653,6 +4245,8 @@ export class BrowserController {
             ? BrowserSurfaceIdSchema.safeParse(parameters?.surfaceId).data
             : undefined;
         this.openOperations.add(opening);
+        // A7: from here a page may exist.
+        this.forwarded.add(message);
         const opened = await withTimeout(
           this.ledger.openSurface({
             signal: operationSignal,
@@ -3686,7 +4280,17 @@ export class BrowserController {
           const binding = this.ledger.binding(tabId);
           if (!binding) throw new BrowserRuntimeError("not_found", "The new tab closed.");
           if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
-          void this.ledger.navigate(tabId, url, message.navigationId).catch(() => undefined);
+          const navigation = this.ledger.navigate(tabId, url, message.navigationId);
+          if (message.replyBudget) {
+            // Stop during the first load stops the load.
+            const stop = () => void binding.cdp.send("Page.stopLoading").catch(() => undefined);
+            operationSignal.addEventListener("abort", stop, { once: true });
+            try {
+              await untilAborted(navigation, operationSignal);
+            } finally {
+              operationSignal.removeEventListener("abort", stop);
+            }
+          } else void navigation.catch(() => undefined);
         }
       }
       await this.drainTabs();
@@ -3696,17 +4300,18 @@ export class BrowserController {
     const surfaceId = parameters?.surfaceId;
     if (typeof surfaceId !== "string")
       throw new BrowserRuntimeError("bad_message", "A surface is required.");
-    const durableClose = this.claims.tabRestoreVersion === 1 && parameters?.durable === true;
-    if (
-      durableClose &&
-      message.command.method === browserHostMethods.closeTab &&
-      !this.ledger.stateOf(BrowserSurfaceIdSchema.parse(surfaceId))
-    ) {
+    const durableClose = parameters?.durable === true;
+    if (durableClose && message.command.method === browserHostMethods.closeTab) {
+      this.forwarded.add(message);
+      await this.ledger.closeDurableSurface(BrowserSurfaceIdSchema.parse(surfaceId));
+      const last = this.ledger.sealLastSurface();
+      await this.drainTabs();
       await this.send({
         type: "cdp.result",
         requestId: message.requestId,
-        result: { outcome: "tab-closed" },
+        result: { outcome: last ? "session-closed" : "tab-closed" },
       });
+      if (last) await this.close();
       return;
     }
     const surface = this.ledger.snapshot().find((entry) => entry.id === surfaceId);
@@ -3721,14 +4326,14 @@ export class BrowserController {
         .safeParse(parameters);
       if (!parsed.success)
         throw new BrowserRuntimeError("bad_message", "Invalid tab-close parameters.");
-      if (!durableClose && parsed.data.inventoryRevision !== this.ledger.inventoryRevision)
+      if (parsed.data.inventoryRevision !== this.ledger.inventoryRevision)
         throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
       let last = this.ledger.snapshot().length === 1;
       if (last) {
         last = this.ledger.sealLastSurface(surface.id);
-        if (!last && !durableClose)
-          throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
+        if (!last) throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
       }
+      this.forwarded.add(message);
       if (!last && this.ledger.stateOf(surface.id))
         await this.ledger.closeSurface(surface.id, "host-closed");
       if (last) {
@@ -3885,10 +4490,19 @@ export class BrowserController {
     return method === "Target.getTargets" && Array.isArray(record.targetInfos)
       ? {
           ...record,
-          rootSurfaceId: this.rootSurfaceId,
-          rootTargetId: this.rootSurfaceId
-            ? (this.ledger.binding(this.rootSurfaceId)?.targetId ?? null)
-            : record.rootTargetId,
+          ...(command.scriptAttachmentId
+            ? {
+                rootSurfaceId:
+                  typeof record.rootTargetId === "string"
+                    ? (this.ledger.surfaceIdForTarget(record.rootTargetId) ?? null)
+                    : null,
+              }
+            : {
+                rootSurfaceId: this.rootSurfaceId,
+                rootTargetId: this.rootSurfaceId
+                  ? (this.ledger.binding(this.rootSurfaceId)?.targetId ?? null)
+                  : record.rootTargetId,
+              }),
           targetInfos: record.targetInfos.map(decorate),
         }
       : method === "Target.getTargetInfo"
@@ -3963,7 +4577,28 @@ function isDialogAnswer(message: BrowserClientMessage): boolean {
   return message.type === "cdp.command" && message.command.method === "Page.handleJavaScriptDialog";
 }
 
-function normalizeControllerError(error: unknown): BrowserRuntimeError {
+function isChromiumCdpProtocolError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    /^(?:cdpSession\.send:\s*)?Protocol error \([^)]+\):/u.test(error.message) ||
+    /Cannot find context with specified id|Cannot find execution context with given id|Execution context was destroyed|Could not find node with given id|No node with given id found|Node with given id does not belong to the document|Cannot find default execution context|Inspected target navigated or closed/u.test(
+      error.message,
+    )
+  );
+}
+
+function normalizeControllerError(error: unknown, cdpRequest = false): BrowserRuntimeError {
+  if (
+    cdpRequest &&
+    !(error instanceof SessionCdpRouterError) &&
+    !(error instanceof BrowserRuntimeError) &&
+    isChromiumCdpProtocolError(error)
+  ) {
+    return new BrowserRuntimeError("conflict", "The browser rejected the CDP command.", {
+      cause: error,
+      reason: "browser-cdp-protocol-error",
+    });
+  }
   if (!(error instanceof SessionCdpRouterError)) return toBrowserRuntimeError(error);
   const code =
     error.code === "bad_command" || error.code === "too_large"
@@ -3973,7 +4608,16 @@ function normalizeControllerError(error: unknown): BrowserRuntimeError {
         : error.code === "forbidden"
           ? "forbidden"
           : "conflict";
-  return new BrowserRuntimeError(code, error.message, { cause: error });
+  // A7: the router refused it before handing it on (its checks, or a lookup it said was one).
+  const unsent = error.unsent || error.code === "bad_command" || error.code === "forbidden";
+  return new BrowserRuntimeError(code, error.message, {
+    cause: error,
+    // Only an answer that arrived over its limit proves the command ran: a failure of the command.
+    // The router's other "too large" refusals (too many attached targets, a command over its own
+    // limit) prove nothing of the kind and stay unknown.
+    ...(error.answerTooLarge ? { reason: "browser-reply-limit" } : {}),
+    ...(unsent ? { unsent: true } : {}),
+  });
 }
 
 const selectedTextExpression = `(() => {
@@ -4038,6 +4682,7 @@ function safeNavigationUrl(value: string): string {
 function inputProducer(message: BrowserClientMessage): string {
   if (message.producerId) return message.producerId;
   if (message.type !== "cdp.command") return "legacy-viewer";
+  if (message.scriptAttachmentId) return message.scriptAttachmentId;
   if (message.actorToken) return message.actorToken;
   const detached =
     message.command.method === "Target.detachFromTarget"
@@ -4059,7 +4704,6 @@ function isOrderedAgentMutation(
       "Page.reload",
       "Page.navigateToHistoryEntry",
       "Page.setDocumentContent",
-      "Target.closeTarget",
     ].includes(message.command.method)
   );
 }

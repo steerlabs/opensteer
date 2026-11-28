@@ -12,7 +12,7 @@ import {
   TabKindSchema,
   TabLayoutViewSchema,
   TabTargetSchema,
-  ToolErrorSchema,
+  ToolErrorViewSchema,
   tabsMaxPerMutation,
 } from "@opensteer/core";
 import { ComputerViewSchema } from "./computer-view.js";
@@ -49,9 +49,7 @@ export const TabOpenResultSchema = z.object({ tab: TabViewSchema });
 export const TabCloseInputSchema = z.strictObject({ tabIds: TabIdsSchema });
 export const TabCloseResultSchema = z.object({
   closed: z.array(TabIdSchema).max(500),
-  failed: z
-    .array(z.object({ tabId: TabIdSchema, error: z.object(ToolErrorSchema.shape) }))
-    .max(500),
+  failed: z.array(z.object({ tabId: TabIdSchema, error: ToolErrorViewSchema })).max(500),
 });
 export type TabCloseResult = z.infer<typeof TabCloseResultSchema>;
 export const TabOrganizeInputSchema = z.strictObject({
@@ -119,10 +117,25 @@ export const TabCommandSchema = z.discriminatedUnion("type", [
   }),
   TabCloseInputSchema.extend({ ...command, type: z.literal("tab.close") }),
   z.strictObject({ ...command, type: z.literal("tab.reopen"), tabId: tabId.optional() }),
-  z.strictObject({ ...command, type: z.literal("tab.activate"), tabId }),
+  z.strictObject({
+    ...command,
+    type: z.literal("tab.activate"),
+    tabId,
+  }),
   TabOrganizeInputSchema.extend({ ...command, type: z.literal("tab.organize") }),
   TabGroupUpdateInputSchema.safeExtend({ ...command, type: z.literal("tab.group.update") }),
   z.strictObject({ ...command, type: z.literal("tab.group.delete"), groupId }),
+  /**
+   * Closes the group's members, and the group once none is left. With `tabIds`, only those
+   * members close: a proposal names the members the person was shown, and one that is no longer
+   * in the group refuses the close as changed. Without, the members it has when it runs.
+   */
+  z.strictObject({
+    ...command,
+    type: z.literal("tab.group.close"),
+    groupId,
+    tabIds: z.array(TabIdSchema).max(500).optional(),
+  }),
 ]);
 export type TabCommand = z.infer<typeof TabCommandSchema>;
 export const TabCommandResultSchema = z.discriminatedUnion("type", [
@@ -140,6 +153,12 @@ export const TabCommandResultSchema = z.discriminatedUnion("type", [
     layout: TabLayoutViewSchema,
   }),
   z.object({ type: z.literal("tab.group.delete"), layout: TabLayoutViewSchema }),
+  TabCloseResultSchema.extend({
+    type: z.literal("tab.group.close"),
+    /** Whether the group is gone: false while a member that could not close keeps it. */
+    groupClosed: z.boolean(),
+    layout: TabLayoutViewSchema,
+  }),
   z.object({ type: z.literal("tab.activate"), tab: TabViewSchema, viewer: TabViewerSchema }),
 ]);
 export type TabCommandResult = z.infer<typeof TabCommandResultSchema>;

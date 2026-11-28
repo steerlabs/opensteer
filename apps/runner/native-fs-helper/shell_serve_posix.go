@@ -638,7 +638,7 @@ func filteredShellEnvironment() []string {
 	environment := make([]string, 0, len(os.Environ()))
 	for _, value := range os.Environ() {
 		name, _, _ := strings.Cut(value, "=")
-		if !strings.HasPrefix(name, "OPENSTEER_") {
+		if !strings.HasPrefix(name, "OPENSTEER_") || name == "OPENSTEER_EXECUTION_SCOPE" {
 			environment = append(environment, value)
 		}
 	}

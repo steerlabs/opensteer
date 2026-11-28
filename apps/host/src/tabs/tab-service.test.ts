@@ -2,13 +2,15 @@ import { RunnerIdSchema } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
 import {
   createId,
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
   TabGroupIdSchema,
   TabIdSchema,
   WindowIdSchema,
   type TabLayout,
 } from "@opensteer/core";
 import type { ComputerView } from "@opensteer/protocol";
-import type { TabRecord, TabStore } from "@opensteer/database";
+import type { TabAuthorization, TabRecord, TabStore } from "@opensteer/database";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -121,6 +123,44 @@ function fixture(rows: TabRecord[]) {
   };
 }
 describe("tab projection and viewer admission", () => {
+  it("requests the physical close of every closed tab's page, a Run's in the same lineage too", async () => {
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    const page = (id: typeof taskId): TabRecord => ({
+      ...row(),
+      kind: "page",
+      openedBy: { taskId: id },
+      pageBinding: {
+        lineageId: sessionId,
+        sessionId,
+        surfaceId: BrowserSurfaceIdSchema.parse(`bsf_${randomUUID()}`),
+      },
+    });
+    const direct = page(taskId),
+      run = page(hiddenTask);
+    const f = fixture([direct, run]);
+    const closes = vi.spyOn(f.options.pages, "closeViewers");
+    f.options.store.close = async (_owner, ids, _key, authorize, include) => {
+      const rows = [direct, run];
+      const layout: TabLayout = { revision: 2, items: [] };
+      await authorize?.({} as unknown as Parameters<TabAuthorization>[0], rows, layout);
+      const closed = rows.filter((row) => ids.includes(row.id) && (!include || include(row)));
+      for (const row of closed) row.closedAt = new Date();
+      return { tabIds: closed.map(({ id }) => id), layout };
+    };
+    try {
+      expect(await f.service.close(actor, [direct.id, run.id], "same-lineage-close")).toEqual({
+        closed: [direct.id, run.id],
+        failed: [],
+      });
+      expect(closes.mock.calls).toEqual([
+        [ownerId, direct, true],
+        [ownerId, run, true],
+      ]);
+    } finally {
+      f.service.dispose();
+    }
+  });
+
   it("hides the entire partial-reach group and unauthorized holders without hiding offline tabs", async () => {
     const a = row("window"),
       b = row();
@@ -267,6 +307,78 @@ it("shares one owner read and refreshes only the changed binding for two devices
     computerReads: computers.mock.calls.length,
     taskReads: tasks.mock.calls.length,
   }).toEqual({ databaseSnapshots: 0, nativeRPCs: 1, computerReads: 1, taskReads: 2 });
+  f.service.dispose();
+});
+
+it("projects only the opened ungrouped tab for a Run actor without scanning unrelated tabs", async () => {
+  const existing = Array.from({ length: 12 }, () => row("window"));
+  const f = fixture(existing);
+  const runActor: TabActor = {
+    kind: "run",
+    claims: {
+      aud: "opensteer-run-tools",
+      iss: "opensteer-host",
+      iat: 1,
+      exp: 9_999_999_999,
+      jti: "jti-1",
+      runId: createId("run"),
+      threadId: taskId,
+      environmentId: createId("environment"),
+      requestedBy: ownerId,
+      runnerId: computerId,
+      runnerBootId: "boot-1",
+      bindingGeneration: 1,
+      grantId: createId("grant"),
+    },
+  };
+  let openedRow: TabRecord | undefined;
+  f.options.pages.open = async (_actor, target) => ({
+    id: tabId(),
+    ownerId,
+    kind: "page",
+    computerId: DeviceIdSchema.parse(computerId),
+    title: "Opened",
+    url: target.url ?? null,
+    openedBy: { taskId },
+    pageBinding: {
+      lineageId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+      sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+      surfaceId: BrowserSurfaceIdSchema.parse(`bsf_${randomUUID()}`),
+    },
+  });
+  f.options.store.open = async (write) => {
+    const created: TabRecord = {
+      ...row("phone"),
+      id: write.id,
+      kind: "page",
+      title: write.title,
+      url: write.kind === "page" ? (write.url ?? null) : null,
+      openedBy: write.openedBy,
+      pageBinding: write.kind === "page" ? (write.pageBinding ?? null) : null,
+    };
+    openedRow = created;
+    existing.push(created);
+    const layout: TabLayout = {
+      revision: 2,
+      items: existing.map((item) => ({ kind: "tab", tabId: item.id })),
+    };
+    f.setLayout(layout);
+    return { tab: created, tabIds: [created.id], layout };
+  };
+  const snapshots = vi.spyOn(f.options.store, "snapshot");
+  const windows = vi.spyOn(f.native, "windowState");
+  const pageStates = vi.spyOn(f.options.pages, "state");
+
+  const opened = await f.service.open(
+    runActor,
+    { kind: "page", guest: true, url: "https://example.test/" },
+    "run-open-key",
+    1,
+  );
+  expect(opened.tab.tabId).toBe(openedRow!.id);
+  expect(snapshots).not.toHaveBeenCalled();
+  expect(windows).not.toHaveBeenCalled();
+  expect(pageStates).toHaveBeenCalledTimes(1);
   f.service.dispose();
 });
 
@@ -1125,6 +1237,52 @@ describe("targeted tab mutations, single-tab reads, and projection batching", ()
     expect(windowStatesBatch).toHaveBeenCalledTimes(1);
     expect(windowStatesBatch.mock.calls[0]?.[1]).toHaveLength(2);
     expect(singleWindowState).not.toHaveBeenCalled();
+    f.service.dispose();
+  });
+});
+
+describe("closing a group", () => {
+  it("answers a replay with the same key exactly as the first call answered", async () => {
+    const [kept, closed] = [row(), row()];
+    const groupId = TabGroupIdSchema.parse(`tgp_${randomUUID()}`);
+    const f = fixture([kept, closed]);
+    const group = (tabIds: TabRecord["id"][]): TabLayout["items"][number] => ({
+      kind: "group",
+      group: { groupId, name: "Research", color: "blue", collapsed: false, tabIds },
+    });
+    let layout: TabLayout = { revision: 1, items: [group([kept.id, closed.id])] };
+    const answered = new Map<string, { tabIds: TabRecord["id"][]; layout: TabLayout }>();
+    // As the store does: authority first, then a replay's stored answer or the close itself.
+    (f.options.store as unknown as Record<string, unknown>).closeGroup = async (
+      _owner: unknown,
+      _group: unknown,
+      key: string,
+      authorize: TabAuthorization,
+      canClose: (row: TabRecord) => boolean,
+    ) => {
+      const open = [kept, closed].filter((row) => !row.closedAt);
+      await authorize({} as never, open, structuredClone(layout));
+      const stored = answered.get(key);
+      if (stored) return { ...structuredClone(stored), replayed: true, currentLayout: layout };
+      const tabIds = open.filter(canClose).map((row) => row.id);
+      for (const row of open) if (tabIds.includes(row.id)) row.closedAt = new Date();
+      const remaining = open.filter((row) => !tabIds.includes(row.id)).map((row) => row.id);
+      layout = { revision: 2, items: remaining.length ? [group(remaining)] : [] };
+      answered.set(key, { tabIds, layout: structuredClone(layout) });
+      return { tabIds, layout: structuredClone(layout) };
+    };
+    // The first call may not close `kept`; by the replay that refusal has gone.
+    let refused = new Set([kept.id]);
+    f.options.deniedRows = async () => refused;
+    const first = await f.service.closeGroup(actor, groupId, "close-group");
+    expect(first).toMatchObject({
+      closed: [closed.id],
+      failed: [{ tabId: kept.id }],
+      groupClosed: false,
+    });
+    refused = new Set();
+    const replay = await f.service.closeGroup(actor, groupId, "close-group");
+    expect({ ...replay, layout: undefined }).toEqual({ ...first, layout: undefined });
     f.service.dispose();
   });
 });

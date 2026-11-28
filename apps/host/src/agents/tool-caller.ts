@@ -19,6 +19,16 @@ export interface RunToolContext {
 export interface ToolCaller {
   readonly run: RunCapabilityClaims<string> | null;
   readonly threadId: ThreadId;
+  /**
+   * The exact execution (`run:`, `trigger:` or `watch:`) the call is admitted under. A task is
+   * never a substitute: without this the call has no authority.
+   */
+  readonly agentBindingId: string;
+  /**
+   * The execution works under a connected agent's authority, as the read that authenticated it
+   * resolved (`AgentCaller.agentConnection`). Carried, never decided here.
+   */
+  readonly connectionWork?: true;
   /** For a call through the plugin tools: asks the person through the calling execution. */
   readonly elicit?: PluginElicit;
   readonly authorize?: () => Promise<void>;

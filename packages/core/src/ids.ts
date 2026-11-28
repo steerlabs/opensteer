@@ -2,6 +2,8 @@ import { z } from "zod";
 import type { DeviceId } from "./devices.js";
 
 const idPrefixes = {
+  agentOperation: "aop",
+  agentSession: "ags",
   teamNotice: "tnt",
   teamBlob: "tbl",
   teamAgentRequest: "tar",
@@ -110,7 +112,13 @@ export type TeamBlobId = Brand<string, "TeamBlobId">;
 
 export type TeamNoticeId = Brand<string, "TeamNoticeId">;
 
+export type AgentSessionId = Brand<string, "AgentSessionId">;
+
+export type AgentOperationId = Brand<string, "AgentOperationId">;
+
 export interface IdByKind {
+  readonly agentOperation: AgentOperationId;
+  readonly agentSession: AgentSessionId;
   readonly teamNotice: TeamNoticeId;
   readonly teamBlob: TeamBlobId;
   readonly teamAgentRequest: TeamAgentRequestId;
@@ -178,6 +186,8 @@ export const AuthAdmissionIdSchema = idSchema("authAdmission");
 export const AttachmentIdSchema = idSchema("attachment");
 export const AuthSessionIdSchema = idSchema("authSession");
 export const BrowserProfileIdSchema = idSchema("browserProfile");
+export const AgentSessionIdSchema = idSchema("agentSession");
+export const AgentOperationIdSchema = idSchema("agentOperation");
 export const BrowserTabGroupIdSchema = idSchema("browserTabGroup");
 export const BrowserSourceIdSchema = idSchema("browserSource");
 export const CausalChainIdSchema = idSchema("causalChain");

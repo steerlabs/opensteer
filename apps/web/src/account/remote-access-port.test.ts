@@ -4,6 +4,7 @@ import type { PersonalRemoteAdministrationStatus } from "@opensteer/protocol";
 import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import {
   courierRemoteAccessPort,
+  desktopRemoteAccessPort,
   signInThroughBrowser,
   webRemoteAccessRoute,
 } from "./remote-access-port.js";
@@ -167,5 +168,37 @@ describe("signInThroughBrowser", () => {
     await expect(pending).rejects.toThrow("Cancelled.");
     await vi.waitFor(() => expect(opening.desktop.cancel).toHaveBeenCalledOnce());
     expect(opening.listening()).toBe(false);
+  });
+});
+
+describe("finishing a saved link on this computer", () => {
+  const outcome = (kind: "activation-pending" | "linked") =>
+    ({
+      kind,
+      message: kind === "linked" ? "Added." : "This computer is saved but not added yet.",
+      status: {} as never,
+      succeeded: kind === "linked",
+    }) as const;
+  const bridge = {} as unknown as Parameters<typeof desktopRemoteAccessPort>[1];
+  const controller = (kind: "activation-pending" | "linked") =>
+    ({ link: vi.fn(async () => outcome(kind)) }) as unknown as Parameters<
+      typeof desktopRemoteAccessPort
+    >[0];
+
+  it("says at once that a link still isn't added, rather than waiting for a change", async () => {
+    const port = desktopRemoteAccessPort(controller("activation-pending"), bridge, "studio Mac");
+    await expect(
+      port.link({ activating: true, signal: new AbortController().signal }),
+    ).rejects.toThrow("Studio Mac is saved to your account but not added yet.");
+    // A first link that is saved but not yet added is followed through as before.
+    await expect(
+      port.link({ activating: false, signal: new AbortController().signal }),
+    ).resolves.toBeUndefined();
+    await expect(
+      desktopRemoteAccessPort(controller("linked"), bridge, "studio Mac").link({
+        activating: true,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBeUndefined();
   });
 });

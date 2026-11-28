@@ -1,23 +1,34 @@
 import type { PersonFillVersion } from "@opensteer/protocol";
 import {
   BrowserAttachTicketClaimsSchema,
-  type BrowserAttachTicketClaims,
+  PooledBrowserAttachTicketClaimsSchema,
+  type RuntimeBrowserAttachTicketClaims,
   type BrowserAttachTicketIdentity,
+  type BrowserHomeAddresses,
   type BrowserSessionId,
 } from "@opensteer/protocol/browser";
 import { randomBytes, sign, type KeyObject } from "node:crypto";
+import type { ThisHomeAddresses } from "@opensteer/shared/homeAddress";
 
 const ticketType = "opensteer-browser-attach+jwt";
 
 interface IssueBrowserAttachTicketInput {
   readonly access: "read-write";
+  readonly standardCdp?: RuntimeBrowserAttachTicketClaims["standardCdp"];
+  readonly standardCdpAttempt?: RuntimeBrowserAttachTicketClaims["standardCdpAttempt"];
+  readonly standardCdpLineage?: RuntimeBrowserAttachTicketClaims["standardCdpLineage"];
+  readonly standardCdpLease?: RuntimeBrowserAttachTicketClaims["standardCdpLease"];
   readonly creationOrigin: "agent" | "person";
+  /** Whom the attachment acts for; only for a runtime that reads it. */
+  readonly actor?: "agent" | "person" | undefined;
   readonly operationExpiresAt?: string;
   readonly remainingBudgetMs?: number;
   readonly passkeys?: 1;
   readonly personFillVersion?: PersonFillVersion | undefined;
   readonly navigationVersion?: 1;
-  readonly initialNavigation?: BrowserAttachTicketClaims["initialNavigation"];
+  readonly initialNavigation?: RuntimeBrowserAttachTicketClaims["initialNavigation"];
+  readonly reattach?: true;
+  readonly pool?: RuntimeBrowserAttachTicketClaims["pool"];
   readonly navigationAttributionVersion?: 1;
   readonly popupFollowVersion?: 1;
   readonly editingVersion?: 1 | 2;
@@ -25,7 +36,7 @@ interface IssueBrowserAttachTicketInput {
   readonly surfaceState?: 1;
   readonly clipboard?: boolean;
   readonly tabRestoreVersion?: 1;
-  readonly initialSurfaceId?: BrowserAttachTicketClaims["initialSurfaceId"];
+  readonly initialSurfaceId?: RuntimeBrowserAttachTicketClaims["initialSurfaceId"];
   /** The session's immutable native binding, or a temporary Guest. */
   readonly identity: BrowserAttachTicketIdentity;
   readonly runtimeId: string;
@@ -40,6 +51,12 @@ interface BrowserAttachTicketSignerOptions {
   readonly keyId: string;
   readonly lifetimeMs?: number;
   readonly privateKey: KeyObject;
+  /**
+   * The addresses of this Home as they are now (`home-addresses.ts`), put on every ticket that
+   * carries the actor claim so the runtime knows where a tab an agent drives may not go. Held in
+   * memory: issuing reads nothing.
+   */
+  readonly homeAddresses?: () => ThisHomeAddresses;
 }
 
 /** Signs the narrow, single-use ticket consumed directly by Browser Runtime. */
@@ -48,6 +65,7 @@ export class BrowserAttachTicketSigner {
   readonly #keyId: string;
   readonly #lifetimeMs: number;
   readonly #privateKey: KeyObject;
+  readonly #homeAddresses: (() => ThisHomeAddresses) | undefined;
 
   constructor(options: BrowserAttachTicketSignerOptions) {
     if (!/^[A-Za-z0-9._:-]{1,255}$/.test(options.keyId)) {
@@ -70,13 +88,24 @@ export class BrowserAttachTicketSigner {
       throw new TypeError("Browser attach ticket lifetime must be from 1 through 300 seconds.");
     }
     this.#privateKey = options.privateKey;
+    this.#homeAddresses = options.homeAddresses;
   }
 
   issue(input: IssueBrowserAttachTicketInput): string {
     const issuedAt = this.#clock();
-    const claims: BrowserAttachTicketClaims = BrowserAttachTicketClaimsSchema.parse({
+    const schema = input.pool
+      ? PooledBrowserAttachTicketClaimsSchema
+      : BrowserAttachTicketClaimsSchema;
+    // Only a ticket with the actor claim carries the set (B4): no other one pays for it.
+    const home = input.actor ? this.#homeAddresses?.() : undefined;
+    const claims: RuntimeBrowserAttachTicketClaims = schema.parse({
       access: input.access,
+      ...(input.standardCdp ? { standardCdp: input.standardCdp } : {}),
+      ...(input.standardCdpAttempt ? { standardCdpAttempt: input.standardCdpAttempt } : {}),
+      ...(input.standardCdpLineage ? { standardCdpLineage: input.standardCdpLineage } : {}),
+      ...(input.standardCdpLease ? { standardCdpLease: input.standardCdpLease } : {}),
       creationOrigin: input.creationOrigin,
+      ...(input.actor ? { actor: input.actor } : {}),
       ...(input.basicInput === 1 ? { basicInput: 1 } : {}),
       ...(input.surfaceState === 1 ? { surfaceState: 1 } : {}),
       ...(input.personFillVersion ? { personFillVersion: input.personFillVersion } : {}),
@@ -93,6 +122,8 @@ export class BrowserAttachTicketSigner {
             initialNavigation: input.initialNavigation,
           }
         : {}),
+      ...(input.reattach ? { reattach: true } : {}),
+      ...(input.pool ? { pool: input.pool } : {}),
       ...(input.navigationAttributionVersion === 1 ? { navigationAttributionVersion: 1 } : {}),
       ...(input.popupFollowVersion === 1 ? { popupFollowVersion: 1 } : {}),
       ...(input.tabRestoreVersion
@@ -114,11 +145,21 @@ export class BrowserAttachTicketSigner {
       sessionId: input.sessionId,
       subject: input.subject,
       ...(input.viewport ? { viewport: input.viewport } : {}),
+      // Only beside the actor claim: a runtime that reads it (the Mac's, a pooled one) holds the
+      // tabs agents drive; a phone browser reads neither and refuses a claim it does not know.
+      ...(home && (home.origins.length || home.loopbackPorts.length)
+        ? {
+            homeAddresses: {
+              origins: [...home.origins],
+              loopbackPorts: [...home.loopbackPorts],
+            } satisfies BrowserHomeAddresses,
+          }
+        : {}),
     });
     return this.#sign(claims, ticketType);
   }
 
-  #sign(claims: BrowserAttachTicketClaims, typ: string): string {
+  #sign(claims: RuntimeBrowserAttachTicketClaims, typ: string): string {
     const protectedHeader = Buffer.from(
       JSON.stringify({ alg: "EdDSA", kid: this.#keyId, typ }),
       "utf8",

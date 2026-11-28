@@ -1,46 +1,68 @@
+import type { SessionPersonTools } from "./session-person.js";
+import { refused } from "@opensteer/core";
+import { discoverHandler } from "./discover.js";
 import { appToolHandlers } from "./apps.js";
 import { TabToolHandlers } from "./tabs.js";
+import type { BrowserToolHandlers } from "./browser.js";
 import { administrationToolHandlers, type AdministrationToolHandlers } from "./administration.js";
 import type { AppService } from "../../apps/app-service.js";
 
 import type { ProductToolHandlers } from "./product.js";
 import type { DeviceToolHandlers } from "./devices.js";
 import type { TriggerToolHandlers } from "./triggers.js";
-import type { TeamKnowledgePort, TeamToolPort } from "../team-tool-port.js";
-import { knowledgeToolHandlers, teamToolHandlers } from "./team.js";
-import type { RunId, TeamAgentRequestId, ThreadId } from "@opensteer/core";
 
 export type { AgentToolHandlers, ToolCall, ToolInput } from "./types.js";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import type { PluginToolHandlers } from "./plugins.js";
 import { localServerToolHandlers } from "./local-servers.js";
 import type { LocalServerRegistry } from "../../local-servers/local-server-registry.js";
+import type { CommandTools } from "./commands.js";
+
 export function agentToolHandlers(options: {
   readonly administration: AdministrationToolHandlers;
   readonly product: ProductToolHandlers;
+  readonly sessionPerson?: SessionPersonTools;
   readonly devices: DeviceToolHandlers;
   readonly triggers: TriggerToolHandlers;
   readonly apps: Pick<AppService, "publish" | "list" | "start" | "stop" | "delete">;
   readonly tabs: TabToolHandlers;
+  readonly discoverSources?: Parameters<typeof discoverHandler>[1];
+  /** The browser for connected agents; absent on a Home without direct work. */
+  readonly browser?: BrowserToolHandlers;
   readonly plugins?: PluginToolHandlers;
   readonly localServers?: LocalServerRegistry;
-  readonly team?: TeamToolPort;
-  readonly knowledge?: TeamKnowledgePort;
-  /** Whether a Run may still use its owner's personal context, rechecked per call. */
-  readonly personalContextForRun: (runId: RunId) => Promise<boolean>;
-  readonly teamRequestForRun: (
-    runId: RunId,
-    threadId: ThreadId,
-  ) => Promise<TeamAgentRequestId | null>;
+  /** Home commands through the one door; absent on a Home without the door wired. */
+  readonly commands?: CommandTools;
 }): Partial<AgentToolHandlers> {
   const p = options.product,
     d = options.devices,
     t = options.triggers;
+  const sessionPerson = () => {
+    if (!options.sessionPerson)
+      throw refused("conflict", "This Home cannot open a Request for direct work.");
+    return options.sessionPerson;
+  };
+  const commands = options.commands;
+  // The older task tools write through the same door (rule 2, A3).
+  if (commands) p?.useDoor(commands);
   const handlers: Partial<AgentToolHandlers> = {
     ...administrationToolHandlers(options.administration),
+    ...(commands
+      ? {
+          opensteer_commands: (c: ToolCall<"opensteer_commands">) => commands.opensteer_commands(c),
+          opensteer_command: (c: ToolCall<"opensteer_command">) => commands.opensteer_command(c),
+          opensteer_state: (c: ToolCall<"opensteer_state">) => commands.opensteer_state(c),
+        }
+      : {}),
     ...options.plugins?.handlers(),
     ...(options.localServers ? localServerToolHandlers(options.localServers) : {}),
     ...appToolHandlers(options.apps),
+    ...(options.browser
+      ? {
+          browser_use: (c: ToolCall<"browser_use">) => options.browser!.browser_use(c),
+          browser_connect: (c: ToolCall<"browser_connect">) => options.browser!.browser_connect(c),
+        }
+      : {}),
     tab_list: (c) => options.tabs.tab_list(c),
     tab_open: (c) => options.tabs.tab_open(c),
     tab_close: (c) => options.tabs.tab_close(c),
@@ -87,7 +109,10 @@ export function agentToolHandlers(options: {
         targets: (c: ToolCall<"opensteer_delegation_cancel">) => p.assignmentTargets(c),
       },
     ),
-    ask_person: async (c) => await p.ask_person(c),
+    ask_person: (c) =>
+      c.caller.kind === "connection"
+        ? sessionPerson().question({ ...c, caller: c.caller })
+        : p.ask_person(c),
     send_to_person: async (c) => await p.send_to_person(c),
     show_to_person: Object.assign(
       async (c: ToolCall<"show_to_person">) => await p.show_to_person(c),
@@ -109,8 +134,14 @@ export function agentToolHandlers(options: {
         input: { ...c.input, action: "respond", limit: 50 },
       }),
     opensteer_request_withdraw: async (c) => await p.opensteer_request_withdraw(c),
-    card_request: async (c) => await p.card_request(c),
-    saved_login_request: async (c) => await p.saved_login_request(c),
+    card_request: (c) =>
+      c.caller.kind === "connection"
+        ? sessionPerson().credentials({ ...c, caller: c.caller }, "card")
+        : p.card_request(c),
+    saved_login_request: (c) =>
+      c.caller.kind === "connection"
+        ? sessionPerson().credentials({ ...c, caller: c.caller }, "login")
+        : p.saved_login_request(c),
     chrome_cookies_request: async (c) => await p.chrome_cookies_request(c),
     browser_profile_request: async (c) => await p.browser_profile_request(c),
     computer_access_request: async (c) => await p.computer_access_request(c),
@@ -122,12 +153,13 @@ export function agentToolHandlers(options: {
     computer_use: async (c) => await d.computer_use(c),
     computer_apps: async (c) => await d.computer_apps(c),
     app_access_request: async (c) => await d.app_access_request(c),
-    ...teamToolHandlers({ port: options.team, personalContext: options.personalContextForRun }),
-    ...knowledgeToolHandlers({
-      port: options.knowledge,
-      requestForRun: options.teamRequestForRun,
-      personalContext: options.personalContextForRun,
-    }),
   };
+  if (options.discoverSources) {
+    const discover = discoverHandler(handlers, options.discoverSources);
+    handlers.discover = (call) => {
+      if (call.caller.kind !== "connection") throw refused("not_found", "Unknown Opensteer tool");
+      return discover({ ...call, caller: call.caller });
+    };
+  }
   return handlers;
 }

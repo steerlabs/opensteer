@@ -1,4 +1,9 @@
-import { SurfaceLedger, type BrowserLaunchRequest } from "@opensteer/browser-runtime-core";
+import { cdpProfileRefusal } from "@opensteer/browser-core";
+import {
+  SurfaceLedger,
+  screencastEndedEvent,
+  type BrowserLaunchRequest,
+} from "@opensteer/browser-runtime-core";
 import { createId } from "@opensteer/core";
 import type { LocalProfileBinding } from "@opensteer/protocol";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
@@ -10,11 +15,44 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 type Bounds = { x: number; y: number; width: number; height: number };
 
+type MockViewWebContents = {
+  backgroundThrottling: boolean;
+  close: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
+  forcefullyCrashRenderer: ReturnType<typeof vi.fn>;
+  loadURL: ReturnType<typeof vi.fn>;
+  getURL: ReturnType<typeof vi.fn<() => string>>;
+  isDestroyed: ReturnType<typeof vi.fn<() => boolean>>;
+  beginFrameSubscription: ReturnType<typeof vi.fn>;
+  endFrameSubscription: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
+  setWindowOpenHandler: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  off: ReturnType<typeof vi.fn>;
+  once: ReturnType<typeof vi.fn>;
+  debugger: {
+    attach: ReturnType<typeof vi.fn>;
+    detach: ReturnType<typeof vi.fn>;
+    isAttached: ReturnType<typeof vi.fn<() => boolean>>;
+    on: ReturnType<typeof vi.fn>;
+    sendCommand: ReturnType<
+      typeof vi.fn<
+        (
+          method: string,
+          parameters?: Record<string, unknown>,
+          sessionId?: string,
+        ) => Promise<unknown>
+      >
+    >;
+  };
+};
+
 const electron = vi.hoisted(() => ({
+  listenerErrors: [] as unknown[],
   restore: undefined as undefined | (() => Promise<void>),
   storage: undefined as undefined | (() => Promise<unknown>),
   blankLoad: undefined as undefined | (() => Promise<void>),
@@ -43,36 +81,26 @@ const electron = vi.hoisted(() => ({
   }>,
   views: [] as Array<{
     options: { webPreferences?: { focusOnNavigation?: boolean } };
-    webContents: {
-      backgroundThrottling: boolean;
-      close: ReturnType<typeof vi.fn>;
-      destroy: ReturnType<typeof vi.fn>;
-      forcefullyCrashRenderer: ReturnType<typeof vi.fn>;
-      loadURL: ReturnType<typeof vi.fn>;
-      getURL: ReturnType<typeof vi.fn<() => string>>;
-      isDestroyed: ReturnType<typeof vi.fn<() => boolean>>;
-      beginFrameSubscription: ReturnType<typeof vi.fn>;
-      endFrameSubscription: ReturnType<typeof vi.fn>;
-      focus: ReturnType<typeof vi.fn>;
-      setWindowOpenHandler: ReturnType<typeof vi.fn>;
-      on: ReturnType<typeof vi.fn>;
-      off: ReturnType<typeof vi.fn>;
-      once: ReturnType<typeof vi.fn>;
-      debugger: {
-        attach: ReturnType<typeof vi.fn>;
-        detach: ReturnType<typeof vi.fn>;
-        isAttached: ReturnType<typeof vi.fn<() => boolean>>;
-        on: ReturnType<typeof vi.fn>;
-        sendCommand: ReturnType<
-          typeof vi.fn<(method: string, parameters?: Record<string, unknown>) => Promise<unknown>>
-        >;
-      };
-    };
+    initialWebContents: MockViewWebContents;
+    webContents: MockViewWebContents;
     getBounds: ReturnType<typeof vi.fn<() => Bounds>>;
     setBounds: ReturnType<typeof vi.fn<(bounds: Bounds) => void>>;
   }>,
 }));
 
+// Each debugger session's state, as the hub makes it, to read what it still keeps.
+const debuggerSessions = vi.hoisted(() => [] as unknown[]);
+vi.mock("./electron-debugger-session.js", async (original) => {
+  const made = await original<typeof import("./electron-debugger-session.js")>();
+  return {
+    DebuggerSessionState: class extends made.DebuggerSessionState {
+      constructor() {
+        super();
+        debuggerSessions.push(this);
+      }
+    },
+  };
+});
 vi.mock("electron", () => {
   class MockWebContents {
     readonly id = electron.views.length + 1;
@@ -126,9 +154,36 @@ vi.mock("electron", () => {
         setImmediate(() => callback({ getSize: () => ({ width: 800, height: 600 }) })),
     );
     readonly endFrameSubscription = vi.fn();
-    readonly close = vi.fn(() => {
+    #onDestroying: (() => void) | undefined;
+    #destroyed = false;
+    readonly #destroyedListeners: Array<{ readonly fn: () => void; readonly once: boolean }> = [];
+    attachView(onDestroying: () => void): void {
+      this.#onDestroying = onDestroying;
+    }
+    #markDestroyed(): void {
+      if (this.#destroyed) return;
+      this.#destroyed = true;
       this.isDestroyed.mockReturnValue(true);
-      for (const [event, listener] of this.once.mock.calls) if (event === "destroyed") listener();
+      // Match real Electron: WebContentsView.webContents becomes undefined before `destroyed` fires,
+      // and `destroyed` is emitted asynchronously to both `on` and `once` listeners in registration
+      // order so throws surface directly instead of being swallowed by `#disposeContents`.
+      this.#onDestroying?.();
+      queueMicrotask(() => {
+        for (const entry of this.#destroyedListeners.slice()) {
+          if (entry.once) {
+            const index = this.#destroyedListeners.indexOf(entry);
+            if (index >= 0) this.#destroyedListeners.splice(index, 1);
+          }
+          try {
+            entry.fn();
+          } catch (error) {
+            electron.listenerErrors.push(error);
+          }
+        }
+      });
+    }
+    readonly close = vi.fn(() => {
+      this.#markDestroyed();
     });
     readonly destroy = vi.fn();
     readonly stopFindInPage = vi.fn();
@@ -139,16 +194,30 @@ vi.mock("electron", () => {
       url === "about:blank" ? electron.blankLoad?.() : undefined,
     );
     readonly executeJavaScriptInIsolatedWorld = vi.fn(async () => electron.storage?.() ?? {});
-    readonly off = vi.fn();
-    readonly on = vi.fn();
-    readonly once = vi.fn();
-    readonly removeAllListeners = vi.fn();
+    readonly off = vi.fn((event: string, listener: () => void) => {
+      if (event !== "destroyed") return;
+      const index = this.#destroyedListeners.findIndex((entry) => entry.fn === listener);
+      if (index >= 0) this.#destroyedListeners.splice(index, 1);
+    });
+    readonly on = vi.fn((event: string, listener: () => void) => {
+      if (event === "destroyed") this.#destroyedListeners.push({ fn: listener, once: false });
+    });
+    readonly once = vi.fn((event: string, listener: () => void) => {
+      if (event === "destroyed") this.#destroyedListeners.push({ fn: listener, once: true });
+    });
+    readonly removeAllListeners = vi.fn((event?: string) => {
+      if (!event || event === "destroyed") this.#destroyedListeners.length = 0;
+    });
     readonly setWindowOpenHandler = vi.fn();
     readonly setVisualZoomLevelLimits = vi.fn(async () => undefined);
   }
 
   class MockWebContentsView {
-    readonly webContents = new MockWebContents();
+    readonly initialWebContents = new MockWebContents();
+    #webContents: MockWebContents | undefined = this.initialWebContents;
+    get webContents(): MockWebContents {
+      return this.#webContents as MockWebContents;
+    }
     bounds = { height: 600, width: 800, x: 0, y: 0 };
     readonly getBounds = vi.fn(() => ({ ...this.bounds }));
     readonly options: { webPreferences?: { focusOnNavigation?: boolean } };
@@ -161,6 +230,9 @@ vi.mock("electron", () => {
 
     constructor(options: { webPreferences?: { focusOnNavigation?: boolean } } = {}) {
       this.options = options;
+      this.initialWebContents.attachView(() => {
+        this.#webContents = undefined;
+      });
       electron.views.push(this);
     }
   }
@@ -206,6 +278,7 @@ vi.mock("electron", () => {
     unregisterPreloadScript: vi.fn(),
     webRequest: {
       onBeforeRequest: vi.fn(),
+      onBeforeRedirect: vi.fn(),
       onBeforeSendHeaders: vi.fn(),
       onHeadersReceived: vi.fn(),
       onCompleted: vi.fn(),
@@ -263,6 +336,11 @@ const {
   electronPagePresentation,
   nativePlacement,
 } = await import("./electron-browser-launcher.js");
+
+afterEach(() => {
+  const errors = electron.listenerErrors.splice(0);
+  if (errors.length > 0) throw errors[0];
+});
 
 it("attributes renderer memory to its own frame trees and keeps unassigned counts separate", async () => {
   const launch = () =>
@@ -375,6 +453,72 @@ it("restores a Guest page before announcing without loading a blank", async () =
     browser.context.onPage(announced);
     await browser.context.createPage({ restore: state });
     expect(announced).toHaveBeenCalledOnce();
+  } finally {
+    await browser.close();
+    launcher.close();
+  }
+});
+
+// The follow view's sign that a page takes commands for the document it committed: a main-frame
+// navigation is pending from did-start-navigation until Electron's did-navigate or did-fail-load,
+// sent from the browser side's end of it, or did-stop-loading for one that committed nothing.
+it("reports the page's navigations as its browser side starts and finishes them", async () => {
+  const downloads = { accept: vi.fn(), active: vi.fn(() => false) };
+  const launcher = new ElectronBrowserLauncher({ downloads, pagePolicyPreloadPath: "/policy.cjs" });
+  const browser = await launcher.launch({
+    partitionKey: "session:navigations",
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    storage: { kind: "guest" },
+  });
+  const page = browser.context.pages()[0]! as unknown as {
+    readonly navigations: {
+      read(): {
+        readonly blankDocument: boolean;
+        readonly finished: number;
+        readonly pending: boolean;
+      };
+      subscribe(listener: () => void): () => void;
+    };
+  };
+  const emit = (event: string, ...parameters: unknown[]) => {
+    for (const [name, listener] of electron.views.at(-1)!.webContents.on.mock.calls)
+      if (name === event) (listener as (...values: unknown[]) => void)(...parameters);
+  };
+  const start = (url: string, frame: { isMainFrame: boolean; isSameDocument: boolean }) =>
+    emit("did-start-navigation", { ...frame, url });
+  try {
+    const heard = vi.fn();
+    const stop = page.navigations.subscribe(heard);
+    const baseline = page.navigations.read().finished;
+    start("https://site.test/", { isMainFrame: true, isSameDocument: false });
+    // A fragment and a subframe are no navigation of the page's document.
+    start("https://site.test/#a", { isMainFrame: true, isSameDocument: true });
+    start("https://ad.test/", { isMainFrame: false, isSameDocument: false });
+    expect(page.navigations.read()).toMatchObject({ finished: baseline, pending: true });
+    emit("did-navigate", {}, "https://site.test/", 200, "OK");
+    expect(page.navigations.read()).toEqual({
+      blankDocument: false,
+      finished: baseline + 1,
+      pending: false,
+    });
+    // An error page committed; one aborted gave way to another; a subframe's is its own.
+    start("https://gone.test/", { isMainFrame: true, isSameDocument: false });
+    emit("did-fail-load", {}, -3, "ERR_ABORTED", "https://gone.test/", true);
+    expect(page.navigations.read()).toMatchObject({ finished: baseline + 1, pending: true });
+    emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://gone.test/", true);
+    emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://ad.test/", false);
+    expect(page.navigations.read()).toMatchObject({ finished: baseline + 2, pending: false });
+    // A navigation stopped before it committed ends without one.
+    start("https://site.test/slow", { isMainFrame: true, isSameDocument: false });
+    emit("did-stop-loading");
+    expect(page.navigations.read()).toMatchObject({ finished: baseline + 2, pending: false });
+    emit("did-navigate", {}, "about:blank", -1, "");
+    expect(page.navigations.read()).toMatchObject({ blankDocument: true, finished: baseline + 3 });
+    const heardBefore = heard.mock.calls.length;
+    stop();
+    emit("did-navigate", {}, "https://site.test/again", 200, "OK");
+    expect(page.navigations.read().finished).toBe(baseline + 4);
+    expect(heard).toHaveBeenCalledTimes(heardBefore);
   } finally {
     await browser.close();
     launcher.close();
@@ -666,8 +810,8 @@ it("rejects a refused restore before announcing and closes its unloaded view", a
       }),
     ).rejects.toThrow("History refused");
     expect(announced).not.toHaveBeenCalled();
-    expect(electron.views.at(-1)!.webContents.loadURL).not.toHaveBeenCalled();
-    expect(electron.views.at(-1)!.webContents.close).toHaveBeenCalled();
+    expect(electron.views.at(-1)!.initialWebContents.loadURL).not.toHaveBeenCalled();
+    expect(electron.views.at(-1)!.initialWebContents.close).toHaveBeenCalled();
   } finally {
     electron.restore = undefined;
     await browser.close();
@@ -922,9 +1066,9 @@ async function hubPage(session: string) {
   debug.detach.mockImplementation(() => {
     attached = false;
   });
-  const deliver = (method: string, parameters: unknown) => {
+  const deliver = (method: string, parameters: unknown, sessionId?: string) => {
     for (const [event, listener] of debug.on.mock.calls)
-      if (event === "message") listener({}, method, parameters);
+      if (event === "message") listener({}, method, parameters, sessionId);
   };
   const holds = new Map<string, PromiseWithResolvers<unknown>[]>();
   let worlds = 0;
@@ -959,6 +1103,48 @@ async function hubPage(session: string) {
   };
 }
 
+/**
+ * Each attach the hub makes for itself gets a session of its own, as Chromium gives it; what was
+ * attached, and what the hub let go, is read back. `announce`: Chromium tells the parent session of
+ * the attach before it answers it. `refuseStartIn`: a start in that session is refused.
+ */
+function ownSessions(
+  hub: Awaited<ReturnType<typeof hubPage>>,
+  options: { readonly announce?: boolean; readonly refuseStartIn?: string } = {},
+) {
+  const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+  const attached: string[] = [];
+  hub.contents.debugger.sendCommand.mockImplementation(
+    (method: string, parameters?: Record<string, unknown>, session?: string) => {
+      if (method === "Target.attachToTarget") {
+        const sessionId = `cast-${attached.length + 1}`;
+        attached.push(sessionId);
+        if (options.announce)
+          hub.deliver("Target.attachedToTarget", {
+            sessionId,
+            targetInfo: { targetId: "target-1", type: "page" },
+            waitingForDebugger: false,
+          });
+        return Promise.resolve({ sessionId });
+      }
+      if (
+        method === "Page.startScreencast" &&
+        options.refuseStartIn !== undefined &&
+        session === options.refuseStartIn
+      )
+        return Promise.reject(new Error("Session with given id not found."));
+      return answer(method, parameters, session);
+    },
+  );
+  return {
+    attached,
+    detached: () =>
+      hub
+        .sent("Target.detachFromTarget")
+        .map(([, parameters]) => String((parameters as { sessionId: string }).sessionId)),
+  };
+}
+
 function world(id: number | string) {
   return {
     context: {
@@ -981,6 +1167,440 @@ function within(promise: Promise<unknown>): Promise<"fulfilled" | "rejected" | "
     new Promise<"held">((resolve) => setTimeout(() => resolve("held"), 1_000)),
   ]);
 }
+
+describe.each([
+  {
+    method: "Browser.setDownloadBehavior",
+    parameters: { behavior: "allow", downloadPath: "/fixture" },
+  },
+  { method: "Browser.cancelDownload", parameters: { guid: "fixture-download" } },
+])("Electron $method profile scoping", ({ method, parameters }) => {
+  it.each([
+    { contextId: undefined, errorMessage: undefined, forbidden: true },
+    { contextId: "native-profile", errorMessage: `'${method}' wasn't found`, forbidden: true },
+    { contextId: "native-profile", errorMessage: "Not allowed", forbidden: true },
+    {
+      contextId: "native-profile",
+      errorMessage: "Browser context management is not supported.",
+      forbidden: true,
+    },
+    { contextId: "native-profile", errorMessage: "Invalid parameters", forbidden: false },
+  ])(
+    "handles context $contextId and debugger error $errorMessage",
+    async ({ contextId, errorMessage, forbidden }) => {
+      const hub = await hubPage("92");
+      const debug = hub.contents.debugger;
+      const answer = debug.sendCommand.getMockImplementation()!;
+      const debuggerError = new Error(errorMessage);
+      debug.sendCommand.mockImplementation(async (command, params) => {
+        if (command === "Target.getTargetInfo")
+          return { targetInfo: { targetId: "target-1", browserContextId: contextId } };
+        if (command === method) throw debuggerError;
+        return answer(command, params);
+      });
+
+      try {
+        const result = hub.browser.cdp.send(method, parameters);
+        if (forbidden) {
+          await expect(result).rejects.toMatchObject({
+            code: "forbidden",
+            message: `${method} cannot be scoped to this browser profile by this Electron version.`,
+          });
+        } else {
+          await expect(result).rejects.toBe(debuggerError);
+        }
+        expect(hub.sent(method)).toEqual(
+          contextId === undefined ? [] : [[method, { ...parameters, browserContextId: contextId }]],
+        );
+      } finally {
+        await hub.browser.close();
+      }
+    },
+  );
+});
+
+it("inspects profiler scripts on a private Electron session and refuses a renderer change", async () => {
+  const hub = await hubPage("91");
+  const debug = hub.contents.debugger;
+  const answer = debug.sendCommand.getMockImplementation()!;
+  const inventorySessionId = "agent-native-session";
+  const result = {
+    profile: {
+      nodes: [
+        {
+          id: 1,
+          callFrame: {
+            scriptId: "17",
+            functionName: "pageWork",
+            url: "https://page.test/work.js",
+            lineNumber: 4,
+            columnNumber: 2,
+          },
+        },
+      ],
+    },
+  };
+  let rendererChanges = false;
+  debug.sendCommand.mockImplementation(async (method, parameters, sessionId) => {
+    if (method === "Runtime.getIsolateId") return { id: "page-isolate" };
+    if (method === "Profiler.stop") return result;
+    if (sessionId === inventorySessionId) {
+      if (method === "Runtime.enable")
+        hub.deliver("Runtime.executionContextCreated", world(17), sessionId);
+      if (method === "Debugger.enable") {
+        hub.deliver("Debugger.scriptParsed", { scriptId: "17", executionContextId: 17 }, sessionId);
+        if (rendererChanges) hub.deliver("Runtime.executionContextsCleared", {});
+      }
+      return {};
+    }
+    return answer(method, parameters);
+  });
+  try {
+    const agent = await hub.page.agentCdp();
+    const events = vi.fn();
+    agent.on("Debugger.scriptParsed", events);
+    await agent.send("Profiler.enable");
+    await agent.send("Profiler.start");
+    await expect(agent.send("Profiler.stop")).resolves.toEqual(result);
+    expect(events).not.toHaveBeenCalled();
+    expect(hub.sent("Debugger.enable")).toEqual([
+      ["Debugger.enable", { maxScriptsCacheSize: 0 }, inventorySessionId],
+    ]);
+    expect(hub.sent("Target.detachFromTarget")).toEqual([
+      ["Target.detachFromTarget", { sessionId: inventorySessionId }],
+    ]);
+
+    rendererChanges = true;
+    await agent.send("Profiler.start");
+    await expect(agent.send("Profiler.stop")).rejects.toMatchObject({ code: "forbidden" });
+    // The page changed under the profile's own inventory, so the scripts alive
+    // at stop are read on a second session; every session read is let go.
+    expect(hub.sent("Target.attachToTarget")).toHaveLength(3);
+    expect(hub.sent("Target.detachFromTarget")).toHaveLength(3);
+  } finally {
+    await hub.browser.close();
+  }
+});
+
+it("knows a page script that ran during a profile and was collected before it stopped", async () => {
+  const hub = await hubPage("92");
+  const debug = hub.contents.debugger;
+  const answer = debug.sendCommand.getMockImplementation()!;
+  const inventorySessionId = "agent-native-session";
+  const platformWorld = {
+    context: { ...world(30).context, id: 30, uniqueId: "world-30", name: "opensteer-editing" },
+  };
+  const watching = new Set<string>();
+  /** Scripts V8 holds now; a collected one is reported to nobody who enables Debugger later. */
+  const alive = new Map<string, number>([["17", 17]]);
+  let parsedDuringProfile: [string, number][] = [];
+  const frame = (scriptId: string) => ({
+    scriptId,
+    functionName: `work${scriptId}`,
+    url: "https://page.test/work.js",
+    lineNumber: 4,
+    columnNumber: 2,
+  });
+  let stopped: unknown = null;
+  debug.sendCommand.mockImplementation(async (method, parameters, sessionId) => {
+    if (method === "Runtime.getIsolateId") return { id: "page-isolate" };
+    if (method === "Profiler.start") {
+      // The page compiles, runs and drops scripts while it is profiled.
+      for (const [scriptId, executionContextId] of parsedDuringProfile)
+        for (const session of watching)
+          hub.deliver("Debugger.scriptParsed", { scriptId, executionContextId }, session);
+      return {};
+    }
+    if (method === "Profiler.stop") return stopped;
+    if (sessionId === inventorySessionId) {
+      if (method === "Runtime.enable") {
+        hub.deliver("Runtime.executionContextCreated", world(17), sessionId);
+        hub.deliver("Runtime.executionContextCreated", platformWorld, sessionId);
+      }
+      if (method === "Debugger.enable") {
+        watching.add(sessionId);
+        for (const [scriptId, executionContextId] of alive)
+          hub.deliver("Debugger.scriptParsed", { scriptId, executionContextId }, sessionId);
+      }
+      return {};
+    }
+    if (method === "Target.detachFromTarget") watching.delete(String(parameters?.sessionId));
+    return answer(method, parameters);
+  });
+  const profile = async (scripts: [string, number][]) => {
+    parsedDuringProfile = scripts;
+    stopped = {
+      profile: {
+        nodes: ["17", ...scripts.map(([id]) => id)].map((id, index) => ({
+          id: index + 1,
+          callFrame: frame(id),
+        })),
+      },
+    };
+    await agent.send("Profiler.start");
+    return agent.send("Profiler.stop");
+  };
+  const agent = await hub.page.agentCdp();
+  try {
+    await agent.send("Profiler.enable");
+    // The page's own script, gone by the time the profile stops, is still the page's.
+    await expect(profile([["23", 17]])).resolves.toEqual(stopped);
+    // One parsed in a platform world during the profile is still refused, and says why.
+    const platform = await profile([["31", 30]]).catch((error: unknown) => error);
+    expect(platform).toMatchObject({
+      code: "forbidden",
+      message: "Profiler.stop returned Opensteer's preload or platform state.",
+    });
+    expect(cdpProfileRefusal(platform)).toBe("platform-script");
+    // A frame of a script nobody ever reported cannot be classified, so it is refused.
+    parsedDuringProfile = [];
+    stopped = { profile: { nodes: [{ id: 1, callFrame: frame("99") }] } };
+    await agent.send("Profiler.start");
+    const unknown = await agent.send("Profiler.stop").catch((error: unknown) => error);
+    expect(unknown).toMatchObject({ code: "forbidden" });
+    expect(cdpProfileRefusal(unknown)).toBe("unknown-script");
+    expect(watching.size).toBe(0);
+  } finally {
+    await hub.browser.close();
+  }
+});
+
+/**
+ * A page whose profiler and private inspection sessions answer as Chromium
+ * does: each attach is a new session, a session with Debugger enabled hears
+ * every script parsed from then on, and a stop with no profile running fails.
+ */
+async function profiledPage(id: string) {
+  const hub = await hubPage(id);
+  const debug = hub.contents.debugger;
+  const answer = debug.sendCommand.getMockImplementation()!;
+  const platformWorld = {
+    context: { ...world(30).context, id: 30, uniqueId: "world-30", name: "opensteer-editing" },
+  };
+  const state = {
+    attached: [] as string[],
+    detached: [] as string[],
+    watching: new Set<string>(),
+    alive: new Map<string, number>([["17", 17]]),
+    parsedDuringProfile: [] as [string, number][],
+    stopped: null as unknown,
+    profiling: false,
+    attachGate: null as Promise<void> | null,
+  };
+  debug.sendCommand.mockImplementation(async (method, parameters, sessionId) => {
+    if (method === "Runtime.getIsolateId") return { id: "page-isolate" };
+    if (method === "Target.attachToTarget") {
+      const session = `inventory-${state.attached.length + 1}`;
+      state.attached.push(session);
+      await state.attachGate;
+      return { sessionId: session };
+    }
+    if (method === "Target.detachFromTarget") {
+      const session = String(parameters?.sessionId);
+      if (session.startsWith("inventory-")) {
+        state.detached.push(session);
+        state.watching.delete(session);
+      }
+      return {};
+    }
+    if (method === "Profiler.start") {
+      state.profiling = true;
+      // The page compiles, runs and drops scripts while it is profiled.
+      for (const [scriptId, executionContextId] of state.parsedDuringProfile)
+        for (const session of state.watching)
+          hub.deliver("Debugger.scriptParsed", { scriptId, executionContextId }, session);
+      return {};
+    }
+    if (method === "Profiler.stop") {
+      if (!state.profiling) throw new Error("No recording profiles found");
+      state.profiling = false;
+      return state.stopped;
+    }
+    if (sessionId?.startsWith("inventory-")) {
+      if (method === "Runtime.enable") {
+        hub.deliver("Runtime.executionContextCreated", world(17), sessionId);
+        hub.deliver("Runtime.executionContextCreated", platformWorld, sessionId);
+      }
+      if (method === "Debugger.enable") {
+        state.watching.add(sessionId);
+        for (const [scriptId, executionContextId] of state.alive)
+          hub.deliver("Debugger.scriptParsed", { scriptId, executionContextId }, sessionId);
+      }
+      return {};
+    }
+    return answer(method, parameters);
+  });
+  const profile = (...ids: string[]) => ({
+    profile: {
+      nodes: ids.map((scriptId, index) => ({
+        id: index + 1,
+        callFrame: {
+          scriptId,
+          functionName: `work${scriptId}`,
+          url: "https://page.test/work.js",
+          lineNumber: 4,
+          columnNumber: 2,
+        },
+      })),
+    },
+  });
+  /** Every private session ever attached has been let go. */
+  const settled = () =>
+    vi.waitFor(() => {
+      expect(state.watching).toEqual(new Set());
+      expect([...state.detached].sort()).toEqual([...state.attached].sort());
+    });
+  return { hub, state, profile, settled };
+}
+
+for (const leaving of ["release", "Profiler.disable"] as const)
+  it(`lets go of a profile inventory whose channel left by ${leaving} while it opened`, async () => {
+    const { hub, state, profile, settled } = await profiledPage(
+      leaving === "release" ? "93" : "94",
+    );
+    const keep = await hub.page.agentCdp();
+    try {
+      const agent = await hub.page.agentCdp();
+      await agent.send("Profiler.enable");
+      const opened = Promise.withResolvers<void>();
+      state.attachGate = opened.promise;
+      const starting = agent.send("Profiler.start").catch((error: unknown) => error);
+      await vi.waitFor(() => expect(state.attached).toHaveLength(1));
+      // A disable follows the start it was sent behind, so it settles after the attach.
+      const left = leaving === "release" ? agent.close() : agent.send("Profiler.disable");
+      if (leaving === "release") await left;
+      state.attachGate = null;
+      opened.resolve();
+      await starting;
+      await left;
+      // A channel that has gone never starts a profile.
+      if (leaving === "release") expect(hub.sent("Profiler.start")).toHaveLength(0);
+      await settled();
+      // The next profile still gets its own inventory.
+      state.profiling = false;
+      const next = await hub.page.agentCdp();
+      await next.send("Profiler.enable");
+      state.parsedDuringProfile = [["23", 17]];
+      state.stopped = profile("17", "23");
+      await next.send("Profiler.start");
+      await expect(next.send("Profiler.stop")).resolves.toEqual(state.stopped);
+      await settled();
+    } finally {
+      await keep.close();
+      await hub.browser.close();
+    }
+  });
+
+it("lets go of a profile inventory when the page navigates, and judges the stop as before", async () => {
+  const { hub, state, profile, settled } = await profiledPage("95");
+  const agent = await hub.page.agentCdp();
+  try {
+    await agent.send("Profiler.enable");
+    state.parsedDuringProfile = [["23", 17]];
+    await agent.send("Profiler.start");
+    expect(state.watching).toEqual(new Set(["inventory-1"]));
+    hub.deliver("Runtime.executionContextsCleared", {});
+    await vi.waitFor(() => expect(state.detached).toEqual(["inventory-1"]));
+    // The scripts alive at stop are read on a second session, as before.
+    state.stopped = profile("17");
+    await expect(agent.send("Profiler.stop")).resolves.toEqual(state.stopped);
+    expect(state.attached).toEqual(["inventory-1", "inventory-2"]);
+    await settled();
+  } finally {
+    await hub.browser.close();
+  }
+});
+
+it("never reads a profile inventory still opening for a stop sent right behind its start", async () => {
+  const { hub, state, profile, settled } = await profiledPage("96");
+  const agent = await hub.page.agentCdp();
+  try {
+    await agent.send("Profiler.enable");
+    const opened = Promise.withResolvers<void>();
+    state.attachGate = opened.promise;
+    state.parsedDuringProfile = [["23", 17]];
+    state.stopped = profile("17", "23");
+    const started = agent.send("Profiler.start");
+    const stopped = agent.send("Profiler.stop");
+    await vi.waitFor(() => expect(state.attached).toHaveLength(1));
+    state.attachGate = null;
+    opened.resolve();
+    await started;
+    await expect(stopped).resolves.toEqual(state.stopped);
+    expect(
+      hub
+        .sent("Profiler.start")
+        .concat(hub.sent("Profiler.stop"))
+        .map(([method]) => method),
+    ).toEqual(["Profiler.start", "Profiler.stop"]);
+    await settled();
+  } finally {
+    await hub.browser.close();
+  }
+});
+
+it("never lets a pause on the profile inventory hold the page", async () => {
+  const { hub, state, settled } = await profiledPage("97");
+  const agent = await hub.page.agentCdp();
+  try {
+    await agent.send("Profiler.enable");
+    await agent.send("Profiler.start");
+    const inventory = (method: string) =>
+      hub.contents.debugger.sendCommand.mock.calls
+        .map(([name, , session], index) => ({ name, session, index }))
+        .filter(({ name, session }) => name === method && session === "inventory-1");
+    // Skipping pauses is asked again once Debugger is on.
+    expect(inventory("Debugger.setSkipAllPauses").at(-1)!.index).toBeGreaterThan(
+      inventory("Debugger.enable")[0]!.index,
+    );
+    hub.deliver(
+      "Debugger.paused",
+      { callFrames: [], reason: "other", hitBreakpoints: [] },
+      "inventory-1",
+    );
+    expect(inventory("Debugger.resume")).toHaveLength(1);
+    state.stopped = { profile: { nodes: [] } };
+    await agent.send("Profiler.stop");
+    await settled();
+  } finally {
+    await hub.browser.close();
+  }
+});
+
+it("keeps a profile inventory its own channel's, whatever another channel does", async () => {
+  const { hub, state, profile, settled } = await profiledPage("98");
+  const keep = await hub.page.agentCdp();
+  try {
+    const owner = await hub.page.agentCdp();
+    const other = await hub.page.agentCdp();
+    await owner.send("Profiler.enable");
+    await other.send("Profiler.enable");
+    state.stopped = profile("17");
+    await owner.send("Profiler.start");
+    expect(state.watching).toEqual(new Set(["inventory-1"]));
+    // Another channel's stop reads the scripts alive then and leaves the owner's inventory.
+    await expect(other.send("Profiler.stop")).resolves.toEqual(state.stopped);
+    expect(state.watching).toEqual(new Set(["inventory-1"]));
+    expect(state.detached).toEqual(["inventory-2"]);
+    // Its own start finds the owner's inventory and takes the old path too.
+    await other.send("Profiler.start");
+    await other.send("Profiler.disable");
+    expect(state.watching).toEqual(new Set(["inventory-1"]));
+    await other.close();
+    expect(state.watching).toEqual(new Set(["inventory-1"]));
+    // The owner's disable lets it go; its close lets go of the next one.
+    await owner.send("Profiler.disable");
+    await vi.waitFor(() => expect(state.watching).toEqual(new Set()));
+    await owner.send("Profiler.enable");
+    await owner.send("Profiler.start");
+    expect(state.watching.size).toBe(1);
+    await owner.close();
+    await settled();
+  } finally {
+    await keep.close();
+    await hub.browser.close();
+  }
+});
 
 describe("Electron debugger teardown", () => {
   it("waits for the native page to be destroyed even when no CDP input is pending", async () => {
@@ -1183,19 +1803,23 @@ describe("Electron debugger teardown", () => {
   it("gives a cast that a released channel was restarting to no one", async () => {
     const hub = await hubPage("14");
     const platform = await hub.page.cdp();
-    await platform.send("Page.startScreencast", { format: "png", quality: 10 });
-    const stop = hub.hold("Page.stopScreencast");
+    // JPEG: a PNG's quality is not a setting Chromium uses, so it would be the same cast.
+    await platform.send("Page.startScreencast", { format: "jpeg", quality: 10 });
+    // A restart is a new start with no stop before it: the channel goes while it is held.
+    const start = hub.hold("Page.startScreencast");
     const restarting = platform
-      .send("Page.startScreencast", { format: "png", quality: 20 })
+      .send("Page.startScreencast", { format: "jpeg", quality: 20 })
       .catch((error: unknown) => error);
-    await vi.waitFor(() => expect(stop.replies).toHaveLength(1));
+    await vi.waitFor(() => expect(start.replies).toHaveLength(1));
     expect(await within(platform.detach())).toBe("fulfilled");
+    start.release();
+    start.replies[0]!.resolve({});
     expect(await restarting).toBeInstanceOf(Error);
-    stop.release();
-    stop.replies[0]!.resolve({});
     const agent = await hub.page.agentCdp();
     const before = hub.contents.debugger.sendCommand.mock.calls.length;
     await agent.send("Page.startScreencast", { format: "jpeg", quality: 30 });
+    // Its first frame, which it acks: an ack is forwarded only for a frame Chromium sent.
+    hub.deliver("Page.screencastFrame", { data: "AAAA", metadata: {}, sessionId: 7 });
     await agent.send("Page.screencastFrameAck", { sessionId: 7 });
     expect(
       hub.contents.debugger.sendCommand.mock.calls
@@ -1206,6 +1830,2166 @@ describe("Electron debugger teardown", () => {
       ["Page.screencastFrameAck", { sessionId: 7 }],
     ]);
     await hub.browser.close();
+  });
+
+  // Run 20261122T201214Z-67db1a88: a tab a person opened and never showed started its cast three
+  // times, each a stop and a start, so whoever was watching saw it go stale or blank. One cast
+  // serves everyone who wants the tab's picture.
+  it("starts one cast for every channel that asks for the same picture, and never stops it under them", async () => {
+    const hub = await hubPage("21");
+    // The page's own channel, and two agents' (each a channel of its own).
+    const stream = await hub.page.cdp();
+    const picture = await hub.page.agentCdp();
+    const cast = { everyNthFrame: 1, format: "jpeg", maxHeight: 600, maxWidth: 800, quality: 80 };
+    const frames = { late: [] as unknown[], picture: [] as unknown[], stream: [] as unknown[] };
+    const watch = (
+      channel: { onEvent(listener: (method: string, parameters: unknown) => void): unknown },
+      into: unknown[],
+    ) =>
+      channel.onEvent((method, parameters) => {
+        if (method === "Page.screencastFrame") into.push(parameters);
+      });
+    watch(stream, frames.stream);
+    watch(picture, frames.picture);
+    // Two owners at once, then one asking again for the same picture.
+    await Promise.all([
+      stream.send("Page.startScreencast", cast),
+      picture.send("Page.startScreencast", cast),
+    ]);
+    const frame = { data: "AAAA", metadata: { deviceWidth: 800 }, sessionId: 1 };
+    hub.deliver("Page.screencastFrame", frame);
+    await stream.send("Page.startScreencast", cast);
+    expect(hub.sent("Page.startScreencast")).toHaveLength(1);
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
+    // The page's own channel asked again, so it reset what it shows: it has the frame again.
+    expect(frames.stream).toEqual([frame, frame]);
+    expect(frames.picture).toEqual([frame]);
+    // One that joins after the frame has it at once: a still page sends no other.
+    const late = await hub.page.agentCdp();
+    watch(late, frames.late);
+    await late.send("Page.startScreencast", cast);
+    expect(frames.late).toEqual([frame]);
+    // Chromium hears one ack a frame, from whichever owner acks it first.
+    await picture.send("Page.screencastFrameAck", { sessionId: 1 });
+    await stream.send("Page.screencastFrameAck", { sessionId: 1 });
+    await late.send("Page.screencastFrameAck", { sessionId: 1 });
+    await stream.send("Page.screencastFrameAck", { sessionId: 1 });
+    expect(hub.sent("Page.screencastFrameAck")).toEqual([
+      ["Page.screencastFrameAck", { sessionId: 1 }],
+    ]);
+    // A new size for one is a cast of its own, in a session of its own: the two still watching
+    // the first keep the size they asked for, and see no stop.
+    await stream.send("Page.startScreencast", { ...cast, maxWidth: 1_200 });
+    expect(hub.sent("Page.startScreencast")).toEqual([
+      ["Page.startScreencast", cast],
+      ["Page.startScreencast", { ...cast, maxWidth: 1_200 }, "agent-native-session"],
+    ]);
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
+    hub.deliver("Page.screencastFrame", { ...frame, data: "800" });
+    expect(frames.stream).toEqual([frame, frame]);
+    // The last of each cast to go ends it.
+    await late.send("Page.stopScreencast");
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
+    await picture.send("Page.stopScreencast");
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
+    await stream.send("Page.stopScreencast");
+    expect(hub.sent("Target.detachFromTarget").at(-1)).toEqual([
+      "Target.detachFromTarget",
+      { sessionId: "agent-native-session" },
+    ]);
+    await hub.browser.close();
+  });
+
+  // A frame's ack names the cast, not the frame, and Chromium sends no more while two wait.
+  it("acks every frame Chromium sent once, from the owner that paces it, and never a replay", async () => {
+    const hub = await hubPage("22");
+    const page = await hub.page.cdp();
+    const slow = await hub.page.agentCdp();
+    const cast = { format: "jpeg", maxHeight: 600, maxWidth: 800, quality: 80 };
+    const seen: unknown[] = [];
+    page.onEvent((method, parameters) => {
+      if (method === "Page.screencastFrame") seen.push(parameters);
+    });
+    await page.send("Page.startScreencast", cast);
+    await slow.send("Page.startScreencast", cast);
+    for (let index = 1; index <= 20; index += 1) {
+      hub.deliver("Page.screencastFrame", { data: `${index}`, metadata: {}, sessionId: 1 });
+      await page.send("Page.screencastFrameAck", { sessionId: 1 });
+      // The other owner acks now and then, late; its acks pace nothing.
+      if (index % 7 === 0) await slow.send("Page.screencastFrameAck", { sessionId: 1 });
+    }
+    expect(seen).toHaveLength(20);
+    expect(hub.sent("Page.screencastFrameAck")).toHaveLength(20);
+    // One who joins is handed the latest frame; its ack of that is the hub's to answer.
+    const joiner = await hub.page.cdp();
+    await joiner.send("Page.startScreencast", cast);
+    await joiner.send("Page.screencastFrameAck", { sessionId: 1 });
+    expect(hub.sent("Page.screencastFrameAck")).toHaveLength(20);
+    await hub.browser.close();
+  });
+
+  it("starts the cast again after the debugger lets go, though the settings are the same", async () => {
+    const hub = await hubPage("23");
+    const page = await hub.page.cdp();
+    const cast = { format: "jpeg", maxHeight: 600, maxWidth: 800, quality: 80 };
+    await page.send("Page.startScreencast", cast);
+    for (const [event, listener] of hub.contents.debugger.on.mock.calls)
+      if (event === "detach") listener({}, "target closed");
+    await page.send("Page.startScreencast", cast).catch(() => undefined);
+    await vi.waitFor(() => expect(hub.sent("Page.startScreencast")).toHaveLength(2));
+    await hub.browser.close();
+  });
+
+  it("hands no one a frame of the old size, and an owner asking again the latest", async () => {
+    const hub = await hubPage("24");
+    const page = await hub.page.cdp();
+    const agent = await hub.page.agentCdp();
+    const cast = { format: "jpeg", maxHeight: 600, maxWidth: 800, quality: 80 };
+    const seen: unknown[] = [];
+    agent.onEvent((method, parameters) => {
+      if (method === "Page.screencastFrame") seen.push(parameters);
+    });
+    await page.send("Page.startScreencast", cast);
+    await agent.send("Page.startScreencast", cast);
+    hub.deliver("Page.screencastFrame", {
+      data: "old",
+      metadata: { deviceWidth: 800 },
+      sessionId: 1,
+    });
+    expect(seen).toHaveLength(1);
+    // The page changes size, as a repair does; one who comes back is not handed the old picture.
+    await page.send("Emulation.setVisibleSize", { height: 700, width: 1_000 });
+    await agent.send("Page.stopScreencast");
+    await agent.send("Page.startScreencast", cast);
+    expect(seen).toHaveLength(1);
+    hub.deliver("Page.screencastFrame", {
+      data: "new",
+      metadata: { deviceWidth: 1_000 },
+      sessionId: 1,
+    });
+    await agent.send("Page.startScreencast", cast);
+    expect(seen.map((frame) => (frame as { data: string }).data)).toEqual(["old", "new", "new"]);
+    await hub.browser.close();
+  });
+
+  // Run 20261122T204015Z-32e9d77d: an agent asked for PNG at 320x240 beside the person's view and
+  // was handed the person's JPEG at 1400x900, while the person watched and after they turned away.
+  it("gives each owner frames in the format and size it asked for, and a cast only to owners who asked the same", async () => {
+    const hub = await hubPage("25");
+    const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+    let sessions = 0;
+    hub.contents.debugger.sendCommand.mockImplementation(
+      (method: string, parameters?: Record<string, unknown>, session?: string) =>
+        method === "Target.attachToTarget"
+          ? Promise.resolve({ sessionId: `cast-${++sessions}` })
+          : answer(method, parameters, session),
+    );
+    const person = await hub.page.cdp();
+    const agent = await hub.page.agentCdp();
+    const frames = { agent: [] as string[], person: [] as string[] };
+    person.onEvent((method, parameters) => {
+      if (method === "Page.screencastFrame")
+        frames.person.push((parameters as { data: string }).data);
+    });
+    agent.onEvent((method, parameters) => {
+      if (method === "Page.screencastFrame")
+        frames.agent.push((parameters as { data: string }).data);
+    });
+    const view = { format: "jpeg", maxHeight: 900, maxWidth: 1_400, quality: 80 };
+    const ask = { format: "png", maxHeight: 240, maxWidth: 320 };
+    // Chromium numbers each cast in a session upward: the person's second cast sends frame id 2.
+    const jpeg = (frame = 1) =>
+      hub.deliver("Page.screencastFrame", {
+        data: "jpeg 1400x900",
+        metadata: {},
+        sessionId: frame,
+      });
+    const png = () =>
+      hub.deliver(
+        "Page.screencastFrame",
+        { data: "png 320x240", metadata: {}, sessionId: 2 },
+        "cast-1",
+      );
+    await person.send("Page.startScreencast", view);
+    await agent.send("Page.startScreencast", ask);
+    // Chromium runs one cast a session: the agent's is a second one, in a session of its own.
+    expect(hub.sent("Page.startScreencast")).toEqual([
+      ["Page.startScreencast", view],
+      ["Page.startScreencast", ask, "cast-1"],
+    ]);
+    jpeg();
+    png();
+    expect(frames).toEqual({ agent: ["png 320x240"], person: ["jpeg 1400x900"] });
+    // Each cast's frame is acked once, in the session that cast runs in.
+    await agent.send("Page.screencastFrameAck", { sessionId: 2 });
+    await person.send("Page.screencastFrameAck", { sessionId: 1 });
+    expect(hub.sent("Page.screencastFrameAck")).toEqual([
+      ["Page.screencastFrameAck", { sessionId: 2 }, "cast-1"],
+      ["Page.screencastFrameAck", { sessionId: 1 }],
+    ]);
+    // The person turns away: their cast stops and the agent's goes on. The agent asking again
+    // for its own settings joins its own cast, and is handed its latest frame.
+    await person.send("Page.stopScreencast");
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
+    png();
+    await agent.send("Page.startScreencast", ask);
+    expect(hub.sent("Page.startScreencast")).toHaveLength(2);
+    expect(frames.agent).toEqual(["png 320x240", "png 320x240", "png 320x240"]);
+    // The person comes back: their cast starts again, and each still sees only its own.
+    await person.send("Page.startScreencast", view);
+    expect(hub.sent("Page.startScreencast").at(-1)).toEqual(["Page.startScreencast", view]);
+    jpeg(2);
+    png();
+    expect(frames.person).toEqual(["jpeg 1400x900", "jpeg 1400x900"]);
+    expect(new Set(frames.agent)).toEqual(new Set(["png 320x240"]));
+    // The agent stops: its session ends with its cast, and the person's picture goes on.
+    await agent.send("Page.stopScreencast");
+    expect(hub.sent("Target.detachFromTarget").at(-1)).toEqual([
+      "Target.detachFromTarget",
+      { sessionId: "cast-1" },
+    ]);
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
+    const agentFrames = frames.agent.length;
+    jpeg(2);
+    expect(frames.person).toHaveLength(3);
+    expect(frames.agent).toHaveLength(agentFrames);
+    await hub.browser.close();
+  });
+
+  // Run 20261122T204015Z-32e9d77d: a tab whose dialog had held it was not pictured again once the
+  // dialog closed. Its cast went on with the same sessionId, and every ack after the first was
+  // dropped as if that frame had been acked already.
+  it("keeps a tab's picture coming after its dialog closes, each frame acked once", async () => {
+    const hub = await hubPage("26");
+    const person = await hub.page.cdp();
+    let seen = 0;
+    person.onEvent((method) => {
+      if (method === "Page.screencastFrame") seen += 1;
+    });
+    await person.send("Page.startScreencast", { format: "jpeg", maxHeight: 700, maxWidth: 1_000 });
+    const frame = async (index: number) => {
+      hub.deliver("Page.screencastFrame", { data: `${index}`, metadata: {}, sessionId: 1 });
+      await person.send("Page.screencastFrameAck", { sessionId: 1 });
+    };
+    await frame(1);
+    await frame(2);
+    // The dialog holds the page, and Chromium sends nothing until it closes.
+    hub.deliver("Page.javascriptDialogOpening", {
+      defaultPrompt: "",
+      frameId: "target-1",
+      hasBrowserHandler: false,
+      message: "Delete this listing?",
+      type: "confirm",
+      url: "https://example.test/follow",
+    });
+    hub.deliver("Page.javascriptDialogClosed", {
+      frameId: "target-1",
+      result: false,
+      userInput: "",
+    });
+    for (let index = 3; index <= 8; index += 1) await frame(index);
+    expect(seen).toBe(8);
+    // Chromium sends no third frame while two wait for an ack: each one is acked.
+    expect(hub.sent("Page.screencastFrameAck")).toHaveLength(8);
+    await hub.browser.close();
+  });
+
+  // The read of 564ca7424..5d197dfbc, findings 3 and 4: a frame and its ack belong to the run of
+  // the cast that produced them, by its identity, not by where its owner stands when it arrives.
+  describe("a cast's frames and acks, by the run that produced them", () => {
+    const view = { format: "jpeg", maxHeight: 900, maxWidth: 1_400, quality: 80 };
+    const small = { format: "png", maxHeight: 240, maxWidth: 320 };
+    const frame = (data: string, sessionId: number) => ({ data, metadata: {}, sessionId });
+    const seen = (channel: { onEvent(l: (m: string, p: unknown) => void): unknown }) => {
+      const into: string[] = [];
+      channel.onEvent((method, parameters) => {
+        if (method === "Page.screencastFrame") into.push((parameters as { data: string }).data);
+      });
+      return into;
+    };
+
+    // Finding 3: the old cast's acks still queued after a hand-over were counted against the new
+    // one and sent with the old id, which Chromium ignores; the new cast's own were then dropped.
+    it("drops the acks of a cast handed over, and sends the new cast's", async () => {
+      const hub = await hubPage("31");
+      const person = await hub.page.cdp();
+      await person.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("view 1", 1));
+      hub.deliver("Page.screencastFrame", frame("view 2", 1));
+      await person.send("Page.startScreencast", small);
+      hub.deliver("Page.screencastFrame", frame("small 1", 2));
+      hub.deliver("Page.screencastFrame", frame("small 2", 2));
+      for (const id of [1, 1, 2, 2])
+        await person.send("Page.screencastFrameAck", { sessionId: id });
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([
+        ["Page.screencastFrameAck", { sessionId: 2 }],
+        ["Page.screencastFrameAck", { sessionId: 2 }],
+      ]);
+      await hub.browser.close();
+    });
+
+    // Finding 4: a frame of the old settings arriving while the new start was still unanswered
+    // was delivered as the new cast's, kept as its latest and replayed to the next owner.
+    it("delivers and keeps nothing before a start has resolved", async () => {
+      const hub = await hubPage("32");
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const personSaw = seen(person);
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("jpeg 1400x900", 1));
+      const start = hub.hold("Page.startScreencast");
+      const starting = person.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      // Late, in the old settings, before Chromium has answered the new start.
+      hub.deliver("Page.screencastFrame", frame("jpeg 1400x900 late", 1));
+      start.release();
+      start.replies[0]!.resolve({});
+      await starting;
+      await agent.send("Page.startScreencast", small);
+      expect(personSaw).toEqual(["jpeg 1400x900"]);
+      expect(agentSaw).toEqual([]);
+      await agent.send("Page.screencastFrameAck", { sessionId: 1 });
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([]);
+      await hub.browser.close();
+    });
+
+    // Two owners share a cast; one moves to other settings, a second cast in a session of its
+    // own. Its ack of a frame of the first goes to the first; of the second, to the second.
+    it("sends each ack to the cast that handed that frame, though two casts share a frame id", async () => {
+      const hub = await hubPage("33");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("view", 1));
+      await agent.send("Page.startScreencast", small);
+      expect(own.attached).toEqual(["cast-1"]);
+      hub.deliver("Page.screencastFrame", frame("small", 1), "cast-1");
+      await agent.send("Page.screencastFrameAck", { sessionId: 1 });
+      await agent.send("Page.screencastFrameAck", { sessionId: 1 });
+      // The person's ack of the same frame finds it acked already.
+      await person.send("Page.screencastFrameAck", { sessionId: 1 });
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([
+        ["Page.screencastFrameAck", { sessionId: 1 }],
+        ["Page.screencastFrameAck", { sessionId: 1 }, "cast-1"],
+      ]);
+      await hub.browser.close();
+    });
+
+    // Finding 4, second part: an owner joined the running cast before its own old cast had ended,
+    // and was handed a frame arriving meanwhile twice, live and as the replay.
+    it("hands an owner that moves to a running cast each frame once", async () => {
+      const hub = await hubPage("34");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      // Its old cast ends as it leaves: its session's detach is held, and a frame arrives.
+      const detach = hub.hold("Target.detachFromTarget");
+      const moving = agent.send("Page.startScreencast", view);
+      await vi.waitFor(() => expect(detach.replies).toHaveLength(1));
+      hub.deliver("Page.screencastFrame", frame("view 1", 1));
+      detach.release();
+      detach.replies[0]!.resolve({});
+      await moving;
+      expect(agentSaw).toEqual(["view 1"]);
+      await hub.browser.close();
+    });
+
+    // The re-check of 5d197dfbc..e7080ea31, finding 1: what a start read before an await was used
+    // after it without being read again. Its three orders.
+    const crash = (hub: Awaited<ReturnType<typeof hubPage>>) => {
+      for (const [name, listener] of [
+        ...hub.contents.on.mock.calls,
+        ...hub.contents.once.mock.calls,
+      ])
+        if (name === "render-process-gone")
+          (listener as (...a: unknown[]) => void)({}, { reason: "crashed" });
+    };
+
+    it("refuses a move to a running cast that ended while the channel left its own", async () => {
+      const hub = await hubPage("35");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      const detach = hub.hold("Target.detachFromTarget");
+      const moving = agent.send("Page.startScreencast", view);
+      await vi.waitFor(() => expect(detach.replies).toHaveLength(1));
+      crash(hub);
+      detach.release();
+      detach.replies[0]!.resolve({});
+      // Refused for the renderer's loss, not with a TypeError of the ended cast.
+      await expect(moving).rejects.toThrow(/crashed/u);
+      // It is in no cast: the person's, started again, reaches the person alone.
+      for (const [name, listener] of hub.contents.on.mock.calls)
+        if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+      await person.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("view again", 2));
+      expect(agentSaw).toEqual([]);
+      await hub.browser.close();
+    });
+
+    it("hands a new cast's first frame to the owner that started it, and sends its ack", async () => {
+      const hub = await hubPage("36");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", view);
+      const start = hub.hold("Page.startScreencast");
+      const starting = agent.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      expect(own.attached).toEqual(["cast-1"]);
+      start.release();
+      // Chromium answers the start, and its first frame arrives before the hub hears the answer.
+      start.replies[0]!.resolve({});
+      hub.deliver("Page.screencastFrame", frame("small 1", 1), "cast-1");
+      await starting;
+      expect(agentSaw).toEqual(["small 1"]);
+      await agent.send("Page.screencastFrameAck", { sessionId: 1 });
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([
+        ["Page.screencastFrameAck", { sessionId: 1 }, "cast-1"],
+      ]);
+      await hub.browser.close();
+    });
+
+    it("takes no late frame of an earlier run for a run whose first frame has not come", async () => {
+      const hub = await hubPage("37");
+      const person = await hub.page.cdp();
+      const personSaw = seen(person);
+      await person.send("Page.startScreencast", view);
+      const start = hub.hold("Page.startScreencast");
+      const starting = person.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      hub.deliver("Page.screencastFrame", frame("view 1", 1));
+      start.release();
+      start.replies[0]!.resolve({});
+      await starting;
+      hub.deliver("Page.screencastFrame", frame("view 2", 1));
+      hub.deliver("Page.screencastFrame", frame("small 1", 2));
+      expect(personSaw).toEqual(["small 1"]);
+      await hub.browser.close();
+    });
+
+    // The re-check of e7080ea31..963f808d0, finding 1: a debugger session's counts die with it.
+    // The hub lets the debugger go when its last channel goes, and Electron says nothing of a
+    // detach it was asked for; the next session numbers its casts from 1 again.
+    it("pictures a page again after the hub let its debugger go and attached it anew", async () => {
+      const hub = await hubPage("71");
+      const first = await hub.page.cdp();
+      await first.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("before", 1));
+      await first.send("Page.screencastFrameAck", { sessionId: 1 });
+      await first.detach();
+      await vi.waitFor(() => expect(hub.contents.debugger.isAttached()).toBe(false));
+      // The page's own channel is gone; the next one to open attaches the debugger again.
+      const second = await hub.page.agentCdp();
+      expect(hub.contents.debugger.isAttached()).toBe(true);
+      const secondSaw = seen(second);
+      await second.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("after", 1));
+      expect(secondSaw).toEqual(["after"]);
+      await second.send("Page.screencastFrameAck", { sessionId: 1 });
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([
+        ["Page.screencastFrameAck", { sessionId: 1 }],
+        ["Page.screencastFrameAck", { sessionId: 1 }],
+      ]);
+      await hub.browser.close();
+    });
+
+    // The re-check of e7080ea31..963f808d0, finding 3: a kept frame is acked or handed, never
+    // forgotten.
+    for (const [clearedBy, clear] of [
+      [
+        "a navigation",
+        (hub: Awaited<ReturnType<typeof hubPage>>) => {
+          for (const [name, listener] of hub.contents.on.mock.calls)
+            if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+        },
+      ],
+      [
+        "a new size",
+        (
+          _hub: Awaited<ReturnType<typeof hubPage>>,
+          person: Awaited<ReturnType<Awaited<ReturnType<typeof hubPage>>["page"]["cdp"]>>,
+        ) =>
+          void person.send("Emulation.setDeviceMetricsOverride", {
+            deviceScaleFactor: 1,
+            height: 700,
+            mobile: false,
+            width: 1_000,
+          }),
+      ],
+    ] as const)
+      it(`acks a frame kept for an unanswered start that ${clearedBy} discards`, async () => {
+        const hub = await hubPage(clearedBy === "a navigation" ? "72" : "73");
+        const person = await hub.page.cdp();
+        const start = hub.hold("Page.startScreencast");
+        const starting = person.send("Page.startScreencast", view);
+        await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+        hub.deliver("Page.screencastFrame", frame("old document", 1));
+        clear(hub, person);
+        await vi.waitFor(() =>
+          expect(hub.sent("Page.screencastFrameAck")).toEqual([
+            ["Page.screencastFrameAck", { sessionId: 1 }],
+          ]),
+        );
+        start.release();
+        start.replies[0]!.resolve({});
+        await starting;
+        // Its next frame is the run's, and acked once, by its owner.
+        hub.deliver("Page.screencastFrame", frame("new document", 1));
+        await person.send("Page.screencastFrameAck", { sessionId: 1 });
+        expect(hub.sent("Page.screencastFrameAck")).toHaveLength(2);
+        await hub.browser.close();
+      });
+
+    it("joins a channel released while its start waited to nothing, and ends the cast it asked for", async () => {
+      const hub = await hubPage("74");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      const start = hub.hold("Page.startScreencast");
+      const starting = agent.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      const releasing = agent.detach();
+      start.release();
+      hub.deliver("Page.screencastFrame", frame("small 1", 1), "cast-1");
+      start.replies[0]!.resolve({});
+      await expect(starting).rejects.toThrow(/closed/u);
+      await releasing;
+      expect(agentSaw).toEqual([]);
+      expect(own.detached()).toEqual(["cast-1"]);
+      await hub.browser.close();
+    });
+
+    // The re-check of 963f808d0..fb245664c, finding 2: a closed channel does nothing, on every
+    // branch of its start, though the start was queued while it was open.
+    it("does nothing for a closed channel's queued ask for the cast it already owns", async () => {
+      const hub = await hubPage("77");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const other = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("view 1", 1));
+      // Another channel's start holds the queue; the agent asks again, then closes.
+      const start = hub.hold("Page.startScreencast");
+      const holding = other.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      const asking = agent.send("Page.startScreencast", view);
+      const releasing = agent.detach();
+      start.release();
+      start.replies[0]!.resolve({});
+      await holding;
+      await expect(asking).rejects.toThrow(/closed/u);
+      await releasing;
+      expect(agentSaw).toEqual(["view 1"]);
+      await hub.browser.close();
+    });
+
+    it("sends Chromium nothing for a closed sole owner's queued ask for new settings", async () => {
+      const hub = await hubPage("78");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      const starts = hub.sent("Page.startScreencast").length;
+      // The person's restart holds the queue; the agent, alone in its cast, asks for new
+      // settings, then closes.
+      const start = hub.hold("Page.startScreencast");
+      const holding = person.send("Page.startScreencast", { ...view, maxWidth: 1_200 });
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      const asking = agent.send("Page.startScreencast", { ...small, maxWidth: 640 });
+      const releasing = agent.detach();
+      start.release();
+      start.replies[0]!.resolve({});
+      await holding;
+      await expect(asking).rejects.toThrow(/closed/u);
+      await releasing;
+      // The person's restart alone reached Chromium.
+      expect(hub.sent("Page.startScreencast")).toHaveLength(starts + 1);
+      await hub.browser.close();
+    });
+
+    it("acks a frame kept for a start that then fails", async () => {
+      const hub = await hubPage("79");
+      ownSessions(hub, { refuseStartIn: "cast-1" });
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+      hub.contents.debugger.sendCommand.mockImplementation(
+        (method: string, parameters?: Record<string, unknown>, session?: string) => {
+          // Chromium sends the cast's first frame, then refuses its start.
+          if (method === "Page.startScreencast" && session === "cast-1")
+            hub.deliver("Page.screencastFrame", frame("small 1", 1), "cast-1");
+          return answer(method, parameters, session);
+        },
+      );
+      await expect(agent.send("Page.startScreencast", small)).rejects.toThrow();
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([
+        ["Page.screencastFrameAck", { sessionId: 1 }, "cast-1"],
+      ]);
+      await hub.browser.close();
+    });
+
+    // The re-check of 963f808d0..fb245664c, finding 3: when casts end, ownership ends with them.
+    it("makes no channel an owner after a crash but one that asks again", async () => {
+      const hub = await hubPage("80");
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const personSaw = seen(person);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", view);
+      for (const [name, listener] of hub.contents.on.mock.calls) {
+        if (name === "render-process-gone")
+          (listener as (...a: unknown[]) => void)({}, { reason: "crashed" });
+        if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+      }
+      // Only the agent asks again; the person never does.
+      const start = hub.hold("Page.startScreencast");
+      const asking = agent.send("Page.startScreencast", view);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      hub.deliver("Page.screencastFrame", frame("after the crash", 2));
+      // The agent closes while its start is unanswered.
+      const releasing = agent.detach();
+      start.release();
+      start.replies[0]!.resolve({});
+      await expect(asking).rejects.toThrow(/closed/u);
+      await releasing;
+      // No one asked for that cast: it ended, and the person was handed none of it.
+      expect(personSaw).toEqual([]);
+      expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
+      await hub.browser.close();
+    });
+
+    // The re-check of fb245664c..e67033f5f, finding 6 (F42): when Chromium detaches a private
+    // cast session, ownership of its cast ends with it, as when a crash ends the casts (F34).
+    it("makes no channel an owner of a cast whose private session Chromium detached", async () => {
+      const hub = await hubPage("83");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      hub.deliver("Target.detachedFromTarget", { sessionId: "cast-1", targetId: "target-1" });
+      // The person moves to the agent's old settings: a cast of their own, which the agent, who
+      // never asked again, is handed nothing of.
+      await person.send("Page.startScreencast", small);
+      hub.deliver("Page.screencastFrame", frame("small, the person's", 2));
+      expect(agentSaw).toEqual([]);
+      await hub.browser.close();
+    });
+
+    // Re-check 10, finding 3 (S4): the owner of that cast is told it ended, as a crash's are.
+    it("tells the owner of a cast whose private session Chromium detached that it ended", async () => {
+      const hub = await hubPage("83b");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      let personTold = 0;
+      let agentTold = 0;
+      person.on(screencastEndedEvent, () => (personTold += 1));
+      agent.on(screencastEndedEvent, () => (agentTold += 1));
+      await agent.send("Page.startScreencast", view);
+      // The person's cast is of another size: it runs in a private session of its own.
+      await person.send("Page.startScreencast", small);
+      hub.deliver("Target.detachedFromTarget", { sessionId: "cast-1", targetId: "target-1" });
+      expect(personTold).toBe(1);
+      expect(agentTold).toBe(0);
+      await hub.browser.close();
+    });
+
+    // Re-check 11, finding 2 (U2): when Chromium detaches a private cast session while an agent's
+    // ownership command holds the queue, any stop or start queued behind it for that cast's owner
+    // fails before it can take effect, and the agent's command and cast stay untouched.
+    it("fails a cast owner's queued stop and start when Chromium detaches its private session, without touching an agent's command", async () => {
+      const hub = await hubPage("83c");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      let personTold = 0;
+      person.on(screencastEndedEvent, () => (personTold += 1));
+      await agent.send("Page.startScreencast", view);
+      // The person's cast runs in a private session ("cast-1").
+      await person.send("Page.startScreencast", small);
+      const startsBefore = hub.sent("Page.startScreencast").length;
+      const attachedBefore = own.attached.length;
+      // An agent domain enable holds the ownership queue.
+      const held = hub.hold("DOM.enable");
+      const agentEnable = agent.send("DOM.enable");
+      await vi.waitFor(() => expect(held.replies).toHaveLength(1));
+      // The follow view queues a stop and a start behind the agent's command.
+      const queuedStop = person.send("Page.stopScreencast");
+      const queuedStart = person.send("Page.startScreencast", { ...small, maxWidth: 400 });
+      // Chromium detaches the follow view's private session while the agent's command still runs.
+      hub.deliver("Target.detachedFromTarget", { sessionId: "cast-1", targetId: "target-1" });
+      expect(personTold).toBe(1);
+      await expect(queuedStop).rejects.toThrow(/detached|ended/u);
+      await expect(queuedStart).rejects.toThrow(/detached|ended/u);
+      // The agent's command completes untouched, and the person's queued start never runs.
+      held.release();
+      held.replies[0]!.resolve({});
+      await expect(agentEnable).resolves.toEqual({});
+      expect(hub.sent("Page.startScreencast")).toHaveLength(startsBefore);
+      expect(own.attached).toHaveLength(attachedBefore);
+      // The agent's own cast on the main session keeps delivering frames.
+      hub.deliver("Page.screencastFrame", frame("agent view", 1));
+      expect(agentSaw).toEqual(["agent view"]);
+      await hub.browser.close();
+    });
+
+    // Opus review W3: if a channel shares a private session cast with another owner, starts a new
+    // cast on the page's own session, and Chromium detaches that private session while the new
+    // start is in flight with Chromium, the hub rejects the start AND stops Chromium's main-session
+    // cast once the in-flight answer arrives (without touching any other owner's cast).
+    it("stops an in-flight start on the page's own session when Chromium detaches the owner's previous private session, without touching another owner's cast (W3)", async () => {
+      const hub = await hubPage("83d");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const peer = await hub.page.agentCdp();
+      const helper = await hub.page.agentCdp();
+      const bystander = await hub.page.agentCdp();
+      const bystanderSaw = seen(bystander);
+      let personTold = 0;
+      person.on(screencastEndedEvent, () => (personTold += 1));
+
+      // Helper holds the page's own session so person & peer open a shared cast on private session
+      // "cast-1" and bystander opens "cast-2"; then helper stops so the page's own session is free.
+      await helper.send("Page.startScreencast", view);
+      await person.send("Page.startScreencast", small);
+      await peer.send("Page.startScreencast", small);
+      await bystander.send("Page.startScreencast", { ...small, maxWidth: 420 });
+      await helper.send("Page.stopScreencast");
+      expect(own.attached).toEqual(["cast-1", "cast-2"]);
+
+      // Hold the next Page.startScreencast on the page's own session.
+      const heldStart = hub.hold("Page.startScreencast");
+      const stopsBefore = hub.sent("Page.stopScreencast").length;
+      const newStart = person.send("Page.startScreencast", { ...view, maxWidth: 900 });
+      await vi.waitFor(() => expect(heldStart.replies).toHaveLength(1));
+
+      // While person's new start is in flight on the page's own session, Chromium detaches cast-1.
+      hub.deliver("Target.detachedFromTarget", { sessionId: "cast-1", targetId: "target-1" });
+      expect(personTold).toBe(1);
+      await expect(newStart).rejects.toThrow(/detached|ended/u);
+
+      // Now Chromium answers the in-flight start on the page's own session.
+      heldStart.release();
+      heldStart.replies[0]!.resolve({});
+      await vi.waitFor(() => expect(hub.sent("Page.stopScreencast")).toHaveLength(stopsBefore + 1));
+      const lastStop = hub.sent("Page.stopScreencast").at(-1)!;
+      expect(lastStop[2]).toBeUndefined();
+
+      // Bystander's cast on private session "cast-2" is untouched and keeps delivering frames.
+      expect(own.detached).not.toContain("cast-2");
+      hub.deliver("Page.screencastFrame", frame("bystander view", 1), "cast-2");
+      expect(bystanderSaw).toEqual(["bystander view"]);
+      await hub.browser.close();
+    });
+
+    // Run on e7080ea31, follow-stale-dialog-answers: the second tab, answered, was pictured no
+    // more. The smoke's order on that tab: opened and pictured, its cast started again in a new
+    // size, then left before that start's first frame; a dialog opens there and is answered; its
+    // cast starts again. A late frame of the start that never pictured anything (Chromium's id 2)
+    // then arrives first.
+    const underADialog = async (label: string) => {
+      const hub = await hubPage(label);
+      const person = await hub.page.cdp();
+      const personSaw = seen(person);
+      const resized = { ...view, maxWidth: 1_200 };
+      await person.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("opened", 1));
+      await person.send("Page.screencastFrameAck", { sessionId: 1 });
+      await person.send("Page.stopScreencast");
+      await person.send("Page.startScreencast", resized);
+      await person.send("Page.stopScreencast");
+      hub.deliver("Page.javascriptDialogOpening", {
+        defaultPrompt: "",
+        frameId: "target-1",
+        hasBrowserHandler: false,
+        message: "Allow destructive action B?",
+        type: "confirm",
+        url: "https://example.test/follow?dialog-b",
+      });
+      await person.send("Page.handleJavaScriptDialog", { accept: false });
+      hub.deliver("Page.javascriptDialogClosed", {
+        frameId: "target-1",
+        result: false,
+        userInput: "",
+      });
+      return { hub, person, personSaw, resized };
+    };
+
+    it("pictures a tab again once its dialog is answered, though a late frame comes first", async () => {
+      const { hub, person, personSaw, resized } = await underADialog("38");
+      await person.send("Page.startScreencast", resized);
+      hub.deliver("Page.screencastFrame", frame("late, never pictured", 2));
+      hub.deliver("Page.screencastFrame", frame("answered", 3));
+      expect(personSaw).toEqual(["opened", "answered"]);
+      await person.send("Page.screencastFrameAck", { sessionId: 3 });
+      expect(hub.sent("Page.screencastFrameAck").at(-1)).toEqual([
+        "Page.screencastFrameAck",
+        { sessionId: 3 },
+      ]);
+      await hub.browser.close();
+    });
+
+    it("pictures a still tab once its dialog is answered, though its one frame beats the start's answer", async () => {
+      const { hub, person, personSaw, resized } = await underADialog("39");
+      const start = hub.hold("Page.startScreencast");
+      const starting = person.send("Page.startScreencast", resized);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      start.release();
+      start.replies[0]!.resolve({});
+      hub.deliver("Page.screencastFrame", frame("answered", 3));
+      await starting;
+      expect(personSaw).toEqual(["opened", "answered"]);
+      await person.send("Page.screencastFrameAck", { sessionId: 3 });
+      expect(hub.sent("Page.screencastFrameAck").at(-1)).toEqual([
+        "Page.screencastFrameAck",
+        { sessionId: 3 },
+      ]);
+      await hub.browser.close();
+    });
+  });
+
+  // Finding 5: every session the hub attaches for itself is detached exactly once, on every path
+  // a cast ends by, and no channel hears of it. The paths: stopped; its owner released; after a
+  // navigation; the renderer gone; the renderer gone during a release; a start it was attached
+  // for failing; the page closed; the app quitting; the window destroyed; the debugger's detach;
+  // and interrupted while attaching, once the attach answers. Which attach is the hub's is told by
+  // its session, never by whether one of the hub's is under way.
+  describe("the hub's own sessions", () => {
+    const view = { format: "jpeg", maxHeight: 900, maxWidth: 1_400, quality: 80 };
+    const small = { format: "png", maxHeight: 240, maxWidth: 320 };
+    type Hub = Awaited<ReturnType<typeof hubPage>>;
+    const fire = (hub: Hub, event: string, ...args: unknown[]) => {
+      for (const [name, listener] of [
+        ...hub.contents.on.mock.calls,
+        ...hub.contents.once.mock.calls,
+      ])
+        if (name === event) (listener as (...a: unknown[]) => void)({}, ...args);
+    };
+    /** Each own session let go once: by the hub, or, where `implicit`, with the debugger itself. */
+    const expectOnce = (hub: Hub, own: ReturnType<typeof ownSessions>, implicit = false) => {
+      expect(own.attached.length).toBeGreaterThan(0);
+      for (const id of own.attached) {
+        const explicit = own.detached().filter((detached) => detached === id).length;
+        expect(explicit, `${id} detached ${explicit} times`).toBeLessThanOrEqual(1);
+        if (!implicit) expect(explicit, `${id} never detached`).toBe(1);
+      }
+      if (implicit)
+        expect(
+          hub.contents.debugger.detach.mock.calls.length > 0 || hub.contents.isDestroyed(),
+        ).toBe(true);
+    };
+    async function casting(label: string) {
+      const hub = await hubPage(label);
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      expect(own.attached).toEqual(["cast-1"]);
+      return { agent, hub, own, person };
+    }
+
+    it("lets go of a cast's session when it is stopped", async () => {
+      const { agent, hub, own } = await casting("41");
+      await agent.send("Page.stopScreencast");
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    it("when its owner is released", async () => {
+      const { agent, hub, own } = await casting("42");
+      await agent.detach();
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    it("after a navigation, when it is stopped, and not at the navigation", async () => {
+      const { agent, hub, own } = await casting("43");
+      fire(hub, "did-navigate");
+      expect(own.detached()).toEqual([]);
+      await agent.send("Page.stopScreencast");
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    it("when the renderer is gone, and not again when its owner stops", async () => {
+      const { agent, hub, own } = await casting("44");
+      fire(hub, "render-process-gone", { reason: "crashed" });
+      await vi.waitFor(() => expect(own.detached()).toEqual(["cast-1"]));
+      await agent.send("Page.stopScreencast").catch(() => undefined);
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    // The read's sequence: a release already under way when the renderer goes.
+    it("when the renderer goes while its owner's release is under way", async () => {
+      const { agent, hub, own, person } = await casting("45");
+      // The person's restart holds the page's ownership changes: the agent's release, begun in
+      // this generation, waits behind it while the renderer goes.
+      const start = hub.hold("Page.startScreencast");
+      const restarting = person
+        .send("Page.startScreencast", { ...view, maxWidth: 1_200 })
+        .catch(() => undefined);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      const releasing = agent.detach();
+      await Promise.resolve();
+      fire(hub, "render-process-gone", { reason: "crashed" });
+      start.release();
+      start.replies[0]!.resolve({});
+      await restarting;
+      await releasing;
+      await vi.waitFor(() => expect(own.detached()).toEqual(["cast-1"]));
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    // The read's sequence: a session attached for a start that fails, while another owner stays.
+    it("when a start it was attached for fails, though another owner remains", async () => {
+      const hub = await hubPage("46");
+      const own = ownSessions(hub, { refuseStartIn: "cast-2" });
+      const person = await hub.page.cdp();
+      const first = await hub.page.agentCdp();
+      const second = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      await first.send("Page.startScreencast", small);
+      await second.send("Page.startScreencast", small);
+      fire(hub, "render-process-gone", { reason: "crashed" });
+      fire(hub, "did-navigate");
+      await person.send("Page.startScreencast", view);
+      await expect(first.send("Page.startScreencast", small)).rejects.toThrow();
+      expect(own.attached).toEqual(["cast-1", "cast-2"]);
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    it("with the debugger, when the page is closed", async () => {
+      const { hub, own } = await casting("47");
+      await hub.page.close();
+      expectOnce(hub, own, true);
+      await hub.browser.close();
+    });
+
+    it("with the debugger, when the app quits", async () => {
+      const { hub, own } = await casting("48");
+      await hub.browser.close();
+      expectOnce(hub, own, true);
+    });
+
+    it("with the page, when its window is destroyed", async () => {
+      const { hub, own } = await casting("49");
+      hub.destroy();
+      expectOnce(hub, own, true);
+      await hub.browser.close();
+    });
+
+    it("with the debugger, when it detaches, and is not let go again", async () => {
+      const { agent, hub, own } = await casting("50");
+      for (const [name, listener] of hub.contents.debugger.on.mock.calls)
+        if (name === "detach") listener({}, "target closed");
+      // As Electron has it once the debugger has let go.
+      (hub.contents.debugger.detach as unknown as () => void)();
+      await agent.send("Page.stopScreencast").catch(() => undefined);
+      expectOnce(hub, own, true);
+      expect(own.detached()).toEqual([]);
+      await hub.browser.close();
+    });
+
+    it("reaches no channel that has Target enabled, while that channel's own frames do", async () => {
+      const hub = await hubPage("51");
+      const own = ownSessions(hub, { announce: true });
+      const platform = await hub.page.cdp();
+      const heard: string[] = [];
+      platform.onEvent((method, parameters) => {
+        if (method.startsWith("Target."))
+          heard.push(`${method} ${String((parameters as { sessionId?: string }).sessionId)}`);
+      });
+      await platform.send("Target.setAutoAttach", {
+        autoAttach: true,
+        flatten: true,
+        waitForDebuggerOnStart: false,
+      });
+      const agent = await hub.page.agentCdp();
+      await platform.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      await agent.send("Page.stopScreencast");
+      hub.deliver("Target.detachedFromTarget", { sessionId: "cast-1", targetId: "target-1" });
+      // An out-of-process frame of the page's own is still the platform's.
+      hub.deliver("Target.attachedToTarget", {
+        sessionId: "frame-1",
+        targetInfo: { targetId: "iframe-1", type: "iframe" },
+        waitingForDebugger: false,
+      });
+      expect(own.attached).toEqual(["cast-1"]);
+      expect(heard).toEqual(["Target.attachedToTarget frame-1"]);
+      await hub.browser.close();
+    });
+
+    // The re-check of 5d197dfbc..e7080ea31, finding 5.
+    it("when the renderer goes while it is attaching, once the attach answers", async () => {
+      const hub = await hubPage("52");
+      const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+      const attach = Promise.withResolvers<unknown>();
+      hub.contents.debugger.sendCommand.mockImplementation(
+        (method: string, parameters?: Record<string, unknown>, session?: string) =>
+          method === "Target.attachToTarget" ? attach.promise : answer(method, parameters, session),
+      );
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      const starting = agent.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(hub.sent("Target.attachToTarget")).toHaveLength(1));
+      fire(hub, "render-process-gone", { reason: "crashed" });
+      await expect(starting).rejects.toThrow(/crashed/u);
+      attach.resolve({ sessionId: "cast-1" });
+      await vi.waitFor(() =>
+        expect(hub.sent("Target.detachFromTarget")).toEqual([
+          ["Target.detachFromTarget", { sessionId: "cast-1" }],
+        ]),
+      );
+      await hub.browser.close();
+    });
+
+    it("lets an agent hear its own target session, attached while one of the hub's was", async () => {
+      const hub = await hubPage("53");
+      const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+      const attaches: { id: string; reply: PromiseWithResolvers<unknown> }[] = [];
+      hub.contents.debugger.sendCommand.mockImplementation(
+        (method: string, parameters?: Record<string, unknown>, session?: string) => {
+          if (method !== "Target.attachToTarget") return answer(method, parameters, session);
+          const id = `session-${attaches.length + 1}`;
+          const reply = Promise.withResolvers<unknown>();
+          attaches.push({ id, reply });
+          // Chromium tells the page's session of each attach to it before it answers.
+          hub.deliver("Target.attachedToTarget", {
+            sessionId: id,
+            targetInfo: { targetId: "target-1", type: "page" },
+            waitingForDebugger: false,
+          });
+          return reply.promise;
+        },
+      );
+      const person = await hub.page.cdp();
+      const caster = await hub.page.agentCdp();
+      const agent = await hub.page.agentCdp();
+      const agentHeard: string[] = [];
+      agent.onEvent((method) => agentHeard.push(method));
+      await person.send("Page.startScreencast", view);
+      // The hub attaches for the caster's cast, and the agent for its targets, at once.
+      const casting = caster.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(attaches).toHaveLength(1));
+      const targets = agent.send("Target.getTargetInfo");
+      await vi.waitFor(() => expect(attaches).toHaveLength(2));
+      attaches[1]!.reply.resolve({ sessionId: "session-2" });
+      await targets;
+      attaches[0]!.reply.resolve({ sessionId: "session-1" });
+      await casting;
+      hub.deliver(
+        "Target.targetInfoChanged",
+        { targetInfo: { targetId: "target-1" } },
+        "session-2",
+      );
+      expect(agentHeard).toEqual(["Target.targetInfoChanged"]);
+      await hub.browser.close();
+    });
+  });
+
+  // The re-check of e7080ea31..963f808d0, finding 2: while an attach of the hub's own is
+  // unanswered, every Target event waits, and is released in order once the answer says whose.
+  describe("Target events while one of the hub's attaches is unanswered", () => {
+    const view = { format: "jpeg", maxHeight: 900, maxWidth: 1_400, quality: 80 };
+    const small = { format: "png", maxHeight: 240, maxWidth: 320 };
+    async function announcing(label: string) {
+      const hub = await hubPage(label);
+      const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+      const attaches: { id: string; reply: PromiseWithResolvers<unknown> }[] = [];
+      hub.contents.debugger.sendCommand.mockImplementation(
+        (method: string, parameters?: Record<string, unknown>, session?: string) => {
+          if (method !== "Target.attachToTarget") return answer(method, parameters, session);
+          const id = `session-${attaches.length + 1}`;
+          const reply = Promise.withResolvers<unknown>();
+          attaches.push({ id, reply });
+          hub.deliver("Target.attachedToTarget", {
+            sessionId: id,
+            targetInfo: { targetId: "target-1", type: "page" },
+            waitingForDebugger: false,
+          });
+          return reply.promise;
+        },
+      );
+      const platform = await hub.page.cdp();
+      const heard: string[] = [];
+      platform.onEvent((method, parameters) => {
+        if (method.startsWith("Target."))
+          heard.push(`${method} ${String((parameters as { sessionId?: string }).sessionId)}`);
+      });
+      await platform.send("Target.setAutoAttach", {
+        autoAttach: true,
+        flatten: true,
+        waitForDebuggerOnStart: false,
+      });
+      await platform.send("Page.startScreencast", view);
+      return { attaches, heard, hub, platform };
+    }
+
+    it("tells no channel of the hub's session when the renderer goes before the attach answers", async () => {
+      const { attaches, heard, hub } = await announcing("75");
+      const agent = await hub.page.agentCdp();
+      const casting = agent.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(attaches).toHaveLength(1));
+      for (const [name, listener] of hub.contents.on.mock.calls)
+        if (name === "render-process-gone")
+          (listener as (...a: unknown[]) => void)({}, { reason: "crashed" });
+      await expect(casting).rejects.toThrow(/crashed/u);
+      attaches[0]!.reply.resolve({ sessionId: "session-1" });
+      await vi.waitFor(() =>
+        expect(hub.sent("Target.detachFromTarget")).toEqual([
+          ["Target.detachFromTarget", { sessionId: "session-1" }],
+        ]),
+      );
+      hub.deliver("Target.detachedFromTarget", { sessionId: "session-1", targetId: "target-1" });
+      expect(heard).toEqual([]);
+      await hub.browser.close();
+    });
+
+    // The re-check of 963f808d0..fb245664c, finding 6: what is counted is released on every exit.
+    it("holds nothing once an attach of the hub's own throws before it is sent", async () => {
+      const hub = await hubPage("81");
+      const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+      let throws = true;
+      hub.contents.debugger.sendCommand.mockImplementation(
+        (method: string, parameters?: Record<string, unknown>, session?: string) => {
+          if (method === "Target.attachToTarget" && throws) {
+            throws = false;
+            throw new Error("Debugger is not attached to a target.");
+          }
+          return answer(method, parameters, session);
+        },
+      );
+      const platform = await hub.page.cdp();
+      const heard: string[] = [];
+      platform.onEvent((method, parameters) => {
+        if (method.startsWith("Target."))
+          heard.push(`${method} ${String((parameters as { sessionId?: string }).sessionId)}`);
+      });
+      await platform.send("Target.setAutoAttach", {
+        autoAttach: true,
+        flatten: true,
+        waitForDebuggerOnStart: false,
+      });
+      await platform.send("Page.startScreencast", view);
+      const agent = await hub.page.agentCdp();
+      await expect(agent.send("Page.startScreencast", small)).rejects.toThrow(/not attached/u);
+      hub.deliver("Target.attachedToTarget", {
+        sessionId: "frame-1",
+        targetInfo: { targetId: "iframe-1", type: "iframe" },
+        waitingForDebugger: false,
+      });
+      hub.deliver("Target.detachedFromTarget", { sessionId: "frame-1", targetId: "iframe-1" });
+      expect(heard).toEqual([
+        "Target.attachedToTarget frame-1",
+        "Target.detachedFromTarget frame-1",
+      ]);
+      await hub.browser.close();
+    });
+
+    // The re-check of 963f808d0..fb245664c, finding 8: nothing in a debugger session's state
+    // outlives what it describes, on a debugger session that lives as long as the tab.
+    it("keeps nothing of a hundred private sessions that came and went", async () => {
+      const hub = await hubPage("82");
+      const own = ownSessions(hub);
+      const frame = (data: string, sessionId: number) => ({ data, metadata: {}, sessionId });
+      const person = await hub.page.cdp();
+      await person.send("Page.startScreencast", view);
+      for (let index = 1; index <= 100; index += 1) {
+        const agent = await hub.page.agentCdp();
+        await agent.send("Page.startScreencast", small);
+        const session = own.attached.at(-1)!;
+        hub.deliver("Page.screencastFrame", frame(`small ${index}`, 1), session);
+        await agent.detach();
+        // Chromium's last word of a session the hub let go; a late frame of it before that.
+        hub.deliver("Page.screencastFrame", frame(`late ${index}`, 1), session);
+        hub.deliver("Target.detachedFromTarget", { sessionId: session, targetId: "target-1" });
+      }
+      expect(own.detached()).toHaveLength(100);
+      const state = debuggerSessions.at(
+        -1,
+      ) as import("./electron-debugger-session.js").DebuggerSessionState;
+      // The page's own session is counted while it lives; of the private ones, nothing is left.
+      expect({
+        laneFrames: [...state.laneFrames.keys()].filter((key) => key !== ""),
+        laneStarts: [...state.laneStarts.keys()].filter((key) => key !== ""),
+        ownSessions: [...state.ownSessions],
+        ownSessionsSeen: [...state.ownSessionsSeen],
+      }).toEqual({ laneFrames: [], laneStarts: [], ownSessions: [], ownSessionsSeen: [] });
+      await hub.browser.close();
+    });
+
+    it("passes on an agent's attach and detach that came meanwhile, in order, attach first", async () => {
+      const { attaches, heard, hub } = await announcing("76");
+      const caster = await hub.page.agentCdp();
+      const agent = await hub.page.agentCdp();
+      const casting = caster.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(attaches).toHaveLength(1));
+      const targets = agent.send("Target.getTargetInfo");
+      await vi.waitFor(() => expect(attaches).toHaveLength(2));
+      attaches[1]!.reply.resolve({ sessionId: "session-2" });
+      await targets;
+      // The agent goes, and Chromium tells of its session's end before the hub's attach answers.
+      // (Its release waits behind the cast's start, as every ownership change does.)
+      const releasing = agent.detach();
+      await vi.waitFor(() =>
+        expect(hub.sent("Target.detachFromTarget")).toEqual([
+          ["Target.detachFromTarget", { sessionId: "session-2" }],
+        ]),
+      );
+      hub.deliver("Target.detachedFromTarget", { sessionId: "session-2", targetId: "target-1" });
+      expect(heard).toEqual([]);
+      attaches[0]!.reply.resolve({ sessionId: "session-1" });
+      await casting;
+      await releasing;
+      expect(heard).toEqual([
+        "Target.attachedToTarget session-2",
+        "Target.detachedFromTarget session-2",
+      ]);
+      await hub.browser.close();
+    });
+  });
+
+  // F32, the re-check of 963f808d0..fb245664c: a tab the person opens with an address is
+  // announced at about:blank, so the follow view starts its cast there, and navigates at once.
+  // Its commit bumps the surface's geometry revision though its size did not change (a stop and a
+  // start), and Electron's did-navigate lets the page's capture go and restores it (another).
+  // Chromium's picture needs neither: one start reaches it, and no stop.
+  it("starts one cast for a tab opened with an address, whatever the follow view restarts", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const hub = await hubPage("66");
+    const channel = await hub.page.cdp();
+    const shown = { height: 900, width: 1_400 };
+    const frame = (id: number) => ({
+      data: jpeg(shown.width, shown.height).toString("base64"),
+      metadata: {
+        deviceHeight: shown.height,
+        deviceWidth: shown.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    const surface = {
+      active: true,
+      documentId: "about-blank",
+      geometryRevision: 1,
+      id: "surface-1",
+      loading: true,
+    };
+    let capture: { height: number; rasterScale: number; revision: number; width: number } | null = {
+      height: shown.height,
+      rasterScale: 1,
+      revision: 1,
+      width: shown.width,
+    };
+    const captureListeners = new Set<() => void>();
+    const binding = {
+      cdp: channel,
+      page: {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => capture,
+          subscribe: (listener: () => void) => {
+            captureListeners.add(listener);
+            return () => captureListeners.delete(listener);
+          },
+        },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      },
+      surface,
+    };
+    const ledgerListeners = new Set<(event: unknown) => void>();
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: (listener: (event: unknown) => void) => {
+        ledgerListeners.add(listener);
+        return () => ledgerListeners.delete(listener);
+      },
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const changed = () => {
+      for (const listener of ledgerListeners)
+        listener({ change: "updated", surface: { ...surface }, type: "changed" });
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    // The first start is unanswered while the page navigates.
+    const start = hub.hold("Page.startScreencast");
+    await follow.start();
+    const streaming = follow.setStreaming(true);
+    await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+    // Page.frameNavigated: a new document, its geometry revision bumped, its size the same.
+    Object.assign(surface, { documentId: "follow", geometryRevision: 2 });
+    changed();
+    // Electron's did-navigate: the page lets its capture go, and its reconcile restores it.
+    for (const [name, listener] of hub.contents.on.mock.calls)
+      if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+    capture = null;
+    for (const listener of captureListeners) listener();
+    capture = { height: shown.height, rasterScale: 1, revision: 1, width: shown.width };
+    for (const listener of captureListeners) listener();
+    start.release();
+    start.replies[0]!.resolve({});
+    await streaming;
+    // The page finishes loading, and draws.
+    Object.assign(surface, { loading: false });
+    changed();
+    // The follow view has dealt with both: restarted its cast for each, or kept it.
+    await vi.waitFor(() =>
+      expect(
+        follow.diagnostics.filter(({ stage }) => stage === "cast-start" || stage === "cast-kept")
+          .length,
+      ).toBeGreaterThan(1),
+    );
+    // Chromium numbers each start's frames: the latest it answered.
+    hub.deliver("Page.screencastFrame", frame(hub.sent("Page.startScreencast").length));
+    await vi.waitFor(() => expect(delivered.length).toBeGreaterThan(0));
+    expect({
+      starts: hub.sent("Page.startScreencast").length,
+      stops: hub.sent("Page.stopScreencast").length,
+    }).toEqual({ starts: 1, stops: 0 });
+    await follow.close();
+    await hub.browser.close();
+  });
+
+  // F32, widened after the walker's runs on 963f808d0 and fb245664c: one ordering passing proves
+  // nothing. Every order of the events around a tab's first start, for a tab opened with an
+  // address: the start's answer, a frame that beats it, the commit bumping the geometry revision,
+  // Electron's did-navigate letting the capture go and restoring it, and a second channel asking
+  // for the same picture. In each, one start reaches Chromium, no stop, and the follow view is
+  // handed a frame.
+  it("starts one cast for a tab opened with an address, in every order of what happens around it", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const shown = { height: 900, width: 1_400 };
+    const settings = {
+      everyNthFrame: 1,
+      format: "jpeg",
+      maxHeight: shown.height,
+      maxWidth: shown.width,
+      quality: 72,
+    };
+    const frameOf = (id: number) => ({
+      data: jpeg(shown.width, shown.height).toString("base64"),
+      metadata: {
+        deviceHeight: shown.height,
+        deviceWidth: shown.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    const events = ["answer", "early frame", "commit", "did-navigate", "second channel"] as const;
+    type Event = (typeof events)[number];
+    // Every order of the first four, then orders of all five drawn from a fixed seed.
+    const orders: Event[][] = [];
+    const permute = (rest: readonly Event[], made: Event[]) => {
+      if (rest.length === 0) orders.push(made);
+      for (const [index, event] of rest.entries())
+        permute([...rest.slice(0, index), ...rest.slice(index + 1)], [...made, event]);
+    };
+    permute(events.slice(0, 4), []);
+    let seed = 0x5eed;
+    const random = () => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed / 2_147_483_648;
+    };
+    for (let drawn = 0; drawn < 24; drawn += 1) {
+      const order = [...events];
+      for (let index = order.length - 1; index > 0; index -= 1) {
+        const other = Math.floor(random() * (index + 1));
+        [order[index], order[other]] = [order[other]!, order[index]!];
+      }
+      orders.push(order);
+    }
+    const failures: string[] = [];
+    for (const [index, order] of orders.entries()) {
+      const hub = await hubPage(String(700 + index));
+      const channel = await hub.page.cdp();
+      const surface = {
+        active: true,
+        documentId: "about-blank",
+        geometryRevision: 1,
+        id: "surface-1",
+        loading: true,
+      };
+      let capture: { height: number; rasterScale: number; revision: number; width: number } | null =
+        { height: shown.height, rasterScale: 1, revision: 1, width: shown.width };
+      const captureListeners = new Set<() => void>();
+      const binding = {
+        cdp: channel,
+        page: {
+          applyGeometry: async () => undefined,
+          capture: {
+            read: () => capture,
+            subscribe: (listener: () => void) => {
+              captureListeners.add(listener);
+              return () => captureListeners.delete(listener);
+            },
+          },
+          invalidateSurface: async () => undefined,
+          settleRendering: async () => undefined,
+        },
+        surface,
+      };
+      const ledgerListeners = new Set<(event: unknown) => void>();
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => null,
+        dialogOpen: () => false,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          ledgerListeners.add(listener);
+          return () => ledgerListeners.delete(listener);
+        },
+        use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        viewportOf: () => shown,
+        withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      };
+      const delivered: unknown[] = [];
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+      });
+      const start = hub.hold("Page.startScreencast");
+      await follow.start();
+      const streaming = follow.setStreaming(true).catch(() => undefined);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      const other = await hub.page.agentCdp();
+      let otherAsked: Promise<unknown> = Promise.resolve();
+      for (const event of order) {
+        if (event === "answer") {
+          start.release();
+          for (const reply of start.replies) reply.resolve({});
+        } else if (event === "early frame") hub.deliver("Page.screencastFrame", frameOf(1));
+        else if (event === "commit") {
+          Object.assign(surface, { documentId: "follow", geometryRevision: 2 });
+          for (const listener of ledgerListeners)
+            listener({ change: "updated", surface: { ...surface }, type: "changed" });
+        } else if (event === "did-navigate") {
+          for (const [name, listener] of hub.contents.on.mock.calls)
+            if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+          capture = null;
+          for (const listener of captureListeners) listener();
+          capture = { height: shown.height, rasterScale: 1, revision: 1, width: shown.width };
+          for (const listener of captureListeners) listener();
+        } else otherAsked = other.send("Page.startScreencast", settings).catch(() => undefined);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await streaming;
+      await otherAsked;
+      // The page draws: Chromium's frames carry the latest start it answered.
+      await vi.waitFor(() => {
+        hub.deliver("Page.screencastFrame", frameOf(hub.sent("Page.startScreencast").length));
+        expect(delivered.length).toBeGreaterThan(0);
+      });
+      const reached = {
+        starts: hub.sent("Page.startScreencast").length,
+        stops: hub.sent("Page.stopScreencast").length,
+      };
+      if (reached.starts !== 1 || reached.stops !== 0)
+        failures.push(`${order.join(" → ")}: ${JSON.stringify(reached)}`);
+      await follow.close();
+      await hub.browser.close();
+    }
+    expect(failures).toEqual([]);
+    expect(orders).toHaveLength(48);
+  });
+
+  // F32 (b), from the walker's run on fb245664c: after a dialog on the shown tab is answered,
+  // its cast runs again at once: a start is sent and a frame handed to the follow view. Every
+  // order of what happens around the answer, on the hub with the real follow view: the dialog's
+  // close, the frame Chromium sends after it, a second channel asking for the same picture, and
+  // the follow view's start being answered.
+  it("pictures a tab again once its dialog is answered, in every order of what happens around it", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const shown = { height: 900, width: 1_400 };
+    const settings = {
+      everyNthFrame: 1,
+      format: "jpeg",
+      maxHeight: shown.height,
+      maxWidth: shown.width,
+      quality: 72,
+    };
+    const frameOf = (id: number) => ({
+      data: jpeg(shown.width, shown.height).toString("base64"),
+      metadata: {
+        deviceHeight: shown.height,
+        deviceWidth: shown.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    const events = ["closed", "frame", "second channel", "answer"] as const;
+    type Event = (typeof events)[number];
+    const orders: Event[][] = [];
+    const permute = (rest: readonly Event[], made: Event[]) => {
+      if (rest.length === 0) orders.push(made);
+      for (const [index, event] of rest.entries())
+        permute([...rest.slice(0, index), ...rest.slice(index + 1)], [...made, event]);
+    };
+    permute(events, []);
+    const failures: string[] = [];
+    for (const [index, order] of orders.entries()) {
+      const hub = await hubPage(String(800 + index));
+      const channel = await hub.page.cdp();
+      let dialogOpen = false;
+      const surface = {
+        active: true,
+        documentId: "b",
+        geometryRevision: 1,
+        id: "tab-b",
+        loading: false,
+      };
+      const capture = { height: shown.height, rasterScale: 1, revision: 1, width: shown.width };
+      const binding = {
+        cdp: channel,
+        page: {
+          applyGeometry: async () => undefined,
+          capture: { read: () => capture, subscribe: () => () => undefined },
+          invalidateSurface: async () => undefined,
+          settleRendering: async () => undefined,
+        },
+        surface,
+      };
+      const ledgerListeners = new Set<(event: unknown) => void>();
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => (dialogOpen ? { id: "dialog-b", surfaceId: "tab-b" } : null),
+        dialogOpen: () => dialogOpen,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          ledgerListeners.add(listener);
+          return () => ledgerListeners.delete(listener);
+        },
+        use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        viewportOf: () => shown,
+        withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      };
+      const delivered: unknown[] = [];
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+      });
+      // The tab was pictured, then the person turned away, before its dialog opened.
+      await follow.start();
+      await follow.setStreaming(true);
+      await vi.waitFor(() => expect(hub.sent("Page.startScreencast")).toHaveLength(1));
+      hub.deliver("Page.screencastFrame", frameOf(1));
+      await vi.waitFor(() => expect(delivered).toHaveLength(1));
+      await follow.setStreaming(false);
+      dialogOpen = true;
+      hub.deliver("Page.javascriptDialogOpening", {
+        defaultPrompt: "",
+        frameId: "target-1",
+        hasBrowserHandler: false,
+        message: "Allow destructive action B?",
+        type: "confirm",
+        url: "https://example.test/follow?dialog-b",
+      });
+      for (const listener of ledgerListeners)
+        listener({ dialog: { id: "dialog-b" }, surfaceId: "tab-b", type: "dialog" });
+      // The person turns back while it is open: the last picture, and no cast until the answer.
+      delivered.length = 0;
+      const start = hub.hold("Page.startScreencast");
+      await follow.setStreaming(true);
+      const other = await hub.page.agentCdp();
+      let otherAsked: Promise<unknown> = Promise.resolve();
+      let answered = false;
+      for (const event of order) {
+        if (event === "closed") {
+          dialogOpen = false;
+          hub.deliver("Page.javascriptDialogClosed", {
+            frameId: "target-1",
+            result: false,
+            userInput: "",
+          });
+          for (const listener of ledgerListeners)
+            listener({ dialog: null, surfaceId: "tab-b", type: "dialog" });
+        } else if (event === "frame")
+          // A late frame of the cast before the dialog: Chromium's id for that cast.
+          hub.deliver("Page.screencastFrame", frameOf(1));
+        else if (event === "second channel")
+          otherAsked = other.send("Page.startScreencast", settings).catch(() => undefined);
+        else {
+          answered = true;
+          start.release();
+          for (const reply of start.replies) reply.resolve({});
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      if (!answered) start.release();
+      start.release();
+      for (const reply of start.replies) reply.resolve({});
+      await otherAsked;
+      try {
+        await vi.waitFor(() => {
+          hub.deliver("Page.screencastFrame", frameOf(hub.sent("Page.startScreencast").length));
+          expect(delivered.length).toBeGreaterThan(0);
+        });
+      } catch {
+        failures.push(
+          `${order.join(" → ")}: no picture, ${hub.sent("Page.startScreencast").length} starts`,
+        );
+      }
+      await follow.close();
+      await hub.browser.close();
+    }
+    expect(failures).toEqual([]);
+    expect(orders).toHaveLength(24);
+  });
+
+  // The walker's run 3 on e67033f5f, follow-agent-screencast-alongside: the person returned to a
+  // still tab within the second the hub kept a stopped cast for, and was pictured again only ten
+  // seconds later. A still page sends a frame when a cast starts and none after; the person's
+  // return must be that start.
+  it("pictures a still tab again when the person returns to it at once", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const hub = await hubPage("84");
+    const channel = await hub.page.cdp();
+    const shown = { height: 900, width: 1_400 };
+    const frameOf = (id: number) => ({
+      data: jpeg(shown.width, shown.height).toString("base64"),
+      metadata: {
+        deviceHeight: shown.height,
+        deviceWidth: shown.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    // A still page: Chromium sends one frame when a start is answered, and no other.
+    const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+    let starts = 0;
+    hub.contents.debugger.sendCommand.mockImplementation(
+      (method: string, parameters?: Record<string, unknown>, session?: string) => {
+        const answered = answer(method, parameters, session);
+        if (method !== "Page.startScreencast") return answered;
+        const id = (starts += 1);
+        return Promise.resolve(answered).then((result) => {
+          setTimeout(() => hub.deliver("Page.screencastFrame", frameOf(id)), 1);
+          return result;
+        });
+      },
+    );
+    const surface = {
+      active: true,
+      documentId: "a",
+      geometryRevision: 1,
+      id: "tab-a",
+      loading: false,
+    };
+    const capture = { ...shown, rasterScale: 1, revision: 1 };
+    const binding = {
+      cdp: channel,
+      page: {
+        applyGeometry: async () => undefined,
+        capture: { read: () => capture, subscribe: () => () => undefined },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      },
+      surface,
+    };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: () => () => undefined,
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    await follow.start();
+    await follow.setStreaming(true);
+    await vi.waitFor(() => expect(delivered).toHaveLength(1));
+    // The person turns away, and back straight after.
+    await follow.setStreaming(false);
+    await follow.setStreaming(true);
+    await vi.waitFor(() => expect(delivered).toHaveLength(2));
+    await follow.close();
+    await hub.browser.close();
+  });
+
+  // The walker's run 3 on 4ecf539ae, stale-dialog-answers: tab B, a still page, was never pictured
+  // again. Its start was answered while its capture moved, which left the follow view counting no
+  // cast while Chromium cast; its next start joined that cast at the hub, which hands the one frame
+  // it holds before it answers, and the follow view dropped every frame that came while its start
+  // was in flight. The real hub and the real follow view; Chromium is a still page.
+  // Re-check 9, finding 3 (R5): a renderer that crashed took the hub's casts with it on the same
+  // channel, and the follow view, still counting its cast running, waited for ever on the
+  // reloaded page's first frame. The real hub and the real follow view; Chromium is a still page.
+  it("pictures a still tab again after its renderer crashed and it reloaded at the same size", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const hub = await hubPage("86");
+    const channel = await hub.page.cdp();
+    const shown = { height: 600, width: 800 };
+    let frames = 0;
+    const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+    hub.contents.debugger.sendCommand.mockImplementation(
+      (method: string, parameters?: Record<string, unknown>, session?: string) => {
+        const answered = answer(method, parameters, session);
+        if (method !== "Page.startScreencast") return answered;
+        // A still page: its one frame for each start, before the answer is handled.
+        hub.deliver("Page.screencastFrame", {
+          data: jpeg(shown.width, shown.height).toString("base64"),
+          metadata: {
+            deviceHeight: shown.height,
+            deviceWidth: shown.width,
+            offsetTop: 0,
+            pageScaleFactor: 1,
+            scrollOffsetX: 0,
+            scrollOffsetY: 0,
+          },
+          sessionId: ++frames,
+        });
+        return answered;
+      },
+    );
+    const surface = {
+      active: true,
+      documentId: "d1",
+      geometryRevision: 1,
+      id: "tab-a",
+      loading: false,
+    };
+    const listeners = new Set<(event: unknown) => void>();
+    const binding = {
+      cdp: channel,
+      page: {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => ({ ...shown, rasterScale: 1, revision: 1 }),
+          subscribe: () => () => undefined,
+        },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      },
+      surface,
+    };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    const settled = async () => {
+      for (let turn = 0; turn < 8; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    };
+    await follow.start();
+    await follow.setStreaming(true);
+    await vi.waitFor(() => expect(delivered).toHaveLength(1));
+    // The renderer crashes: the hub ends its casts, on this channel too.
+    for (const [name, listener] of [...hub.contents.on.mock.calls, ...hub.contents.once.mock.calls])
+      if (name === "render-process-gone")
+        (listener as (...a: unknown[]) => void)({}, { reason: "crashed" });
+    await settled();
+    // The person reloads it at the same size: a new document, the same capture.
+    for (const [name, listener] of hub.contents.on.mock.calls)
+      if (name === "did-navigate")
+        (listener as (...a: unknown[]) => void)({}, "https://site.test/");
+    surface.documentId = "d2";
+    surface.geometryRevision = 2;
+    for (const listener of listeners)
+      listener({ change: "updated", surface: { ...surface }, type: "changed" });
+    await vi.waitFor(() => expect(delivered).toHaveLength(2), { timeout: 1_000 });
+    expect(follow.diagnostics.some(({ stage }) => stage === "cast-ended")).toBe(true);
+    await follow.close();
+    await hub.browser.close();
+  });
+
+  it("pictures a still tab whose capture moved while its start was answered", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const hub = await hubPage("85");
+    const channel = await hub.page.cdp();
+    const shown = { height: 900, width: 1_400 };
+    const frameOf = (id: number) => ({
+      data: jpeg(shown.width, shown.height).toString("base64"),
+      metadata: {
+        deviceHeight: shown.height,
+        deviceWidth: shown.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    let capture = { ...shown, rasterScale: 1, revision: 1 };
+    const captureListeners = new Set<() => void>();
+    const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+    let starts = 0;
+    hub.contents.debugger.sendCommand.mockImplementation(
+      (method: string, parameters?: Record<string, unknown>, session?: string) => {
+        const answered = answer(method, parameters, session);
+        if (method !== "Page.startScreencast") return answered;
+        const id = (starts += 1);
+        // A still page: its one frame comes before the answer is handled, and the page's capture
+        // is admitted anew meanwhile.
+        hub.deliver("Page.screencastFrame", frameOf(id));
+        if (id === 1) {
+          capture = { ...capture, revision: 2 };
+          for (const listener of captureListeners) listener();
+        }
+        return answered;
+      },
+    );
+    const surface = {
+      active: true,
+      documentId: "a",
+      geometryRevision: 1,
+      id: "tab-a",
+      loading: false,
+    };
+    const binding = {
+      cdp: channel,
+      page: {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => capture,
+          subscribe: (listener: () => void) => {
+            captureListeners.add(listener);
+            return () => captureListeners.delete(listener);
+          },
+        },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      },
+      surface,
+    };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: () => () => undefined,
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    await follow.start();
+    await follow.setStreaming(true);
+    await vi.waitFor(() => expect(delivered.length).toBeGreaterThan(0), { timeout: 1_000 });
+    // Each start Chromium answered is running, or was stopped.
+    expect(hub.sent("Page.startScreencast").length).toBeLessThanOrEqual(
+      hub.sent("Page.stopScreencast").length + 1,
+    );
+    await follow.close();
+    await hub.browser.close();
+  });
+
+  // F30, the first half of the hypothesis for follow-never-shown-tab's four starts: a tab never
+  // shown sends, before its start's answer is handled, a first frame at the size it last drew,
+  // which 6a0311f0b made the hub hand on; the real follow view, sized as the Electron page sizes
+  // it, sees that frame. If it restarted the cast for every such frame, one show would send
+  // several starts. Here it is the follow view of browser-runtime-core, its resizeView included,
+  // on the hub's own channel; only the ledger around it is the least the follow view reads.
+  it("sends one start when a never-shown tab's first frame, of its old size, beats the answer", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const hub = await hubPage("65");
+    const channel = await hub.page.cdp();
+    const shown = { height: 900, width: 1_400 };
+    // The size the tab drew at before it was shown: its resting host's.
+    const resting = { height: 600, width: 800 };
+    const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+    let starts = 0;
+    const frame = (size: { height: number; width: number }, id: number) => ({
+      data: jpeg(size.width, size.height).toString("base64"),
+      metadata: {
+        deviceHeight: size.height,
+        deviceWidth: size.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    hub.contents.debugger.sendCommand.mockImplementation(
+      (method: string, parameters?: Record<string, unknown>, session?: string) => {
+        const answered = answer(method, parameters, session);
+        if (method !== "Page.startScreencast") return answered;
+        const id = (starts += 1);
+        // Chromium answers, and sends the picture it last drew before the hub hears the
+        // answer; the picture at the shown size follows.
+        return Promise.resolve(answered).then((result) => {
+          hub.deliver("Page.screencastFrame", frame(resting, id));
+          setTimeout(() => hub.deliver("Page.screencastFrame", frame(shown, id)), 5);
+          return result;
+        });
+      },
+    );
+    const surface = {
+      documentId: "document-1",
+      geometryRevision: 1,
+      id: "surface-1",
+      loading: false,
+    };
+    const capture = { height: shown.height, rasterScale: 1, revision: 1, width: shown.width };
+    const binding = {
+      cdp: channel,
+      page: {
+        applyGeometry: async () => undefined,
+        capture: { read: () => capture, subscribe: () => () => undefined },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      },
+      surface,
+    };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: () => () => undefined,
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    // What the follow view asks of the hub, beside what reaches Chromium (`starts`).
+    const asked: string[] = [];
+    const ask = channel.send.bind(channel);
+    channel.send = ((method: string, parameters?: Record<string, unknown>) => {
+      if (method === "Page.startScreencast" || method === "Page.stopScreencast") asked.push(method);
+      return ask(method, parameters);
+    }) as typeof channel.send;
+    const handed: number[] = [];
+    channel.onEvent((method, parameters) => {
+      if (method === "Page.screencastFrame")
+        handed.push((parameters as { metadata: { deviceWidth: number } }).metadata.deviceWidth);
+    });
+    await follow.start();
+    await follow.setStreaming(true);
+    const admitted = () =>
+      follow.diagnostics.filter(({ stage }) => stage === "capture-admit").length;
+    // Drawn: the frame at the shown size, which comes after any restart the first one caused.
+    await vi.waitFor(() => expect(admitted()).toBe(1));
+    await new Promise((resolve) => setImmediate(resolve));
+    const discarded = () =>
+      follow.diagnostics.filter(({ stage }) => stage === "capture-discard").length;
+    // The hub handed it the old-size frame with the start, and it took the frame for none of its
+    // own: its cast had not started when the frame came, so it neither drew it nor restarted.
+    expect(handed).toEqual([resting.width, shown.width]);
+    expect({ discarded: discarded(), starts }).toEqual({ discarded: 0, starts: 1 });
+    // The same frame once its cast runs is one it restarts for, once: what the test would see.
+    hub.deliver("Page.screencastFrame", frame(resting, starts));
+    await vi.waitFor(() => expect(admitted()).toBe(2));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect({ discarded: discarded(), starts }).toEqual({ discarded: 1, starts: 2 });
+    expect(asked).toEqual(["Page.startScreencast", "Page.stopScreencast", "Page.startScreencast"]);
+    await follow.close();
+    await hub.browser.close();
+  });
+
+  // Finding 8: a page runs a few casts at most, and equal settings are one cast.
+  describe("how many casts a page runs", () => {
+    // Run on 963f808d0, follow-never-shown-tab: a tab the person opened recorded four starts in
+    // equal settings. Every caller that asks while a start for the tab is unanswered waits for it
+    // (the ownership queue) and joins the cast it makes: one start, whoever and however many ask.
+    it("sends one start for a never-shown tab that several callers ask for at once", async () => {
+      const hub = await hubPage("64");
+      const settings = {
+        everyNthFrame: 1,
+        format: "jpeg",
+        maxHeight: 900,
+        maxWidth: 1_400,
+        quality: 72,
+      };
+      const person = await hub.page.cdp();
+      const agents = await Promise.all([1, 2].map(() => hub.page.agentCdp()));
+      const start = hub.hold("Page.startScreencast");
+      const asking = [person, person, ...agents, person].map((channel) =>
+        channel.send("Page.startScreencast", settings),
+      );
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      start.release();
+      start.replies[0]!.resolve({});
+      await Promise.all(asking);
+      expect(hub.sent("Page.startScreencast")).toHaveLength(1);
+      await hub.browser.close();
+    });
+
+    it("takes settings that differ only by Chromium's defaults for one cast", async () => {
+      const hub = await hubPage("61");
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const other = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", { format: "jpeg", quality: 80 });
+      await agent.send("Page.startScreencast", { everyNthFrame: 1, format: "jpeg", quality: 80 });
+      await other.send("Page.startScreencast", { format: "jpeg" });
+      expect(hub.sent("Page.startScreencast")).toHaveLength(1);
+      await hub.browser.close();
+    });
+
+    it("refuses a fourth in a sentence, takes nothing from those that run, and never refuses the person", async () => {
+      const hub = await hubPage("62");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agents = await Promise.all([1, 2, 3].map(() => hub.page.agentCdp()));
+      await person.send("Page.startScreencast", { format: "jpeg", maxWidth: 1_400 });
+      await agents[0]!.send("Page.startScreencast", { format: "png", maxWidth: 320 });
+      await agents[1]!.send("Page.startScreencast", { format: "png", maxWidth: 640 });
+      // The third agent watches the person's cast, then asks for a fourth.
+      await agents[2]!.send("Page.startScreencast", { format: "jpeg", maxWidth: 1_400 });
+      const saw: string[] = [];
+      agents[2]!.onEvent((method, parameters) => {
+        if (method === "Page.screencastFrame") saw.push((parameters as { data: string }).data);
+      });
+      const starts = hub.sent("Page.startScreencast").length;
+      await expect(
+        agents[2]!.send("Page.startScreencast", { format: "png", maxWidth: 800 }),
+      ).rejects.toThrow(/already pictured in 3 formats or sizes at once/u);
+      expect(hub.sent("Page.startScreencast")).toHaveLength(starts);
+      expect(own.attached).toEqual(["cast-1", "cast-2"]);
+      hub.deliver("Page.screencastFrame", { data: "person's", metadata: {}, sessionId: 1 });
+      expect(saw).toEqual(["person's"]);
+      // The person's own view in another size is never the one refused.
+      const phone = await hub.page.cdp();
+      await phone.send("Page.startScreencast", { format: "jpeg", maxWidth: 390 });
+      expect(own.attached).toEqual(["cast-1", "cast-2", "cast-3"]);
+      await hub.browser.close();
+    });
+
+    // The re-check of 5d197dfbc..e7080ea31, finding 5: the cap counts casts that run or start.
+    it("counts no cast the renderer's loss ended, though its owners stay", async () => {
+      const hub = await hubPage("63");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agents = await Promise.all([1, 2, 3].map(() => hub.page.agentCdp()));
+      await person.send("Page.startScreencast", { format: "jpeg", maxWidth: 1_400 });
+      await agents[0]!.send("Page.startScreencast", { format: "png", maxWidth: 320 });
+      await agents[1]!.send("Page.startScreencast", { format: "png", maxWidth: 640 });
+      for (const [name, listener] of hub.contents.on.mock.calls) {
+        if (name === "render-process-gone")
+          (listener as (...a: unknown[]) => void)({}, { reason: "crashed" });
+        if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+      }
+      await expect(
+        agents[2]!.send("Page.startScreencast", { format: "png", maxWidth: 800 }),
+      ).resolves.toEqual({});
+      await hub.browser.close();
+    });
   });
 
   it("lets go of a released channel's domains when the renderer is lost during its release", async () => {
@@ -1467,8 +4251,145 @@ describe("Electron geometry lifecycle", () => {
     const drain = async () => {
       for (let index = 0; index < operations.length; index++) await operations[index];
     };
-    return { browser, page, native, view, host, unbind, drain, releaseInput, serialize };
+    return {
+      browser,
+      page,
+      native,
+      view,
+      host,
+      unbind,
+      drain,
+      operations,
+      releaseInput,
+      serialize,
+    };
   }
+
+  // F32 (b), from the walker's run on fb245664c: after dialog B was answered no command reached
+  // the tab for five seconds. The real Electron page, placed and unplaced as the desktop does,
+  // with the real follow view on it: the tab pictured, left, its dialog opening, the person
+  // turning back to it under the dialog, the dialog answered. The cast starts again at once.
+  it("starts the cast again at once when a dialog on a tab turned back to is answered", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const { browser, page, native, view, host, drain, serialize } = await launch();
+    const debug = view.webContents.debugger;
+    const deliver = (method: string, parameters: unknown) => {
+      for (const [event, listener] of debug.on.mock.calls)
+        if (event === "message") (listener as (...a: unknown[]) => void)({}, method, parameters);
+    };
+    const starts = () =>
+      debug.sendCommand.mock.calls.filter(([method]) => method === "Page.startScreencast").length;
+    const stage = { x: 10, y: 20, width: 800, height: 600 };
+    try {
+      native.mount(host as unknown as BaseWindow, stage, vi.fn());
+      await drain();
+      const shown = { height: 600, width: 800 };
+      let dialogOpen = false;
+      const surface = {
+        active: true,
+        documentId: "b",
+        geometryRevision: 1,
+        id: "tab-b",
+        loading: false,
+      };
+      const channel = await page.cdp();
+      const asks: { at: number; method: string }[] = [];
+      const ask = channel.send.bind(channel);
+      channel.send = ((method: string, parameters?: Record<string, unknown>) => {
+        if (method === "Page.startScreencast" || method === "Page.stopScreencast")
+          asks.push({ at: performance.now(), method });
+        return ask(method, parameters);
+      }) as typeof channel.send;
+      const binding = { cdp: channel, page, surface };
+      const ledgerListeners = new Set<(event: unknown) => void>();
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => (dialogOpen ? { id: "dialog-b", surfaceId: "tab-b" } : null),
+        dialogOpen: () => dialogOpen,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          ledgerListeners.add(listener);
+          return () => ledgerListeners.delete(listener);
+        },
+        use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        viewportOf: () => shown,
+        withGeometry: <T>(_id: string, operation: () => Promise<T>) =>
+          new Promise<T>((resolve, reject) => {
+            void serialize(async () => {
+              await operation().then(resolve, reject);
+            });
+          }),
+      };
+      const delivered: unknown[] = [];
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+      });
+      const frameOf = (id: number) => ({
+        data: jpeg(shown.width, shown.height).toString("base64"),
+        metadata: {
+          deviceHeight: shown.height,
+          deviceWidth: shown.width,
+          offsetTop: 0,
+          pageScaleFactor: 1,
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
+        },
+        sessionId: id,
+      });
+      await follow.start();
+      await follow.setStreaming(true);
+      await vi.waitFor(() => expect(starts()).toBe(1));
+      deliver("Page.screencastFrame", frameOf(1));
+      await vi.waitFor(() => expect(delivered.length).toBeGreaterThan(0));
+      // The person turns to another tab: this one is unplaced and its picture paused.
+      await follow.setStreaming(false);
+      native.unmount();
+      await drain();
+      // Its dialog opens; the person turns back to it under the dialog.
+      dialogOpen = true;
+      deliver("Page.javascriptDialogOpening", {
+        defaultPrompt: "",
+        frameId: "target-1",
+        hasBrowserHandler: false,
+        message: "Allow destructive action B?",
+        type: "confirm",
+        url: "https://example.test/follow?dialog-b",
+      });
+      for (const listener of ledgerListeners)
+        listener({ dialog: { id: "dialog-b" }, surfaceId: "tab-b", type: "dialog" });
+      native.mount(host as unknown as BaseWindow, stage, vi.fn());
+      await follow.setStreaming(true);
+      const before = starts();
+      delivered.length = 0;
+      // The person answers it.
+      const answeredAt = performance.now();
+      dialogOpen = false;
+      deliver("Page.javascriptDialogClosed", { frameId: "target-1", result: false, userInput: "" });
+      for (const listener of ledgerListeners)
+        listener({ dialog: null, surfaceId: "tab-b", type: "dialog" });
+      // The follow view asks again at once, and the frame Chromium sends next reaches it.
+      const asked = asks.length;
+      await vi.waitFor(() => expect(asks.length).toBeGreaterThan(asked));
+      expect(asks.slice(asked).map(({ method }) => method)).toEqual(["Page.startScreencast"]);
+      expect(asks[asked]!.at - answeredAt).toBeLessThan(100);
+      await vi.waitFor(() => {
+        deliver("Page.screencastFrame", frameOf(starts()));
+        expect(delivered.length).toBeGreaterThan(0);
+      });
+      expect(starts() - before).toBeLessThanOrEqual(1);
+      await follow.close();
+    } finally {
+      await browser.close();
+    }
+  });
 
   it("keeps provider TLS domains in the existing hub ownership until the page releases", async () => {
     const { browser, page, view } = await launch(false, true);
@@ -1635,8 +4556,8 @@ describe("Electron geometry lifecycle", () => {
       }
       const writes = view.setBounds.mock.calls.length;
       const hostWrites = host.setContentSize.mock.calls.length;
-      const commands = view.webContents.debugger.sendCommand.mock.calls.length;
-      const subscriptions = view.webContents.beginFrameSubscription.mock.calls.length;
+      const commands = view.initialWebContents.debugger.sendCommand.mock.calls.length;
+      const subscriptions = view.initialWebContents.beginFrameSubscription.mock.calls.length;
       const placements = placed.mock.calls.length;
       if (outcome === "resolve") barrier.resolve();
       else barrier.reject(new Error("Release barrier failed"));
@@ -1644,8 +4565,8 @@ describe("Electron geometry lifecycle", () => {
       await native.invalidateSurface().catch(() => undefined);
       expect(view.setBounds.mock.calls).toHaveLength(writes);
       expect(host.setContentSize.mock.calls).toHaveLength(hostWrites);
-      expect(view.webContents.debugger.sendCommand.mock.calls).toHaveLength(commands);
-      expect(view.webContents.beginFrameSubscription.mock.calls).toHaveLength(subscriptions);
+      expect(view.initialWebContents.debugger.sendCommand.mock.calls).toHaveLength(commands);
+      expect(view.initialWebContents.beginFrameSubscription.mock.calls).toHaveLength(subscriptions);
       expect(placed.mock.calls).toHaveLength(placements);
       await expect(native.waitForPaint()).rejects.toThrow(/canceled|closed|aborted|crashed/);
       expect(reads).toBeLessThan(20);
@@ -1709,6 +4630,118 @@ describe("Electron geometry lifecycle", () => {
       }
     },
   );
+
+  describe("a page in a hidden window", () => {
+    const stage = { x: 280, y: 52, width: 800, height: 600 };
+    type Host = (typeof electron.hosts)[number];
+    type View = (typeof electron.views)[number];
+    /** The host the view was last added to, by the order Electron saw the calls. */
+    const parentOf = (view: View, hosts: readonly Host[]) => {
+      let parent: Host | null = null;
+      let latest = -1;
+      for (const candidate of hosts) {
+        const { calls, invocationCallOrder } = candidate.contentView.addChildView.mock;
+        calls.forEach(([child], index) => {
+          if (child === view && invocationCallOrder[index]! > latest) {
+            latest = invocationCallOrder[index]!;
+            parent = candidate;
+          }
+        });
+      }
+      return parent;
+    };
+    const mounted = async () => {
+      const launched = await launch();
+      const window = new BaseWindow({}) as unknown as Host;
+      launched.native.mount(window as unknown as BaseWindow, stage, vi.fn());
+      await launched.drain();
+      return { ...launched, window };
+    };
+
+    it("rests in its own host at its own origin, then returns to its place in the window", async () => {
+      const { browser, drain, host, native, view, window } = await mounted();
+      try {
+        expect(parentOf(view, [host, window])).toBe(window);
+        native.setParked(true);
+        expect(parentOf(view, [host, window])).toBe(host);
+        expect(view.getBounds()).toEqual({ ...stage, x: 0, y: 0 });
+        await drain();
+        native.setParked(false);
+        await drain();
+        expect(parentOf(view, [host, window])).toBe(window);
+        expect(view.getBounds()).toEqual(stage);
+      } finally {
+        await browser.close();
+      }
+    });
+
+    it("settles a resize while parked instead of placing it again forever", async () => {
+      const { browser, drain, host, native, operations, view, window } = await mounted();
+      try {
+        native.setParked(true);
+        native.setStage({ ...stage, width: 820 });
+        await drain();
+        const settled = operations.length;
+        const writes = view.setBounds.mock.calls.length;
+        await drain();
+        expect(operations.length).toBe(settled);
+        expect(view.setBounds.mock.calls.length).toBe(writes);
+        expect(parentOf(view, [host, window])).toBe(host);
+        expect(view.getBounds()).toEqual({ x: 0, y: 0, width: 820, height: 600 });
+        native.setParked(false);
+        await drain();
+        expect(parentOf(view, [host, window])).toBe(window);
+        expect(view.getBounds()).toEqual({ ...stage, width: 820 });
+      } finally {
+        await browser.close();
+      }
+    });
+
+    it("lands in its place, not at the corner, after a quick hide and show", async () => {
+      const { browser, drain, host, native, view, window } = await mounted();
+      try {
+        native.setParked(true);
+        native.setParked(false);
+        await drain();
+        expect(parentOf(view, [host, window])).toBe(window);
+        expect(view.getBounds()).toEqual(stage);
+      } finally {
+        await browser.close();
+      }
+    });
+
+    it("never joins a window that hid before its first placement", async () => {
+      const { browser, drain, host, native, view } = await launch();
+      const window = new BaseWindow({}) as unknown as Host;
+      try {
+        native.mount(window as unknown as BaseWindow, stage, vi.fn());
+        native.setParked(true);
+        await drain();
+        expect(window.contentView.addChildView).not.toHaveBeenCalled();
+        expect(parentOf(view, [host, window])).toBe(host);
+        native.setParked(false);
+        await drain();
+        expect(parentOf(view, [host, window])).toBe(window);
+        expect(view.getBounds()).toEqual(stage);
+      } finally {
+        await browser.close();
+      }
+    });
+
+    it("stays in its own host when it closes while parked", async () => {
+      const { browser, drain, host, native, view, window } = await mounted();
+      try {
+        native.setParked(true);
+        native.unmount();
+        native.setParked(false);
+        await drain();
+        expect(parentOf(view, [host, window])).toBe(host);
+        expect(window.contentView.addChildView).toHaveBeenCalledTimes(1);
+      } finally {
+        await browser.close();
+      }
+    });
+  });
 
   it("attaches a page remounted while its placement waited only to its latest window", async () => {
     const { browser, native, view, serialize, drain } = await launch();
@@ -2259,6 +5292,544 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         const popup = view.webContents.setWindowOpenHandler.mock.calls[0]![0];
         expect(popup({ url })).toMatchObject({ action: "deny" });
       }
+    } finally {
+      await browser.close();
+    }
+  });
+  it("refuses page-started chrome-extension: navigations, subframes, redirects, and popups on connection-controlled pages while keeping them for the person (M1a)", async () => {
+    const launcher = new ElectronBrowserLauncher({
+      downloads: { accept: () => undefined },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const browser = await launcher.launch({
+      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      partitionKey: "session:connection-extension-nav",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000099"),
+      storage: { kind: "guest" },
+    });
+    try {
+      const page = browser.context.pages()[0]!;
+      const targetId = await page.targetId();
+      const view = electron.views.at(-1)!;
+      const willNavigate = view.webContents.on.mock.calls.find(
+        ([name]) => name === "will-navigate",
+      )![1];
+      const willFrameNavigate = view.webContents.on.mock.calls.find(
+        ([name]) => name === "will-frame-navigate",
+      )![1];
+      const willRedirect = view.webContents.on.mock.calls.find(
+        ([name]) => name === "will-redirect",
+      )![1];
+      const popupHandler = view.webContents.setWindowOpenHandler.mock.calls[0]![0];
+      const extId = "abcdefghijklmnopabcdefghijklmnop";
+      const extUrls = [
+        `chrome-extension://${extId}/war.html`,
+        `chrome-ex\ttension://${extId}/war.html`,
+        `\u0001chrome-extension://${extId}/war.html`,
+      ];
+      withExtensions(view.webContents, { [extId]: warManifest });
+      withFrames(view.webContents, ["https://site.test"]);
+      const initiator = { origin: "https://site.test" };
+
+      // Before connection control: the person's own page reaches the web-accessible war.html,
+      // and will-frame-navigate / will-redirect do NOT block data:, blob:, or about:srcdoc
+      // subframes (N4).
+      const personNav = vi.fn();
+      willNavigate({ preventDefault: personNav, initiator }, extUrls[0]);
+      expect(personNav).not.toHaveBeenCalled();
+      expect(popupHandler({ url: extUrls[0] })).toMatchObject({ action: "allow" });
+      for (const subframeUrl of [
+        "data:text/html,<p>inline</p>",
+        "blob:https://example.test/1234",
+        "about:srcdoc",
+        extUrls[0],
+      ]) {
+        const preventFrame = vi.fn();
+        willFrameNavigate({ url: subframeUrl, preventDefault: preventFrame, initiator });
+        expect(
+          preventFrame,
+          `uncontrolled will-frame-navigate ${subframeUrl}`,
+        ).not.toHaveBeenCalled();
+        const preventRedir = vi.fn();
+        if (subframeUrl === extUrls[0])
+          sessionBeforeRedirect()({
+            webContentsId: webContentsIdOf(view.webContents),
+            frame: { frameTreeNodeId: 1 },
+            url: "https://site.test/bounce",
+            redirectURL: subframeUrl,
+            resourceType: "mainFrame",
+          });
+        willRedirect(
+          { preventDefault: preventRedir, initiator, frame: { frameTreeNodeId: 1 } },
+          subframeUrl,
+        );
+        expect(preventRedir, `uncontrolled will-redirect ${subframeUrl}`).not.toHaveBeenCalled();
+      }
+
+      // S-e: backend.attach alone does NOT mark the page connection-controlled; only setConnectionControlled does.
+      const channel = await browser.cdp.attach(targetId);
+      const stillPersonNav = vi.fn();
+      willNavigate({ preventDefault: stillPersonNav, initiator }, extUrls[0]);
+      expect(stillPersonNav).not.toHaveBeenCalled();
+
+      // Mark page as connection-controlled (as SessionCdpRouter's counted retain does).
+      browser.cdp.setConnectionControlled?.(targetId, true);
+      await vi.waitFor(() => {
+        const probe = vi.fn();
+        willNavigate({ preventDefault: probe, initiator }, extUrls[0]);
+        expect(probe).toHaveBeenCalledOnce();
+      });
+      for (const url of [
+        ...extUrls,
+        `blob:chrome-extension://${extId}/0b1c`,
+        `filesystem:chrome-extension://${extId}/temporary/x`,
+      ]) {
+        const preventNav = vi.fn();
+        willNavigate({ preventDefault: preventNav, initiator }, url);
+        expect(preventNav, `will-navigate ${url}`).toHaveBeenCalledOnce();
+
+        const preventFrame = vi.fn();
+        willFrameNavigate({ url, preventDefault: preventFrame, initiator });
+        expect(preventFrame, `will-frame-navigate ${url}`).toHaveBeenCalledOnce();
+
+        const preventRedirect = vi.fn();
+        willRedirect({ preventDefault: preventRedirect, initiator }, url);
+        expect(preventRedirect, `will-redirect ${url}`).toHaveBeenCalledOnce();
+
+        expect(popupHandler({ url }), `windowOpen ${url}`).toMatchObject({ action: "deny" });
+      }
+      // On a connection-controlled page, ordinary data:/blob:/about:srcdoc subframes still work (N4).
+      for (const okSubframe of [
+        "data:text/html,<p>inline</p>",
+        "blob:https://example.test/1234",
+        "about:srcdoc",
+      ]) {
+        const preventFrame = vi.fn();
+        willFrameNavigate({ url: okSubframe, preventDefault: preventFrame });
+        expect(preventFrame, `controlled will-frame-navigate ${okSubframe}`).not.toHaveBeenCalled();
+      }
+
+      // A popup opened by a connection-controlled page inherits connection control immediately.
+      const beforeViews = electron.views.length;
+      popupHandler({ url: "about:blank", disposition: "new-window" }).createWindow({});
+      const popupView = electron.views[beforeViews]!;
+      withExtensions(popupView.webContents, { [extId]: warManifest });
+      const origPopupSend = popupView.webContents.debugger.sendCommand;
+      popupView.webContents.debugger.sendCommand = vi.fn(
+        (method: string, params?: Record<string, unknown>, sid?: string) =>
+          method === "Target.getTargetInfo"
+            ? Promise.resolve({ targetInfo: { targetId: "target-popup-s5" } })
+            : origPopupSend(method, params, sid),
+      );
+      const popupWillNavigate = popupView.webContents.on.mock.calls.find(
+        ([name]) => name === "will-navigate",
+      )![1];
+      const preventPopupExt = vi.fn();
+      popupWillNavigate({ preventDefault: preventPopupExt, initiator }, extUrls[0]);
+      expect(preventPopupExt).toHaveBeenCalledOnce();
+
+      // S5: when the popup is announced and no router retains it (e.g., after Disconnect), the
+      // inherited connection-controlled flag is released instead of staying sticky forever.
+      await vi.waitFor(() => {
+        const afterAnnounce = vi.fn();
+        popupWillNavigate({ preventDefault: afterAnnounce, initiator }, extUrls[0]);
+        expect(afterAnnounce).not.toHaveBeenCalled();
+      });
+
+      await channel.close();
+      // Closing a connection-controlled page clears its webContents ID cleanly even though real
+      // Electron sets `view.webContents` to undefined before emitting `destroyed`.
+      await expect(page.close()).resolves.toBeUndefined();
+      expect(view.webContents).toBeUndefined();
+    } finally {
+      await browser.close();
+    }
+  });
+  it("lets a page that is not connection-controlled reach an extension address only as Chrome lets a web page", async () => {
+    const launcher = new ElectronBrowserLauncher({
+      downloads: { accept: () => undefined },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const browser = await launcher.launch({
+      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      partitionKey: "session:extension-web-accessible",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000098"),
+      storage: { kind: "guest" },
+    });
+    try {
+      const view = electron.views.at(-1)!;
+      const handler = (name: string) =>
+        view.webContents.on.mock.calls.find(([event]) => event === name)![1];
+      const willNavigate = handler("will-navigate");
+      const willFrameNavigate = handler("will-frame-navigate");
+      const popupHandler = view.webContents.setWindowOpenHandler.mock.calls[0]![0];
+      const extId = "abcdefghijklmnopabcdefghijklmnop";
+      const absentId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      withExtensions(view.webContents, { [extId]: warManifest });
+      const war = `chrome-extension://${extId}/war.html`;
+      const nonWar = `chrome-extension://${extId}/nonwar.html`;
+      const siteOnly = `chrome-extension://${extId}/site-only.html`;
+      const absent = `chrome-extension://${absentId}/war.html`;
+      const web = { origin: "https://site.test" };
+      const own = { origin: `chrome-extension://${extId}` };
+      const refused = {
+        navigate: (url: string, initiator: object | null) => {
+          const preventDefault = vi.fn();
+          willNavigate({ preventDefault, initiator }, url);
+          return preventDefault.mock.calls.length > 0;
+        },
+        frame: (url: string, initiator: object | null) => {
+          const preventDefault = vi.fn();
+          willFrameNavigate({ url, preventDefault, initiator, isMainFrame: false });
+          return preventDefault.mock.calls.length > 0;
+        },
+      };
+      for (const [gate, refuses] of Object.entries(refused)) {
+        // A web page reaches the web-accessible page; not the non-web-accessible one, and not
+        // an absent extension's, alike.
+        expect(refuses(war, web), `${gate} war from web`).toBe(false);
+        expect(refuses(nonWar, web), `${gate} nonwar from web`).toBe(true);
+        expect(refuses(absent, web), `${gate} absent from web`).toBe(true);
+        // An initiator Electron no longer has matches no MV3 entry.
+        expect(refuses(war, null), `${gate} war from no initiator`).toBe(true);
+        // Ordinary addresses are not this rule's.
+        expect(refuses("https://example.test/", null), `${gate} web`).toBe(false);
+      }
+      // An extension's dynamic address (use_dynamic_url) is not this rule's: Chromium enforces it.
+      const dynamicPage = "chrome-extension://e7c508fa-1f5c-471b-9065-5bf03292faaa/dyn.html";
+      expect(refused.navigate(dynamicPage, web)).toBe(false);
+      expect(refused.frame(dynamicPage, web)).toBe(false);
+      withFrames(view.webContents, ["https://site.test"]);
+      expect(
+        popupHandler({
+          url: dynamicPage,
+          disposition: "new-window",
+          referrer: { url: "https://site.test/", policy: "strict-origin-when-cross-origin" },
+        }),
+      ).toMatchObject({ action: "allow" });
+      // The extension's own pages move among their own pages.
+      expect(refused.navigate(nonWar, own)).toBe(false);
+      expect(refused.frame(nonWar, own)).toBe(false);
+      // data:, blob: and about:srcdoc subframes still load without an initiator (N4).
+      for (const url of [
+        "data:text/html,<p>inline</p>",
+        "blob:https://example.test/1234",
+        "about:srcdoc",
+      ])
+        expect(refused.frame(url, null), url).toBe(false);
+
+      // window.open (W2): the referrer the browser reports names the opener's origin, which must
+      // be a live frame's. Without one, every frame must be allowed, or else the window's own
+      // first navigation decides: Electron 44 gives the handler no opener frame (probe
+      // 20261125T005627Z-14fc5203), so "allow" there leaves the refusal to the popup.
+      const opens = (url: string, origins: readonly string[], referrer = "") => {
+        withFrames(view.webContents, origins);
+        return popupHandler({
+          url,
+          disposition: "new-window",
+          referrer: { url: referrer, policy: "strict-origin-when-cross-origin" },
+        }) as { action: string; createWindow?: (options: object) => unknown };
+      };
+      const mainWithWidgets = ["https://site.test", "null", "https://cross.test"];
+      expect(opens(war, mainWithWidgets, "https://site.test/").action).toBe("allow");
+      expect(opens(siteOnly, mainWithWidgets, "https://site.test/").action).toBe("allow");
+      expect(opens(siteOnly, mainWithWidgets, "https://cross.test/")).toEqual({ action: "deny" });
+      expect(opens(nonWar, mainWithWidgets, "https://site.test/")).toEqual({ action: "deny" });
+      expect(opens(absent, mainWithWidgets, "https://site.test/")).toEqual({ action: "deny" });
+      // A referrer that names no frame of the page is refused.
+      expect(opens(war, ["https://site.test"], "https://elsewhere.test/")).toEqual({
+        action: "deny",
+      });
+      // No referrer (no-referrer, a sandboxed or an extension opener): every frame allowed opens.
+      expect(opens(war, ["https://site.test"]).action).toBe("allow");
+      expect(opens(nonWar, [`chrome-extension://${extId}`]).action).toBe("allow");
+      expect(opens("https://example.test/", []).action).toBe("allow");
+      // No frame of the page could reach it: refused at once, no blank window (R3).
+      expect.soft(opens(nonWar, ["https://site.test"])).toEqual({ action: "deny" });
+      expect.soft(opens(absent, ["https://site.test"])).toEqual({ action: "deny" });
+      expect.soft(opens(war, [])).toEqual({ action: "deny" });
+      // Otherwise the window opens and its own first navigation decides. A window Opensteer would
+      // load itself (no pre-created contents) starts blank instead of at the address. A dynamic
+      // address is always judged so, never handed to loadURL (M1, R1).
+      const dynamicNonWar = "chrome-extension://e7c508fa-1f5c-471b-9065-5bf03292faaa/nonwar.html";
+      for (const [url, origins, referrer] of [
+        [nonWar, [`chrome-extension://${extId}`, "https://site.test"], ""],
+        [war, ["https://site.test", "null"], ""],
+        [dynamicNonWar, ["https://site.test"], ""],
+        [dynamicNonWar, ["https://site.test"], "https://site.test/"],
+      ] as const) {
+        const answer = opens(url, origins, referrer);
+        expect.soft(answer.action, `${url} from ${origins.join(",")}`).toBe("allow");
+        const before = electron.views.length;
+        answer.createWindow!({});
+        const loaded = electron.views
+          .slice(before)
+          .flatMap((child) => child.webContents.loadURL.mock.calls.map(([target]) => target));
+        expect.soft(loaded, `${url} loaded by Opensteer`).not.toContain(url);
+      }
+      // A window Electron navigates itself: its first navigation names the frame that opened it.
+      const { WebContentsView } = await import("electron");
+      const precreated = new WebContentsView({}).webContents;
+      const before = electron.views.length;
+      opens(nonWar, [`chrome-extension://${extId}`, "https://site.test"]).createWindow!({
+        webContents: precreated,
+      });
+      const popup = electron.views[before]!;
+      withExtensions(popup.webContents, { [extId]: warManifest });
+      const popupFrameNavigate = popup.webContents.on.mock.calls.find(
+        ([event]) => event === "will-frame-navigate",
+      )![1];
+      const popupRefuses = (opener: object) => {
+        const preventDefault = vi.fn();
+        popupFrameNavigate({ url: nonWar, preventDefault, initiator: opener, isMainFrame: true });
+        return preventDefault.mock.calls.length > 0;
+      };
+      expect(popupRefuses(own), "the extension's own page opens its page").toBe(false);
+      expect(popupRefuses(web), "its web iframe does not").toBe(true);
+    } finally {
+      await browser.close();
+    }
+  });
+  it("judges a server redirect into an extension by the origin that redirects (W1)", async () => {
+    const launcher = new ElectronBrowserLauncher({
+      downloads: { accept: () => undefined },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const browser = await launcher.launch({
+      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      partitionKey: "session:extension-redirects",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000097"),
+      storage: { kind: "guest" },
+    });
+    try {
+      const view = electron.views.at(-1)!;
+      const willRedirect = view.webContents.on.mock.calls.find(
+        ([event]) => event === "will-redirect",
+      )![1];
+      const beforeRedirect = sessionBeforeRedirect();
+      const extId = "abcdefghijklmnopabcdefghijklmnop";
+      const peerId = "ponmlkjihgfedcbaponmlkjihgfedcba";
+      const absentId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      withExtensions(view.webContents, {
+        [extId]: {
+          manifest_version: 3,
+          web_accessible_resources: [
+            { resources: ["war.html"], matches: ["<all_urls>"] },
+            { resources: ["trusted-only.html"], matches: ["https://trusted.test/*"] },
+            { resources: ["callback.html"], matches: ["https://idp.test/*"] },
+            { resources: ["ext-only.html"], extension_ids: ["*"] },
+            { resources: ["dyn.html"], matches: ["<all_urls>"], use_dynamic_url: true },
+          ],
+        },
+      });
+      const page = (name: string, id = extId) => `chrome-extension://${id}/${name}`;
+      const trusted = { origin: "https://trusted.test" };
+      const own = { origin: `chrome-extension://${extId}` };
+      const peer = { origin: `chrome-extension://${peerId}` };
+      /** Whether the page refuses a redirect to `to` that the response at `from` sent. */
+      const refuses = (
+        to: string,
+        from: string | null,
+        initiator: object | null,
+        frameTreeNodeId = 1,
+        recordedFrame = frameTreeNodeId,
+      ) => {
+        if (from)
+          beforeRedirect({
+            webContentsId: webContentsIdOf(view.webContents),
+            frame: { frameTreeNodeId: recordedFrame },
+            url: from,
+            redirectURL: to,
+            resourceType: frameTreeNodeId === 1 ? "mainFrame" : "subFrame",
+          });
+        const preventDefault = vi.fn();
+        willRedirect({ preventDefault, initiator, frame: { frameTreeNodeId } }, to);
+        return preventDefault.mock.calls.length > 0;
+      };
+      // The reviewer's five cases.
+      expect(
+        refuses(page("trusted-only.html"), "https://evil.test/bounce", trusted),
+        "trustedToEvilBypass",
+      ).toBe(true);
+      expect(
+        refuses(page("ext-only.html"), "https://evil.test/", own),
+        "extToEvilExtIdsBypass",
+      ).toBe(true);
+      expect(
+        refuses(page("ext-only.html"), "https://evil.test/", peer),
+        "peerToEvilExtIdsBypass",
+      ).toBe(true);
+      expect(refuses(page("callback.html"), "https://idp.test/auth", own), "ownExtOAuth").toBe(
+        false,
+      );
+      expect(
+        refuses(page("callback.html"), "https://idp.test/auth", null),
+        "browserStartedOAuth",
+      ).toBe(false);
+      // Whoever started it, the redirecting origin is what is judged.
+      expect(refuses(page("trusted-only.html"), "https://trusted.test/bounce", null)).toBe(false);
+      expect(refuses(page("war.html"), "https://evil.test/bounce", null)).toBe(false);
+      expect(refuses(page("nonwar.html"), "https://trusted.test/bounce", own)).toBe(true);
+      expect(refuses(page("nonwar.html", absentId), "https://trusted.test/bounce", own)).toBe(true);
+      // A subframe's redirect is its own frame's.
+      expect(refuses(page("callback.html"), "https://idp.test/auth", trusted, 5)).toBe(false);
+      expect(refuses(page("callback.html"), "https://idp.test/auth", trusted, 5, 6)).toBe(true);
+      // A redirect the session did not see (a service worker's) is refused; a record is used once.
+      expect(refuses(page("war.html"), null, trusted)).toBe(true);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: "https://idp.test/auth",
+        redirectURL: page("callback.html"),
+        resourceType: "mainFrame",
+      });
+      expect(refuses(page("callback.html"), null, null)).toBe(false);
+      expect(refuses(page("callback.html"), null, null)).toBe(true);
+      // A dynamic address is only an alias of its static one (R1): Chromium's hop to the static
+      // address is judged as that address, by how the navigation came to the alias.
+      const dynamicHost = "chrome-extension://e7c508fa-1f5c-471b-9065-5bf03292faaa";
+      const emit = (name: string, ...args: unknown[]) => {
+        for (const [event, listener] of view.webContents.on.mock.calls)
+          if (event === name) (listener as (...values: unknown[]) => void)(...args);
+      };
+      const started = (url: string, initiator?: object | null, frameTreeNodeId = 1) =>
+        emit("did-start-navigation", {
+          url,
+          isSameDocument: false,
+          isMainFrame: frameTreeNodeId === 1,
+          frame: { frameTreeNodeId },
+          ...(initiator === undefined ? {} : { initiator }),
+        });
+      /** A navigation to a dynamic address, then Chromium's hop: whether the hop is refused. */
+      const hopRefused = (path: string) => refuses(page(path), `${dynamicHost}/${path}`, null);
+      started(`${dynamicHost}/dyn.html`, trusted);
+      expect.soft(hopRefused("dyn.html"), "a web page's own use_dynamic_url address").toBe(false);
+      started(`${dynamicHost}/nonwar.html`, trusted);
+      expect.soft(hopRefused("nonwar.html"), "a web page to a page not listed").toBe(true);
+      started(`${dynamicHost}/trusted-only.html`, trusted);
+      expect.soft(hopRefused("trusted-only.html"), "listed for that page's origin").toBe(false);
+      started(`${dynamicHost}/trusted-only.html`, { origin: "https://evil.test" });
+      expect.soft(hopRefused("trusted-only.html"), "not listed for this one").toBe(true);
+      started(`${dynamicHost}/nonwar.html`, own);
+      expect.soft(hopRefused("nonwar.html"), "the extension's own page").toBe(false);
+      started(`${dynamicHost}/nonwar.html`, null);
+      expect.soft(hopRefused("nonwar.html"), "a page whose frame is gone").toBe(true);
+      started(`${dynamicHost}/dyn.html`);
+      expect.soft(hopRefused("dyn.html"), "Opensteer's own load").toBe(false);
+      expect.soft(hopRefused("dyn.html"), "a hop no navigation start accounts for").toBe(true);
+      // M2: a web response's redirect into a dynamic address is judged, at the hop, as that origin.
+      const viaRedirect = (from: string, initiator: object | null, path: string) => {
+        started(from, initiator);
+        const intoAlias = refuses(`${dynamicHost}/${path}`, from, initiator);
+        return { intoAlias, hop: refuses(page(path), `${dynamicHost}/${path}`, initiator) };
+      };
+      expect
+        .soft(viaRedirect("https://evil.test/bounce", own, "nonwar.html"), "ext -> evil -> nonwar")
+        .toEqual({
+          intoAlias: false,
+          hop: true,
+        });
+      expect
+        .soft(
+          viaRedirect("https://evil.test/bounce", null, "nonwar.html"),
+          "browser -> evil -> nonwar",
+        )
+        .toEqual({
+          intoAlias: false,
+          hop: true,
+        });
+      expect
+        .soft(
+          viaRedirect("https://evil.test/bounce", trusted, "trusted-only.html"),
+          "trusted -> evil -> trusted-only",
+        )
+        .toEqual({ intoAlias: false, hop: true });
+      expect
+        .soft(viaRedirect("https://idp.test/auth", own, "dyn.html"), "ext -> idp -> dyn")
+        .toEqual({
+          intoAlias: false,
+          hop: false,
+        });
+      // A #fragment (a hash route, a token) is on the navigation's URL and not on the loader's.
+      started(`${dynamicHost}/dyn.html#/settings`, own);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: `${dynamicHost}/dyn.html`,
+        redirectURL: page("dyn.html"),
+        resourceType: "mainFrame",
+      });
+      expect.soft(refuses(page("dyn.html#/settings"), null, own), "a hash route").toBe(false);
+      started("https://trusted.test/oauth", trusted);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: "https://trusted.test/oauth",
+        redirectURL: `${dynamicHost}/dyn.html`,
+        resourceType: "mainFrame",
+      });
+      expect
+        .soft(refuses(`${dynamicHost}/dyn.html#token=1`, null, trusted), "into it with #token")
+        .toBe(false);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: `${dynamicHost}/dyn.html`,
+        redirectURL: page("dyn.html"),
+        resourceType: "mainFrame",
+      });
+      expect
+        .soft(refuses(page("dyn.html#token=1"), null, trusted), "its hop with #token")
+        .toBe(false);
+      // M3a: a navigation that ends or gives way leaves no record a later redirect can use.
+      started(`${dynamicHost}/nonwar.html`);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: `${dynamicHost}/nonwar.html`,
+        redirectURL: page("nonwar.html"),
+        resourceType: "mainFrame",
+      });
+      started("https://evil.test/sw-page", { origin: "https://evil.test" });
+      expect
+        .soft(refuses(page("nonwar.html"), null, null), "a service worker's redirect after")
+        .toBe(true);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: "https://trusted.test/bounce",
+        redirectURL: page("trusted-only.html"),
+        resourceType: "mainFrame",
+      });
+      emit("did-fail-load", {}, -3, "ERR_ABORTED", "https://trusted.test/bounce", true, 9, 9);
+      expect
+        .soft(refuses(page("trusted-only.html"), null, trusted), "after a failed load")
+        .toBe(true);
+      // M3b: a connection-controlled page's refusal uses its record up too, so nothing is left for
+      // a later redirect once control is released.
+      const targetId = await browser.context.pages()[0]!.targetId();
+      browser.cdp.setConnectionControlled?.(targetId, true);
+      await vi.waitFor(() =>
+        expect(refuses(page("war.html"), "https://trusted.test/x", trusted)).toBe(true),
+      );
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: "https://trusted.test/bounce",
+        redirectURL: page("trusted-only.html"),
+        resourceType: "mainFrame",
+      });
+      expect.soft(refuses(page("trusted-only.html"), null, trusted), "while controlled").toBe(true);
+      browser.cdp.setConnectionControlled?.(targetId, false);
+      await vi.waitFor(() =>
+        expect(refuses(page("war.html"), "https://trusted.test/x", trusted)).toBe(false),
+      );
+      expect
+        .soft(refuses(page("trusted-only.html"), null, trusted), "after control ends")
+        .toBe(true);
+      // Ordinary redirects are not this rule's, and a redirect from a non-web origin is refused.
+      expect(refuses("https://example.test/next", null, null)).toBe(false);
+      expect(refuses(page("war.html"), page("war.html", peerId), null)).toBe(true);
     } finally {
       await browser.close();
     }
@@ -3059,7 +6630,7 @@ describe("native Electron profiles", () => {
         const flush = vi
           .spyOn(owner.session.cookies, "flushStore")
           .mockImplementationOnce(async () => {
-            pageClosedFirst = page.webContents.close.mock.calls.length > 0;
+            pageClosedFirst = page.initialWebContents.close.mock.calls.length > 0;
             entered.resolve();
             if (mode === "hung") await new Promise(() => {});
             throw new Error("secret final save failure");
@@ -3085,7 +6656,7 @@ describe("native Electron profiles", () => {
         );
         expect(await closed).toMatchObject({ reason: "browser-profile-persistence-failed" });
         expect(browser.context.isConnected?.()).toBe(false);
-        expect(page.webContents.close).toHaveBeenCalled();
+        expect(page.initialWebContents.close).toHaveBeenCalled();
         await expect(browser.cdp.send("Target.getTargets")).rejects.toThrow(/closed/);
         expect(() => owner.assertReady()).not.toThrow();
         flush.mockRestore();
@@ -3147,12 +6718,12 @@ describe("native Electron profiles", () => {
       ).not.toHaveBeenCalled();
       expect(() => owner.assertAdmitted()).not.toThrow();
       const captures = electron.views
-        .flatMap((v) => v.webContents.debugger.sendCommand.mock.calls)
+        .flatMap((v) => v.initialWebContents.debugger.sendCommand.mock.calls)
         .filter(([method]) => method === "Network.getAllCookies").length;
       await vi.advanceTimersByTimeAsync(1_000);
       expect(
         electron.views
-          .flatMap((v) => v.webContents.debugger.sendCommand.mock.calls)
+          .flatMap((v) => v.initialWebContents.debugger.sendCommand.mock.calls)
           .filter(([method]) => method === "Network.getAllCookies"),
       ).toHaveLength(captures + 1);
       expect(capture).toHaveBeenCalledOnce();
@@ -3259,6 +6830,46 @@ describe("native Electron profiles", () => {
       });
       expect(browser.context.pages()).toEqual([]);
       await expect(browser.context.createPage()).rejects.toThrow(/admitted/);
+      await browser.close();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("refuses this Home's addresses in a saved local profile, as in a Guest (G1, M1)", async () => {
+    const f = await fixture();
+    const { session } = await import("electron");
+    const { ThisHomeAddressSet } = await import("@opensteer/shared/homeAddress");
+    try {
+      await f.initialize();
+      // Admitted, so its gate lets the profile's requests go: what is refused is the Home's.
+      const browser = await f.launch();
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      // As the runtime's router hands the backend the set from the attach ticket.
+      await browser.cdp.setHomeAddresses?.(
+        new ThisHomeAddressSet({ origins: ["http://127.0.0.1:4310"], loopbackPorts: [4310] }),
+      );
+      const before = vi.mocked(profile.webRequest.onBeforeRequest).mock.calls.at(-1)![0] as (
+        details: Record<string, unknown>,
+        callback: (response: { cancel?: boolean }) => void,
+      ) => void;
+      const ask = (url: string, webContentsId?: number) => {
+        let answer: { cancel?: boolean } | undefined;
+        before(
+          {
+            url,
+            method: "GET",
+            resourceType: webContentsId ? "mainFrame" : "other",
+            webContentsId,
+          },
+          (response) => (answer = response),
+        );
+        return answer;
+      };
+      expect(ask("https://web.test/", 7)).toEqual({ cancel: false });
+      expect(ask("http://127.0.0.1:4310/", 7)).toEqual({ cancel: true });
+      expect(ask("http://localhost:4310/v1/auth/session")).toEqual({ cancel: true });
       await browser.close();
     } finally {
       await f.launcher.localProfiles.release(f.directory);
@@ -3384,8 +6995,8 @@ describe("native Electron profiles", () => {
       const helpersBefore = electron.views.length;
       await browser.replaceSiteCookies("https://example.test", [], new AbortController().signal);
       for (const helper of electron.views.slice(helpersBefore)) {
-        expect(helper.webContents.loadURL).not.toHaveBeenCalled();
-        expect(helper.webContents.debugger.sendCommand).not.toHaveBeenCalledWith(
+        expect(helper.initialWebContents.loadURL).not.toHaveBeenCalled();
+        expect(helper.initialWebContents.debugger.sendCommand).not.toHaveBeenCalledWith(
           "Fetch.enable",
           expect.anything(),
         );
@@ -3628,9 +7239,9 @@ describe("native Electron profiles", () => {
         } else {
           await vi.waitFor(() => expect(capturing).toHaveBeenCalled(), { timeout: 1000 });
           const target = electron.views.at(-1)!;
-          expect(target.webContents.close).not.toHaveBeenCalled();
+          expect(target.initialWebContents.close).not.toHaveBeenCalled();
           cancellation.abort();
-          expect(target.webContents.close).toHaveBeenCalled();
+          expect(target.initialWebContents.close).toHaveBeenCalled();
           held.resolve({ cookies: [] });
           await expect(launching).rejects.toThrow();
         }
@@ -3675,13 +7286,13 @@ describe("native Electron profiles", () => {
       const first = electron.views
         .slice(start)
         .filter((view) =>
-          view.webContents.debugger.sendCommand.mock.calls.some(
+          view.initialWebContents.debugger.sendCommand.mock.calls.some(
             ([method]) => method === "Network.getAllCookies",
           ),
         )
         .at(-1)!;
-      expect(first.webContents.close).toHaveBeenCalled();
-      expect(first.webContents.loadURL).not.toHaveBeenCalled();
+      expect(first.initialWebContents.close).toHaveBeenCalled();
+      expect(first.initialWebContents.loadURL).not.toHaveBeenCalled();
       const browser = await f.launch();
       const page = browser.context.pages()[0]!;
       const view = electron.views.at(-1)!;
@@ -3699,7 +7310,7 @@ describe("native Electron profiles", () => {
       });
       await owner.mirror.flush();
       const captured = electron.views.at(-1)!;
-      await vi.waitFor(() => expect(captured.webContents.close).toHaveBeenCalled(), {
+      await vi.waitFor(() => expect(captured.initialWebContents.close).toHaveBeenCalled(), {
         timeout: 1000,
       });
       const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
@@ -3714,7 +7325,7 @@ describe("native Electron profiles", () => {
       const retried = await f.launch();
       await retried.close();
       expect(electron.views.length).toBeGreaterThan(beforeRecovery);
-      expect(electron.views.at(-1)!.webContents.close).toHaveBeenCalled();
+      expect(electron.views.at(-1)!.initialWebContents.close).toHaveBeenCalled();
       expect(profile.clearStorageData).not.toHaveBeenCalled();
     } finally {
       await f.launcher.localProfiles.release(f.directory);
@@ -3836,7 +7447,7 @@ describe("native Electron profiles through the shared runtime", () => {
       await vi.waitFor(
         () =>
           expect(
-            pages.every((view) => view.webContents.close.mock.calls.length > 0),
+            pages.every((view) => view.initialWebContents.close.mock.calls.length > 0),
             "Network Service loss never closed the retired owner's views",
           ).toBe(true),
         { timeout: 2_000 },
@@ -3898,3 +7509,140 @@ it("routes root and attached cookie commands to the admitted native profile cont
     await browser.close();
   }
 });
+
+it("answers a connection's browser_connect the one sentence for a command outside the list, before the Mac's own check", async () => {
+  const sentence = (method: string) =>
+    `${method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`;
+  const browser = await new ElectronBrowserLauncher({
+    downloads: { accept: () => undefined },
+    pagePolicyPreloadPath: "/opensteer/browser-page-preload.cjs",
+  }).launch({
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    partitionKey: "session:bsn_00000000-0000-4000-8000-000000000307",
+    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000307"),
+    storage: { kind: "guest" },
+  });
+  const { SessionCdpRouter } = await import("@opensteer/browser-core");
+  const router = new SessionCdpRouter(browser.cdp);
+  const targetId = await browser.context.pages()[0]!.targetId();
+  router.registerSession("agent", targetId, async () => true, "/files");
+  try {
+    const refusal = async (connection: boolean, method: string, parameters = {}) => {
+      const client = router.openStandardClient("agent", {
+        wholeContext: false,
+        ...(connection
+          ? { connection: true, lineage: { attachmentId: "mac-agent", seedTargetId: targetId } }
+          : {}),
+      });
+      try {
+        return await client.send({ method, parameters }).then(
+          () => "sent",
+          (error: unknown) => (error as Error).message,
+        );
+      } finally {
+        client.close();
+      }
+    };
+    for (const method of [
+      "SystemInfo.getProcessInfo",
+      "SystemInfo.getInfo",
+      "Browser.getBrowserCommandLine",
+    ]) {
+      expect(await refusal(true, method), method).toBe(sentence(method));
+      expect(await refusal(false, method), method).toBe(
+        `${method} describes the Opensteer process, outside browser page ownership.`,
+      );
+    }
+    // A listed command still meets the Mac's own check.
+    expect(await refusal(true, "Target.createTarget", { url: "about:blank", windowId: 1 })).toBe(
+      "Opensteer windows are outside the browser page context.",
+    );
+  } finally {
+    await router.close();
+    await browser.close();
+  }
+});
+
+it("does not block channel release or other channels' domain work behind a held Runtime.enable attachment (P1)", async () => {
+  const hub = await hubPage("21");
+  try {
+    await (await hub.page.cdp()).detach();
+    const attachment = hub.hold("Runtime.enable");
+    const keep = await hub.page.agentCdp();
+    const first = await hub.page.agentCdp();
+    const subscribing = first.send("Runtime.enable").catch((error: unknown) => error);
+    await vi.waitFor(() => expect(attachment.replies).toHaveLength(1));
+
+    // P1: detaching the subscribing channel must complete immediately (not block on #serializeOwnership),
+    // its abandoned subscription must reject promptly, and another channel's domain command must not wait.
+    expect(await within(first.detach())).toBe("fulfilled");
+    expect(await within(subscribing)).toBe("fulfilled");
+    expect(await subscribing).toBeInstanceOf(Error);
+    expect(await within(keep.send("Network.enable"))).toBe("fulfilled");
+
+    attachment.release();
+    attachment.replies[0]!.resolve({});
+    await keep.detach();
+  } finally {
+    await hub.browser.close();
+  }
+});
+
+const warManifest = {
+  manifest_version: 3,
+  web_accessible_resources: [
+    { resources: ["war.html"], matches: ["<all_urls>"] },
+    { resources: ["site-only.html"], matches: ["https://site.test/*"] },
+  ],
+};
+
+/**
+ * Gives a mock page the profile's loaded extensions, as Electron's `session.extensions` holds them,
+ * on the profile's own Session (the one the browser session policy listens on).
+ */
+function withExtensions(contents: object, manifests: Record<string, unknown>): void {
+  const profile = vi.mocked(session.fromPartition).mock.results.at(-1)!.value as object;
+  Object.assign(profile, {
+    extensions: {
+      getExtension: (id: string) => (id in manifests ? { manifest: manifests[id] } : null),
+    },
+  });
+  Object.assign(contents, { session: profile });
+}
+
+/** Gives a mock page the frames Electron reports in `mainFrame.framesInSubtree`. */
+function withFrames(contents: object, origins: readonly string[]): void {
+  Object.assign(contents, {
+    mainFrame: {
+      framesInSubtree: origins.map((origin) => ({
+        origin,
+        isDestroyed: () => false,
+        osProcessId: 0,
+      })),
+    },
+  });
+}
+
+/**
+ * The session's `onBeforeRedirect` listener, as the browser session policy registered it (a no-op
+ * when none is, so a page's `will-redirect` is then judged without any recorded redirect).
+ */
+function sessionBeforeRedirect(): (details: object) => void {
+  const registered = vi
+    .mocked(session.fromPartition)
+    .mock.results.map(
+      (result) =>
+        (result.value as { webRequest: { onBeforeRedirect?: ReturnType<typeof vi.fn> } }).webRequest
+          .onBeforeRedirect,
+    )
+    .filter((listener) => (listener?.mock.calls.length ?? 0) > 0)
+    .at(-1);
+  return (
+    (registered?.mock.calls.at(-1)?.at(-1) as ((details: object) => void) | undefined) ??
+    (() => undefined)
+  );
+}
+
+function webContentsIdOf(contents: object): number {
+  return (contents as { readonly id: number }).id;
+}

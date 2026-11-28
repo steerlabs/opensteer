@@ -8,6 +8,7 @@ import {
   app,
   BrowserWindow,
   dialog,
+  Menu,
   powerMonitor,
   session,
   utilityProcess,
@@ -18,9 +19,11 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
+import { createDesktopApplicationMenu } from "../src/app/application-menu.js";
+import { DesktopBackgroundMode } from "../src/app/background-mode.js";
+import { DesktopQuitRouting, type QuitActions } from "../src/app/quit-routing.js";
 import { DesktopShutdown } from "../src/app/desktop-shutdown.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
 import { electronBrowserPartition } from "../src/browser/electron-browser-launcher.js";
@@ -48,7 +51,11 @@ import {
   readPersonalProcessSupervisorRelease,
 } from "../src/supervisor/personal-process-port.js";
 import { runTabRestoreTrial } from "./electron-tab-restore-trial.js";
+import { requireSmokeProtectedStorage } from "./test-support/require-smoke-protected-storage.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard(`quit:${process.env.OPENSTEER_QUIT_E2E_TRIAL ?? "trial"}`, 180_000);
 
 const smokeDownloads = smokeDesktopDownloads();
 
@@ -76,6 +83,19 @@ const shutdown = new DesktopShutdown({
     for (const window of BrowserWindow.getAllWindows()) window.hide();
   },
 });
+// The app's own quit wiring: the production menu, installed at ready as main installs it.
+const quitRouting = new DesktopQuitRouting({
+  shutdown,
+  confirm: async () => false,
+  hideWindows: () => {
+    for (const window of BrowserWindow.getAllWindows()) window.hide();
+  },
+  log,
+});
+const installQuitMenu = (quit: QuitActions) =>
+  Menu.setApplicationMenu(createDesktopApplicationMenu({ quit, workspaceContents: () => null }));
+if (app.isReady()) installQuitMenu(quitRouting.actions);
+else quitRouting.installAtReady(app, installQuitMenu);
 const watchdog = setTimeout(() => {
   log("test.watchdog");
   shutdown.request("test-timeout");
@@ -87,6 +107,7 @@ void run().catch((error: unknown) => {
 
 async function run(): Promise<void> {
   await app.whenReady();
+  if (trial.startsWith("restore-")) await requireSmokeProtectedStorage();
   const shell = new BrowserWindow({ show: false });
   await shell.loadURL("data:text/html,<script>window.onbeforeunload=()=>false</script>");
   shutdown.add({
@@ -109,9 +130,6 @@ async function run(): Promise<void> {
     logsDirectory: path.join(root, "logs"),
     supervisorExecutable: readPersonalProcessSupervisorRelease(resources),
   });
-  let periodicCommits = 0;
-  let capturedLargeHash: string | null = null;
-  let capturedNormal = false;
   const supervisor = new PersonalDeploymentSupervisor({
     log,
     catalog: {
@@ -256,7 +274,6 @@ async function run(): Promise<void> {
       trial,
       window: restoreWindow,
       rpc,
-      checkpointed: () => periodicCommits > 0,
     });
     clearTimeout(watchdog);
     log("test.ready", { restore: true });
@@ -518,38 +535,6 @@ async function run(): Promise<void> {
     savedPath,
     JSON.stringify({ profileId, pagePort: address.port, normalPort: normalAddress.port }),
   );
-  if (trial === "partial") {
-    const badUrl = `http://localhost:${address.port}/unsupported-storage`;
-    await rpc("commands.dispatch", {
-      type: "browser.session.start",
-      idempotencyKey: randomUUID(),
-      input: { profileId, initialUrl: badUrl, reuseExisting: false },
-    });
-    const badPage = webContents
-      .getAllWebContents()
-      .find((contents) => contents.getURL() === badUrl);
-    assert(badPage);
-    await badPage.executeJavaScript(
-      `new Promise((resolve,reject)=>{const request=indexedDB.open('x'.repeat(17000),1);request.onsuccess=()=>{request.result.close();resolve(true)};request.onerror=()=>reject(request.error)})`,
-    );
-    const deadline = Date.now() + 15_000;
-    const diagnostics = path.join(root, "logs", "personal-browser.log");
-    while (
-      !existsSync(diagnostics) ||
-      !readFileSync(diagnostics, "utf8").includes("profile-checkpoint.origins-incomplete")
-    ) {
-      assert(Date.now() < deadline, "Partial periodic checkpoint was not reported");
-      await delay(25);
-    }
-    log("test.partial-checkpoint-reported");
-  }
-  const checkpointDeadline = Date.now() + 15_000;
-  while (capturedLargeHash !== expectedHash || !capturedNormal) {
-    assert(Date.now() < checkpointDeadline, "Automatic checkpoint did not commit");
-    await delay(25);
-  }
-  assert.equal(await hashLargeValue(), expectedHash);
-  log("test.automatic-checkpoint", { commits: periodicCommits, largeSha256: expectedHash });
   await new Promise<void>((resolve, reject) => {
     network.openWebSocket(
       {
@@ -586,4 +571,39 @@ async function run(): Promise<void> {
     profileId,
   });
   if (trial === "logout") process.once("SIGUSR2", () => powerMonitor.emit("shutdown"));
+  if (trial === "background" || trial === "quit-completely") {
+    const background = new DesktopBackgroundMode({
+      shutdown,
+      window: { hide: () => shell.hide() },
+      notice: {
+        seen: async () => false,
+        markSeen: async () => undefined,
+        show: () => log("test.background-notice"),
+      },
+      work: async () => ({ known: true, hostsHome: true, deviceHomes: [], lines: [] }),
+      confirm: async ({ detail }) => {
+        log("test.quit-confirmed", { detail });
+        return true;
+      },
+      log,
+    });
+    quitRouting.attach(background);
+    // Nothing here can press Cmd+Q, so a signal clicks the very menu item that has it.
+    const item = (id: string) => {
+      const found = Menu.getApplicationMenu()?.getMenuItemById(id);
+      assert(found, `The app menu has no ${id} item`);
+      return found;
+    };
+    assert.equal(item("quit").accelerator, "CommandOrControl+Q");
+    log("test.quit-menu", { accelerator: item("quit").accelerator ?? "" });
+    process.once("SIGUSR1", () => {
+      item("quit").click();
+      // Still serving after Cmd+Q: the Host answers, so the phone stays connected.
+      void rpc("machines.list").then(
+        () => log("test.backgrounded", { hostServing: true }),
+        (error: unknown) => log("test.failed", { error: String(error) }),
+      );
+    });
+    process.once("SIGHUP", () => item("quit-completely").click());
+  }
 }

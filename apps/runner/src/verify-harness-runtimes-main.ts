@@ -3,17 +3,34 @@ import { pathToFileURL } from "node:url";
 import { verifyNativeImageDecoder } from "@opensteer/harness";
 import { inspectClaudeExecutable } from "@opensteer/harness-claude";
 import { parseAgentExecutionConfig } from "./app-config.js";
-import { harnessRuntimeVersionMismatches } from "./harness/verify-harness-runtimes.js";
+import {
+  harnessRuntimeVersionMismatches,
+  verifyInstalledClaudeVersion,
+} from "./harness/verify-harness-runtimes.js";
 
 /**
  * Fails when an engine this Runner ships does not answer `--version` with the
  * harness catalog's pin, or when the image decoder its drivers fit images with
  * cannot load. The container image runs it at build time. Private images can
- * additionally require the installed Claude CLI, without making it mandatory
- * for the public image.
+ * check that an installed Claude CLI is supported. An image that bundles it
+ * can also require its exact version.
  */
 async function main(): Promise<void> {
-  if (process.argv.slice(2).includes("--require-installed-claude")) {
+  const args = process.argv.slice(2);
+  const versionIndex = args.indexOf("--require-claude-version");
+  if (versionIndex >= 0) {
+    const version = args[versionIndex + 1];
+    if (!version || !/^\d+\.\d+\.\d+$/u.test(version))
+      throw new Error("Expected a Claude Code version");
+    const { harnessExecutables } = parseAgentExecutionConfig(process.env);
+    await verifyInstalledClaudeVersion(
+      harnessExecutables.claude,
+      version,
+      process.env,
+      process.execPath,
+    );
+  }
+  if (args.includes("--require-installed-claude")) {
     const { harnessExecutables } = parseAgentExecutionConfig(process.env);
     const inspection = await inspectClaudeExecutable(
       harnessExecutables.claude,

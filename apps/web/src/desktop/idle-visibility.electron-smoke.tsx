@@ -4,7 +4,7 @@ import { HttpHostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { placeList } from "@opensteer/client/host";
 import { useRunPlacePicture } from "@opensteer/client/react";
-import { createId } from "@opensteer/core";
+import { createId, type TabId } from "@opensteer/core";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
 import { pageVisible } from "../page-visibility.js";
 import { Viewfinder } from "../components/workspace/viewfinder.js";
@@ -43,6 +43,18 @@ const smoke = {
       baseUrl: origin,
       lifecycle: browserClientLifecycle(),
     });
+    let activatedSurface = false;
+    const stopBind = client.subscribe(() => {
+      if (activatedSurface) return;
+      const snapshot = client.getSnapshot();
+      if (
+        snapshot.session === "authenticated" &&
+        snapshot.tabs.rows.has(surfaceId as unknown as TabId)
+      ) {
+        activatedSurface = true;
+        void client.activateTab(surfaceId as unknown as TabId);
+      }
+    });
     await client.load();
     const control = client.retainBrowserViewer(sessionId, surfaceId);
     const watch = client.retainBrowserWatch(sessionId, surfaceId);
@@ -74,10 +86,14 @@ const smoke = {
       runId: createId("run"),
       threadId: finderThread.id,
     };
+    const finderOrigin =
+      finderPlace.tab.kind === "page" && finderPlace.tab.url
+        ? new URL(finderPlace.tab.url).origin
+        : null;
     owner.enterPlace(finder.runId, finder.threadId, {
       place: { kind: "browser", sessionId: pageViewer.sessionId, surfaceId: finderPlace.tab.tabId },
       title: finderPlace.title,
-      site: finderPlace.site,
+      site: finderOrigin,
     });
     const retainWatch = owner.retainBrowserWatch;
     Object.defineProperty(owner, "retainBrowserWatch", {
@@ -192,6 +208,7 @@ const smoke = {
     );
     dispose = () => {
       root.unmount();
+      stopBind();
       control();
       watch();
       client.dispose();

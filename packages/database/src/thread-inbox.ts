@@ -1,6 +1,8 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import type { PersonalInputQueue } from "@opensteer/protocol";
 import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
+import { admitBridgeSender, chatWaitingError } from "./bridge-admission.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import {
   republishPendingRequestsShowing,
@@ -13,7 +15,7 @@ import {
 } from "./personal-mutation.js";
 import { syncTranscriptMessage } from "./message-visibility.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
-import { executionDate } from "./personal-transaction.js";
+import { executionDate, withPersonalReadTransaction } from "./personal-transaction.js";
 import {
   liveInputLease,
   inputEditEligibility,
@@ -25,7 +27,12 @@ import {
 } from "./waiting-inputs.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
-import { threadAllowsPersonalContext } from "./run-personal-context.js";
+import {
+  connectionIsWaiting,
+  lineagePersonalContext,
+  readLiveAgentConnectionRow,
+} from "./resource-access.js";
+import { threadContextLineage } from "./run-personal-context.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import {
@@ -33,7 +40,16 @@ import {
   memoryPassWakeContext,
   startMemoryPassInTransaction,
 } from "./memory-pass-store.js";
-import { assertLineageCompatibleReuse } from "./resource-access.js";
+import {
+  assertLineageCompatibleReuse,
+  bindingAgentConnectionId,
+  assertPersonMayContinue,
+  assertSendEligible,
+  connectionTaskReadScope,
+  liveDelegatingConnection,
+  meetsConnectionFloor,
+  sendEligible,
+} from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import {
   taskQuestionCause,
@@ -51,13 +67,7 @@ import { harnessRevisionChanged, prepareThreadInsertion } from "./thread-inserti
 import { projectThreadState, publishRunQueue, publishThreadSummary } from "./thread-status.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import {
-  ChannelConversationIdSchema,
-  ChannelBindingSchema,
-  ChannelIngressIdSchema,
-  PrincipalIdSchema,
-  type PrincipalId,
-} from "@opensteer/channel-core";
+import { ChannelConversationIdSchema, type PrincipalId } from "@opensteer/channel-core";
 import {
   ArtifactContentPartSchema,
   deriveThreadStatus,
@@ -171,12 +181,7 @@ import {
   supersedeCurrentAttempt,
   type SteeringMode,
 } from "./run-attempts.js";
-import { resolveChannelAuthority } from "./channel-authority.js";
 import { claimMessageAttachments } from "./attachment-store.js";
-import {
-  channelInputAuthorityIsCurrent,
-  lockThreadChannelAuthorities,
-} from "./channel-execution.js";
 import { resolveMessageQuote } from "./message-quotes.js";
 import { describeTranscriptMessage, transcriptMessageTextBytes } from "./transcript-store.js";
 import {
@@ -337,7 +342,7 @@ export async function readThreadInputQueue(
   for (const row of rows) {
     const message = byId.get(row.messageId);
     if (!message) throw new Error("Pending input lost its message");
-    const own = row.state === "pending" && !row.teamRequestId && canManageQueuedInput(row, request);
+    const own = row.state === "pending" && canManageQueuedInput(row, request);
     const liveLease = liveInputLease(transaction, row);
     const lease = liveLease
       ? {
@@ -379,14 +384,6 @@ export async function readThreadInputQueue(
         state: row.state,
         queueRank: row.queueRank,
       },
-      ask:
-        row.teamRequestId && row.teamSource
-          ? {
-              teamId: row.teamSource.teamId,
-              requestId: row.teamRequestId,
-              audience: row.teamSource.audience,
-            }
-          : null,
       canEdit:
         !request.authority &&
         (await inputEditEligibility(
@@ -482,11 +479,10 @@ async function restartInputCount(
 }
 
 /**
- * The sources that are the person themselves writing: in the app, or in a
- * direct message their channel identity sent. Everything else that reaches a
+ * The sources that are the person themselves writing in the app. Everything else that reaches a
  * conversation — Triggers, watches, tasks, other agents — keeps its queue.
  */
-const personAuthoritySourceKinds = ["user-session", "channel-ingress"] as const;
+const personAuthoritySourceKinds = ["user-session"] as const;
 
 /** Whether a message is the person themselves writing, rather than a machine queuing work. */
 function isPersonsMessage(input: {
@@ -506,12 +502,7 @@ function compatibleSteeringTarget(
     readonly authoritySource: Readonly<Record<string, unknown>>;
   },
 ): boolean {
-  return (
-    isDeepStrictEqual(target, input.replyTarget) ||
-    (target?.kind === "team-thread" &&
-      input.replyTarget === null &&
-      input.authoritySource.kind === "user-session")
-  );
+  return isDeepStrictEqual(target, input.replyTarget);
 }
 
 async function conversationalReply(
@@ -521,17 +512,29 @@ async function conversationalReply(
 ): Promise<boolean> {
   if (thread.purpose === "voice") return true;
   if (replyTarget?.kind !== "channel") return false;
+  // The person's own direct messages to a bridge only they may speak to are a conversation with
+  // them, as a reply under way; a channel or group, or anyone else, waits its turn.
   const conversation = await transaction
-    .selectFrom("channelConversations")
-    .select("personalContext")
-    .where("id", "=", ChannelConversationIdSchema.parse(replyTarget.conversationId))
+    .selectFrom("bridgeConversations")
+    .innerJoin("agentConnections", "agentConnections.id", "bridgeConversations.bridgeId")
+    .select("bridgeConversations.id")
+    .where(
+      "bridgeConversations.id",
+      "=",
+      ChannelConversationIdSchema.parse(replyTarget.conversationId),
+    )
+    .where("bridgeConversations.conversationType", "=", "dm")
+    .where("agentConnections.bridgeSenders", "=", "owner")
     .executeTakeFirst();
-  return conversation?.personalContext === true;
+  return conversation !== undefined;
 }
 
 function exchangeInputs(
   transaction: Transaction<DatabaseSchema>,
-  run: Pick<RunRow, "assignmentId" | "replyTarget" | "requestedBy" | "voiceSessionId">,
+  run: Pick<
+    RunRow,
+    "assignmentId" | "connectionId" | "replyTarget" | "requestedBy" | "voiceSessionId"
+  >,
   threadId: ThreadId,
   state: "claimed" | "pending",
 ) {
@@ -540,7 +543,14 @@ function exchangeInputs(
     .where("threadInputs.threadId", "=", threadId)
     .where("threadInputs.policy", "=", "queue")
     .where("threadInputs.state", "=", state)
-    .where("threadInputs.requestedBy", "=", run.requestedBy);
+    .where("threadInputs.requestedBy", "=", run.requestedBy)
+    // A Run takes only work of its own lineage: the task's, else the input's own connection.
+    .where(
+      sql<boolean>`coalesce(
+        (select threads.origin_connection_id from threads where threads.id = thread_inputs.thread_id),
+        thread_inputs.connection_id
+      ) is not distinct from ${run.connectionId}`,
+    );
   // A call stays open across turns, so anything sent to its Thread arrives now.
   if (run.voiceSessionId) return addressed;
   return addressed
@@ -556,7 +566,10 @@ function exchangeInputs(
 /** The exchange's waiting messages a Run can take: those not already the seed of a Run. */
 function conversationFollowUps(
   transaction: Transaction<DatabaseSchema>,
-  run: Pick<RunRow, "assignmentId" | "replyTarget" | "requestedBy" | "voiceSessionId">,
+  run: Pick<
+    RunRow,
+    "assignmentId" | "connectionId" | "replyTarget" | "requestedBy" | "voiceSessionId"
+  >,
   threadId: ThreadId,
 ) {
   return exchangeInputs(transaction, run, threadId, "pending").where(
@@ -616,6 +629,30 @@ async function claimFollowUps(
     .limit(input.limit)
     .execute();
   if (waiting.length === 0) return { claimed: 0 };
+  let chatWaits = false;
+  const connection = run.connectionId
+    ? await liveDelegatingConnection(transaction, run.requestedBy, run.connectionId).catch(
+        (error: unknown) => {
+          if (error instanceof OpensteerError && error.code === "forbidden") {
+            chatWaits = connectionIsWaiting(error);
+            return null;
+          }
+          throw error;
+        },
+      )
+    : null;
+  // A paused chat's follow-ups wait for it, queued; they are not taken, and not cancelled.
+  if (run.connectionId !== null && connection === null && chatWaits) return { claimed: 0 };
+  const eligible =
+    run.connectionId === null ||
+    (connection !== null && sendEligible(connection, thread.originConnectionId));
+  if (
+    eligible &&
+    connection &&
+    run.admittedGrantRevision !== null &&
+    !meetsConnectionFloor(connection, run.admittedGrantRevision, run.admittedAccessMode)
+  )
+    return { claimed: 0 };
   const ids = waiting.map(({ messageId }) => messageId);
   const locked = await transaction
     .selectFrom("threadInputs")
@@ -639,11 +676,11 @@ async function claimFollowUps(
   for (const messageId of ids) {
     const row = lockedById.get(messageId);
     if (!row) continue;
-    if (!(await channelInputAuthorityIsCurrent(transaction, messageId))) {
+    if (!eligible || !(await chatSenderMaySpeak(transaction, row))) {
       const cancelled = await transaction
         .updateTable("threadInputs")
         .set({
-          cancelReason: "channel-authority-unavailable",
+          cancelReason: "authority-revoked",
           state: "cancelled",
           updatedAt: new Date(),
         })
@@ -1052,6 +1089,7 @@ export async function steerThreadInputInTransaction(
     request.requestedBy,
     "Only the execution owner can steer this Thread",
   );
+  await assertPersonMayContinue(transaction, request.requestedBy, thread.originConnectionId);
   const row = await transaction
     .selectFrom("threadInputs")
     .selectAll()
@@ -1423,6 +1461,67 @@ export async function cancelThreadInputInTransaction(
   const advanced = await advanceThreadQueue(transaction, thread);
   return { ...advanced, input, wasDuplicate: false };
 }
+
+/**
+ * Disconnect cancels any waiting or awaiting-approval input of an ended connection — even when
+ * its task is paused, done, archived, or holds an edit lease — and defers invalid provider
+ * sessions so one broken task never stalls cleanup of the connection.
+ */
+export async function cancelDisconnectedThreadInputInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  request: { readonly threadId: ThreadId; readonly messageId: MessageId },
+): Promise<{ readonly revokedGrants: readonly RevokedRunGrant[] }> {
+  const observed = await transaction
+    .selectFrom("threads")
+    .select("id")
+    .where("id", "=", request.threadId)
+    .executeTakeFirst();
+  if (!observed) return { revokedGrants: [] };
+  const thread = await lockInputQueueProjection(transaction, request.threadId);
+  const row = await transaction
+    .selectFrom("threadInputs")
+    .selectAll()
+    .where("messageId", "=", request.messageId)
+    .where("threadId", "=", thread.id)
+    .forNoKeyUpdate()
+    .executeTakeFirst();
+  const state: string | undefined = row?.state;
+  if (!row || (state !== "pending" && state !== "awaiting-approval") || row.runId !== null)
+    return { revokedGrants: [] };
+  const reserved = await transaction
+    .selectFrom("runs")
+    .select("id")
+    .where("seedInputId", "=", row.messageId)
+    .where("status", "in", nonTerminalRunStatuses)
+    .executeTakeFirst();
+  if (reserved) return { revokedGrants: [] };
+  const cancelled = await transaction
+    .updateTable("threadInputs")
+    .set({
+      ...clearInputLease,
+      cancelReason: "authority-revoked",
+      state: "cancelled",
+      updatedAt: new Date(),
+    })
+    .where("messageId", "=", row.messageId)
+    .where(sql<boolean>`state in ('pending', 'awaiting-approval')`)
+    .returningAll()
+    .executeTakeFirst();
+  if (!cancelled) return { revokedGrants: [] };
+  if (row.editLeaseExpiresAt) await wakeRequestDeadlines(transaction);
+  await refreshInputQueue(transaction, thread.id, cancelled.messageId);
+  await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });
+  const active = await transaction
+    .selectFrom("runs")
+    .select("id")
+    .where("threadId", "=", thread.id)
+    .where("status", "=", "running")
+    .executeTakeFirst();
+  const handed = active
+    ? await deliverConversationInputsInTransaction(transaction, active.id)
+    : { revokedGrants: [] };
+  return { revokedGrants: handed.revokedGrants };
+}
 export async function claimRunInputBatch(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
@@ -1455,6 +1554,14 @@ export async function claimRunInputBatch(
     throw new OpensteerError({
       code: "conflict",
       message: "A Run must start with its queued work item",
+    });
+  // A Run works for its task's lineage, else its seed's connection; a Run that disagrees with
+  // its own seed is refused here, never started as the person's work.
+  if ((thread.originConnectionId ?? seed.connectionId) !== run.connectionId)
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "run-lineage-mismatch",
+      message: "This Run does not match the work it was queued for, so it was not started.",
     });
 
   if (run.maintenance) {
@@ -1494,9 +1601,12 @@ export async function claimRunInputBatch(
     return;
   }
   if (seed.freshContext) {
+    const lineage = await threadContextLineage(transaction, thread.id, thread.createdBy);
     const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
       freshRunId: run.id,
-      personalContext: await threadAllowsPersonalContext(transaction, thread.id, thread.createdBy),
+      personalContext:
+        lineage.personalContext && (await lineagePersonalContext(transaction, run.connectionId)),
+      personLineage: lineage.personLineage && run.connectionId === null,
     });
     await transaction
       .updateTable("runs")
@@ -1527,6 +1637,8 @@ export async function claimRunInputBatch(
     .where(
       sql<boolean>`thread_inputs.reply_target is not distinct from ${run.replyTarget === null ? null : JSON.stringify(run.replyTarget)}::jsonb`,
     )
+    // A Run reads only the reports of work done under its own lineage.
+    .where(sql<boolean>`thread_inputs.connection_id is not distinct from ${run.connectionId}`)
     .where("messages.sequence", "<=", throughSequence);
   const total = await eligible
     .select(({ fn }) => fn.countAll<string>().as("count"))
@@ -1545,24 +1657,6 @@ export async function claimRunInputBatch(
     if (candidates.length === 0) break;
     for (const candidate of candidates) {
       afterSequence = String(candidate.sequence);
-      if (!(await channelInputAuthorityIsCurrent(transaction, candidate.id))) {
-        const cancelled = await transaction
-          .updateTable("threadInputs")
-          .set({
-            cancelReason: "channel-authority-unavailable",
-            state: "cancelled",
-            updatedAt: new Date(),
-          })
-          .where("messageId", "=", candidate.id)
-          .where("state", "in", ["pending", "unknown"])
-          .returningAll()
-          .executeTakeFirst();
-        if (cancelled) {
-          cancelledCount += 1;
-          await refreshInputQueue(transaction, thread.id, cancelled.messageId);
-        }
-        continue;
-      }
       const candidateBytes =
         Buffer.byteLength(JSON.stringify(messageFromRow(candidate)), "utf8") + 1;
       if (bytes + candidateBytes > threadReportBatchMaxSerializedBytes) break selection;
@@ -1793,6 +1887,7 @@ export async function settleSteer(
   outcome: "failed" | "unknown",
   reason: string,
   reasonCode?: string,
+  pendingOnly = false,
 ): Promise<void> {
   const observed = await transaction
     .selectFrom("commands")
@@ -1823,10 +1918,6 @@ export async function settleSteer(
     .forNoKeyUpdate()
     .executeTakeFirst();
   if (!run) return;
-  const channelAuthorityCurrent = await channelInputAuthorityIsCurrent(
-    transaction,
-    observed.messageId,
-  );
   await lockThreadRow(transaction, observed.threadId);
   // A refusal can return the hand-offs behind this one as well.
   await lockRunProjectionRows(transaction, {
@@ -1840,7 +1931,13 @@ export async function settleSteer(
     .where("id", "=", commandId)
     .forNoKeyUpdate()
     .executeTakeFirst();
-  if (!command || !["pending", "dispatched"].includes(command.status)) return;
+  const acceptableStatus =
+    command !== undefined &&
+    (command.status === "pending" ||
+      (!pendingOnly &&
+        (command.status === "dispatched" ||
+          (outcome === "unknown" && command.status === "unknown"))));
+  if (!acceptableStatus) return;
   const now = new Date();
   // A refusal proves the message never reached a reply the person stopped.
   const stopped =
@@ -1854,12 +1951,8 @@ export async function settleSteer(
   await transaction
     .updateTable("commands")
     .set({
-      lastError: jsonValue({
-        message: channelAuthorityCurrent
-          ? reason.trim().slice(0, 500) || "Steer was refused"
-          : "Channel authority changed before the input could be delivered",
-      }),
-      status: channelAuthorityCurrent ? outcome : "failed",
+      lastError: jsonValue({ message: reason.trim().slice(0, 500) || "Steer was refused" }),
+      status: outcome,
       updatedAt: now,
     })
     .where("id", "=", commandId)
@@ -1867,40 +1960,43 @@ export async function settleSteer(
   const inputRow = await transaction
     .updateTable("threadInputs")
     .set(
-      !channelAuthorityCurrent
+      stopped
         ? {
-            cancelReason: "channel-authority-unavailable",
+            cancelReason: "stopped",
             state: "cancelled",
             updatedAt: now,
           }
-        : stopped
-          ? {
-              cancelReason: "stopped",
-              state: "cancelled",
-              updatedAt: now,
-            }
-          : outcome === "failed"
-            ? observed.policy === "queue" || reasonCode === "request-pending"
-              ? {
-                  cancelReason: null,
-                  state: "pending",
-                  policy: reasonCode === "request-pending" ? "queue" : observed.policy,
-                  runId: null,
-                  steerCommandId: null,
-                  updatedAt: now,
-                }
-              : {
-                  cancelReason: "steer-refused",
-                  state: "cancelled",
-                  updatedAt: now,
-                }
-            : {
-                state: "unknown",
+        : outcome === "failed"
+          ? // A message for a Run that has ended (as one held for a paused chat may find it)
+            // goes back to its task's queue, to start the next Run.
+            observed.policy === "queue" ||
+            reasonCode === "request-pending" ||
+            !nonTerminalRunStatuses.some((status) => status === run.status)
+            ? {
+                cancelReason: null,
+                state: "pending",
+                policy:
+                  reasonCode === "request-pending" ||
+                  !nonTerminalRunStatuses.some((status) => status === run.status)
+                    ? "queue"
+                    : observed.policy,
+                runId: null,
+                steerCommandId: null,
                 updatedAt: now,
-              },
+              }
+            : {
+                cancelReason: "steer-refused",
+                state: "cancelled",
+                updatedAt: now,
+              }
+          : {
+              cancelReason: null,
+              state: "unknown",
+              updatedAt: now,
+            },
     )
     .where("messageId", "=", observed.messageId)
-    .where("state", "=", "claimed")
+    .where("state", "in", outcome === "unknown" ? ["claimed", "unknown"] : ["claimed"])
     .returningAll()
     .executeTakeFirst();
   if (!inputRow) return;
@@ -2006,7 +2102,7 @@ async function returnHandOffsBehind(
 export async function settleOutstandingSteersForRun(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
-  recoveringLostExecution = false,
+  _recoveringLostExecution = false,
 ): Promise<void> {
   // finalizeRunTransaction already owns the prefix in ./lock-order.ts. Commands
   // are locked only after those scope locks, matching settleSteer and the ACK
@@ -2071,10 +2167,13 @@ export async function settleOutstandingSteersForRun(
                 state: "cancelled",
                 updatedAt: now,
               }
-            : command.policy === "queue" ||
-                command.state === "unknown" ||
-                (recoveringLostExecution && !provedNotDispatched)
-              ? provedNotDispatched
+            : !provedNotDispatched || command.state === "unknown"
+              ? {
+                  cancelReason: null,
+                  state: "unknown",
+                  updatedAt: now,
+                }
+              : command.policy === "queue"
                 ? {
                     cancelReason: null,
                     state: "pending",
@@ -2083,28 +2182,17 @@ export async function settleOutstandingSteersForRun(
                     updatedAt: now,
                   }
                 : {
-                    state: "unknown",
+                    cancelReason: "steer-not-delivered",
+                    state: "cancelled",
                     updatedAt: now,
-                  }
-              : {
-                  cancelReason: provedNotDispatched
-                    ? "steer-not-delivered"
-                    : "run-ended-delivery-unknown",
-                  state: "cancelled",
-                  updatedAt: now,
-                },
+                  },
       )
       .where("messageId", "=", command.messageId)
       .where("state", "in", ["claimed", "unknown"])
       .returningAll()
       .executeTakeFirst();
     // Finalization fails a restart that never reached the Runner itself.
-    if (
-      !restart &&
-      (command.status === "pending" ||
-        command.status === "dispatched" ||
-        command.status === "unknown")
-    ) {
+    if (!restart && (command.status === "pending" || command.status === "dispatched")) {
       await transaction
         .updateTable("commands")
         .set({
@@ -2113,11 +2201,11 @@ export async function settleOutstandingSteersForRun(
               ? "The Run ended before this input could be dispatched"
               : "The Run ended before delivery could be confirmed",
           }),
-          status: command.policy === "queue" && !provedNotDispatched ? "unknown" : "failed",
+          status: !provedNotDispatched ? "unknown" : "failed",
           updatedAt: now,
         })
         .where("id", "=", command.id)
-        .where("status", "in", ["pending", "dispatched", "unknown"])
+        .where("status", "in", ["pending", "dispatched"])
         .execute();
     }
     if (!row) continue;
@@ -2140,7 +2228,6 @@ async function lockThreadInputPreconditions(
     readonly source: ThreadInputSource;
     readonly threadId: ThreadId;
     readonly policy: "report" | "queue" | "steer";
-    readonly teamRequest?: EnqueueThreadInputRequest["teamRequest"];
     readonly memoryPass?: { readonly harnessInstanceId: HarnessInstanceId };
     readonly expectedHarnessRevision?: number;
   },
@@ -2154,12 +2241,19 @@ async function lockThreadInputPreconditions(
   await requirePersonalOwner(transaction, input.requestedBy);
   const observed = await transaction
     .selectFrom("threads")
-    .select("harnessInstanceId")
+    .select(["harnessInstanceId", "worker"])
     .where("id", "=", input.threadId)
     .where("removedAt", "is", null)
     .executeTakeFirstOrThrow(
       () => new OpensteerError({ code: "not_found", message: "Task not found" }),
     );
+  // A connected agent works this task directly; no native Run ever starts on it.
+  if (observed.worker === "external")
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "external-agent-task",
+      message: "A connected agent is doing this task itself, so it takes no messages here.",
+    });
   const active = await transaction
     .selectFrom("runs")
     .select("id")
@@ -2170,11 +2264,9 @@ async function lockThreadInputPreconditions(
   const sourceRunId =
     input.source.kind === "agent"
       ? input.source.runId
-      : input.source.kind === "team-member"
-        ? (input.source.resumeRunId ?? null)
-        : input.source.kind === "platform"
-          ? input.source.sourceRunId
-          : null;
+      : input.source.kind === "platform"
+        ? input.source.sourceRunId
+        : null;
   const runIds = [
     ...new Set([active?.id, sourceRunId].filter((id): id is RunId => Boolean(id))),
   ].sort();
@@ -2209,41 +2301,12 @@ async function lockThreadInputPreconditions(
     harness?.runtimeRevision !== input.expectedHarnessRevision
   )
     throw harnessRevisionChanged();
-  await lockThreadChannelAuthorities(transaction, [input.threadId]);
   const thread = await transaction
     .selectFrom("threads")
     .selectAll()
     .where("id", "=", input.threadId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
-  if (input.source.kind === "team-member" && input.source.resumeRunId) {
-    const run = await transaction
-      .selectFrom("runs")
-      .select(["threadId", "requestedBy", "assignmentId"])
-      .where("id", "=", input.source.resumeRunId)
-      .executeTakeFirst();
-    const assignment = run?.assignmentId
-      ? await transaction
-          .selectFrom("delegations")
-          .select("status")
-          .where("id", "=", run.assignmentId)
-          .executeTakeFirst()
-      : null;
-    if (
-      !run ||
-      run.threadId !== thread.id ||
-      run.requestedBy !== input.requestedBy ||
-      thread.createdBy !== input.requestedBy ||
-      thread.doneAt ||
-      thread.status === "archived" ||
-      (run.assignmentId && assignment?.status !== "open")
-    )
-      throw new OpensteerError({
-        code: "conflict",
-        reason: teamReturnUndeliverableReason,
-        message: "Team return is undeliverable.",
-      });
-  }
   if (input.source.kind === "platform" && input.source.cause === taskQuestionCause) {
     const question = await taskQuestionNoticeSource(
       transaction,
@@ -2279,7 +2342,6 @@ async function lockThreadInputPreconditions(
     thread.doneAt &&
     input.policy !== "report" &&
     input.source.kind !== "human" &&
-    !input.teamRequest &&
     !reopensDone &&
     !(
       input.source.kind === "trigger" &&
@@ -2328,7 +2390,15 @@ export async function assertThreadInputCapacity(
       sql<string>`coalesce(sum(octet_length(messages.content::text)), 0)`.as("bytes"),
     ])
     .where("threadInputs.threadId", "=", threadId)
-    .where("threadInputs.state", "in", ["awaiting-approval", "pending", "claimed", "unknown"])
+    // Capacity bounds deliverable backlog: `pending` and `claimed` for work
+    // inputs (an `unknown` work input is retained delivery history and is never
+    // dispatched again), plus `unknown` for passive `report` inputs (which a
+    // later Run claims again).
+    .where(
+      "threadInputs.state",
+      "in",
+      policy === "report" ? ["pending", "claimed", "unknown"] : ["pending", "claimed"],
+    )
     .where("threadInputs.policy", policy === "report" ? "=" : "!=", "report")
     .$if(replacingMessageId !== undefined, (query) =>
       query.where("threadInputs.messageId", "!=", replacingMessageId!),
@@ -2355,13 +2425,6 @@ export async function assertThreadInputCapacity(
 }
 function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSource {
   switch (source.kind) {
-    case "team-member":
-      return {
-        kind: "team-member",
-        teamId: source.teamId,
-        requestId: source.requestId,
-        ...(source.resumeRunId ? { resumeRunId: source.resumeRunId } : {}),
-      };
     case "human":
       return {
         kind: "human",
@@ -2370,6 +2433,16 @@ function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSour
       return {
         kind: "connection",
         connectionId: source.connectionId,
+        // Where the reply goes is part of the request; who wrote it is not.
+        ...(source.chat
+          ? {
+              chat: {
+                conversationId: source.chat.conversationId,
+                revision: source.chat.revision,
+                sender: { displayName: "", externalUserId: source.chat.sender.externalUserId },
+              },
+            }
+          : {}),
       };
     case "agent":
       return {
@@ -2380,13 +2453,6 @@ function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSour
       return {
         kind: "trigger",
         occurrenceId: source.occurrenceId,
-      };
-    case "channel":
-      return {
-        kind: "channel",
-        conversationId: source.conversationId,
-        ingressId: source.ingressId,
-        principalId: source.principalId,
       };
     case "watch":
       return {
@@ -2563,43 +2629,27 @@ export async function enqueueThreadInputInTransaction(
       code: "bad_request",
       message: "freshContext requires queue delivery.",
     });
-  if (
-    request.teamRequest &&
-    (policy !== "queue" || !["human", "team-member"].includes(request.source.kind))
-  )
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "A team request must be its own queued input.",
-    });
   requireBoundedIdentity(request.idempotencyKey, "Thread input idempotency key", 255);
   const requestFingerprint = createHash("sha256")
     .update(
-      JSON.stringify(
-        request.teamRequest
+      JSON.stringify({
+        content,
+        ...(request.compaction ? { compaction: request.compaction } : {}),
+        policy,
+        ...(request.freshContext ? { freshContext: true } : {}),
+        source: normalizedThreadInputSource(request.source),
+        threadId: request.threadId,
+        ...(request.requireUnassigned
           ? {
-              ...(request.freshContext ? { freshContext: true } : {}),
-              requestId: request.teamRequest.id,
-              triggerMessageId: request.teamRequest.triggerMessageId,
+              requireUnassigned: true,
             }
-          : {
-              content,
-              ...(request.compaction ? { compaction: request.compaction } : {}),
-              policy,
-              ...(request.freshContext ? { freshContext: true } : {}),
-              source: normalizedThreadInputSource(request.source),
-              threadId: request.threadId,
-              ...(request.requireUnassigned
-                ? {
-                    requireUnassigned: true,
-                  }
-                : {}),
-              ...(request.quotedMessageId
-                ? {
-                    quotedMessageId: request.quotedMessageId,
-                  }
-                : {}),
-            },
-      ),
+          : {}),
+        ...(request.quotedMessageId
+          ? {
+              quotedMessageId: request.quotedMessageId,
+            }
+          : {}),
+      }),
       "utf8",
     )
     .digest("base64url");
@@ -2682,6 +2732,10 @@ export async function enqueueThreadInputInTransaction(
     source: request.source,
     targetThread: thread,
   });
+  const inputConnectionId = await threadInputLineageId(transaction, request.source);
+  await assertInputLineage(transaction, request.requestedBy, thread, inputConnectionId);
+  // The connection a Run started from this input works for: the task's own, else the input's.
+  const executionConnectionId = thread.originConnectionId ?? inputConnectionId;
 
   if (request.source.kind === "human" && policy !== "report" && prelockedActiveRunId) {
     const prior = await transaction
@@ -2708,7 +2762,7 @@ export async function enqueueThreadInputInTransaction(
     // Writing to a Done task reopens it for whoever could reopen it by hand.
     const reopens =
       preconditions.reopensDone ||
-      ((request.source.kind === "human" || Boolean(request.teamRequest)) &&
+      (request.source.kind === "human" &&
         (await requireThreadWriteAuthority(
           transaction,
           thread,
@@ -2756,7 +2810,11 @@ export async function enqueueThreadInputInTransaction(
       ...content,
       {
         type: "text",
-        text: await memoryPassWakeContext(transaction, thread),
+        text: await memoryPassWakeContext(
+          transaction,
+          thread,
+          request.source.kind === "trigger" ? request.source.occurrenceId : undefined,
+        ),
       },
     ];
     const started = await startMemoryPassInTransaction(transaction, thread, request.memoryPass);
@@ -2782,11 +2840,9 @@ export async function enqueueThreadInputInTransaction(
   const sourceRunId =
     request.source.kind === "agent"
       ? request.source.runId
-      : request.source.kind === "team-member"
-        ? (request.source.resumeRunId ?? null)
-        : request.source.kind === "platform"
-          ? request.source.sourceRunId
-          : null;
+      : request.source.kind === "platform"
+        ? request.source.sourceRunId
+        : null;
   const sourceRun = sourceRunId
     ? await transaction
         .selectFrom("runs")
@@ -2875,7 +2931,9 @@ export async function enqueueThreadInputInTransaction(
     (await conversationalReply(transaction, thread, facts.replyTarget)) &&
     policy === "queue" &&
     (request.source.kind === "human" ||
-      request.source.kind === "channel" ||
+      // A chat message that is a conversation with the person (their own direct messages to a
+      // bridge only they may speak to: conversationalReply checks which).
+      (request.source.kind === "connection" && request.source.chat !== undefined) ||
       Boolean(activeRun?.voiceSessionId));
   // A Run whose turn ended while its background work runs on takes the next
   // message from its own requester, on the same engine and model, as a new
@@ -2883,10 +2941,7 @@ export async function enqueueThreadInputInTransaction(
   const joinsBackground =
     !activeRun?.maintenance &&
     !request.freshContext &&
-    request.source.kind !== "channel" &&
-    request.source.kind !== "team-member" &&
-    !request.teamRequest &&
-    activeRun?.replyTarget?.kind !== "team-thread" &&
+    !(request.source.kind === "connection" && request.source.chat) &&
     !conversational &&
     policy === "queue" &&
     activeRun?.phase === "background" &&
@@ -2900,6 +2955,8 @@ export async function enqueueThreadInputInTransaction(
     activeRun !== undefined &&
     activeRun.id === prelockedActiveRunId &&
     activeRun.requestedBy === request.requestedBy &&
+    // Never steered into an execution that works under different authority.
+    activeRun.connectionId === executionConnectionId &&
     (policy === "steer"
       ? compatibleSteeringTarget(activeRun.replyTarget, facts)
       : isDeepStrictEqual(activeRun.replyTarget, facts.replyTarget))
@@ -3017,31 +3074,14 @@ export async function enqueueThreadInputInTransaction(
       .executeTakeFirstOrThrow();
     await wakeExecutionCommands(transaction);
   }
-  const askGate = request.teamRequest
-    ? await transaction
-        .selectFrom("personalTeamRequests")
-        .select(["kind", "releasedAt"])
-        .where("teamDeploymentId", "=", request.teamRequest.source.teamId)
-        .where("requestId", "=", request.teamRequest.id)
-        .executeTakeFirst()
-    : null;
-  const gated = askGate?.kind === "ask" && !askGate.releasedAt;
   const inputRow = await transaction
     .insertInto("threadInputs")
     .values({
-      teamRequestId: request.teamRequest?.id ?? null,
-      teamSource: request.teamRequest?.source ?? null,
+      // Its effective lineage, so reports and follow-ups batch with the work they belong to.
+      ...(executionConnectionId ? { connectionId: executionConnectionId } : {}),
       assignmentId,
       actorPrincipalId: facts.actorPrincipalId,
-      authoritySource: jsonValue(
-        request.teamRequest
-          ? {
-              kind: "team-request",
-              teamId: request.teamRequest.source.teamId,
-              requestId: request.teamRequest.id,
-            }
-          : facts.authoritySource,
-      ),
+      authoritySource: jsonValue(facts.authoritySource),
       cancelReason: executionValid ? null : "execution-authority-unavailable",
       causalChainId,
       deliveredAt: null,
@@ -3049,30 +3089,12 @@ export async function enqueueThreadInputInTransaction(
       messageId,
       policy,
       queueRank: thread.nextMessageSequence,
-      replyTarget: request.teamRequest
-        ? jsonValue(
-            ReplyTargetSchema.parse({
-              kind: "team-thread",
-              teamId: request.teamRequest.source.teamId,
-              channelId: request.teamRequest.source.channelId,
-              threadRootId: request.teamRequest.source.threadRootId,
-              requestId: request.teamRequest.id,
-            }),
-          )
-        : facts.replyTarget
-          ? jsonValue(facts.replyTarget)
-          : null,
+      replyTarget: facts.replyTarget ? jsonValue(facts.replyTarget) : null,
       requestedBy: request.requestedBy,
       requestFingerprint,
       ...(request.freshContext ? { freshContext: true } : {}),
       runId: steerRun?.id ?? null,
-      state: executionValid
-        ? gated
-          ? "awaiting-approval"
-          : steer
-            ? "claimed"
-            : "pending"
-        : "cancelled",
+      state: executionValid ? (steer ? "claimed" : "pending") : "cancelled",
       steerCommandId,
       threadId: thread.id,
       updatedAt: new Date(),
@@ -3188,7 +3210,6 @@ export async function enqueueThreadInputInTransaction(
           .where("messageId", "=", messageId)
           .executeTakeFirstOrThrow();
   const finalInput = threadInputFromRow(finalInputRow);
-  if (gated) await projectThreadState(transaction, thread.id);
   return credited({
     command: queued?.run?.seedInputId === messageId ? queued.command : null,
     disposition:
@@ -3207,7 +3228,42 @@ export async function enqueueThreadInputInTransaction(
 
 /** The platform cause an automation that stopped working is told to its Thread with. */
 export const automationStoppedCause = "automation-stopped";
-export const teamReturnUndeliverableReason = "team-return-undeliverable";
+/** The connection whose lineage an input comes from, read from the source the Home verified. */
+async function threadInputLineageId(
+  transaction: Transaction<DatabaseSchema>,
+  source: ThreadInputSource,
+): Promise<string | null> {
+  switch (source.kind) {
+    case "connection":
+      return source.connectionId;
+    case "agent":
+      return bindingAgentConnectionId(transaction, `run:${source.runId}`);
+    case "trigger":
+      return bindingAgentConnectionId(transaction, `trigger:${source.occurrenceId}`);
+    case "watch":
+      return bindingAgentConnectionId(transaction, `watch:${source.activationId}`);
+    case "platform":
+      return source.sourceRunId
+        ? bindingAgentConnectionId(transaction, `run:${source.sourceRunId}`)
+        : null;
+    default:
+      return null;
+  }
+}
+/**
+ * Work for a connection enters only its own lineage's tasks, or, for an `everything` grant, the
+ * person's own tasks. Nothing crosses into another connection's task; the person may type anywhere.
+ */
+async function assertInputLineage(
+  transaction: Transaction<DatabaseSchema>,
+  owner: UserId,
+  thread: { readonly originConnectionId: string | null },
+  inputConnectionId: string | null,
+): Promise<void> {
+  if (inputConnectionId === null)
+    await assertPersonMayContinue(transaction, owner, thread.originConnectionId);
+  else await assertSendEligible(transaction, owner, thread.originConnectionId, inputConnectionId);
+}
 async function resolveThreadInputFacts(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -3218,257 +3274,131 @@ async function resolveThreadInputFacts(
   },
 ): Promise<ResolvedThreadInputFacts> {
   const { source } = input;
-  if (source.kind === "team-member") {
-    await requirePersonalOwner(transaction, input.requestedBy);
-    const mirror = await transaction
-      .selectFrom("personalTeamRequests")
-      .selectAll()
-      .where("teamDeploymentId", "=", source.teamId)
-      .where("requestId", "=", source.requestId)
-      .executeTakeFirstOrThrow();
-    const asker =
-      mirror.kind === "ask" &&
-      mirror.localDecision !== "decline" &&
-      !mirror.terminalState &&
-      mirror.consentExpiresAt !== null &&
-      (mirror.localDecision === "approve" || mirror.consentExpiresAt > executionDate(transaction))
-        ? mirror.presentation?.asker
-        : mirror.kind === "return"
-          ? mirror.returnPayload?.author
-          : null;
-    if (!asker)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Team input has no approved author.",
-      });
-    const resume = source.resumeRunId
-      ? await transaction
-          .selectFrom("runs")
-          .select(["causalChainId", "threadId", "requestedBy"])
-          .where("id", "=", source.resumeRunId)
-          .executeTakeFirst()
-      : null;
-    if (
-      mirror.kind === "return" &&
-      (!resume ||
-        mirror.returnPayload?.resumeRunId !== source.resumeRunId ||
-        resume.threadId !== input.targetThread.id ||
-        resume.requestedBy !== input.requestedBy)
-    )
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Team return does not belong to this task.",
-      });
+  if (source.kind === "human") {
     const principal = await transaction
       .selectFrom("principals")
-      .select("id")
-      .where("kind", "=", "user")
-      .where("userId", "=", input.requestedBy)
+      .innerJoin("users", "users.id", "principals.userId")
+      .select(["principals.displayName", "principals.id", "principals.userId"])
+      .where("principals.kind", "=", "user")
+      .where("principals.userId", "=", input.requestedBy)
       .executeTakeFirstOrThrow();
-    return {
-      actorPrincipalId: principal.id,
-      author: MessageAuthorSchema.parse({
-        kind: "team-member",
-        teamId: source.teamId,
-        teamUserId: asker.teamUserId,
-        displayName: asker.displayName,
-        actor: asker.actor,
-      }),
-      authoritySource: {
-        kind: "team-request",
-        teamId: source.teamId,
-        requestId: source.requestId,
-        userId: input.requestedBy,
-      },
-      causalChainId: resume?.causalChainId ?? null,
-      kind: "input",
-      replyTarget: null,
-    };
-  }
-  if (source.kind === "channel") requireBoundedIdentity(source.ingressId, "Channel ingress", 255);
-  if (source.kind === "human" || source.kind === "channel") {
-    const channelSource =
-      source.kind === "channel"
-        ? await transaction
-            .selectFrom("channelIngressEvents")
-            .innerJoin(
-              "channelConversations",
-              "channelConversations.id",
-              "channelIngressEvents.conversationId",
-            )
-            .innerJoin("channelBindings", "channelBindings.id", "channelConversations.bindingId")
-            .innerJoin("channelIdentities", (join) =>
-              join
-                .onRef("channelIdentities.accountId", "=", "channelIngressEvents.accountId")
-                .on(
-                  "channelIdentities.principalId",
-                  "=",
-                  PrincipalIdSchema.parse(source.principalId),
-                ),
-            )
-            .select([
-              "channelBindings.accessPolicy",
-              "channelBindings.accountId as bindingAccountId",
-              "channelBindings.createdAt as bindingCreatedAt",
-              "channelBindings.createdBy as bindingCreatedBy",
-              "channelBindings.executionPolicy",
-              "channelBindings.id as bindingId",
-              "channelBindings.revision as currentBindingRevision",
-              "channelBindings.selector",
-              "channelBindings.status as bindingStatus",
-              "channelBindings.updatedAt as bindingUpdatedAt",
-              "channelConversations.activeThreadId as contextActiveThreadId",
-              "channelConversations.bindingRevision as contextBindingRevision",
-              "channelConversations.conversationType",
-              "channelConversations.externalConversationId",
-              "channelConversations.id as conversationId",
-              "channelIdentities.externalUserId",
-              "channelIdentities.id",
-              "channelIdentities.linkedUserId",
-              "channelIdentities.status as identityStatus",
-              "channelIdentities.principalId",
-            ])
-            .where("channelIngressEvents.id", "=", ChannelIngressIdSchema.parse(source.ingressId))
-            .where("channelIngressEvents.status", "=", "leased")
-            .where(
-              "channelIngressEvents.conversationId",
-              "=",
-              ChannelConversationIdSchema.parse(source.conversationId),
-            )
-            // This is the final authority check, not a snapshot replay. A
-            // concurrent binding/identity revocation either commits first and
-            // is observed here, or waits until this admission commits.
-            .forNoKeyUpdate([
-              "channelIngressEvents",
-              "channelConversations",
-              "channelBindings",
-              "channelIdentities",
-            ])
-            .executeTakeFirst()
-        : null;
-    let channelAuthority: Awaited<ReturnType<typeof resolveChannelAuthority>> | null = null;
-    if (source.kind === "channel" && channelSource) {
-      const binding = ChannelBindingSchema.parse({
-        accessPolicy: channelSource.accessPolicy,
-        accountId: channelSource.bindingAccountId,
-        createdAt: channelSource.bindingCreatedAt.toISOString(),
-        createdBy: channelSource.bindingCreatedBy,
-        executionPolicy: channelSource.executionPolicy,
-        id: channelSource.bindingId,
-        revision: channelSource.currentBindingRevision,
-        selector: channelSource.selector,
-        status: channelSource.bindingStatus,
-        updatedAt: channelSource.bindingUpdatedAt.toISOString(),
-      });
-      channelAuthority = await resolveChannelAuthority(transaction, binding, channelSource, {
-        externalConversationId: channelSource.externalConversationId,
-        type: channelSource.conversationType,
-      });
-    }
-    if (
-      source.kind === "channel" &&
-      (!channelSource ||
-        channelSource.bindingStatus !== "active" ||
-        channelSource.contextBindingRevision !== channelSource.currentBindingRevision ||
-        channelSource.contextActiveThreadId !== input.targetThread.id ||
-        !channelAuthority ||
-        channelAuthority.userId !== input.requestedBy)
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Channel ingress source is invalid",
-      });
-    }
-    const principal =
-      source.kind === "human"
-        ? await transaction
-            .selectFrom("principals")
-            .innerJoin("users", "users.id", "principals.userId")
-            .select(["principals.displayName", "principals.id", "principals.userId"])
-            .where("principals.kind", "=", "user")
-            .where("principals.userId", "=", input.requestedBy)
-            .executeTakeFirstOrThrow()
-        : await transaction
-            .selectFrom("principals")
-            .select(["displayName", "id", "userId"])
-            .where("id", "=", PrincipalIdSchema.parse(source.principalId))
-            .executeTakeFirstOrThrow();
-    const authorUserId =
-      source.kind === "channel"
-        ? channelSource?.identityStatus === "linked"
-          ? channelSource.linkedUserId
-          : null
-        : principal.userId;
-    const replyTarget =
-      source.kind === "channel"
-        ? ReplyTargetSchema.parse({
-            conversationId: source.conversationId,
-            kind: "channel",
-          })
-        : null;
     return {
       actorPrincipalId: principal.id,
       author: MessageAuthorSchema.parse({
         displayName: principal.displayName,
         kind: "human",
         principalId: principal.id,
-        ...(authorUserId
-          ? {
-              userId: authorUserId,
-            }
-          : {}),
-      }),
-      authoritySource:
-        source.kind === "channel"
-          ? {
-              access: channelAuthority!.source,
-              bindingId: channelSource!.bindingId,
-              bindingRevision: channelSource!.contextBindingRevision,
-              conversationId: source.conversationId,
-              ingressId: source.ingressId,
-              kind: "channel-ingress",
-              principalId: principal.id,
-              userId: input.requestedBy,
-            }
-          : {
-              kind: "user-session",
-              userId: input.requestedBy,
-              ...(source.clientSessionId ? { clientSessionId: source.clientSessionId } : {}),
-            },
-      causalChainId: null,
-      kind: "input",
-      replyTarget,
-    };
-  }
-  if (source.kind === "connection") {
-    const connection = await transaction
-      .selectFrom("agentConnections")
-      .selectAll()
-      .where("id", "=", source.connectionId)
-      .where("userId", "=", input.requestedBy)
-      .where("revokedAt", "is", null)
-      .where("expiresAt", ">", new Date())
-      .executeTakeFirst();
-    if (!connection || !connection.tokenHash)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Connected agent source is invalid",
-      });
-    return {
-      actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-      author: MessageAuthorSchema.parse({
-        kind: "connection",
-        connectionId: connection.id,
-        displayName: connection.label,
+        ...(principal.userId ? { userId: principal.userId } : {}),
       }),
       authoritySource: {
-        kind: "connection",
-        connectionId: connection.id,
+        kind: "user-session",
         userId: input.requestedBy,
+        ...(source.clientSessionId ? { clientSessionId: source.clientSessionId } : {}),
       },
       causalChainId: null,
       kind: "input",
       replyTarget: null,
+    };
+  }
+  if (source.kind === "connection") {
+    const chat = source.chat;
+    // A chat's message reads through the one sender admission: the bridge is live, it covers
+    // this conversation, and this sender may speak under the revision the message was admitted
+    // under. Any other connection's message reads its live row in one statement. The task is
+    // already locked here, so the row is read, not locked.
+    const admitted = chat
+      ? await admitBridgeSender(transaction, {
+          ownerUserId: input.requestedBy,
+          bridgeId: source.connectionId,
+          externalUserId: chat.sender.externalUserId,
+          expectedRevision: chat.revision,
+        })
+      : null;
+    // A chat that went paused while its message was on the way: the message waits for it.
+    if (admitted?.kind === "waiting") throw chatWaitingError();
+    const connection =
+      admitted?.kind === "admitted"
+        ? { id: admitted.connection.agentConnectionId, label: admitted.connection.label }
+        : chat
+          ? undefined
+          : await readLiveAgentConnectionRow(
+              transaction,
+              input.requestedBy,
+              source.connectionId,
+            ).catch((error: unknown) => {
+              if (error instanceof OpensteerError && error.code === "forbidden") return undefined;
+              throw error;
+            });
+    if (!connection)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Connected agent source is invalid",
+      });
+    if (
+      chat &&
+      (admitted?.kind !== "admitted" ||
+        !(await transaction
+          .selectFrom("bridgeConversations")
+          .select("id")
+          .where("id", "=", ChannelConversationIdSchema.parse(chat.conversationId))
+          .where("bridgeId", "=", connection.id)
+          .executeTakeFirst()))
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Connected agent source is invalid",
+      });
+    const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
+    const owner =
+      admitted?.kind === "admitted" && admitted.owner
+        ? await transaction
+            .selectFrom("principals")
+            .select("displayName")
+            .where("id", "=", actorPrincipalId)
+            .executeTakeFirstOrThrow()
+        : null;
+    return {
+      actorPrincipalId,
+      // The person writing from their own linked account is the person; anyone else in a
+      // bridge's conversation is named, and is never the person.
+      author: MessageAuthorSchema.parse(
+        owner
+          ? {
+              kind: "human",
+              displayName:
+                outsideName(`${owner.displayName} (via ${connection.label})`, 160) || "Someone",
+              principalId: actorPrincipalId,
+              userId: input.requestedBy,
+            }
+          : {
+              kind: "connection",
+              connectionId: connection.id,
+              displayName:
+                outsideName(
+                  chat ? `${chat.sender.displayName} in ${connection.label}` : connection.label,
+                  160,
+                ) || "Someone",
+            },
+      ),
+      authoritySource: {
+        kind: "connection",
+        connectionId: connection.id,
+        userId: input.requestedBy,
+        // Who wrote it, so that it runs only if they may still speak when its turn comes.
+        ...(chat
+          ? {
+              chat: {
+                conversationId: chat.conversationId,
+                externalUserId: chat.sender.externalUserId,
+              },
+            }
+          : {}),
+      },
+      causalChainId: null,
+      kind: "input",
+      replyTarget: chat
+        ? ReplyTargetSchema.parse({ kind: "channel", conversationId: chat.conversationId })
+        : null,
     };
   }
   if (source.kind === "agent") {
@@ -3557,7 +3487,7 @@ async function resolveThreadInputFacts(
           .select("messageId")
           .where("threadId", "=", worker.id)
           .where("policy", "!=", "report")
-          .where("state", "in", ["awaiting-approval", "pending", "claimed", "unknown"])
+          .where("state", "in", ["pending", "claimed", "unknown"])
           .executeTakeFirst(),
       ]);
       if (
@@ -3760,11 +3690,15 @@ export async function ensureSelectedProviderSession(
     readonly id: ThreadId;
     readonly harnessInstanceId: HarnessInstanceId;
   },
-  options: { readonly personalContext?: boolean; readonly freshRunId?: RunId } = {},
+  options: {
+    readonly personalContext?: boolean;
+    readonly personLineage?: boolean;
+    readonly freshRunId?: RunId;
+  } = {},
 ): Promise<ProviderSessionId> {
   const selected = await transaction
     .selectFrom("providerSessions")
-    .select(["id", "harnessInstanceId", "personalContext"])
+    .select(["id", "harnessInstanceId", "personalContext", "personLineage"])
     .where("threadId", "=", thread.id)
     .where("active", "=", true)
     .forNoKeyUpdate()
@@ -3779,7 +3713,8 @@ export async function ensureSelectedProviderSession(
     if (
       !options.freshRunId &&
       (options.personalContext === undefined ||
-        selected.personalContext === options.personalContext)
+        selected.personalContext === options.personalContext) &&
+      (options.personLineage === undefined || selected.personLineage === options.personLineage)
     )
       return selected.id;
     const active = await transaction
@@ -3821,6 +3756,7 @@ export async function ensureSelectedProviderSession(
     .values({
       active: true,
       personalContext: options.personalContext ?? true,
+      personLineage: options.personLineage ?? true,
       bindingGeneration: 0,
       continuationIdentity: null,
       harnessInstanceId: thread.harnessInstanceId,
@@ -3926,27 +3862,6 @@ export async function ensureQueuedRun(
     if (!candidate || (await inputLeaseBarrier(transaction, thread.id, candidate.queueRank)))
       return { command: null, run: null };
 
-    // Channel authority can change after inbox admission. Read and lock its
-    // binding before taking the input lock so revocation and policy updates
-    // cannot cross a requeue boundary.
-    if (!(await channelInputAuthorityIsCurrent(transaction, candidate.messageId))) {
-      const cancelled = await transaction
-        .updateTable("threadInputs")
-        .set({
-          cancelReason: "channel-authority-unavailable",
-          state: "cancelled",
-          updatedAt: new Date(),
-        })
-        .where("messageId", "=", candidate.messageId)
-        .where("state", "=", "pending")
-        .where("policy", "=", "queue")
-        .returningAll()
-        .executeTakeFirst();
-      if (cancelled) {
-        await refreshInputQueue(transaction, thread.id, cancelled.messageId);
-      }
-      continue;
-    }
     const lockedCandidate = await transaction
       .selectFrom("threadWorkInputs as threadInputs")
       .innerJoin("messages", "messages.id", "threadInputs.messageId")
@@ -4024,6 +3939,43 @@ export async function ensureQueuedRun(
       }
       continue;
     }
+    // The Run would work for the task's connection, else this input's: the input must still be
+    // one that connection may send here (a narrowing can take that away), and the connection it
+    // works for must still delegate. Work that no longer qualifies is cancelled, never run.
+    const candidateConnectionId = thread.originConnectionId ?? candidate.connectionId;
+    let waiting = false;
+    if (
+      !(await assertSendEligible(
+        transaction,
+        candidate.requestedBy,
+        thread.originConnectionId,
+        candidate.connectionId,
+      )
+        .then(() =>
+          candidateConnectionId
+            ? liveDelegatingConnection(transaction, candidate.requestedBy, candidateConnectionId)
+            : null,
+        )
+        .then(
+          () => chatSenderMaySpeak(transaction, candidate),
+          (error: unknown) => {
+            waiting = connectionIsWaiting(error);
+            return false;
+          },
+        ))
+    ) {
+      // A paused chat's work waits: it stays queued, and so does everything behind it.
+      if (candidateConnectionId && waiting) break;
+      const cancelled = await transaction
+        .updateTable("threadInputs")
+        .set({ cancelReason: "authority-revoked", state: "cancelled", updatedAt: new Date() })
+        .where("messageId", "=", candidate.messageId)
+        .where("state", "=", "pending")
+        .returningAll()
+        .executeTakeFirst();
+      if (cancelled) await refreshInputQueue(transaction, thread.id, cancelled.messageId);
+      continue;
+    }
     if (isGuaranteedCompletionKind(candidate.messageKind)) {
       seed = candidate;
       break;
@@ -4059,19 +4011,22 @@ export async function ensureQueuedRun(
     }
   }
   if (!seed) return { command: null, run: null };
+  const connectionId = thread.originConnectionId ?? seed.connectionId;
   const selectedSession = options.maintenance
     ? options.maintenance.providerSessionId
-    : await ensureSelectedProviderSession(transaction, thread, {
-        personalContext: await threadAllowsPersonalContext(
-          transaction,
-          thread.id,
-          thread.createdBy,
-        ),
-      });
+    : await (async () => {
+        const lineage = await threadContextLineage(transaction, thread.id, thread.createdBy);
+        return ensureSelectedProviderSession(transaction, thread, {
+          personalContext:
+            lineage.personalContext && (await lineagePersonalContext(transaction, connectionId)),
+          personLineage: lineage.personLineage && connectionId === null,
+        });
+      })();
   const runId = createId("run");
   const runRow = await transaction
     .insertInto("runs")
     .values({
+      ...(connectionId ? { connectionId } : {}),
       accessMode: thread.accessMode,
       ...(options.maintenance ? { maintenance: options.maintenance } : {}),
       activationInputId: seed.messageId,
@@ -4149,13 +4104,6 @@ export async function ensureQueuedRun(
   });
   await publishRunQueue(transaction, thread.id, runId);
   await projectThreadState(transaction, thread.id, new Date(), true);
-  if (seed.teamRequestId)
-    await transaction
-      .updateTable("personalTeamRequests")
-      .set({ runId })
-      .where("requestId", "=", seed.teamRequestId)
-      .where("localInputId", "=", seed.messageId)
-      .execute();
   return { command, run: runRow };
 }
 
@@ -4174,7 +4122,7 @@ async function waitingThreadInputs(
     .selectAll()
     .where("threadId", "=", threadId)
     .where("policy", "=", "queue")
-    .where("state", "in", ["pending", "awaiting-approval"])
+    .where("state", "=", "pending")
     .where(({ not, exists, selectFrom }) =>
       not(
         exists(
@@ -4185,7 +4133,6 @@ async function waitingThreadInputs(
         ),
       ),
     )
-    .orderBy(sql`approval_sort`)
     .orderBy("queueRank", "asc")
     .orderBy("messageId", "asc")
     .limit(threadInputMaxPendingEntries)
@@ -4365,7 +4312,6 @@ async function lockAssignmentReturn(
   const threadIds = [
     ...new Set([observed.parentThreadId, ...group.map(({ childThreadId }) => childThreadId)]),
   ];
-  await lockThreadChannelAuthorities(transaction, threadIds);
   await transaction
     .selectFrom("threads")
     .select("id")
@@ -4754,9 +4700,14 @@ async function deliverAssignmentReturnTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  const returnRunId = assignment.resultRunId ?? assignment.childRunId;
+  const returnConnectionId = returnRunId
+    ? await bindingAgentConnectionId(transaction, `run:${returnRunId}`)
+    : null;
   await transaction
     .insertInto("threadInputs")
     .values({
+      ...(returnConnectionId ? { connectionId: returnConnectionId } : {}),
       actorPrincipalId: systemPrincipalId,
       // The parent's open work receives the result, as any input into its Thread would.
       assignmentId: parentOpenAssignment?.id ?? null,
@@ -4826,10 +4777,9 @@ async function assignmentResultReader(
     });
   const { assignment } = locked;
   const authority = input.authority;
-  await assertThreadCaller(transaction, authority, {
-    threadId: assignment.childThreadId,
-    readOnly: true,
-  });
+  // Both ends of a delegation must be visible to the reader, not only the task that did the work.
+  for (const threadId of [assignment.parentThreadId, assignment.childThreadId])
+    await assertThreadCaller(transaction, authority, { threadId, readOnly: true });
   if (
     !(await threadExecutionIsAvailableToUser(
       transaction,
@@ -4964,12 +4914,58 @@ export async function recoverAssignmentResultWaits(
   });
 }
 
+/**
+ * For a connected agent waiting on a child task: the newest delegation of that task whose parent
+ * the connection may also read, and its result. A connection never assigned the work, so reading
+ * it delivers nothing and leaves the parent's automatic return alone; it is a plain read.
+ */
+export function readConnectionChildResult(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly authority: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+    readonly childThreadId: ThreadId;
+  },
+) {
+  const { authority, childThreadId } = input;
+  return withPersonalReadTransaction(database, async (transaction) => {
+    await requirePersonalOwner(transaction, authority.userId);
+    const scope = await connectionTaskReadScope(transaction, authority);
+    const row = await transaction
+      .selectFrom("delegations")
+      .innerJoin("threads as parent", "parent.id", "delegations.parentThreadId")
+      .selectAll("delegations")
+      .where("delegations.childThreadId", "=", childThreadId)
+      .where("parent.createdBy", "=", authority.userId)
+      .$if(scope === "selected", (query) =>
+        query.where("parent.originConnectionId", "=", authority.connectionId),
+      )
+      .orderBy("delegations.createdAt", "desc")
+      .orderBy("delegations.id", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (
+      !row ||
+      !(await threadExecutionIsAvailableToUser(transaction, childThreadId, authority.userId))
+    )
+      return undefined;
+    return {
+      assignment: await assignmentSummaryInTransaction(transaction, row, {
+        connectionAuthority: authority,
+        ownerVerified: true,
+        scope,
+      }),
+      result: row.resultText,
+    };
+  });
+}
+
 /** Reading and automatic return share the same Thread and Assignment fences. */
 export function readAssignmentResult(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly assignmentId: AssignmentId;
     readonly authority: ThreadCallerAuthority;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
     readonly signal?: AbortSignal;
   },
 ) {
@@ -5020,7 +5016,16 @@ export function readAssignmentResult(
         readOnly: true,
       });
       input.signal?.throwIfAborted();
-      return { assignment: await assignmentSummaryInTransaction(transaction, assignment), result };
+      return {
+        assignment: await assignmentSummaryInTransaction(
+          transaction,
+          assignment,
+          input.connectionAuthority
+            ? { connectionAuthority: input.connectionAuthority, ownerVerified: true }
+            : undefined,
+        ),
+        result,
+      };
     },
     (error) => error instanceof TransactionScopeChanged,
   );
@@ -5292,13 +5297,6 @@ async function delegationCallerIntentMatches(
         .executeTakeFirst();
       break;
     case "watch":
-      receipt = await database
-        .selectFrom("watchControlRequests")
-        .select("requestFingerprint")
-        .where("activationId", "=", input.origin.activationId)
-        .where("observationId", "=", input.origin.observationId)
-        .where("action", "=", "thread.delegate")
-        .executeTakeFirst();
       break;
   }
   return receipt?.requestFingerprint === intent.requestFingerprint;
@@ -5573,10 +5571,6 @@ export async function delegateThreadInTransaction(
     },
     input.expectedHarnessRevision,
   );
-  await lockThreadChannelAuthorities(transaction, [
-    input.origin.parentThreadId,
-    ...(input.threadId ? [input.threadId] : []),
-  ]);
   const lockedThreads = await transaction
     .selectFrom("threads")
     .select(["id", "lineageRootThreadId", "purpose", "doneAt"])
@@ -5644,6 +5638,18 @@ export async function delegateThreadInTransaction(
     );
   }
   await assertDelegationDepth(transaction, parent.id);
+  // A child inherits its delegator's lineage; read after the delegator's row is locked, so it
+  // either precedes a Disconnect that then reaches it, or sees that Disconnect and stops.
+  const childConnectionId = await bindingAgentConnectionId(
+    transaction,
+    input.origin.kind === "run"
+      ? `run:${input.origin.parentRunId}`
+      : input.origin.kind === "trigger"
+        ? `trigger:${input.origin.occurrenceId}`
+        : `watch:${input.origin.activationId}`,
+  );
+  if (childConnectionId)
+    await liveDelegatingConnection(transaction, input.createdBy, childConnectionId);
   if (!parentCausalChainId) {
     throw new OpensteerError({
       code: "internal",
@@ -5762,11 +5768,9 @@ export async function delegateThreadInTransaction(
           .executeTakeFirstOrThrow()
       : reusedRow
     : await insertThread({
+        ...(childConnectionId ? { originConnectionId: childConnectionId } : {}),
         accessMode: ThreadAccessModeSchema.parse(input.accessMode),
         purpose: "task",
-        teamId: null,
-        channelId: null,
-        threadRootId: null,
         createdByPrincipalId: actorPrincipalId,
         id: threadId,
         lineageRootThreadId: parent.lineageRootThreadId,
@@ -5778,12 +5782,23 @@ export async function delegateThreadInTransaction(
           inputQueuePaused: false,
           lastRunFailed: false,
         }),
-        title: input.title,
+        title: outsideName(input.title, 240) || "Task",
         titleSource: input.titleSource ?? "chosen",
         icon: null,
         iconSource: "provisional",
       });
-  await ensureSelectedProviderSession(transaction, threadRow);
+  // A new worker in a lineage without the person's personal context never has a personal
+  // session, not even its first (none is queried for the person's own work).
+  await ensureSelectedProviderSession(
+    transaction,
+    threadRow,
+    reusedRow
+      ? {}
+      : {
+          personalContext: await lineagePersonalContext(transaction, childConnectionId),
+          personLineage: childConnectionId === null,
+        },
+  );
   await transaction
     .insertInto("commands")
     .values({
@@ -5946,4 +5961,28 @@ async function delegationListsThread(
     .where("runs.id", "=", origin.parentRunId)
     .executeTakeFirstOrThrow();
   return seed.voiceSessionId !== null || MessageAuthorSchema.parse(seed.author).kind === "human";
+}
+
+/**
+ * A chat's queued message runs only if its sender may still speak there when its turn comes: if
+ * "me" was linked to another identity since (the person said the old one is no longer them), or
+ * the chat's senders no longer include them, it is cancelled, silently. A paused chat holds it
+ * (its own check holds the queue first); anything not from a chat is not asked.
+ */
+export async function chatSenderMaySpeak(
+  transaction: Transaction<DatabaseSchema>,
+  input: {
+    readonly authoritySource: Readonly<Record<string, unknown>>;
+    readonly connectionId: string | null;
+    readonly requestedBy: UserId;
+  },
+): Promise<boolean> {
+  const chat = input.authoritySource["chat"] as { readonly externalUserId?: unknown } | undefined;
+  if (!chat || typeof chat.externalUserId !== "string" || input.connectionId === null) return true;
+  const admitted = await admitBridgeSender(transaction, {
+    ownerUserId: input.requestedBy,
+    bridgeId: input.connectionId,
+    externalUserId: chat.externalUserId,
+  });
+  return admitted.kind !== "refused";
 }

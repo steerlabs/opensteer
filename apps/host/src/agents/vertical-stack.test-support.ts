@@ -1,8 +1,7 @@
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import type { Kysely, Selectable } from "kysely";
 import type { DatabaseSchema } from "@opensteer/database";
-import type { HostConfig } from "@opensteer/config";
-import type { HarnessRegistry, HarnessRuntimeBoundary } from "@opensteer/harness";
+import type { HarnessRegistry } from "@opensteer/harness";
 import type {
   AgentHomeAccess,
   PreparedIntegrationsModule,
@@ -19,6 +18,7 @@ import type {
 import type { HarnessInstanceCatalogView, HarnessModelDescriptor } from "@opensteer/protocol";
 import type { PersonalHostRuntime as HostRuntime } from "../runtime/runtime.js";
 import type { NetworkPartition } from "./network-partition.test-support.js";
+import type { RunnerCrashOptions } from "./runner-child.test-support.js";
 import type { RunnerWire, RunnerWireOptions } from "./runner-wire.test-support.js";
 import type {
   ArtifactContentPart,
@@ -85,7 +85,11 @@ export interface VerticalStack {
   readonly network: Pick<NetworkPartition, "block" | "drop" | "unblock">;
   readonly agentHomePreparations: readonly Parameters<AgentHomeAccess["prepare"]>[0][];
   settledRunEvent(runId: RunId): import("@opensteer/protocol").PendingAgentEvent | undefined;
-  crashRunner(beforeRestart?: () => Promise<void>): Promise<void>;
+  /** The person's Stop for one Run on the computer running it, as that computer's menu bar sends it. */
+  stopRunLocally(runId: RunId): boolean;
+  /** Settles once the Runner reports this Run among the work it is doing. */
+  runStarted(runId: RunId): Promise<void>;
+  crashRunner(beforeRestart?: () => Promise<void>, options?: RunnerCrashOptions): Promise<void>;
   /** A separate database/Deployment using this harness; closed with this fixture. */
   startAdditionalPersonal(): Promise<VerticalStack>;
   configureModel(
@@ -136,7 +140,7 @@ export interface VerticalStack {
     readonly downForMs?: number;
     readonly whileDown?: () => Promise<void>;
   }): Promise<void>;
-  restartRunner(): Promise<void>;
+  restartRunner(agentsStoppedSince?: string | null): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -144,12 +148,19 @@ export interface VerticalStackOptions {
   readonly agentHome?: ComputerFolder;
   readonly startPersonal?: (options: VerticalStackOptions) => Promise<VerticalStack>;
   readonly executionClock?: import("@opensteer/shared/clock").Clock;
-  readonly account?: HostConfig["account"];
   readonly accountDirectoryFetch?: typeof globalThis.fetch;
   readonly personalAccountIssuer?: URL;
   readonly runnerWire?: RunnerWireOptions;
   /** Child-process Runner for crash/reaping acceptance journeys. */
-  readonly runnerChild?: { readonly fixture: string; readonly arguments: readonly string[] };
+  readonly runnerChild?: {
+    readonly fixture: string;
+    readonly arguments: readonly string[];
+    readonly stopJourney?: {
+      readonly beforeSignal: () => Promise<void>;
+      readonly computerUseBridge: { readonly url: URL; readonly token: string };
+      readonly afterProof: (pid: number) => void;
+    };
+  };
   /** Personal Main Runner with its desktop authority; no server enrollment shortcut. */
   readonly integrations?: () => PreparedIntegrationsModule;
   /**
@@ -173,7 +184,6 @@ export interface VerticalStackOptions {
    * closes its registry when it stops.
    */
   readonly harnesses: HarnessRegistry | (() => HarnessRegistry);
-  readonly harnessRuntimeBoundary: HarnessRuntimeBoundary;
   /** The one account the deployment is given before its Runner connects. */
   readonly harnessInstance: {
     readonly config: Readonly<Record<string, unknown>>;
@@ -200,6 +210,8 @@ export interface VerticalStackOptions {
   readonly runTimeoutMs: number;
   /** Captures Runner diagnostics for engine lifecycle journeys. */
   readonly runnerLogger?: RunnerLogger;
+  /** The person's Stop on the Runner's computer, as its menu bar would set it. */
+  readonly agentsStoppedSince?: string | null;
   /** Original Host diagnostics, before an acceptance journey scrubs exports. */
   readonly hostLog?: (line: string) => void;
   /** Runs the one Runner executes at once; one unless a journey needs more. */
@@ -322,7 +334,7 @@ export interface PersonalVerticalRuntime {
     replacementRunId?: RunId,
   ): Promise<VerticalTurn>;
   restartHost(): Promise<void>;
-  restartRunner(): Promise<void>;
+  restartRunner(agentsStoppedSince?: string | null): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -394,7 +406,7 @@ export function createPersonalVerticalStack(
       );
     },
     restartHost: () => runtime.restartHost(),
-    restartRunner: () => runtime.restartRunner(),
+    restartRunner: (mode) => runtime.restartRunner(mode),
     close: () => runtime.close(),
   };
 }

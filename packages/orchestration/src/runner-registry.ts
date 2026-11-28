@@ -21,9 +21,21 @@ import type {
 } from "@opensteer/core";
 import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
 import {
+  agentHomeFilesCapability,
+  attemptStopStateCapability,
+  runnerPowerStateCapability,
+  runnerAgentStopCapability,
+  runnerRestartingCloseCode,
   type HostAppRequest,
+  type HostHomeFileRequest,
+  type HostOutputImageUpload,
   type HostRunFileRequest,
+  type RunnerAgentHomeReport,
   type RunnerAppResult,
+  type RunnerHomeFileResult,
+  type RunnerOutputImagePublish,
+  type RunFileTransfer,
+  type RunFileTransferBinding,
   type RunnerRunFileResult,
   type RunnerVoiceCommand,
   type RunnerVoiceResult,
@@ -115,7 +127,8 @@ export type RunnerStreamLossReason =
   | "revoked"
   | "superseded"
   | "transport-disconnected"
-  | "primary-lost";
+  | "primary-lost"
+  | "device-restarting";
 
 /**
  * What the caller of `dispatch` learns. The connection fence is absent because
@@ -155,6 +168,30 @@ export type RunnerAttachResult = Extract<
     readonly type: "host.executions.attached";
   }
 >["results"][number];
+export type RunnerAttachFiring = NonNullable<RunnerAttach["firings"]>[number];
+export type RunnerAttachFiringResult = NonNullable<
+  Extract<
+    HostToRunnerMessage,
+    {
+      readonly type: "host.executions.attached";
+    }
+  >["firingResults"]
+>[number];
+export type RunnerProxyTokenRenew = Extract<
+  RunnerOperationalMessage,
+  {
+    readonly type: "runner.proxy-token.renew";
+  }
+>;
+export type RunnerProxyTokenRenewAnswer = Pick<
+  Extract<
+    HostToRunnerMessage,
+    {
+      readonly type: "host.proxy-token.renewed";
+    }
+  >,
+  "browserCdp" | "mcp" | "reason"
+>;
 type RunnerSessionBound = Extract<
   RunnerOperationalMessage,
   {
@@ -186,7 +223,19 @@ type RunnerHarnessInstallation = Extract<
   }
 >;
 export interface RunnerRegistryHooks {
+  bindRunFileTransfer?(
+    transfer: RunFileTransfer,
+    method: "GET" | "PUT",
+    binding: RunFileTransferBinding,
+    signal: AbortSignal,
+  ): void;
   onAppState?(identity: RunnerIdentity, state: RunnerAppState): void;
+  /**
+   * The person stopped agents on this Runner's computer (`stoppedSince`), or
+   * resumed them (null). Held work may be dispatched again on resume.
+   */
+  onAgentWork?(identity: RunnerIdentity, stoppedSince: Date | null): void;
+  onSleepAnnounced?(identity: RunnerIdentity): void;
   authorize(identity: RunnerIdentity): Promise<void>;
   /** Persist the Runner receipt before any causally later event is admitted. */
   onCommandAccepted?(identity: RunnerIdentity, receipt: RunnerCommandAccepted): Promise<void>;
@@ -215,8 +264,21 @@ export interface RunnerRegistryHooks {
     identity: RunnerIdentity,
     report: import("@opensteer/protocol").RunnerSettingsReport,
   ): Promise<void>;
+  onAgentHomeReport?(
+    identity: RunnerIdentity,
+    report: RunnerAgentHomeReport,
+    signal: AbortSignal,
+  ): Promise<boolean>;
+  onOutputImagePublish?(
+    identity: RunnerIdentity,
+    request: RunnerOutputImagePublish,
+    signal: AbortSignal,
+  ): Promise<Omit<HostOutputImageUpload, keyof RunnerConnectionFence | "requestId" | "type">>;
   /** The Agent home this Runner hosts, which its welcome names so it reports settings.json at once. */
-  agentHome?(identity: RunnerIdentity): Promise<import("@opensteer/core").ComputerFolder | null>;
+  agentHome?(identity: RunnerIdentity): Promise<{
+    agentHome: import("@opensteer/core").ComputerFolder;
+    agentHomeIsProvisional?: true;
+  } | null>;
   /**
    * Fires once the connection is live and reachable, which `authorize` cannot
    * do: authorization runs before the connection is inserted, so nothing it
@@ -243,6 +305,14 @@ export interface RunnerRegistryHooks {
     identity: RunnerIdentity,
     executions: RunnerAttach["executions"],
   ): Promise<readonly RunnerAttachResult[]>;
+  onAttachFirings?(
+    identity: RunnerIdentity,
+    firings: readonly RunnerAttachFiring[],
+  ): Promise<readonly RunnerAttachFiringResult[]>;
+  onRenewProxyToken?(
+    identity: RunnerIdentity,
+    request: RunnerProxyTokenRenew,
+  ): Promise<RunnerProxyTokenRenewAnswer>;
   /** The Runner's Runs are settled and new work may be dispatched to it. */
   onAttached?(identity: RunnerIdentity): Promise<void>;
   /** A held Run slot or a preparing harness became available for dispatch. */
@@ -256,7 +326,10 @@ export interface RunnerRegistryHooks {
     installation: RunnerHarnessInstallation,
   ): Promise<void>;
   onSessionBound?(identity: RunnerIdentity, binding: RunnerSessionBound): Promise<void>;
-  onTriggerResult?(identity: RunnerIdentity, result: RunnerTriggerResult): Promise<void>;
+  onTriggerResult?(
+    identity: RunnerIdentity,
+    result: RunnerTriggerResult,
+  ): Promise<void | "retired">;
   onWatchStatus?(identity: RunnerIdentity, status: RunnerWatchStatus): Promise<void>;
   onDisconnect?(identity: RunnerIdentity, scope: RunnerDisconnectScope): Promise<void>;
   /** Full Disk Access is the descriptor fact a person can change during a live connection. */
@@ -307,6 +380,7 @@ export interface RunnerRegistryHooks {
   >;
 }
 interface PendingAck {
+  rejectedBeforeAdmission?: true;
   readonly beforeAck?: () => Promise<void>;
   readonly commandType: RunnerCommand["type"];
   readonly runBinding?: { readonly runId: RunId; readonly bindingGeneration: number };
@@ -315,6 +389,7 @@ interface PendingAck {
   readonly resolve: (result: RunnerCommandAccepted) => void;
 }
 interface PendingTriggerProgram {
+  readonly executionGeneration: number;
   readonly reject: (error: unknown) => void;
   readonly resolve: () => void;
 }
@@ -369,6 +444,7 @@ interface OwnedRunBinding {
   readonly threadId: ThreadId;
 }
 interface RunnerConnection {
+  agentHomeReady: boolean;
   /**
    * Whether this connection's Runner has said which Runs it holds and the Host
    * has answered. Nothing is dispatched to it before: a Run sent earlier could
@@ -425,6 +501,25 @@ interface RunnerConnection {
     string,
     {
       resolve: (result: RunnerRunFileResult) => void;
+      reject: (error: unknown) => void;
+    }
+  >;
+  readonly pendingHomeFiles: Map<
+    string,
+    {
+      resolve: (result: RunnerHomeFileResult) => void;
+      reject: (error: unknown) => void;
+    }
+  >;
+  readonly pendingStopRechecks: Map<
+    string,
+    {
+      resolve: (
+        result: Extract<
+          RunnerOperationalMessage,
+          { readonly type: "runner.thread.stop.recheck.result" }
+        >,
+      ) => void;
       reject: (error: unknown) => void;
     }
   >;
@@ -490,8 +585,12 @@ interface RunnerConnection {
    */
   readonly preparingHarnesses: Set<HarnessInstanceId>;
   catalogRequestRevision: number;
-  catalogGeneration: number;
+  readonly catalogGenerations: Map<HarnessInstanceId, number>;
   lastSeenAt: number;
+  /** Timestamp when this connection last reported `runner.power.sleeping`. */
+  sleepAnnouncedAtMs: number | undefined;
+  /** When the person stopped agents on this computer, as its last notice said. */
+  agentsStoppedAtMs: number | undefined;
 }
 interface RunnerRegistryOptions {
   readonly commandAckTimeoutMs?: number;
@@ -513,6 +612,19 @@ const defaultExecutionLeaseMs = 90_000;
 const eventAckBatchMs = 200;
 const maximumConnectionLeaseMs = 5 * 60_000;
 const maximumHeartbeatClockSkewMs = 30_000;
+/**
+ * How long a computer that reported going to sleep stays "asleep" while
+ * disconnected before the Home treats it as offline again (7 days). Covers
+ * multi-day standby/hibernation (e.g. a closed MacBook over a weekend or trip)
+ * without leaving a powered-off or abandoned computer marked asleep forever.
+ */
+export const runnerMaxAsleepDurationMs = 7 * 24 * 60 * 60 * 1_000;
+/**
+ * A fresh heartbeat arriving more than this long after `runner.power.sleeping`
+ * proves the computer stayed awake (e.g. sleep cancelled or Dark Wake), so a
+ * later crash does not look like sleep.
+ */
+const sleepAnnouncementHeartbeatClearMs = 5_000;
 
 /**
  * A request a person is waiting on in the app. It ends before the client's own
@@ -570,6 +682,17 @@ export class RunnerRegistry {
    * newer one came and went is still refused.
    */
   readonly #highestGeneration = new Map<RunnerId, number>();
+  /** Timestamp (`asleepSince`) for disconnected Runners that reported sleep. */
+  readonly #asleep = new Map<RunnerId, { readonly since: number; readonly generation: number }>();
+  /**
+   * Runners whose computer had agents stopped by the person when their last
+   * connection ended. In memory only: a Home restart forgets it, and the
+   * Runner says it again when it reconnects still stopped.
+   */
+  readonly #agentsStopped = new Map<
+    RunnerId,
+    { readonly since: number; readonly generation: number }
+  >();
   readonly #lifetime = new AbortController();
   #closing = false;
   #closePromise: Promise<void> | undefined;
@@ -648,6 +771,7 @@ export class RunnerRegistry {
     this.#assertNewestGeneration(identity);
     const settled = deferred<void>();
     const now = this.#now();
+    const previouslyStopped = this.#agentsStopped.has(identity.runnerId);
     const connection: RunnerConnection = {
       attached: false,
       auxiliaryStreams: new Map(),
@@ -664,7 +788,7 @@ export class RunnerRegistry {
       abandonedCatalogs: new Set(),
       catalogCache: new Map(),
       preparingHarnesses: new Set(),
-      catalogGeneration: 0,
+      catalogGenerations: new Map(),
       catalogRequestRevision: 0,
       lastHeartbeatSentAt: undefined,
       lastSeenAt: now,
@@ -684,13 +808,23 @@ export class RunnerRegistry {
       pendingApps: new Map(),
       pendingAppSyncs: new Map(),
       pendingRunFiles: new Map(),
+      pendingHomeFiles: new Map(),
+      pendingStopRechecks: new Map(),
+      agentHomeReady: false,
       ownedRunIds: new Set(),
       ownedRunBindings: new Map(),
       ownedTriggerOccurrenceIds: new Set(),
       observedRunIds: new Set(),
       observedTriggerOccurrenceIds: new Set(),
+      sleepAnnouncedAtMs: undefined,
+      agentsStoppedAtMs:
+        identity.agentsStoppedSince && identity.capabilities.includes(runnerAgentStopCapability)
+          ? Math.min(Date.parse(identity.agentsStoppedSince), now)
+          : undefined,
     };
     connection.leaseTimer = this.#leaseTimer(connection);
+    this.#asleep.delete(identity.runnerId);
+    this.#agentsStopped.delete(identity.runnerId);
     this.#byRunner.set(identity.runnerId, connection);
     this.#byPeer.set(peer.id, connection);
     for (const environmentId of identity.environmentIds)
@@ -709,7 +843,20 @@ export class RunnerRegistry {
         // Several renewals fit in one execution lease, so one lost heartbeat
         // never costs a Run its lease.
         heartbeatIntervalMs: Math.min(15_000, Math.floor(this.#executionLeaseMs / 4)),
-        ...(agentHome ? { agentHome } : {}),
+        ...(identity.capabilities.includes(runnerPowerStateCapability)
+          ? { acceptsPowerState: true as const }
+          : {}),
+        ...(identity.capabilities.includes(runnerAgentStopCapability)
+          ? { acceptsAgentStop: true as const }
+          : {}),
+        ...(identity.capabilities.includes(attemptStopStateCapability)
+          ? { acceptsAttemptStopState: true as const }
+          : {}),
+        ...(identity.capabilities.includes("automation-script-v1")
+          ? { acceptsAutomationScripts: true as const }
+          : {}),
+        ...(this.#acceptsHomeFiles(identity) ? { acceptsHomeFiles: true as const } : {}),
+        ...agentHome,
         ...(identity.capabilities.includes(runRetryCapability)
           ? { runRetryEvents: true as const }
           : {}),
@@ -737,6 +884,8 @@ export class RunnerRegistry {
     if (this.#hooks.onRegistered) {
       void this.#runHook(() => this.#hooks.onRegistered?.(identity)).catch(() => undefined);
     }
+    if (identity.agentsStoppedSince === null && previouslyStopped)
+      this.#hooks.onAgentWork?.(identity, null);
     return identity;
   }
   #assertNewestGeneration(identity: Pick<RunnerIdentity, "connectionGeneration" | "runnerId">) {
@@ -784,11 +933,65 @@ export class RunnerRegistry {
   hasRunCapacity(environmentId: EnvironmentId, dispatching = 0): boolean {
     const connection = this.#byEnvironment.get(environmentId);
     if (!connection?.attached) return false;
+    // A computer whose person stopped agents takes nothing new until they resume.
+    if (connection.agentsStoppedAtMs !== undefined) return false;
     const capacity = connection.identity.modules.agents?.maxConcurrentRuns ?? 1;
     return connection.ownedRunIds.size + dispatching < capacity;
   }
   isRunnerConnected(runnerId: RunnerId): boolean {
     return this.#byRunner.has(runnerId);
+  }
+  /**
+   * When this disconnected Runner reported it was going to sleep, or null when
+   * it is online, never reported sleep, was removed, or exceeded the sleep bound.
+   */
+  asleepSince(runnerId: RunnerId, generation?: number): Date | null {
+    if (this.#closing || this.#byRunner.has(runnerId)) return null;
+    const sleep = this.#asleep.get(runnerId);
+    if (!sleep) return null;
+    if (this.#now() - sleep.since >= runnerMaxAsleepDurationMs) {
+      this.#asleep.delete(runnerId);
+      return null;
+    }
+    return generation === undefined || sleep.generation === generation
+      ? new Date(sleep.since)
+      : null;
+  }
+  isRunnerSleeping(runnerId: RunnerId): boolean {
+    return (
+      this.#byRunner.get(runnerId)?.sleepAnnouncedAtMs !== undefined ||
+      this.isRunnerAsleep(runnerId)
+    );
+  }
+  isRunnerAsleep(runnerId: RunnerId): boolean {
+    return this.asleepSince(runnerId) !== null;
+  }
+
+  /**
+   * When the person stopped agents on this Runner's computer, while that
+   * holds: on its live connection, or as its last connection left it. Null
+   * when they never did, resumed, or the Runner was removed. `generation`
+   * names the connection the caller read the Runner at.
+   */
+  agentsStoppedSince(runnerId: RunnerId, generation?: number): Date | null {
+    if (this.#closing) return null;
+    const connection = this.#byRunner.get(runnerId);
+    if (connection) {
+      if (connection.agentsStoppedAtMs === undefined) return null;
+      return generation === undefined || connection.identity.connectionGeneration === generation
+        ? new Date(connection.agentsStoppedAtMs)
+        : null;
+    }
+    const stopped = this.#agentsStopped.get(runnerId);
+    if (!stopped) return null;
+    return generation === undefined || stopped.generation === generation
+      ? new Date(stopped.since)
+      : null;
+  }
+
+  /** Whether the environment's Runner said the person stopped agents on its computer. */
+  areAgentsStopped(environmentId: EnvironmentId): boolean {
+    return this.#byEnvironment.get(environmentId)?.agentsStoppedAtMs !== undefined;
   }
 
   /**
@@ -958,10 +1161,13 @@ export class RunnerRegistry {
     stream.leaseTimer = this.#auxiliaryLeaseTimer(stream);
     return auxiliarySnapshot(stream);
   }
-  detachAuxiliary(peer: RunnerAuxiliaryPeer): void {
+  detachAuxiliary(
+    peer: RunnerAuxiliaryPeer,
+    reason: RunnerStreamLossReason = "transport-disconnected",
+  ): void {
     const stream = this.#auxiliaryByPeer.get(peer.id);
     if (!stream || stream.peer !== peer) return;
-    this.#removeAuxiliary(stream, "transport-disconnected");
+    this.#removeAuxiliary(stream, reason);
   }
   #removeAuxiliary(stream: AuxiliaryStream, reason: RunnerStreamLossReason): void {
     if (stream.detached) return;
@@ -1055,7 +1261,10 @@ export class RunnerRegistry {
         .filter((connection) => connection.identity.personalRemoteAccessGeneration !== null)
         // Not the revoked code: every session riding this connection would then
         // end as `machine-revoked` rather than as the disconnection this is.
-        .map((connection) => this.#disconnect(connection, new Error(reason), 1001)),
+        .map((connection) => {
+          connection.sleepAnnouncedAtMs = undefined;
+          return this.#disconnect(connection, new Error(reason), 1001);
+        }),
     );
   }
 
@@ -1077,11 +1286,14 @@ export class RunnerRegistry {
   ): Promise<boolean> {
     const connection = this.#byRunner.get(identity.runnerId);
     if (!connection || connection.identity.connectionId !== identity.connectionId) return false;
+    connection.sleepAnnouncedAtMs = undefined;
     await this.#disconnect(connection, new Error(options.reason), options.code);
     return true;
   }
   async revoke(runnerId: RunnerId): Promise<void> {
     this.#revokedRunnerIds.add(runnerId);
+    this.#asleep.delete(runnerId);
+    this.#agentsStopped.delete(runnerId);
     const connection = this.#byRunner.get(runnerId);
     if (connection) {
       await this.#disconnect(
@@ -1345,7 +1557,9 @@ export class RunnerRegistry {
     const definitionFingerprints = new Map(
       harnesses.map((harness) => [harness.id, catalogFingerprint([harness])]),
     );
-    const generation = connection.catalogGeneration;
+    const generations = inspected.map(
+      (harness) => [harness.id, connection.catalogGenerations.get(harness.id) ?? 0] as const,
+    );
     const joined = connection.inFlightCatalogs.get(fingerprint);
     // A reconciliation always issues its own request; only a read may join one.
     if (joined && type === "host.inspect-harnesses") return await awaitCatalog(joined, signal);
@@ -1384,7 +1598,11 @@ export class RunnerRegistry {
       }
     })();
     const attempt = capture.then((catalogs) => {
-      if (connection.catalogGeneration !== generation) {
+      if (
+        generations.some(
+          ([id, generation]) => (connection.catalogGenerations.get(id) ?? 0) !== generation,
+        )
+      ) {
         throw new OpensteerError({
           code: "conflict",
           message: "Harness catalog changed while it was being read",
@@ -1418,6 +1636,7 @@ export class RunnerRegistry {
     attempt.catch(() => undefined);
     const entry: InFlightCatalog = {
       attempt,
+      harnesses: new Set(inspected.map((harness) => harness.id)),
       waiters: 0,
       // Every caller's own deadline passed with no reply: the request is
       // abandoned, so the next attempt sends a new one instead of joining it.
@@ -1729,6 +1948,13 @@ export class RunnerRegistry {
     return { ...connection.identity.fence, environmentId, bindingGeneration };
   }
 
+  #acceptsHomeFiles(identity: RunnerIdentity): boolean {
+    return (
+      identity.capabilities.includes(agentHomeFilesCapability) &&
+      this.#hooks.onAgentHomeReport !== undefined
+    );
+  }
+
   /**
    * Asks the Runner holding a Run to move files for it, inside one live tool
    * call. Fenced to that connection and never queued or replayed: a call that
@@ -1784,6 +2010,22 @@ export class RunnerRegistry {
     });
     try {
       signal.throwIfAborted();
+      if (this.#acceptsHomeFiles(connection.identity)) {
+        const bind = this.#hooks.bindRunFileTransfer;
+        if (!bind)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Run file transfers are unavailable",
+          });
+        const binding = { ...fence, requestId };
+        const connectionSignal = connection.disconnected.controller.signal;
+        if (request.type === "host.run-file.receive")
+          for (const transfer of request.transfers)
+            bind(transfer, "GET", binding, connectionSignal);
+        else
+          for (const { transfer } of request.files)
+            bind(transfer, "PUT", binding, connectionSignal);
+      }
       await connection.peer.send({
         ...fence,
         ...request,
@@ -1807,6 +2049,75 @@ export class RunnerRegistry {
     } finally {
       signal.removeEventListener("abort", cancel);
       connection.pendingRunFiles.delete(requestId);
+    }
+  }
+
+  /**
+   * Asks the hosting Runner to perform a rooted Agent-home file operation over
+   * its authenticated connection. Fenced and never replayed.
+   */
+  async requestHomeFile(
+    runnerId: RunnerId,
+    request: DistributiveOmit<
+      Exclude<HostHomeFileRequest, { readonly type: "host.home-files.cancel" }>,
+      keyof RunnerConnectionFence | "requestId"
+    >,
+    signal: AbortSignal,
+    bindTransfer?: (binding: RunFileTransferBinding, signal: AbortSignal) => void,
+  ): Promise<RunnerHomeFileResult> {
+    const connection = this.#byRunner.get(runnerId);
+    if (!connection) {
+      const asleep = this.isRunnerAsleep(runnerId);
+      throw new OpensteerError({
+        code: "runner_offline",
+        ...(asleep ? { reason: "device-asleep" } : {}),
+        message: asleep ? "The hosting computer is asleep" : "The hosting computer is offline",
+      });
+    }
+    if (!connection.identity.capabilities.includes(agentHomeFilesCapability))
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "unsupported-runner",
+        message: "Update the hosting computer to access Agent home files",
+      });
+    const readsOutputImage = "root" in request && request.root === "output-images";
+    if (!readsOutputImage && connection.identity.runnerKind !== "main")
+      throw new OpensteerError({ code: "forbidden", message: "This is not the hosting computer" });
+    if (!readsOutputImage && !connection.agentHomeReady)
+      throw new OpensteerError({
+        code: "folder_unavailable",
+        message: "Agent home is not ready on the hosting computer",
+      });
+    signal.throwIfAborted();
+    const fence = connection.identity.fence;
+    const requestId = randomUUID();
+    const pending = deferred<RunnerHomeFileResult>();
+    connection.pendingHomeFiles.set(requestId, pending);
+    try {
+      bindTransfer?.({ ...fence, requestId }, connection.disconnected.controller.signal);
+      const result = await withDeadline(
+        Promise.all([
+          pending.promise,
+          connection.peer.send({ ...fence, ...request, requestId }),
+        ]).then(([result]) => result),
+        runFileRequestTimeoutMs,
+        signal,
+        "The hosting computer did not finish the Agent home file operation in time",
+      );
+      if (!sameRunnerConnectionFence(result, fence))
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Agent home file response belongs to another connection",
+        });
+      return result;
+    } catch (error) {
+      if (!connection.disconnected.controller.signal.aborted)
+        void connection.peer
+          .send({ ...fence, requestId, type: "host.home-files.cancel" })
+          .catch(() => undefined);
+      throw error;
+    } finally {
+      connection.pendingHomeFiles.delete(requestId);
     }
   }
   /** One ephemeral request, bound to this exact authenticated connection until its deadline. */
@@ -1891,6 +2202,59 @@ export class RunnerRegistry {
   }
 
   /**
+   * Asks the Runner serving `environmentId` to run its scoped last resort and
+   * containment check for `threadId` again ("Check again").
+   */
+  async recheckThreadStop(
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    signal: AbortSignal,
+  ): Promise<{ readonly proven: boolean }> {
+    const connection = this.#byEnvironment.get(environmentId);
+    if (!connection?.attached) {
+      const asleep = connection ? this.isRunnerAsleep(connection.identity.runnerId) : false;
+      throw new OpensteerError({
+        code: "runner_offline",
+        ...(asleep ? { reason: "device-asleep" } : {}),
+        message: asleep ? "That device is asleep" : "That device is offline",
+      });
+    }
+    signal.throwIfAborted();
+    const fence = connection.identity.fence;
+    const requestId = CorrelationIdSchema.parse(`stop-recheck:${randomUUID()}`);
+    const pending =
+      deferred<
+        Extract<RunnerOperationalMessage, { readonly type: "runner.thread.stop.recheck.result" }>
+      >();
+    connection.pendingStopRechecks.set(requestId, pending);
+    try {
+      const result = await withDeadline(
+        Promise.all([
+          pending.promise,
+          connection.peer.send({
+            ...fence,
+            requestId,
+            threadId,
+            type: "host.thread.stop.recheck",
+          }),
+        ]).then(([answer]) => answer),
+        30_000,
+        signal,
+        "That device did not answer the stop check in time",
+      );
+      if (!sameRunnerConnectionFence(result, fence)) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Stop check response belongs to another connection",
+        });
+      }
+      return { proven: result.proven };
+    } finally {
+      connection.pendingStopRechecks.delete(requestId);
+    }
+  }
+
+  /**
    * Sends a durable command and resolves when the Runner accepts it. A caller
    * that prepared the command for one connection names its generation: a
    * command meant for a connection that has since been replaced is never sent
@@ -1908,12 +2272,40 @@ export class RunnerRegistry {
        * command is written straight after it with nothing in between.
        */
       readonly beforeSend?: () => Promise<void>;
+      /**
+       * Runs at the point of no return inside `dispatch`, after every refusing
+       * check (offline, connection replaced, agents stopped, aborted) and
+       * immediately before `peer.send(frame)` (Z4).
+       */
+      readonly beforeWireSend?: () => Promise<void>;
+      readonly onNotAdmitted?: () => Promise<void>;
       readonly fenceRequestSend?: RequestResponseSendFence;
       readonly connectionGeneration?: number;
     } = {},
   ): Promise<RunnerCommandReceipt> {
-    const { beforeAck, beforeSend, connectionGeneration, fenceRequestSend } = options;
+    const {
+      beforeAck,
+      beforeSend,
+      beforeWireSend,
+      connectionGeneration,
+      fenceRequestSend,
+      onNotAdmitted,
+    } = options;
     RunnerCommandSchema.parse(command);
+    const startsWork =
+      command.type === "run.execute" ||
+      command.type === "trigger.execute" ||
+      command.type === "watch.reconcile";
+    const refuseStopped = () =>
+      new CommandDispatchError("Agents are stopped on this computer.", "retry", {
+        cause: {
+          code: "conflict",
+          reason: "computer_stopped",
+          retryable: true,
+          message: "Agents are stopped on this computer.",
+        },
+        provenNotStarted: true,
+      });
     if (
       command.type === "request.resolve" &&
       (!fenceRequestSend || connectionGeneration === undefined)
@@ -1926,6 +2318,12 @@ export class RunnerRegistry {
         current.identity.connectionGeneration === connectionGeneration)
         ? current
         : undefined;
+    if (startsWork && connection?.agentsStoppedAtMs !== undefined) {
+      await onNotAdmitted?.();
+      throw refuseStopped();
+    }
+    if (connection?.pendingAcks.has(command.commandId))
+      throw new CommandDispatchError("Runner command is already in flight", "retry");
     let runCancellation:
       | {
           active: boolean;
@@ -1939,7 +2337,7 @@ export class RunnerRegistry {
           pendingInterrupts: number;
         }
       | undefined;
-    if (command.type === "run.interrupt") {
+    if (command.type === "run.interrupt" && !command.stop) {
       const existing = this.#canceledRuns.get(command.runId);
       if (existing && existing.threadId !== command.threadId) {
         throw new CommandDispatchError("Run cancellation targets a different Thread", "failed");
@@ -1955,7 +2353,11 @@ export class RunnerRegistry {
         (connection.ownedRunIds.has(command.runId) || connection.observedRunIds.has(command.runId)),
       );
       this.#canceledRuns.set(command.runId, runCancellation);
-    } else if (command.type === "trigger.interrupt") {
+    } else if (
+      command.type === "trigger.interrupt" &&
+      command.executionGeneration === undefined &&
+      !command.stop
+    ) {
       triggerCancellation = this.#canceledTriggerOccurrences.get(command.occurrenceId) ?? {
         active: false,
         pendingInterrupts: 0,
@@ -1976,27 +2378,20 @@ export class RunnerRegistry {
       command.type === "trigger.execute" &&
       this.#canceledTriggerOccurrences.delete(command.context.occurrenceId)
     ) {
+      await onNotAdmitted?.();
       throw new CommandDispatchError("Trigger execution authority was revoked", "failed");
     }
     if (!connection) {
-      // A Trigger program ends with its connection, so there is nothing left to
-      // interrupt. A Run outlives it on its lease: its interrupt waits for the
-      // Runner to return, and the Run's end settles it if the Runner never does.
-      if (command.type === "trigger.interrupt") {
-        this.#releaseCancellation(command, runCancellation, triggerCancellation);
-        return {
-          commandId: command.commandId,
-          correlationId: command.correlationId,
-          type: "runner.command-accepted",
-        };
-      }
       // An offline Runner has no running turn to steer. Failing here rather
       // than retrying lets the Host requeue the message as an ordered turn.
       if (command.type === "run.steer") {
-        throw new CommandDispatchError("Runner is offline", "failed");
+        throw new CommandDispatchError("Runner is offline", "failed", { provenNotStarted: true });
       }
+      // Both Runs and automation firings survive a lost connection (T12), so
+      // `trigger.interrupt` retries while offline just like `run.interrupt`.
       this.#releaseCancellation(command, runCancellation, triggerCancellation);
-      throw new CommandDispatchError("Runner is offline", "retry");
+      await onNotAdmitted?.();
+      throw new CommandDispatchError("Runner is offline", "retry", { provenNotStarted: true });
     }
     if (
       command.type === "run.execute" &&
@@ -2040,7 +2435,10 @@ export class RunnerRegistry {
     // A Trigger program's dispatch lasts until its result. A Run's ends when the
     // Runner accepts it: its outcome arrives as events, and a Run that waits on
     // a person must not hold a Host dispatch slot while it does.
-    const completion = occurrenceId ? deferred<void>() : undefined;
+    const completion =
+      command.type === "trigger.execute"
+        ? { ...deferred<void>(), executionGeneration: command.context.executionGeneration }
+        : undefined;
     // A disconnect can reject both lifecycle stages while dispatch is still
     // awaiting acknowledgement. Observe the later completion rejection now;
     // awaiting the original Promise below still receives the same error.
@@ -2070,16 +2468,23 @@ export class RunnerRegistry {
       if (runId && (!ownsBinding() || this.#canceledRuns.delete(runId))) {
         throw new CommandDispatchError("Run execution authority was revoked", "retry");
       }
+      if (occurrenceId && this.#canceledTriggerOccurrences.delete(occurrenceId)) {
+        throw new CommandDispatchError("Trigger execution authority was revoked", "failed");
+      }
       const frame = { ...connection.identity.fence, command, type: "host.command" as const };
       const prepared = fenceRequestSend && connection.peer.prepareSend?.(frame);
-      const enqueue = () => {
+      const checkStillSendable = () => {
         if (
           this.#byPeer.get(connection.peer.id) !== connection ||
           this.#byEnvironment.get(command.environmentId) !== connection
         ) {
-          throw new CommandDispatchError("Runner is offline", "retry");
+          throw new CommandDispatchError("Runner is offline", "retry", { provenNotStarted: true });
         }
+        if (startsWork && connection.agentsStoppedAtMs !== undefined) throw refuseStopped();
         throwIfAborted(signal, "Aborted");
+      };
+      const enqueue = () => {
+        checkStillSendable();
         sent = true;
         const sending = prepared ? prepared() : connection.peer.send(frame);
         void sending.catch(() => undefined);
@@ -2099,11 +2504,17 @@ export class RunnerRegistry {
             owned.environmentId !== binding.environmentId ||
             connection.revokedRunIds.has(command.runId)
           ) {
-            throw new CommandDispatchError("Run execution authority was revoked", "retry");
+            throw new CommandDispatchError("Run execution authority was revoked", "retry", {
+              provenNotStarted: true,
+            });
           }
           sending = enqueue();
         });
       } else {
+        checkStillSendable();
+        if (beforeWireSend) {
+          await beforeWireSend();
+        }
         sending = enqueue();
       }
       await sending;
@@ -2116,10 +2527,36 @@ export class RunnerRegistry {
       if (completion) await withAbort(completion.promise, signal);
       return accepted;
     } catch (error) {
-      if (completion && occurrenceId) connection.pendingTriggerPrograms.delete(occurrenceId);
+      if (
+        completion &&
+        occurrenceId &&
+        connection.pendingTriggerPrograms.get(occurrenceId) === completion
+      )
+        connection.pendingTriggerPrograms.delete(occurrenceId);
       // A Run never sent was never this Runner's; a Run that may have arrived
       // stays held until the next attach says whether the Runner has it.
       if (runBinding && !sent) this.#forgetUnadmittedRun(connection, runBinding);
+      if (!sent || connection.pendingAcks.get(command.commandId)?.rejectedBeforeAdmission)
+        await onNotAdmitted?.();
+      if (!sent) {
+        if (error instanceof CommandDispatchError) {
+          if (error.disposition === "retry" && !error.provenNotStarted) {
+            throw new CommandDispatchError(error.message, "retry", {
+              cause: error.cause ?? error,
+              provenNotStarted: true,
+            });
+          }
+          throw error;
+        }
+        throw new CommandDispatchError(
+          error instanceof Error ? error.message : "Runner dispatch was refused",
+          "retry",
+          {
+            cause: error,
+            provenNotStarted: true,
+          },
+        );
+      }
       if (error instanceof CommandDispatchError) throw error;
       // The caller's own refusal: nothing was sent, so the command is retried,
       // and settles as unsent work under whatever authority stands by then.
@@ -2129,6 +2566,7 @@ export class RunnerRegistry {
           "retry",
           {
             cause: error,
+            provenNotStarted: true,
           },
         );
       }
@@ -2170,12 +2608,17 @@ export class RunnerRegistry {
     reconcileGeneration: number,
     desired: readonly WatchReconcileActivation[],
     signal: AbortSignal,
+    options?: {
+      readonly filterDesired: () => Promise<readonly WatchReconcileActivation[]>;
+      readonly connectionGeneration: number;
+    },
   ): Promise<void> {
+    const activations = [...desired];
     await this.dispatch(
       {
         commandId: createId("command"),
         correlationId: CorrelationIdSchema.parse(`watch:${randomUUID()}`),
-        desired: [...desired],
+        desired: activations,
         environmentId,
         reconcileGeneration,
         type: "watch.reconcile",
@@ -2183,6 +2626,14 @@ export class RunnerRegistry {
       signal,
       {
         beforeAck: async () => undefined,
+        ...(options
+          ? {
+              connectionGeneration: options.connectionGeneration,
+              beforeSend: async () => {
+                activations.splice(0, activations.length, ...(await options.filterDesired()));
+              },
+            }
+          : {}),
       },
     );
   }
@@ -2202,6 +2653,49 @@ export class RunnerRegistry {
         break;
       case "runner.settings.report":
         await this.#runHook(() => this.#hooks.onSettingsReport?.(connection.identity, message));
+        break;
+      case "runner.agent-home.report":
+        if (
+          !connection.agentHomeReady &&
+          connection.identity.runnerKind === "main" &&
+          connection.identity.capabilities.includes(agentHomeFilesCapability) &&
+          connection.identity.environmentIds.includes(message.environmentId)
+        ) {
+          const signal = connection.disconnected.controller.signal;
+          connection.agentHomeReady =
+            (await this.#runHook(() =>
+              this.#hooks.onAgentHomeReport?.(connection.identity, message, signal),
+            )) === true;
+        }
+        break;
+      case "runner.output-image.publish":
+        await this.#runHook(async () => {
+          const signal = connection.disconnected.controller.signal;
+          const answer = await Promise.resolve()
+            .then(() =>
+              connection.identity.capabilities.includes(agentHomeFilesCapability)
+                ? this.#hooks.onOutputImagePublish?.(connection.identity, message, signal)
+                : undefined,
+            )
+            .then(
+              (result) =>
+                result ?? {
+                  message: "Output image publishing is unavailable on this Host",
+                  status: "rejected" as const,
+                },
+            )
+            .catch(() => ({
+              message: "Output image publishing failed on this Host",
+              status: "rejected" as const,
+            }));
+          if (signal.aborted) return;
+          await connection.peer.send({
+            ...connection.identity.fence,
+            ...answer,
+            requestId: message.requestId,
+            type: "host.output-image.upload",
+          });
+        });
         break;
       case "runner.auxiliary.ticket-request":
         await this.#runHook(async () => {
@@ -2295,8 +2789,39 @@ export class RunnerRegistry {
           await this.#runHook(() => this.#hooks.onModuleReadiness?.(connection.identity, changed));
         break;
       }
+      case "runner.power.sleeping":
+        if (connection.identity.capabilities.includes(runnerPowerStateCapability)) {
+          const firstAnnouncement = connection.sleepAnnouncedAtMs === undefined;
+          connection.sleepAnnouncedAtMs = this.#now();
+          if (firstAnnouncement) this.#hooks.onSleepAnnounced?.(connection.identity);
+        }
+        break;
+      case "runner.agents.stopped":
+      case "runner.agents.resumed": {
+        // A Runner that never advertised this is not believed.
+        if (!connection.identity.capabilities.includes(runnerAgentStopCapability)) break;
+        const stoppedAtMs =
+          message.type === "runner.agents.stopped"
+            ? Math.min(Date.parse(message.stoppedAt), this.#now())
+            : undefined;
+        if (stoppedAtMs === connection.agentsStoppedAtMs) break;
+        connection.agentsStoppedAtMs = stoppedAtMs;
+        this.#hooks.onAgentWork?.(
+          connection.identity,
+          stoppedAtMs === undefined ? null : new Date(stoppedAtMs),
+        );
+        // Work held for this computer may start now.
+        if (stoppedAtMs === undefined) this.#hooks.onRunDispatchAvailable?.();
+        break;
+      }
       case "runner.heartbeat":
         this.#renewLease(connection, message.sentAt);
+        if (
+          connection.sleepAnnouncedAtMs !== undefined &&
+          this.#now() - connection.sleepAnnouncedAtMs > sleepAnnouncementHeartbeatClearMs
+        ) {
+          connection.sleepAnnouncedAtMs = undefined;
+        }
         // A heartbeat is a bounded point-in-time observation, not execution
         // authority. Retaining every identifier a faulty Runner ever reported
         // would permit unbounded Host memory growth. Host-dispatched ownership
@@ -2349,6 +2874,7 @@ export class RunnerRegistry {
       case "runner.command-rejected":
         {
           const pending = connection.pendingAcks.get(message.commandId);
+          if (pending) pending.rejectedBeforeAdmission = true;
           if (pending?.runBinding) this.#forgetUnadmittedRun(connection, pending.runBinding);
           if (pending?.triggerOccurrenceId) {
             connection.ownedTriggerOccurrenceIds.delete(pending.triggerOccurrenceId);
@@ -2362,6 +2888,7 @@ export class RunnerRegistry {
               message.error.retryable ? "retry" : "failed",
               {
                 cause: message.error,
+                provenNotStarted: true,
               },
             ),
           );
@@ -2370,7 +2897,11 @@ export class RunnerRegistry {
       case "runner.command-uncertain":
         {
           const pending = connection.pendingAcks.get(message.commandId);
-          if (pending && pending.commandType !== "run.steer") {
+          if (
+            pending &&
+            pending.commandType !== "run.steer" &&
+            pending.commandType !== "trigger.execute"
+          ) {
             const error = new CommandDispatchError(
               `Runner reported uncertain delivery for ${pending.commandType}`,
               "failed",
@@ -2382,6 +2913,9 @@ export class RunnerRegistry {
             });
           }
           pending?.reject(new CommandDispatchError(message.message, "uncertain"));
+          if (pending?.commandType === "trigger.execute") {
+            void this.#disconnect(connection, new Error(message.message), 1011);
+          }
         }
         break;
       case "runner.event": {
@@ -2392,7 +2926,11 @@ export class RunnerRegistry {
           });
         }
         const { event } = message;
-        if (connection.revokedRunIds.has(event.runId)) break;
+        const terminal =
+          event.type === "run.completed" ||
+          event.type === "run.failed" ||
+          event.type === "run.interrupted";
+        if (!terminal && connection.revokedRunIds.has(event.runId)) break;
         let throughOrdinal: number;
         try {
           throughOrdinal = await this.#runHook(() =>
@@ -2406,10 +2944,7 @@ export class RunnerRegistry {
           await this.#refuseEvent(connection, event, error);
           break;
         }
-        const terminal =
-          event.type === "run.completed" ||
-          event.type === "run.failed" ||
-          event.type === "run.interrupted";
+
         this.#acknowledge(
           connection,
           event.runId,
@@ -2449,7 +2984,7 @@ export class RunnerRegistry {
         }
         break;
       }
-      case "runner.trigger-result":
+      case "runner.trigger-result": {
         if (!connection.identity.environmentIds.includes(message.environmentId)) {
           throw new OpensteerError({
             code: "forbidden",
@@ -2457,17 +2992,73 @@ export class RunnerRegistry {
           });
         }
         if (this.#hooks.onTriggerResult) {
-          await this.#runHook(() => this.#hooks.onTriggerResult?.(connection.identity, message));
+          try {
+            const settled = await this.#runHook(() =>
+              this.#hooks.onTriggerResult?.(connection.identity, message),
+            );
+            if (settled === "retired") {
+              if (connection.identity.capabilities.includes("automation-script-v1")) {
+                await connection.peer
+                  .send({
+                    ...connection.identity.fence,
+                    acks: [],
+                    firingAcks: [
+                      {
+                        executionGeneration: message.executionGeneration,
+                        occurrenceId: message.output.occurrenceId,
+                      },
+                    ],
+                    type: "host.executions.acked",
+                  })
+                  .catch(() => undefined);
+              }
+              break;
+            }
+          } catch (error) {
+            if (
+              !(error instanceof OpensteerError) ||
+              (error.code !== "forbidden" && error.code !== "not_found")
+            )
+              throw error;
+            break;
+          }
         }
-        connection.pendingTriggerPrograms.get(message.output.occurrenceId)?.resolve();
+        if (connection.identity.capabilities.includes("automation-script-v1")) {
+          await connection.peer
+            .send({
+              ...connection.identity.fence,
+              acks: [],
+              firingAcks: [
+                {
+                  executionGeneration: message.executionGeneration,
+                  occurrenceId: message.output.occurrenceId,
+                },
+              ],
+              type: "host.executions.acked",
+            })
+            .catch(() => undefined);
+        }
+        const pending = connection.pendingTriggerPrograms.get(message.output.occurrenceId);
+        if (pending && pending.executionGeneration !== message.executionGeneration) break;
+        pending?.resolve();
         connection.pendingTriggerPrograms.delete(message.output.occurrenceId);
         connection.ownedTriggerOccurrenceIds.delete(message.output.occurrenceId);
         connection.observedTriggerOccurrenceIds.delete(message.output.occurrenceId);
         this.#canceledTriggerOccurrences.delete(message.output.occurrenceId);
         break;
+      }
       case "runner.watch-status":
         if (this.#hooks.onWatchStatus) {
-          await this.#runHook(() => this.#hooks.onWatchStatus?.(connection.identity, message));
+          try {
+            await this.#runHook(() => this.#hooks.onWatchStatus?.(connection.identity, message));
+          } catch (error) {
+            if (
+              (message.observed !== "stopped" && message.observed !== "expired") ||
+              !(error instanceof OpensteerError) ||
+              (error.code !== "forbidden" && error.code !== "not_found")
+            )
+              throw error;
+          }
         }
         break;
       case "runner.session-bound":
@@ -2494,6 +3085,21 @@ export class RunnerRegistry {
       case "runner.executions.attach":
         await this.#attach(connection, message);
         break;
+      case "runner.proxy-token.renew": {
+        if (!connection.identity.capabilities.includes("automation-script-v1")) break;
+        const answer: RunnerProxyTokenRenewAnswer = this.#hooks.onRenewProxyToken
+          ? await this.#runHook(() => this.#hooks.onRenewProxyToken!(connection.identity, message))
+          : { browserCdp: null, mcp: null, reason: "Token renewal is unavailable on this Host." };
+        await connection.peer
+          .send({
+            ...connection.identity.fence,
+            ...answer,
+            requestId: message.requestId,
+            type: "host.proxy-token.renewed",
+          })
+          .catch(() => undefined);
+        break;
+      }
       case "runner.harness-catalog": {
         const pending = connection.pendingCatalogs.get(message.requestId);
         if (!pending && connection.abandonedCatalogs.delete(message.requestId)) break;
@@ -2582,8 +3188,17 @@ export class RunnerRegistry {
       case "runner.run-file.result":
         connection.pendingRunFiles.get(message.requestId)?.resolve(message);
         break;
+      case "runner.home-files.result":
+        connection.pendingHomeFiles.get(message.requestId)?.resolve(message);
+        break;
+      case "runner.thread.stop.recheck.result":
+        connection.pendingStopRechecks.get(message.requestId)?.resolve(message);
+        break;
       case "runner.harness-catalog-invalidated":
-        connection.catalogGeneration += 1;
+        connection.catalogGenerations.set(
+          message.harnessInstanceId,
+          (connection.catalogGenerations.get(message.harnessInstanceId) ?? 0) + 1,
+        );
         connection.catalogCache.delete(message.harnessInstanceId);
         // Preparation settled, so work waiting on it may be dispatched; the
         // inspection that follows says what the account is now.
@@ -2591,7 +3206,11 @@ export class RunnerRegistry {
           this.#hooks.onRunDispatchAvailable?.();
         // Existing callers still own their request, but a recapture prompted by
         // this signal must observe the state after preparation completed.
-        connection.inFlightCatalogs.clear();
+        for (const [fingerprint, entry] of connection.inFlightCatalogs) {
+          if (entry.harnesses.has(message.harnessInstanceId)) {
+            connection.inFlightCatalogs.delete(fingerprint);
+          }
+        }
         if (this.#hooks.onHarnessCatalogInvalidated) {
           void this.#runHook(() =>
             this.#hooks.onHarnessCatalogInvalidated?.(connection.identity, message),
@@ -2718,8 +3337,31 @@ export class RunnerRegistry {
         threadId: execution.threadId,
       });
     }
+    const supportsAutomationScripts =
+      connection.identity.capabilities.includes("automation-script-v1");
+    const firings = supportsAutomationScripts ? (message.firings ?? []) : [];
+    for (const firing of firings) {
+      if (!connection.identity.environmentIds.includes(firing.environmentId)) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Runner announced a firing in another environment",
+        });
+      }
+    }
+    const firingResults =
+      supportsAutomationScripts && this.#hooks.onAttachFirings
+        ? await this.#runHook(() => this.#hooks.onAttachFirings?.(connection.identity, firings))
+        : undefined;
+    if (firingResults) {
+      for (const result of firingResults) {
+        if (result.status === "attached") {
+          connection.ownedTriggerOccurrenceIds.add(result.occurrenceId);
+        }
+      }
+    }
     await connection.peer.send({
       ...connection.identity.fence,
+      ...(supportsAutomationScripts && firingResults ? { firingResults: [...firingResults] } : {}),
       leaseMs: this.#executionLeaseMs,
       results: [...results],
       type: "host.executions.attached",
@@ -2811,13 +3453,20 @@ export class RunnerRegistry {
     this.#canceledRuns.delete(runId);
     if (released) this.#hooks.onRunDispatchAvailable?.();
   }
-  disconnect(peer: RunnerPeer): void {
+  disconnect(peer: RunnerPeer, restarting = false): void {
     const connection = this.#byPeer.get(peer.id);
-    if (connection) void this.#disconnect(connection, new Error("Runner disconnected"));
+    if (connection)
+      void this.#disconnect(
+        connection,
+        new Error(restarting ? "The device is restarting." : "Runner disconnected"),
+        restarting ? runnerRestartingCloseCode : 1001,
+      );
   }
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closing = true;
+    this.#asleep.clear();
+    this.#agentsStopped.clear();
     this.#lifetime.abort(new Error("Runner registry is closing"));
     this.#closePromise = this.#close();
     return this.#closePromise;
@@ -2865,6 +3514,27 @@ export class RunnerRegistry {
     if (connection.leaseTimer) clearTimeout(connection.leaseTimer);
     if (this.#byRunner.get(connection.identity.runnerId) === connection) {
       this.#byRunner.delete(connection.identity.runnerId);
+      const now = this.#now();
+      const graceMs = Math.max(this.#connectionLeaseMs + 30_000, 5 * 60_000);
+      if (
+        scope.reason === "lost" &&
+        connection.sleepAnnouncedAtMs !== undefined &&
+        now - connection.sleepAnnouncedAtMs <= graceMs
+      ) {
+        for (const [id, sleep] of this.#asleep)
+          if (now - sleep.since >= runnerMaxAsleepDurationMs) this.#asleep.delete(id);
+        this.#asleep.set(connection.identity.runnerId, {
+          generation: connection.identity.connectionGeneration,
+          since: connection.sleepAnnouncedAtMs,
+        });
+      }
+      // The person's Stop outlives the connection: a Device Runner says it
+      // just before it is stopped, and nothing but the person ends it.
+      if (connection.agentsStoppedAtMs !== undefined && code !== runnerIdentityRevokedCloseCode)
+        this.#agentsStopped.set(connection.identity.runnerId, {
+          generation: connection.identity.connectionGeneration,
+          since: connection.agentsStoppedAtMs,
+        });
     }
     // An auxiliary stream exists only beside a live primary connection: its
     // whole authority is the fence the primary handed it.
@@ -2874,7 +3544,11 @@ export class RunnerRegistry {
       // end saying the machine went away rather than that it was removed.
       this.#removeAuxiliary(
         stream,
-        code === runnerIdentityRevokedCloseCode ? "revoked" : "primary-lost",
+        code === runnerIdentityRevokedCloseCode
+          ? "revoked"
+          : code === runnerRestartingCloseCode
+            ? "device-restarting"
+            : "primary-lost",
       );
       stream.peer.close(code, error.message);
     }
@@ -2893,6 +3567,8 @@ export class RunnerRegistry {
     for (const pending of connection.pendingTriggerPrograms.values()) pending.reject(error);
     for (const pending of connection.pendingApps.values()) pending.reject(error);
     for (const pending of connection.pendingRunFiles.values()) pending.reject(error);
+    for (const pending of connection.pendingHomeFiles.values()) pending.reject(error);
+    for (const pending of connection.pendingStopRechecks.values()) pending.reject(error);
     connection.pendingAcks.clear();
     connection.pendingCatalogs.clear();
     connection.pendingHarnessAuthentications.clear();
@@ -2904,6 +3580,8 @@ export class RunnerRegistry {
     for (const pending of connection.pendingAppSyncs.values()) pending.reject(error);
     connection.pendingAppSyncs.clear();
     connection.pendingRunFiles.clear();
+    connection.pendingHomeFiles.clear();
+    connection.pendingStopRechecks.clear();
     connection.ownedRunIds.clear();
     connection.ownedRunBindings.clear();
     connection.ownedTriggerOccurrenceIds.clear();
@@ -3086,6 +3764,7 @@ async function withDeadline<T>(
 }
 interface InFlightCatalog {
   readonly attempt: Promise<readonly HarnessInstanceCatalog[]>;
+  readonly harnesses: ReadonlySet<HarnessInstanceId>;
   waiters: number;
   abandon(): void;
 }

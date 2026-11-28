@@ -1,3 +1,4 @@
+import { fileDeviceUpdateMessage } from "@opensteer/client/host";
 import {
   useEffect,
   useId,
@@ -217,6 +218,14 @@ function FileBody({
   switch (state.status) {
     case "unavailable":
       return <Unavailable />;
+    case "update-required":
+      return (
+        <ViewerState
+          body={fileDeviceUpdateMessage}
+          icon="help-circle"
+          title="Device update required"
+        />
+      );
     case "failed":
       return <Unavailable unloaded="this file" onRetry={retry} />;
     case "unreachable":
@@ -421,7 +430,13 @@ function ViewerImage({
         {...target}
       >
         {image.failed ? (
-          <ViewerState body="Its preview couldn't be loaded." icon="help-circle" title={name} />
+          <ViewerState
+            body={
+              image.updateRequired ? fileDeviceUpdateMessage : "Its preview couldn't be loaded."
+            }
+            icon="help-circle"
+            title={name}
+          />
         ) : image.image && !stale ? (
           <img alt={name} key={image.retry} onError={image.onError} src={image.image.source} />
         ) : (
@@ -477,7 +492,9 @@ function DownloadButton({
             setError(
               result.status === "unavailable"
                 ? presentClientIssue({ code: "access-lost" }).title
-                : presentClientIssue({ code: "rejected", action: "download this file" }).title,
+                : result.status === "update-required"
+                  ? fileDeviceUpdateMessage
+                  : presentClientIssue({ code: "rejected", action: "download this file" }).title,
             );
           return;
         }

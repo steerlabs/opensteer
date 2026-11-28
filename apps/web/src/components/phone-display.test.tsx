@@ -8,11 +8,19 @@ import { MockHostClient, mockDeviceMachine, mockIphoneScreenDevice } from "@open
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { type TabTarget } from "@opensteer/core";
 import { runPlacePicture, type HostSnapshot } from "@opensteer/client/host";
-import { useRunPlacePicture } from "@opensteer/client/react";
+import {
+  useHostSelector,
+  useOwnerViewReconnect,
+  useRunPlacePicture,
+} from "@opensteer/client/react";
 import { LivePlace } from "./workspace/viewfinder.js";
 import { RunPlacePictureScope, useDisplayDecoding } from "./workspace/run-place-picture.js";
 import type { WebSocketClient } from "@opensteer/client/host";
-import type { MachineSummary } from "@opensteer/protocol";
+import {
+  displayFirstFrameTimeoutMs,
+  displayViewerCloseCodes,
+  type MachineSummary,
+} from "@opensteer/protocol";
 
 /*
  * Ways the live phone Watch can fail in a page, each answered below:
@@ -109,6 +117,7 @@ vi.mock("./workspace/workspace-context.js", () => ({
 vi.mock("./workspace/tab-closer.js", () => ({ useTabCloser: () => () => undefined }));
 const { ComputerWatchView } = await import("./computer-watch.js");
 const { OwnerView } = await import("./workspace/owner-view.js");
+const { passingWindowWordsMs } = await import("./phone-display.js");
 const { PhoneControlBar } = await import("./phone-display.js");
 
 /** Opens a window or phone tab the way a person does and answers this device's view of it. */
@@ -597,6 +606,20 @@ function proxyInput(
 function remoteEvents() {
   return inputs().flatMap((message) => message.events as Record<string, unknown>[]);
 }
+function ackInputs() {
+  act(() => {
+    let acked = 0;
+    while (acked < inputs().length) {
+      const batch = inputs()[acked]!;
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: batch.sequence,
+        outcome: "dispatched",
+      });
+      acked += 1;
+    }
+  });
+}
 function hardware(field: HTMLElement, key: string, code: string, extra: KeyboardEventInit = {}) {
   act(() => {
     field.dispatchEvent(
@@ -627,6 +650,7 @@ describe("negotiated phone viewer wire", () => {
     hardware(field, "ArrowLeft", "ArrowLeft");
     hardware(field, "Backspace", "Backspace");
     hardware(field, "Backspace", "Backspace");
+    ackInputs();
     expect(remoteEvents()).toEqual([
       {
         kind: "key",
@@ -642,9 +666,9 @@ describe("negotiated phone viewer wire", () => {
         kind: "edit",
         edit: { contextId: editingContext.contextId, before: "e", after: "", text: "é" },
       },
-      { kind: "command", command: "moveBackward" },
-      { kind: "command", command: "deleteBackward" },
-      { kind: "command", command: "deleteBackward" },
+      { kind: "command", command: "moveBackward", contextId: editingContext.contextId },
+      { kind: "command", command: "deleteBackward", contextId: editingContext.contextId },
+      { kind: "command", command: "deleteBackward", contextId: editingContext.contextId },
     ]);
   });
   it("cancels composition and resets input when the keyboard blurs", async () => {
@@ -852,7 +876,7 @@ describe("negotiated phone viewer wire", () => {
       field.dispatchEvent(new Event("copy", { bubbles: true, cancelable: true }));
     });
     const batch = inputs().at(-1)!;
-    expect(batch.events).toEqual([{ kind: "copy" }]);
+    expect(batch.events).toEqual([{ kind: "copy", contextId: editingContext.contextId }]);
     act(() =>
       sockets[0]!.deliver({
         type: "display.clipboard",
@@ -891,9 +915,16 @@ describe("negotiated phone viewer wire", () => {
     const field = await negotiatedPhone();
     trustedPaste(field, { "text/plain": "one\ntwo 🦊" });
     trustedPaste(field, { "text/plain": "rich", "text/html": "<b>rich</b>" });
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: inputs()[0]!.sequence,
+        outcome: "dispatched",
+      }),
+    );
     expect(remoteEvents()).toEqual([
-      { kind: "paste", text: "one\ntwo 🦊" },
-      { kind: "paste", text: "rich" },
+      { kind: "paste", text: "one\ntwo 🦊", contextId: editingContext.contextId },
+      { kind: "paste", text: "rich", contextId: editingContext.contextId },
     ]);
     const batch = inputs().at(-1)!;
     act(() =>
@@ -940,7 +971,7 @@ describe("negotiated phone viewer wire", () => {
   });
 });
 
-async function macOwner() {
+async function macOwner({ pictured = true }: { readonly pictured?: boolean } = {}) {
   const approved = (await client.listApprovedComputerApps()).find(
     (app) => app.target.kind === "app",
   );
@@ -970,8 +1001,26 @@ async function macOwner() {
       />,
     ),
   );
-  await until(() => decoder.outputs.length > 0);
+  if (pictured) await until(() => decoder.outputs.length > 0);
+  else await until(() => sockets.length > 0 && decoder.configs.length > 0);
 }
+/** The words under the Mac window's picture, and whether it offers Open again. */
+function macStatus() {
+  return {
+    words: document.querySelector(".owner-view [role='status']")?.textContent ?? "",
+    openAgain: [...document.querySelectorAll("button")].some(
+      (candidate) => candidate.textContent === "Open again",
+    ),
+  };
+}
+const passingWindowState = {
+  type: "display.state",
+  state: "protected",
+  reason: "target-unavailable",
+  generation: 1,
+  width: 0,
+  height: 0,
+} as const;
 async function negotiatedMacOwner() {
   await macOwner();
   expect(document.querySelector(".owner-view__view-only")?.textContent).toBe("View only");
@@ -994,6 +1043,165 @@ async function negotiatedMacOwner() {
   return document.querySelector<HTMLTextAreaElement>("textarea.remote-keyboard-input")!;
 }
 describe("Mac owner viewer", () => {
+  it("says it is waiting for the window, with no Open again, while the Mac's capture has not started", async () => {
+    decoder.blocked = true;
+    await macOwner({ pictured: false });
+    act(() => sockets[0]!.deliver(passingWindowState));
+    expect(macStatus()).toEqual({ words: "Waiting for the window…", openAgain: false });
+    expect(document.body.textContent).not.toContain("has no open window");
+    // Past the Home's own first-picture bound, the words are what they were before.
+    act(() => sockets[0]!.deliver({ ...passingWindowState, state: "starting", reason: undefined }));
+    vi.useFakeTimers();
+    try {
+      act(() => sockets[0]!.deliver(passingWindowState));
+      expect(macStatus().words).toBe("Waiting for the window…");
+      await act(async () => vi.advanceTimersByTimeAsync(displayFirstFrameTimeoutMs));
+      expect(macStatus().words).toContain("has no open window");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the last picture through a passing pause of the Mac's capture, and says it waits only past a bound", async () => {
+    await macOwner();
+    expect(shown()).toBe(true);
+    vi.useFakeTimers();
+    try {
+      act(() => sockets[0]!.deliver({ ...passingWindowState, generation: 2 }));
+      // The picture stays, with nothing over it: a pause this short is not worth a word.
+      expect(shown()).toBe(true);
+      expect(macStatus()).toEqual({ words: "", openAgain: false });
+      await act(async () => vi.advanceTimersByTimeAsync(passingWindowWordsMs - 1));
+      expect(macStatus().words).toBe("");
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      // Past the bound it says so, over the same picture, with no Open again.
+      expect(shown()).toBe(true);
+      expect(macStatus().words).toMatch(/^Waiting for .+…$/u);
+      expect(macStatus().openAgain).toBe(false);
+      act(() =>
+        sockets[0]!.deliver({
+          type: "display.state",
+          state: "live",
+          generation: 2,
+          width: 360,
+          height: 780,
+        }),
+      );
+      expect(macStatus().words).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still says a closed window has no open window, and offers Open again", async () => {
+    await macOwner();
+    const socket = vi.mocked(client.connectComputerDisplay).mock.results.at(-1)!
+      .value as WebSocketClient;
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.state",
+        state: "failed",
+        reason: "window-closed",
+        generation: 1,
+        width: 0,
+        height: 0,
+      }),
+    );
+    act(() => socket.close(displayViewerCloseCodes.ended, "Window capture failed"));
+    await until(() => macStatus().openAgain);
+    expect(macStatus().words).toContain("has no open window");
+  });
+
+  it("reopens the same Mac tab after a restart and replaces Reconnecting with fresh pixels", async () => {
+    const approved = (await client.listApprovedComputerApps()).find(
+      (app) => app.target.kind === "app",
+    );
+    if (approved?.target.kind !== "app") throw new Error("No Mac fixture");
+    const tab = await client.openTab({
+      kind: "window",
+      computerId: DeviceIdSchema.parse(approved.machineId),
+      bundleId: approved.target.app.bundleId,
+    });
+    const initial = await client.activateTab(tab.tabId);
+    if (initial.kind !== "window") throw new Error("Expected a window view");
+    const view = initial.view;
+    const activate = vi.spyOn(client, "activateTab");
+    function ViewedWindow() {
+      const viewer = useHostSelector(client, () => client.tabViewer(tab.tabId));
+      const reconnect = useOwnerViewReconnect(client, tab.tabId);
+      return (
+        <OwnerView
+          hostClient={client}
+          hostConnected
+          machineId={view.machineId}
+          marks={null}
+          leading={null}
+          onReopen={async () => {
+            throw new Error("No Retry should be needed");
+          }}
+          phone={false}
+          place={null}
+          reconnect={reconnect}
+          source={
+            viewer?.kind === "window"
+              ? {
+                  kind: "owner-view",
+                  viewId: viewer.view.viewId,
+                  generation: viewer.view.generation,
+                }
+              : null
+          }
+          trailing={null}
+        />
+      );
+    }
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    vi.useFakeTimers();
+    try {
+      await act(async () => root!.render(<ViewedWindow />));
+      await act(async () => vi.advanceTimersByTimeAsync(100));
+      expect(shown()).toBe(true);
+
+      act(() =>
+        sockets[0]!.deliver({
+          type: "display.state",
+          state: "stopped",
+          reason: "device-restarting",
+          generation: 1,
+          width: 360,
+          height: 780,
+        }),
+      );
+      expect(container.querySelector('[role="status"]')?.textContent).toBe("Reconnecting…");
+      expect(shown()).toBe(false);
+      expect(activate).not.toHaveBeenCalled();
+      await act(async () => {
+        const closing = client.closeComputerView(view.viewId, view.generation);
+        await vi.advanceTimersByTimeAsync(0);
+        await closing;
+      });
+      await act(async () => vi.advanceTimersByTimeAsync(250));
+      await act(async () => vi.advanceTimersByTimeAsync(100));
+      expect(activate).toHaveBeenCalledExactlyOnceWith(tab.tabId, {
+        signal: expect.any(AbortSignal),
+      });
+      const replacement = client.tabViewer(tab.tabId);
+      expect(replacement?.kind).toBe("window");
+      if (replacement?.kind !== "window") throw new Error("Expected a replacement view");
+      expect([replacement.view.viewId, replacement.view.generation]).not.toEqual([
+        view.viewId,
+        view.generation,
+      ]);
+      expect(sockets).toHaveLength(2);
+      expect(shown()).toBe(true);
+      expect(container.textContent).not.toContain("Reconnecting…");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a new Runner's baseline resolved Desktop/helper view passive", async () => {
     await macOwner();
     expect(requestedEditing).toEqual({ editing: 1 });
@@ -1051,6 +1259,70 @@ describe("Mac owner viewer", () => {
     hardware(field, "F6", "F6");
     expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
   });
+  it("clears a refused key as soon as the Mac dispatches later pointer input", async () => {
+    const field = await negotiatedMacOwner();
+    proxyInput(field, "a");
+    const refused = inputs().at(-1)!;
+    await act(async () =>
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: refused.sequence,
+        outcome: "refused",
+        reason: "unavailable",
+      }),
+    );
+    const words = "This device isn’t taking input right now. Try again.";
+    expect(document.body.textContent).toContain(words);
+    act(() => {
+      canvas().dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          button: 0,
+          buttons: 1,
+          clientX: 270,
+          clientY: 390,
+        }),
+      );
+    });
+    const press = inputs().at(-1)!;
+    expect(press.sequence).not.toBe(refused.sequence);
+    expect(press.events).toMatchObject([{ kind: "mouse", phase: "down" }]);
+    expect(document.body.textContent).toContain(words);
+    await act(async () => {
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: press.sequence,
+        outcome: "dispatched",
+      });
+    });
+    expect(document.body.textContent).not.toContain(words);
+  });
+
+  it("shows a stopped Mac typing burst for four seconds on an idle live view", async () => {
+    const field = await negotiatedMacOwner();
+    vi.useFakeTimers();
+    try {
+      proxyInput(field, "a");
+      proxyInput(field, "b");
+      await act(async () =>
+        sockets[0]!.deliver({
+          type: "display.input.result",
+          sequence: inputs().at(-1)!.sequence,
+          outcome: "unknown",
+        }),
+      );
+      expect(inputs()).toHaveLength(1);
+      const words = "Typing stopped. Some of it may not have arrived: check the text.";
+      expect(document.body.textContent).toContain(words);
+      await act(async () => vi.advanceTimersByTimeAsync(3_999));
+      expect(document.body.textContent).toContain(words);
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(document.body.textContent).not.toContain(words);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sends hover, right and middle buttons, modifiers, click counts, drag and scroll in current geometry", async () => {
     await negotiatedMacOwner();
     for (const [type, button, buttons, x] of [
@@ -1097,15 +1369,11 @@ describe("Mac owner viewer", () => {
       canvas().dispatchEvent(wheel);
     });
     expect(remoteEvents().some((event) => event.kind === "scroll")).toBe(false);
-    act(() => {
-      for (const batch of inputs())
-        sockets[0]!.deliver({
-          type: "display.input.result",
-          sequence: batch.sequence,
-          outcome: "dispatched",
-        });
+    ackInputs();
+    await until(() => {
+      ackInputs();
+      return remoteEvents().some((event) => event.kind === "scroll");
     });
-    await until(() => remoteEvents().some((event) => event.kind === "scroll"));
     expect(remoteEvents()).toEqual([
       { kind: "mouse", phase: "move", button: "none", modifiers: ["shift"], x: 0.25, y: 0.5 },
       {
@@ -1179,6 +1447,7 @@ describe("Mac owner viewer", () => {
         }),
       );
     });
+    ackInputs();
     act(() => root!.unmount());
     root = null;
     expect(remoteEvents()).toContainEqual(
@@ -1189,6 +1458,91 @@ describe("Mac owner viewer", () => {
     );
     expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
     expect(sockets[0]!.closed).toBe(true);
+  });
+  it("releases held mouse and keys and drops queued edits on unmount with an outstanding receipt", async () => {
+    const field = await negotiatedMacOwner();
+    hardware(field, "F2", "F2");
+    act(() => {
+      canvas().dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true,
+          pointerType: "mouse",
+          pointerId: 7,
+          isPrimary: true,
+          button: 0,
+          buttons: 1,
+          clientX: 270,
+          clientY: 390,
+        }),
+      );
+    });
+    act(() => {
+      canvas().dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          buttons: 1,
+          detail: 1,
+          clientX: 270,
+          clientY: 390,
+        }),
+      );
+    });
+    // Acknowledge F2-down and mouse-down so both are held on the device, then leave an edit pending.
+    ackInputs();
+    proxyInput(field, "a");
+    proxyInput(field, "b");
+    const pendingSeq = inputs().at(-1)!.sequence;
+    act(() => root!.unmount());
+    root = null;
+    expect(remoteEvents()).toContainEqual(
+      expect.objectContaining({ kind: "mouse", phase: "cancel", button: "left" }),
+    );
+    expect(remoteEvents()).toContainEqual(
+      expect.objectContaining({ kind: "key", action: "up", code: "F2" }),
+    );
+    expect(remoteEvents()).not.toContainEqual(
+      expect.objectContaining({ kind: "edit", edit: expect.objectContaining({ text: "b" }) }),
+    );
+    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
+    // Late receipt for the pending edit must not drain queued edits.
+    const countAfterUnmount = inputs().length;
+    sockets[0]!.deliver({
+      type: "display.input.result",
+      sequence: pendingSeq,
+      outcome: "dispatched",
+    });
+    expect(inputs()).toHaveLength(countAfterUnmount);
+  });
+  it("drops queued edits on blur with an outstanding receipt so a late receipt never drains them", async () => {
+    const field = await negotiatedMacOwner();
+    act(() => field.focus());
+    hardware(field, "F2", "F2");
+    ackInputs();
+    proxyInput(field, "a");
+    proxyInput(field, "b");
+    const pendingSeq = inputs().at(-1)!.sequence;
+    act(() => field.blur());
+    expect(remoteEvents()).toContainEqual(
+      expect.objectContaining({ kind: "key", action: "up", code: "F2" }),
+    );
+    expect(remoteEvents()).not.toContainEqual(
+      expect.objectContaining({ kind: "edit", edit: expect.objectContaining({ text: "b" }) }),
+    );
+    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
+    const countAfterBlur = inputs().length;
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: pendingSeq,
+        outcome: "dispatched",
+      }),
+    );
+    expect(inputs()).toHaveLength(countAfterBlur);
+    expect(remoteEvents()).not.toContainEqual(
+      expect.objectContaining({ kind: "edit", edit: expect.objectContaining({ text: "b" }) }),
+    );
   });
 });
 

@@ -14,6 +14,7 @@ import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HostRelayAuthenticator } from "../passkeys/host-relay.js";
+import { BrowserRuntimeError } from "../errors.js";
 import {
   PublicKeyCredentialRequestOptionsJSONSchema,
   serializeClientData,
@@ -65,6 +66,520 @@ describe("BrowserController", () => {
     await ledger.start();
   });
 
+  it("opens a connected agent's lineage attachment without the clipboard, and the person's own as before", async () => {
+    const controller = createController();
+    await controller.start();
+    const targetId = await page.targetId();
+    const seedSurfaceId = ledger.surfaceIdForTarget(targetId)!;
+    const paste = async (scope?: { attachmentId: string; seedSurfaceId: typeof seedSurfaceId }) => {
+      const client = controller.openStandardCdp(false, () => undefined, scope);
+      try {
+        const { sessionId } = (await client.send({
+          method: "Target.attachToTarget",
+          parameters: { targetId, flatten: true },
+        })) as { sessionId: string };
+        return await client
+          .send({
+            method: "Input.dispatchKeyEvent",
+            parameters: { type: "rawKeyDown", modifiers: 4, key: "v", code: "KeyV" },
+            sessionId,
+          })
+          .then(
+            () => "forwarded",
+            (error: unknown) => error,
+          );
+      } finally {
+        client.close();
+      }
+    };
+    // The Home issues a lineage only for a connected agent's own direct work.
+    await expect(paste({ attachmentId: randomUUID(), seedSurfaceId })).resolves.toMatchObject({
+      code: "forbidden",
+      message:
+        "The clipboard is not available to a connected agent. Use Input.insertText to enter text.",
+    });
+    await expect(paste()).resolves.toBe("forwarded");
+    await controller.close();
+  });
+
+  it("emits the released ordinary close frames byte for byte", async () => {
+    const controller = createController();
+    await controller.start();
+    const before = sink.messages.length;
+    await controller.close();
+    expect(
+      sink.messages
+        .slice(before)
+        .filter(({ type }) => type === "browser.status")
+        .map((message) => JSON.stringify(message)),
+    ).toEqual([
+      '{"state":"closing","type":"browser.status"}',
+      '{"state":"closed","type":"browser.status"}',
+    ]);
+  });
+
+  it("ends at a Stop an attach that waited for its tab to settle, and an open's first load, which it stops", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const cancel = (requestId: string, attachment?: string) =>
+      controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        ...(attachment ? { scriptAttachmentId: attachment } : {}),
+        command: { method: browserHostMethods.cancelScriptCommand, parameters: { requestId } },
+      });
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      // The attach waits for its tab to settle; Stop comes meanwhile; nothing attaches after.
+      const settled = Promise.withResolvers<void>();
+      const settling = vi
+        .spyOn(ledger, "settleTarget")
+        .mockImplementationOnce(() => settled.promise);
+      const attachId = randomUUID();
+      const attaching = controller.handle({
+        type: "cdp.command",
+        requestId: attachId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method: "Target.attachToTarget", parameters: { targetId } },
+      });
+      await vi.waitFor(() => expect(settling).toHaveBeenCalledOnce());
+      await cancel(attachId, scriptAttachmentId);
+      settled.resolve();
+      await attaching;
+      expect(reply(attachId)).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "browser-command-cancelled" },
+      });
+      // An open at an address: its first load never ends; Stop ends the open and stops the load.
+      vi.spyOn(ledger, "navigate").mockImplementationOnce(() => new Promise(() => {}));
+      const openId = randomUUID();
+      const opening = controller.handle({
+        type: "cdp.command",
+        requestId: openId,
+        replyBudget,
+        command: {
+          method: browserHostMethods.openTab,
+          parameters: { idempotencyKey: randomUUID(), url: "https://example.test/slow" },
+        },
+      });
+      await vi.waitFor(() => expect(ledger.navigate).toHaveBeenCalled());
+      const opened = context.pages().at(-1) as unknown as FakePage;
+      await cancel(openId);
+      await opening;
+      expect(reply(openId)).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "browser-command-cancelled" },
+      });
+      await vi.waitFor(() => expect(commandsNamed("Page.stopLoading", opened)).toHaveLength(1));
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("holds an agent's script answer to 432 KiB: at the limit it arrives, one byte over it fails naming 432 KiB", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    // The budget the Host sends with a connected agent's browser command (1020 KiB): larger than
+    // the router's limit for a script's answer, which is the one that applies.
+    const replyBudget = { maxBytes: 1_020 * 1_024, maxDepth: 31, maxEntries: 16_384 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const send = async (
+      method: string,
+      parameters: Record<string, unknown>,
+      sessionId?: string,
+    ) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+      return reply(requestId);
+    };
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attached = await send("Target.attachToTarget", { targetId });
+      if (attached?.type !== "cdp.result" || typeof attached.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const sessionId = attached.result.sessionId;
+      const limit = 432 * 1_024;
+      const answer = (bytes: number) => ({
+        result: {
+          type: "string",
+          value: "x".repeat(
+            bytes - JSON.stringify({ result: { type: "string", value: "" } }).length,
+          ),
+        },
+      });
+      page.cdpSession.responses.set("Runtime.evaluate", () => answer(limit));
+      expect(await send("Runtime.evaluate", { expression: "html()" }, sessionId)).toMatchObject({
+        type: "cdp.result",
+      });
+      page.cdpSession.responses.set("Runtime.evaluate", () => answer(limit + 1));
+      const over = await send("Runtime.evaluate", { expression: "html()" }, sessionId);
+      expect(over).toMatchObject({
+        type: "cdp.error",
+        error: {
+          reason: "browser-reply-limit",
+          message:
+            "The command ran, but its answer is 433 KiB, over the 432 KiB limit for one answer, so it exceeds the bounded agent transport and was dropped. Ask the page for less: a slice of the text, an element by selector, or innerText instead of the HTML. If the command changed something, do not run it again.",
+        },
+      });
+      expect(over?.type === "cdp.error" && over.error.unsent).toBeUndefined();
+      // The same attachment answers the next command.
+      page.cdpSession.responses.set("Runtime.evaluate", () => answer(64));
+      expect(await send("Runtime.evaluate", { expression: "title()" }, sessionId)).toMatchObject({
+        type: "cdp.result",
+      });
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  /*
+   * A7: a browser command's error says, as data, whether the command was refused before it was
+   * sent to the page (`unsent`: nothing happened) or came after it may have run (no `unsent`: its
+   * outcome is unknown). Here: a command that ran and whose reply is over its budget; a command
+   * refused by its attachment's router before it was sent; and one the queue refused.
+   */
+  it("says whether a command's error came before it was sent or after it may have run (A7)", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const send = (
+      requestId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      sessionId?: string,
+    ) =>
+      controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attachId = randomUUID();
+      await send(attachId, "Target.attachToTarget", { targetId });
+      const attached = reply(attachId);
+      if (attached?.type !== "cdp.result" || typeof attached.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const sessionId = attached.result.sessionId;
+      // It ran: the page changed, and its answer is larger than the reply may be.
+      let ran = false;
+      page.cdpSession.responses.set("Runtime.evaluate", () => {
+        ran = true;
+        return { result: { type: "string", value: "x".repeat(8_192) } };
+      });
+      const tooLarge = randomUUID();
+      await send(tooLarge, "Runtime.evaluate", { expression: "clicked()" }, sessionId);
+      expect(ran).toBe(true);
+      const after = reply(tooLarge);
+      expect(after).toMatchObject({ type: "cdp.error", error: { reason: "browser-reply-limit" } });
+      expect(after?.type === "cdp.error" && after.error.unsent).toBeUndefined();
+      // Refused before it was sent on: a CDP session that is not the attachment's.
+      const refused = randomUUID();
+      await send(refused, "Runtime.evaluate", { expression: "1" }, "not-this-session");
+      expect(reply(refused)).toMatchObject({ type: "cdp.error", error: { unsent: true } });
+      // Refused before dispatch: the same request ID already active.
+      const held = Promise.withResolvers<object>();
+      page.cdpSession.responses.set("Runtime.evaluate", () => held.promise);
+      const busy = randomUUID();
+      const running = send(busy, "Runtime.evaluate", { expression: "slow()" }, sessionId);
+      await vi.waitFor(() =>
+        expect(commandsNamed("Runtime.evaluate", page).length).toBeGreaterThan(1),
+      );
+      await send(busy, "Runtime.evaluate", { expression: "again()" }, sessionId);
+      expect(reply(busy)).toMatchObject({ type: "cdp.error", error: { unsent: true } });
+      held.resolve({ result: { type: "number", value: 1 } });
+      await running;
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  /*
+   * N4: a newer input overtakes one already in flight. The page has APPLIED the first Input
+   * command and not yet answered; a second waits behind it; the agent's newer input (its cancel
+   * of earlier work) arrives. The one still pending is refused before dispatch (`unsent`); the
+   * one already dispatched is not cancelled, and when its page fails it, its outcome is unknown.
+   */
+  it("refuses an overtaken input still pending as unsent, and leaves the one already dispatched unknown (N4)", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const send = (
+      requestId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      sessionId?: string,
+    ) =>
+      controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attachId = randomUUID();
+      await send(attachId, "Target.attachToTarget", { targetId });
+      const attached = reply(attachId);
+      if (attached?.type !== "cdp.result" || typeof attached.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const sessionId = attached.result.sessionId;
+      const applied = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<object>();
+      let inputs = 0;
+      page.cdpSession.responses.set("Input.insertText", () => {
+        if (++inputs > 1) return {};
+        applied.resolve();
+        return answer.promise;
+      });
+      const dispatched = randomUUID();
+      const pending = randomUUID();
+      const first = send(dispatched, "Input.insertText", { text: "first" }, sessionId);
+      await applied.promise;
+      const second = send(pending, "Input.insertText", { text: "second" }, sessionId);
+      await flushMicrotasks();
+      // The newer input: the agent's producer cancels its earlier work. It runs once the input in
+      // flight has ended; the one still pending is refused at once.
+      const overtaking = controller.handle({
+        type: "input.cancel",
+        producerId: scriptAttachmentId,
+      });
+      await second;
+      expect(reply(pending)).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "browser-input-canceled", unsent: true },
+      });
+      expect(inputs).toBe(1);
+      // The page applied the first and then failed it: an error after the effect.
+      answer.reject(new Error("Target closed."));
+      await first;
+      await overtaking;
+      const outcome = reply(dispatched);
+      expect(outcome?.type).toBe("cdp.error");
+      expect(outcome?.type === "cdp.error" && outcome.error.unsent).toBeUndefined();
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("acknowledges cancellation only for the matching queued script command", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const send = (
+      requestId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      sessionId?: string,
+    ) =>
+      controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+    const started = Promise.withResolvers<void>();
+    const hold = Promise.withResolvers<object>();
+    let running: Promise<void> | undefined;
+    let queued: Promise<void> | undefined;
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attachId = randomUUID();
+      await send(attachId, "Target.attachToTarget", { targetId });
+      const response = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === attachId,
+      );
+      if (response?.type !== "cdp.result" || typeof response.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const sessionId = response.result.sessionId;
+      const expressions: unknown[] = [];
+      const evaluate = (parameters: Record<string, unknown> | undefined) => {
+        expressions.push(parameters?.expression);
+        if (parameters?.expression !== "active") return {};
+        started.resolve();
+        return hold.promise;
+      };
+      page.cdpSession.responses.set("Runtime.evaluate", evaluate);
+      const activeId = randomUUID();
+      const queuedId = randomUUID();
+      running = send(activeId, "Runtime.evaluate", { expression: "active" }, sessionId);
+      await started.promise;
+      queued = send(queuedId, "Runtime.evaluate", { expression: "queued" }, sessionId);
+      const cancel = (requestId: string, attachment = scriptAttachmentId) =>
+        controller.handle({
+          type: "cdp.command",
+          requestId: randomUUID(),
+          scriptAttachmentId: attachment,
+          command: { method: browserHostMethods.cancelScriptCommand, parameters: { requestId } },
+        });
+      await cancel(queuedId, randomUUID());
+      await cancel(activeId);
+      const errors = () => sink.messages.filter((message) => message.type === "cdp.error");
+      expect(errors()).toEqual([]);
+      await cancel(queuedId);
+      expect(errors()).toEqual([
+        expect.objectContaining({
+          requestId: queuedId,
+          error: expect.objectContaining({ reason: "browser-command-cancelled" }),
+        }),
+      ]);
+      hold.resolve({});
+      await Promise.all([running, queued]);
+      expect(expressions).toContain("active");
+      expect(expressions).not.toContain("queued");
+      expect(sink.messages).toContainEqual(
+        expect.objectContaining({ type: "cdp.result", requestId: activeId }),
+      );
+    } finally {
+      hold.resolve({});
+      await Promise.allSettled([running, queued]);
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("stops an in-flight navigation when its script attachment closes", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const started = Promise.withResolvers<void>();
+    const navigation = Promise.withResolvers<{ errorText: string }>();
+    let navigating: Promise<void> | undefined;
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attachId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: attachId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method: "Target.attachToTarget", parameters: { targetId } },
+      });
+      const response = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === attachId,
+      );
+      if (response?.type !== "cdp.result" || typeof response.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      page.cdpSession.responses.set("Page.navigate", () => {
+        started.resolve();
+        return navigation.promise;
+      });
+      const stopLoading = vi.fn(() => {
+        navigation.resolve({ errorText: "net::ERR_ABORTED" });
+        return {};
+      });
+      page.cdpSession.responses.set("Page.stopLoading", stopLoading);
+      navigating = controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        scriptAttachmentId,
+        replyBudget,
+        command: {
+          method: "Page.navigate",
+          sessionId: response.result.sessionId,
+          parameters: { url: "https://example.test/slow" },
+        },
+      });
+      await started.promise;
+      await controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        scriptAttachmentId,
+        command: { method: browserHostMethods.closeScriptAttachment },
+      });
+      expect(stopLoading).toHaveBeenCalledOnce();
+      await navigating;
+    } finally {
+      navigation.resolve({ errorText: "net::ERR_ABORTED" });
+      await Promise.allSettled([navigating]);
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("admits input on surface 129 and releases idle lanes", async () => {
     const controller = createController();
     await controller.start();
@@ -94,6 +609,643 @@ describe("BrowserController", () => {
       vi.useRealTimers();
       await controller.close();
       await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("binds a viewer that subscribes while its tab wakes to the tab it wakes into, never not_found (V7)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      await ledger.sleep(id, () => null);
+      // The wake is held while its new page is made.
+      const made = Promise.withResolvers<void>();
+      const createPage = context.createPage.bind(context);
+      vi.spyOn(context, "createPage").mockImplementation(async (...args) => {
+        await made.promise;
+        return createPage(...args);
+      });
+      const waking = ledger.wake(id);
+      await vi.waitFor(() => expect(ledger.waking(id)).not.toBeNull());
+      const before = sink.messages.length;
+      const subscribed = controller.handle({ type: "stream.subscribe", surfaceId: id });
+      made.resolve();
+      await waking;
+      await subscribed;
+      expect(
+        sink.messages
+          .slice(before)
+          .filter((message) => message.type === "browser.error")
+          .map((message) => JSON.stringify(message)),
+      ).toEqual([]);
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("holds a viewer joining mid-wake until wake finishes instead of casting about:blank", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    const navStarted = Promise.withResolvers<void>();
+    const finishNav = Promise.withResolvers<void>();
+    let wokenPage: FakePage | null = null;
+    try {
+      await ledger.sleep(id, () => null);
+      const createPage = context.createPage.bind(context);
+      vi.spyOn(context, "createPage").mockImplementationOnce(async (...args) => {
+        const next = (await createPage(...args)) as FakePage;
+        wokenPage = next;
+        next.cdpSession.responses.set("Page.navigate", async (params?: Record<string, unknown>) => {
+          navStarted.resolve();
+          await finishNav.promise;
+          next.navigate(String(params?.url ?? "https://example.test/"), "Example");
+          return { frameId: await next.targetId(), loaderId: next.loaderId };
+        });
+        return next;
+      });
+      const waking = ledger.wake(id);
+      await navStarted.promise;
+      // Mid-wake: record.live exists (binding is non-null) with surface.state === "suspended".
+      expect(ledger.binding(id)?.surface.state).toBe("suspended");
+      expect(ledger.waking(id)).not.toBeNull();
+      let subscribedSettled = false;
+      const subscribed = controller.handle({ type: "stream.subscribe", surfaceId: id }).then(() => {
+        subscribedSettled = true;
+      });
+      for (let turn = 0; turn < 10; turn += 1) await flushMicrotasks();
+      expect(subscribedSettled).toBe(false);
+      expect(commandsNamed("Page.startScreencast", wokenPage!)).toHaveLength(0);
+      finishNav.resolve();
+      await waking;
+      await subscribed;
+      expect(subscribedSettled).toBe(true);
+      await vi.waitFor(() =>
+        expect(commandsNamed("Page.startScreencast", wokenPage!)).toHaveLength(1),
+      );
+    } finally {
+      finishNav.resolve();
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("waits for the page's load on every try of an agent's resume, and ends the wait with its operation (V3)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const resume = async (extra: Record<string, unknown> = {}) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        ...extra,
+        command: {
+          method: browserHostMethods.resumeTab,
+          parameters: { surfaceId: id, loaded: true },
+        },
+      } as never);
+      return reply(requestId);
+    };
+    /** The woken page's main frame starts and stops loading, as Chromium reports it. */
+    const finishLoad = async () => {
+      const woken = ledger.binding(id)!.page as unknown as FakePage;
+      const frameId = await woken.targetId();
+      woken.cdpSession.emit("Page.frameNavigated", {
+        frame: { id: frameId, url: "https://example.test/", loaderId: "woken" },
+      });
+      woken.cdpSession.emit("Page.frameStartedLoading", { frameId });
+      woken.cdpSession.emit("Page.frameStoppedLoading", { frameId });
+      await flushMicrotasks();
+    };
+    try {
+      // First try wakes the sleeping tab: its page is still loading at the bound, and it is said.
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      const loaded = vi.spyOn(ledger, "documentLoaded").mockResolvedValueOnce("loading");
+      expect(await resume()).toMatchObject({
+        type: "cdp.error",
+        error: { message: "This tab is awake, but its page is still loading. Try again shortly." },
+      });
+      // Z1: the retry waits for that same load, though the tab is awake now: the runtime
+      // remembers the wake, whatever anyone last heard of the tab. It is told the page reloaded.
+      expect(ledger.stateOf(id)).toBe("live");
+      expect(ledger.wakeUnfinished(id)).toBe(true);
+      // The woken page's load finishes while the retry waits, as its page says.
+      loaded.mockImplementationOnce(async () => {
+        await finishLoad();
+        return "loaded";
+      });
+      expect(await resume()).toMatchObject({
+        type: "cdp.result",
+        result: { surfaceId: id, reloaded: true },
+      });
+      expect(ledger.wakeUnfinished(id)).toBe(false);
+      expect(loaded).toHaveBeenCalledTimes(2);
+      // Once its load was seen, the awake tab is handed over as it is, with no wait.
+      expect(await resume()).toMatchObject({
+        type: "cdp.result",
+        result: { surfaceId: id, reloaded: false },
+      });
+      expect(loaded).toHaveBeenCalledTimes(2);
+      // A tab that went back to sleep under the wait is said, never handed over stale.
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      loaded.mockResolvedValueOnce("asleep");
+      expect(await resume()).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "target-suspended" },
+      });
+      // Stop or Disconnect cancels the wait: it ends at once with the operation.
+      loaded.mockImplementationOnce(
+        (_id, _bound, signal) =>
+          new Promise((_resolve, reject) =>
+            signal?.addEventListener("abort", () =>
+              reject(
+                new BrowserRuntimeError("conflict", "The browser command was cancelled.", {
+                  reason: "browser-command-cancelled",
+                }),
+              ),
+            ),
+          ),
+      );
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      const requestId = randomUUID();
+      const waiting = controller.handle({
+        type: "cdp.command",
+        requestId,
+        replyBudget: { maxBytes: 4096, maxDepth: 8, maxEntries: 64 },
+        command: {
+          method: browserHostMethods.resumeTab,
+          parameters: { surfaceId: id, loaded: true },
+        },
+      });
+      await vi.waitFor(() => expect(loaded).toHaveBeenCalledTimes(4));
+      await controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        command: {
+          method: browserHostMethods.cancelScriptCommand,
+          parameters: { requestId },
+        },
+      });
+      await waiting;
+      expect(reply(requestId)).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "browser-command-cancelled" },
+      });
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  /*
+   * Z4: whether a wake's load is unfinished belongs to the ledger, set when the wake begins and
+   * ended by the events that end it. (A) a person's wake, its load seen to finish, then the tab
+   * navigated elsewhere: an agent's bind later waits for nothing and is told nothing reloaded.
+   * (B) an agent's wake cancelled during the wake: the next agent's bind still waits for that
+   * wake's load, and is told the page reloaded.
+   */
+  it.each(["a person's wake that loaded long ago", "an agent's wake cancelled under it"] as const)(
+    "decides an agent's load wait from the wake itself: %s (Z4)",
+    async (sequence) => {
+      const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+      await controller.start();
+      const id = ledger.snapshot()[0]!.id;
+      const reply = (requestId: string) =>
+        sink.messages.findLast(
+          (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+        );
+      const resume = (requestId: string, loaded: boolean) =>
+        controller.handle({
+          type: "cdp.command",
+          requestId,
+          replyBudget: { maxBytes: 4096, maxDepth: 8, maxEntries: 64 },
+          command: {
+            method: browserHostMethods.resumeTab,
+            parameters: { surfaceId: id, ...(loaded ? { loaded: true } : {}) },
+          },
+        });
+      const frame = async () => {
+        const woken = ledger.binding(id)!.page as unknown as FakePage;
+        return { woken, frameId: await woken.targetId() };
+      };
+      try {
+        expect(await ledger.sleep(id, () => null)).toBe(true);
+        const loaded = vi.spyOn(ledger, "documentLoaded");
+        if (sequence === "a person's wake that loaded long ago") {
+          await resume(randomUUID(), false);
+          const { woken, frameId } = await frame();
+          woken.cdpSession.emit("Page.frameNavigated", {
+            frame: { id: frameId, url: "https://example.test/", loaderId: "woken" },
+          });
+          woken.cdpSession.emit("Page.frameStartedLoading", { frameId });
+          woken.cdpSession.emit("Page.frameStoppedLoading", { frameId });
+          // Minutes later the person navigates it elsewhere; that page is still loading.
+          woken.cdpSession.emit("Page.frameNavigated", {
+            frame: { id: frameId, url: "https://example.test/other", loaderId: "other" },
+          });
+          woken.cdpSession.emit("Page.frameStartedLoading", { frameId });
+          await flushMicrotasks();
+          const requestId = randomUUID();
+          await resume(requestId, true);
+          expect(reply(requestId)).toMatchObject({
+            type: "cdp.result",
+            result: { surfaceId: id, reloaded: false },
+          });
+          expect(loaded).not.toHaveBeenCalled();
+          return;
+        }
+        const wake = ledger.wake.bind(ledger);
+        const held = Promise.withResolvers<void>();
+        const waking = vi.spyOn(ledger, "wake").mockImplementationOnce(async (surfaceId) => {
+          await held.promise;
+          return wake(surfaceId);
+        });
+        const first = randomUUID();
+        const answered = resume(first, true);
+        await vi.waitFor(() => expect(waking).toHaveBeenCalledOnce());
+        await controller.handle({
+          type: "cdp.command",
+          requestId: randomUUID(),
+          command: {
+            method: browserHostMethods.cancelScriptCommand,
+            parameters: { requestId: first },
+          },
+        });
+        await answered;
+        expect(reply(first)).toMatchObject({ error: { reason: "browser-command-cancelled" } });
+        held.resolve();
+        await vi.waitFor(() => expect(ledger.stateOf(id)).toBe("live"));
+        // The next agent's bind waits for that wake's load, and is told the page reloaded.
+        loaded.mockResolvedValueOnce("loaded");
+        const second = randomUUID();
+        await resume(second, true);
+        expect(loaded).toHaveBeenCalledOnce();
+        expect(reply(second)).toMatchObject({
+          type: "cdp.result",
+          result: { surfaceId: id, reloaded: true },
+        });
+      } finally {
+        await controller.close();
+        await ledger.closeOwnedPages();
+        await ledger.close();
+      }
+    },
+  );
+
+  it("ends an agent's resume at once when its operation is cancelled during the wake, and starts no load wait after it (Z2)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    try {
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      const wake = ledger.wake.bind(ledger);
+      const held = Promise.withResolvers<void>();
+      const waking = vi.spyOn(ledger, "wake").mockImplementationOnce(async (surfaceId) => {
+        await held.promise;
+        return wake(surfaceId);
+      });
+      const loaded = vi.spyOn(ledger, "documentLoaded");
+      const requestId = randomUUID();
+      const answered = controller.handle({
+        type: "cdp.command",
+        requestId,
+        replyBudget: { maxBytes: 4096, maxDepth: 8, maxEntries: 64 },
+        command: {
+          method: browserHostMethods.resumeTab,
+          parameters: { surfaceId: id, loaded: true },
+        },
+      });
+      await vi.waitFor(() => expect(waking).toHaveBeenCalledOnce());
+      // Stop or Disconnect while the tab wakes.
+      await controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        command: { method: browserHostMethods.cancelScriptCommand, parameters: { requestId } },
+      });
+      await vi.waitFor(
+        () =>
+          expect(reply(requestId)).toMatchObject({
+            type: "cdp.error",
+            error: { reason: "browser-command-cancelled" },
+          }),
+        { timeout: 1_000, interval: 10 },
+      );
+      await answered;
+      // The wake goes on for anyone else; nothing of this command starts after it.
+      held.resolve();
+      await vi.waitFor(() => expect(ledger.stateOf(id)).toBe("live"));
+      await flushMicrotasks();
+      expect(loaded).not.toHaveBeenCalled();
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("opens a connected agent's script attachment as a connection's when the Home says so (S-3)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const surfaceId = ledger.snapshot()[0]!.id;
+    const budget = { maxBytes: 65_536, maxDepth: 16, maxEntries: 256 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const scriptCommand = async (
+      scriptAttachmentId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      extra: Record<string, unknown> = {},
+    ) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget: budget,
+        command: { method, parameters },
+        ...extra,
+      } as BrowserClientMessage);
+      return reply(requestId);
+    };
+    try {
+      for (const connection of [true, false]) {
+        const scriptAttachmentId = randomUUID();
+        expect(
+          await scriptCommand(
+            scriptAttachmentId,
+            browserHostMethods.resumeTab,
+            { surfaceId },
+            { scriptEventBudget: budget, ...(connection ? { connection: true } : {}) },
+          ),
+        ).toMatchObject({ type: "cdp.result" });
+        // A later command that does not itself say it is a connection's is still held to a
+        // connection's rules on a connection's attachment, and only there.
+        const listed = await scriptCommand(scriptAttachmentId, "Extensions.getExtensions", {});
+        if (connection)
+          expect(listed).toMatchObject({
+            type: "cdp.error",
+            error: {
+              code: "forbidden",
+              message: expect.stringContaining("not available to a connected agent"),
+            },
+          });
+        else expect(JSON.stringify(listed)).not.toContain("not available to a connected agent");
+      }
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("never lists or resumes a tab on an extension's page to a connection (N1)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const surfaceId = ledger.snapshot()[0]!.id;
+    const extensionPage = `chrome-extension://${"a".repeat(32)}/options.html`;
+    const budget = { maxBytes: 65_536, maxDepth: 16, maxEntries: 256 };
+    const reply = async (message: Record<string, unknown>) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        ...message,
+      } as BrowserClientMessage);
+      return sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    };
+    const list = (connection: boolean) =>
+      reply({
+        command: { method: browserHostMethods.listTabs, parameters: {} },
+        ...(connection ? { connection: true } : {}),
+      });
+    const resume = (target: string, connection: boolean, scriptAttachmentId = randomUUID()) =>
+      reply({
+        scriptAttachmentId,
+        replyBudget: budget,
+        scriptEventBudget: budget,
+        command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: target } },
+        ...(connection ? { connection: true } : {}),
+      });
+    // What a tab that does not exist answers.
+    const absent = await resume(BrowserSurfaceIdSchema.parse(`tab_${"0".repeat(8)}`), true);
+    expect(absent).toMatchObject({ type: "cdp.error", error: { code: "not_found" } });
+    const absentError = (absent as { error: unknown }).error;
+    const opened = (scriptAttachmentId: string) => {
+      try {
+        cdpRouter.assertScriptTarget(validClaims().sessionId, scriptAttachmentId);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      for (const world of ["web", "extension", "becomes-extension-while-waking"] as const) {
+        page.setMetadata("A page", "https://example.test/");
+        if (world === "extension") page.setMetadata("My Extension Options", extensionPage);
+        if (world === "becomes-extension-while-waking") {
+          const wake = ledger.wake.bind(ledger);
+          vi.spyOn(ledger, "wake").mockImplementation(async (id) => {
+            const binding = await wake(id);
+            page.setMetadata("My Extension Options", extensionPage);
+            return binding;
+          });
+        }
+        const hidden = world !== "web";
+        // A connection: not listed, and resuming it answers as a tab that does not exist, with
+        // no script attachment opened and no target named.
+        const listed = await list(true);
+        expect(JSON.stringify(listed).includes(surfaceId), world).toBe(world !== "extension");
+        expect(JSON.stringify(listed)).not.toContain("chrome-extension:");
+        const scriptAttachmentId = randomUUID();
+        const resumed = await resume(surfaceId, true, scriptAttachmentId);
+        if (hidden) {
+          expect(resumed, world).toMatchObject({ type: "cdp.error" });
+          expect((resumed as { error: unknown }).error, world).toEqual(absentError);
+          expect(opened(scriptAttachmentId), world).toBe(false);
+        } else {
+          expect(resumed, world).toMatchObject({ type: "cdp.result" });
+          expect(opened(scriptAttachmentId), world).toBe(true);
+        }
+        // Your own agent, not bound to a connection, as before.
+        page.setMetadata("A page", world === "extension" ? extensionPage : "https://example.test/");
+        expect(JSON.stringify(await list(false)).includes(surfaceId), world).toBe(true);
+        expect(await resume(surfaceId, false), world).toMatchObject({ type: "cdp.result" });
+        vi.restoreAllMocks();
+      }
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("says nothing of a hidden tab's answer, its size included: it reads as a closed tab (rule 5)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const surfaceId = ledger.snapshot()[0]!.id;
+    // A budget smaller than any resume answer: over it, a page the connection may see fails
+    // with the answer's size.
+    const budget = { maxBytes: 64, maxDepth: 16, maxEntries: 256 };
+    const resume = async (target: string) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        connection: true,
+        scriptAttachmentId: randomUUID(),
+        replyBudget: budget,
+        scriptEventBudget: budget,
+        command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: target } },
+      } as BrowserClientMessage);
+      return sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    };
+    try {
+      const absent = await resume(BrowserSurfaceIdSchema.parse(`tab_${"0".repeat(8)}`));
+      expect(absent).toMatchObject({ type: "cdp.error", error: { code: "not_found" } });
+      page.setMetadata("A page", "https://example.test/");
+      expect(await resume(surfaceId)).toMatchObject({
+        type: "cdp.error",
+        error: {
+          reason: "browser-reply-limit",
+          message: expect.stringMatching(/^The command ran/u),
+        },
+      });
+      // The tab becomes an extension's page while it wakes: the same answer as no tab at all.
+      const wake = ledger.wake.bind(ledger);
+      vi.spyOn(ledger, "wake").mockImplementation(async (id) => {
+        const binding = await wake(id);
+        page.setMetadata(
+          "My Extension Options",
+          `chrome-extension://${"a".repeat(32)}/options.html`,
+        );
+        return binding;
+      });
+      const hidden = await resume(surfaceId);
+      expect((hidden as { error: unknown }).error).toEqual((absent as { error: unknown }).error);
+    } finally {
+      vi.restoreAllMocks();
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("fills nothing into a page on an extension's page for a connection (N1)", async () => {
+    const controller = createController();
+    await controller.start();
+    const fill = vi.spyOn(HostSignIns.prototype, "fill").mockResolvedValue("filled");
+    try {
+      const attached = await cdpRouter.send(validClaims().sessionId, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: await page.targetId(), flatten: true },
+      });
+      const sessionId = (attached as { sessionId: string }).sessionId;
+      const loginRef = `lgn_${"a".repeat(32)}`;
+      const fillLogin = async (session: string, connection: boolean) => {
+        const requestId = randomUUID();
+        await controller.handle({
+          type: "cdp.command",
+          requestId,
+          command: {
+            method: "Opensteer.fillLogin",
+            sessionId: session,
+            parameters: { loginRef, field: "password" },
+          },
+          ...(connection ? { connection: true } : {}),
+        } as BrowserClientMessage);
+        return sink.messages.findLast(
+          (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+        );
+      };
+      page.setMetadata("Options", `chrome-extension://${"a".repeat(32)}/options.html`);
+      const absent = await fillLogin("unknown", true);
+      const hidden = await fillLogin(sessionId, true);
+      expect(hidden).toMatchObject({ type: "cdp.error" });
+      expect((hidden as { error: unknown }).error).toEqual((absent as { error: unknown }).error);
+      expect(fill).not.toHaveBeenCalled();
+      // Your own agent, not bound to a connection, as before.
+      expect(await fillLogin(sessionId, false)).toMatchObject({
+        type: "cdp.result",
+        result: { status: "filled" },
+      });
+      expect(fill).toHaveBeenCalledOnce();
+    } finally {
+      fill.mockRestore();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("reads a page's live address for a connection's fill and picture, not only the ledger's (P7)", async () => {
+    const controller = createController();
+    await controller.start();
+    const fill = vi.spyOn(HostSignIns.prototype, "fill").mockResolvedValue("filled");
+    try {
+      const attached = await cdpRouter.send(validClaims().sessionId, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: await page.targetId(), flatten: true },
+        connection: true,
+      });
+      const sessionId = (attached as { sessionId: string }).sessionId;
+      const send = async (command: Record<string, unknown>) => {
+        const requestId = randomUUID();
+        await controller.handle({
+          type: "cdp.command",
+          requestId,
+          command,
+          connection: true,
+        } as BrowserClientMessage);
+        return sink.messages.findLast(
+          (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+        );
+      };
+      // The page is on an extension's address; the ledger has not heard yet.
+      (page as unknown as { pageUrl: string }).pageUrl =
+        `chrome-extension://${"a".repeat(32)}/options.html`;
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).not.toContain("chrome-extension:");
+      const loginRef = `lgn_${"a".repeat(32)}`;
+      const filled = await send({
+        method: "Opensteer.fillLogin",
+        sessionId,
+        parameters: { loginRef, field: "password" },
+      });
+      const absentFill = await send({
+        method: "Opensteer.fillLogin",
+        sessionId: "unknown",
+        parameters: { loginRef, field: "password" },
+      });
+      expect((filled as { error: unknown }).error).toEqual(
+        (absentFill as { error: unknown }).error,
+      );
+      expect(fill).not.toHaveBeenCalled();
+      const picture = await send({ method: "Page.captureScreenshot", sessionId, parameters: {} });
+      expect(picture).toMatchObject({
+        type: "cdp.error",
+        error: { code: "not_found", message: "The browser page closed." },
+      });
+    } finally {
+      fill.mockRestore();
+      await controller.close();
       await ledger.close();
     }
   });
@@ -139,9 +1291,10 @@ describe("BrowserController", () => {
         type: "cdp.result",
         result: { tabs: [{ surfaceId: id, targetId: null, state: "suspended" }], nextCursor: null },
       });
+      // V4: this tab slept by closing, so its wake opened it again at its address, and says so.
       expect(await command(browserHostMethods.resumeTab, { surfaceId: id })).toMatchObject({
         type: "cdp.result",
-        result: { surfaceId: id, targetId: expect.any(String), reloaded: true },
+        result: { surfaceId: id, targetId: expect.any(String), reloaded: true, reopened: true },
       });
       expect(create).toHaveBeenCalledTimes(1);
       expect(await command("Target.attachToTarget", { targetId, flatten: true })).toMatchObject({
@@ -1146,6 +2299,7 @@ describe("BrowserController", () => {
                   surfaceId: activeSurfaceId(),
                   text: "x",
                   producerId: token,
+                  contextId: edit.contextId,
                 }
               : kind === "text"
                 ? { type: "input.text", surfaceId: activeSurfaceId(), edit, producerId: token }
@@ -1203,7 +2357,16 @@ describe("BrowserController", () => {
           clipboard: false,
         });
         const surfaceId = activeSurfaceId();
-        await controller.handle({ type: "input.command", surfaceId, command: "selectAll" });
+        const context = sink.messages
+          .filter((message) => message.type === "browser.editing")
+          .at(-1);
+        if (context?.type !== "browser.editing") throw new Error("Missing editing context");
+        await controller.handle({
+          type: "input.command",
+          surfaceId,
+          command: "selectAll",
+          contextId: context.context.contextId,
+        });
         expect(page.cdpSession.sent).toContainEqual(
           expect.objectContaining({
             method: "Input.dispatchKeyEvent",
@@ -1241,6 +2404,7 @@ describe("BrowserController", () => {
           type: "clipboard.copy",
           surfaceId,
           operationId: crypto.randomUUID(),
+          contextId: crypto.randomUUID(),
         });
         expect(
           page.cdpSession.sent
@@ -1289,10 +2453,13 @@ describe("BrowserController", () => {
           consumerToken,
           producerId: "00000000-0000-4000-8000-000000000002",
         };
+        const published = sink.messages.filter((m) => m.type === "browser.editing").at(-1);
+        const contextId =
+          published?.type === "browser.editing" ? published.context.contextId : crypto.randomUUID();
         await controller.handle(
           type === "clipboard.paste-data"
-            ? { ...identity, type, items: [{ type: "text/plain", size: 1 }] }
-            : { ...identity, type },
+            ? { ...identity, type, items: [{ type: "text/plain", size: 1 }], contextId }
+            : { ...identity, type, contextId },
         );
         expect(
           sink.messages.filter(
@@ -2338,12 +3505,17 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  // The reader's finding 1 on 5ebc2cbbd: the person turned to B and straight back to A while A's
+  // start was being prepared, and A stayed blank until an unrelated event. This test used to need
+  // a capture change to see A pictured again. The tab in view is pictured with nothing else
+  // happening, and a flip the follow view never saw costs no restart.
   it.each([false, true])(
-    "restarts after A→B→A cancels a cast attempt (startup pending: %s)",
+    "pictures A after A→B→A with nothing else happening, and restarts it once for a new capture (startup pending: %s)",
     async (pending) => {
       let capture = { width: 1280, height: 720, rasterScale: 1, revision: 1 };
       const listeners = new Set<() => void>();
       const attempts: AbortSignal[] = [];
+      const painted = Promise.withResolvers<void>();
       Object.assign(page, {
         capture: {
           read: () => capture,
@@ -2355,12 +3527,17 @@ describe("BrowserController", () => {
         applyGeometry: async () => undefined,
         settleRendering: async (signal: AbortSignal) => {
           attempts.push(signal);
+          // A's first paint comes only when the test says so, unless the wait is given up.
           if (pending && attempts.length === 1)
-            await new Promise<void>((resolve) =>
-              signal.addEventListener("abort", () => resolve(), { once: true }),
-            );
+            await Promise.race([
+              painted.promise,
+              new Promise<void>((resolve) =>
+                signal.addEventListener("abort", () => resolve(), { once: true }),
+              ),
+            ]);
         },
       });
+      const starts = () => commandsNamed("Page.startScreencast", page).length;
       const controller = createController();
       await controller.start();
       const first = activeSurfaceId();
@@ -2368,18 +3545,31 @@ describe("BrowserController", () => {
       await flushMicrotasks();
       const subscription = controller.handle({ type: "stream.subscribe", captureRegion: true });
       await flushMicrotasks();
-      const starts = commandsNamed("Page.startScreencast", page).length;
       await Promise.all([ledger.activate(second.id), ledger.activate(first)]);
+      await flushMicrotasks();
+      if (pending) {
+        // A's paint is still waited for: the person never left it, as the follow view reads it.
+        expect(attempts[0]?.aborted).toBe(false);
+        expect(starts()).toBe(0);
+        painted.resolve();
+      }
       await subscription;
       await flushMicrotasks();
-      if (pending) expect(attempts[0]?.aborted).toBe(true);
+      expect(starts()).toBe(1);
+      page.cdpSession.emit("Page.screencastFrame", {
+        sessionId: 1,
+        data: jpeg(1280, 720).toString("base64"),
+        metadata: { deviceWidth: 1280, deviceHeight: 720 },
+      });
+      await flushMicrotasks();
+      expect(sink.frames.at(-1)?.header.capture).toEqual({ width: 1280, height: 720, revision: 1 });
       capture = { width: 800, height: 600, rasterScale: 1, revision: 2 };
       for (const listener of listeners) listener();
       await flushMicrotasks();
-      expect(commandsNamed("Page.startScreencast", page)).toHaveLength(starts + 1);
+      expect(starts()).toBe(2);
       expect(attempts.at(-1)?.aborted).toBe(false);
       page.cdpSession.emit("Page.screencastFrame", {
-        sessionId: 1,
+        sessionId: 2,
         data: jpeg(800, 600).toString("base64"),
         metadata: { deviceWidth: 800, deviceHeight: 600 },
       });
@@ -2389,7 +3579,7 @@ describe("BrowserController", () => {
       page.cdpSession.emit("Page.javascriptDialogClosed", {});
       await flushMicrotasks();
       await controller.handle({ type: "viewport.set", surfaceId: first, width: 1300, height: 800 });
-      expect(commandsNamed("Page.startScreencast", page).length).toBeGreaterThan(starts + 1);
+      expect(starts()).toBeGreaterThan(2);
       await controller.close();
       await ledger.close();
     },
@@ -2594,7 +3784,8 @@ describe("BrowserController", () => {
         expect(ledger.binding(surfaceId)?.surface.loading).toBe(loading);
         expect(retainRendering).toHaveBeenCalledTimes(3);
         expect(holds).toBe(1);
-        expect(vi.getTimerCount()).toBe(0);
+        // The paint backoff timer is gone; only the running cast's first-frame timer remains.
+        expect(vi.getTimerCount()).toBe(1);
         page.cdpSession.emit("Page.screencastFrame", {
           sessionId: 1,
           data: jpeg(1280, 720).toString("base64"),
@@ -2602,6 +3793,7 @@ describe("BrowserController", () => {
         });
         await flushMicrotasks();
         expect(sink.frames).toHaveLength(1);
+        expect(vi.getTimerCount()).toBe(0);
         await controller.handle({ type: "stream.unsubscribe" });
         expect(holds).toBe(0);
       } finally {
@@ -3093,6 +4285,342 @@ describe("BrowserController", () => {
     }
   });
 
+  it("allows Target.detachFromTarget when mouseReleased has already been dispatched and is held by a dialog", async () => {
+    const controller = createController();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let pending: Promise<void> | undefined;
+    try {
+      await controller.start();
+      const attachId = crypto.randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: attachId,
+        command: {
+          method: "Target.attachToTarget",
+          parameters: { targetId: await page.targetId(), flatten: true },
+        },
+      });
+      const attached = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === attachId,
+      );
+      if (attached?.type !== "cdp.result") throw new Error("Agent attachment never completed.");
+      const { sessionId } = attached.result as { sessionId: string };
+      page.cdpSession.responses.set(
+        "Input.dispatchMouseEvent",
+        async (parameters: Record<string, unknown> | undefined) => {
+          if (parameters?.type === "mouseReleased") {
+            entered.resolve();
+            await release.promise;
+          }
+          return {};
+        },
+      );
+      await controller.handle({
+        type: "cdp.command",
+        requestId: crypto.randomUUID(),
+        command: {
+          method: "Input.dispatchMouseEvent",
+          sessionId,
+          parameters: { type: "mousePressed", button: "left", buttons: 1, x: 30, y: 40 },
+        },
+      });
+      pending = controller.handle({
+        type: "cdp.command",
+        requestId: crypto.randomUUID(),
+        command: {
+          method: "Input.dispatchMouseEvent",
+          sessionId,
+          parameters: { type: "mouseReleased", button: "left", buttons: 0, x: 30, y: 40 },
+        },
+      });
+      await entered.promise;
+      page.cdpSession.emit("Page.javascriptDialogOpening", { message: "Delete?", type: "confirm" });
+      const detachId = crypto.randomUUID();
+      await withTimeout(
+        controller.handle({
+          type: "cdp.command",
+          requestId: detachId,
+          command: { method: "Target.detachFromTarget", parameters: { sessionId } },
+        }),
+        1000,
+        { timeoutError: () => new Error("Detach waited behind dialog-held mouseReleased.") },
+      );
+      expect(sink.messages).toContainEqual(
+        expect.objectContaining({ type: "cdp.result", requestId: detachId }),
+      );
+      expect(cdpRouter.attachedTargetId(validClaims().sessionId, sessionId)).toBeNull();
+    } finally {
+      release.resolve();
+      await pending;
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("does not emit browser.error when a closing tab notifies its capture listener while streaming", async () => {
+    const second = new FakePage();
+    const listeners = new Set<() => void>();
+    let capture: { width: number; height: number; rasterScale: number; revision: number } | null = {
+      width: 1280,
+      height: 720,
+      rasterScale: 1,
+      revision: 1,
+    };
+    Object.assign(second, {
+      capture: {
+        read: () => capture,
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      applyGeometry: async () => undefined,
+    });
+    const originalClose = second.close.bind(second);
+    second.close = async () => {
+      // Simulate Electron's terminal close clearing capture and notifying listeners
+      // before the renderer's close confirmation arrives.
+      capture = null;
+      for (const listener of listeners) listener();
+      for (let turn = 0; turn < 10; turn += 1) await flushMicrotasks();
+      await originalClose();
+    };
+    const controller = createController();
+    try {
+      await controller.start();
+      vi.spyOn(context, "createPage").mockImplementationOnce(async () => {
+        context.addPage(second);
+        return second;
+      });
+      await controller.handle({ type: "surface.open", url: "https://example.test/closing" });
+      await vi.waitFor(() => expect(ledger.snapshot()).toHaveLength(2));
+      const secondId = ledger.surfaceIdForTarget(await second.targetId())!;
+      expect(secondId).toBeDefined();
+      await controller.handle({ type: "surface.activate", surfaceId: secondId });
+      await controller.handle({ type: "stream.subscribe" });
+      await vi.waitFor(() => expect(command("Page.startScreencast", second)).toBeDefined());
+      await controller.handle({ type: "surface.close", surfaceId: secondId });
+      for (let turn = 0; turn < 10; turn += 1) await flushMicrotasks();
+      expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("closes an agent's tab or a person's tab without waiting on a held size write or drag cancel (X3)", async () => {
+    const controller = createController();
+    const heldSize = gate({ label: "agent-tab held size", deadlineMs: 2_000 });
+    const heldPersonSize = gate({ label: "person-tab held size", deadlineMs: 2_000 });
+    const heldDragCancel = gate({ label: "person-tab held drag cancel", deadlineMs: 2_000 });
+    let pendingAgentViewport1: Promise<void> | undefined;
+    let pendingAgentViewport2: Promise<void> | undefined;
+    let pendingPersonViewport: Promise<void> | undefined;
+    try {
+      await controller.start();
+
+      // 1. Agent opens a tab; view starts a size write that Chromium holds; agent closes the tab.
+      const agentPage = new FakePage({ title: "Agent tab", url: "https://example.test/agent" });
+      vi.spyOn(context, "createPage").mockImplementationOnce(async () => {
+        context.addPage(agentPage);
+        return agentPage;
+      });
+      const createId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: createId,
+        command: {
+          method: "Target.createTarget",
+          parameters: { url: "https://example.test/agent" },
+        },
+      });
+      const created = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === createId,
+      );
+      if (created?.type !== "cdp.result") throw new Error("Target.createTarget failed");
+      const agentTargetId = String((created.result as { targetId: string }).targetId);
+      const agentSurfaceId = ledger.surfaceIdForTarget(agentTargetId)!;
+      expect(agentSurfaceId).toBeDefined();
+
+      agentPage.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () =>
+        heldSize.enter(),
+      );
+      pendingAgentViewport1 = controller.handle({
+        type: "viewport.follow",
+        surfaceId: agentSurfaceId,
+        width: 900,
+        height: 650,
+      });
+      await heldSize.entered;
+      pendingAgentViewport2 = controller.handle({
+        type: "viewport.follow",
+        surfaceId: agentSurfaceId,
+        width: 880,
+        height: 640,
+      });
+
+      const closeId = randomUUID();
+      await withTimeout(
+        controller.handle({
+          type: "cdp.command",
+          requestId: closeId,
+          command: { method: "Target.closeTarget", parameters: { targetId: agentTargetId } },
+        }),
+        500,
+        { timeoutError: () => new Error("Target.closeTarget waited on held viewport.follow") },
+      );
+      expect(
+        sink.messages.find(
+          (message) => message.type === "cdp.result" && message.requestId === closeId,
+        ),
+      ).toMatchObject({ type: "cdp.result", result: { success: true } });
+      expect(ledger.snapshot().map((surface) => surface.id)).not.toContain(agentSurfaceId);
+
+      // 2. Person tab has a held pointer drag and an in-flight size write; person closes it.
+      const personPage = new FakePage({ title: "Person tab", url: "https://example.test/person" });
+      vi.spyOn(context, "createPage").mockImplementationOnce(async () => {
+        context.addPage(personPage);
+        return personPage;
+      });
+      await controller.handle({ type: "surface.open", url: "https://example.test/person" });
+      const personSurfaceId = ledger.surfaceIdForTarget(await personPage.targetId())!;
+      expect(personSurfaceId).toBeDefined();
+      const personViewport = ledger.viewportOf(personSurfaceId)!;
+      await controller.handle({
+        type: "input.pointer",
+        action: "down",
+        button: "left",
+        surfaceId: personSurfaceId,
+        viewportWidth: personViewport.width,
+        viewportHeight: personViewport.height,
+        x: 0.25,
+        y: 0.25,
+        producerId: "00000000-0000-4000-8000-000000000001",
+      });
+      personPage.cdpSession.responses.set("Input.cancelDragging", () => heldDragCancel.enter());
+      personPage.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () =>
+        heldPersonSize.enter(),
+      );
+      pendingPersonViewport = controller.handle({
+        type: "viewport.follow",
+        surfaceId: personSurfaceId,
+        width: 840,
+        height: 600,
+      });
+      await heldDragCancel.entered;
+
+      await withTimeout(
+        controller.handle({ type: "surface.close", surfaceId: personSurfaceId }),
+        500,
+        { timeoutError: () => new Error("surface.close waited on held size/drag cleanup") },
+      );
+      expect(ledger.snapshot().map((surface) => surface.id)).not.toContain(personSurfaceId);
+
+      heldSize.release();
+      heldDragCancel.release();
+      heldPersonSize.release();
+      await Promise.all([pendingAgentViewport1, pendingAgentViewport2, pendingPersonViewport]);
+      expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
+    } finally {
+      heldSize.release();
+      heldDragCancel.release();
+      heldPersonSize.release();
+      await Promise.allSettled([
+        pendingAgentViewport1,
+        pendingAgentViewport2,
+        pendingPersonViewport,
+      ]);
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("keeps a script detach pending while input cleanup is blocked by a dialog", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const press = Promise.withResolvers<void>();
+    const releasePress = Promise.withResolvers<void>();
+    let pressing: Promise<void> | undefined;
+    let detaching: Promise<void> | undefined;
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const send = (
+        requestId: string,
+        command: { method: string; parameters: Record<string, unknown>; sessionId?: string },
+      ) =>
+        controller.handle({
+          type: "cdp.command",
+          requestId,
+          scriptAttachmentId,
+          replyBudget,
+          command,
+        });
+      const attachId = randomUUID();
+      await send(attachId, { method: "Target.attachToTarget", parameters: { targetId } });
+      const attached = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === attachId,
+      );
+      if (attached?.type !== "cdp.result" || typeof attached.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const { sessionId } = attached.result;
+      page.cdpSession.responses.set(
+        "Input.dispatchMouseEvent",
+        async (parameters: Record<string, unknown> | undefined) => {
+          if (parameters?.type === "mousePressed") {
+            press.resolve();
+            await releasePress.promise;
+          }
+          return {};
+        },
+      );
+      pressing = send(randomUUID(), {
+        method: "Input.dispatchMouseEvent",
+        sessionId,
+        parameters: { type: "mousePressed", button: "left", buttons: 1, x: 30, y: 40 },
+      });
+      await press.promise;
+      page.cdpSession.emit("Page.javascriptDialogOpening", { message: "Held", type: "alert" });
+      const detachId = randomUUID();
+      detaching = send(detachId, { method: "Target.detachFromTarget", parameters: { sessionId } });
+      const cancelId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: cancelId,
+        scriptAttachmentId,
+        command: {
+          method: browserHostMethods.cancelScriptCommand,
+          parameters: { requestId: detachId },
+        },
+      });
+      const replies = () =>
+        sink.messages.filter((message) => "requestId" in message && message.requestId === detachId);
+      expect(replies()).toEqual([]);
+      page.cdpSession.emit("Page.javascriptDialogClosed", { result: false });
+      releasePress.resolve();
+      await Promise.all([pressing, detaching]);
+      expect(replies()).toEqual([expect.objectContaining({ type: "cdp.result" })]);
+      expect(
+        cdpRouter.attachedTargetId(validClaims().sessionId, sessionId, scriptAttachmentId),
+      ).toBeNull();
+    } finally {
+      page.cdpSession.emit("Page.javascriptDialogClosed", { result: false });
+      releasePress.resolve();
+      await Promise.allSettled([pressing, detaching]);
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("clears only the producer's own hover and never interrupts a held drag", async () => {
     const controller = createController();
     await controller.start();
@@ -3358,6 +4886,7 @@ describe("BrowserController", () => {
       surfaceId: originalSurfaceId,
       text: "pasted",
       type: "clipboard.paste",
+      contextId: crypto.randomUUID(),
     });
 
     const opened = context.pages().at(-1);
@@ -3819,15 +5348,412 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
-  it("reports only the latest human action on its exact target without typed content", async () => {
-    const controller = createController();
+  // CZ5: a paste goes into the field it was made for, or nowhere: one made for a context the page
+  // has left is refused whole, and nothing is typed.
+  it("refuses a paste made for a context the page has left", async () => {
+    const controller = createController(
+      undefined,
+      {},
+      validClaims({ editingVersion: 2, clipboard: false }),
+    );
     await controller.start();
     const active = ledger.active();
     if (!active) throw new Error("Missing active surface");
+    await vi.waitFor(() =>
+      expect(sink.messages.some((message) => message.type === "browser.editing")).toBe(true),
+    );
+    const published = sink.messages.filter((message) => message.type === "browser.editing").at(-1);
+    if (published?.type !== "browser.editing") throw new Error("Missing editing context");
+    await controller.handle({
+      type: "clipboard.paste",
+      surfaceId: active.surface.id,
+      text: "secret",
+      contextId: crypto.randomUUID(),
+    });
+    expect(commandsNamed("Input.insertText", page)).toHaveLength(0);
+    // The person is told.
+    expect(sink.messages.filter((message) => message.type === "browser.error")).toMatchObject([
+      { error: { message: "The field changed. Paste again." } },
+    ]);
+    await controller.handle({
+      type: "clipboard.paste",
+      surfaceId: active.surface.id,
+      text: "secret",
+      contextId: published.context.contextId,
+    });
+    expect(commandsNamed("Input.insertText", page)).toHaveLength(1);
+    await controller.close();
+    await ledger.close();
+  });
+
+  // PH2: live in-page focus check for clipboard.paste-data and clipboard.paste after all awaits,
+  // and paste over selection refused as one unit when its preceding deletion edit was refused.
+  it("verifies focus live in page right before pasting and refuses paste-over-selection after a refused deletion", async () => {
+    const cdp = page.cdpSession;
+    let clipboardOpenHook: (() => void) | null = null;
+    const controller = new BrowserController({
+      cdpRouter,
+      claims: validClaims({ editingVersion: 2, clipboard: true }),
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+      clipboard: {
+        open: async () => {
+          clipboardOpenHook?.();
+          return { close: async () => null };
+        },
+      },
+    });
+    await controller.start();
+    try {
+      await flushMicrotasks();
+      const active = ledger.active();
+      if (!active) throw new Error("Missing active surface");
+      const world = cdp.sent.find(
+        (entry) =>
+          entry.method === "Runtime.addBinding" &&
+          String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
+      )!.parameters!;
+      cdp.emit("Runtime.executionContextCreated", {
+        context: {
+          id: 7,
+          uniqueId: globalThis.crypto.randomUUID(),
+          name: world.executionContextName,
+          origin: "https://example.test",
+          auxData: { frameId: "main", isDefault: false },
+        },
+      });
+      cdp.emit("Runtime.bindingCalled", {
+        name: world.name,
+        executionContextId: 7,
+        payload: JSON.stringify({
+          fieldId: "1:control:text:false:false",
+          selectionRevision: 0,
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        }),
+      });
+      await flushMicrotasks();
+      const firstContext = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (firstContext?.type !== "browser.editing") throw new Error("Missing editing context");
+      const ctx = firstContext.context.contextId;
+      const producer = crypto.randomUUID();
+
+      // 1) Focus flips in page DURING clipboard.open (after admitsInsertion passed): must refuse!
+      let liveOk = true;
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (expr.includes("prepareClipboard"))
+          return {
+            result: { value: liveOk ? { ok: true } : { ok: false, reason: "focus-changed" } },
+          };
+        if (expr.includes("prepare("))
+          return { result: { value: { ok: false, reason: "range-mismatch" } } };
+        return { result: { value: false } };
+      });
+      clipboardOpenHook = () => {
+        liveOk = false;
+      };
+      const op1 = crypto.randomUUID();
+      const data = Buffer.from("secret");
+      const pasteDone = controller.handle({
+        type: "clipboard.paste-data",
+        surfaceId: active.surface.id,
+        operationId: op1,
+        items: [{ type: "text/plain", size: data.length }],
+        contextId: ctx,
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "clipboard.part",
+        part: { operationId: op1, index: 0, data: data.toString("base64") },
+        producerId: producer,
+      });
+      await pasteDone;
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === op1),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      // 2) Paste over selection (follows: true) after its preceding deletion edit was refused:
+      // even though ctx is in earlier of the same field after mismatch rotation, paste must refuse.
+      clipboardOpenHook = null;
+      liveOk = true;
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: ctx, before: "sel", after: "", text: "" },
+        producerId: producer,
+      });
+      const op2 = crypto.randomUUID();
+      const followPaste = controller.handle({
+        type: "clipboard.paste-data",
+        surfaceId: active.surface.id,
+        operationId: op2,
+        items: [{ type: "text/plain", size: data.length }],
+        contextId: ctx,
+        follows: true,
+        producerId: producer,
+      } as never);
+      await controller.handle({
+        type: "clipboard.part",
+        part: { operationId: op2, index: 0, data: data.toString("base64") },
+        producerId: producer,
+      });
+      await followPaste;
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === op2),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      // 3) Legacy clipboard.paste also verifies focus live in page.
+      liveOk = false;
+      const latestContext = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (latestContext?.type !== "browser.editing") throw new Error("Missing latest context");
+      await controller.handle({
+        type: "clipboard.paste",
+        surfaceId: active.surface.id,
+        text: "secret",
+        contextId: latestContext.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.insertText", page)).toHaveLength(0);
+
+      // 4) PH5: clipboard.copy and clipboard.cut verify contextId and live non-sensitive focus in page.
+      liveOk = true;
+      const staleOp = crypto.randomUUID();
+      await controller.handle({
+        type: "clipboard.cut",
+        surfaceId: active.surface.id,
+        operationId: staleOp,
+        contextId: crypto.randomUUID(),
+        producerId: producer,
+      });
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === staleOp),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      clipboardOpenHook = () => {
+        liveOk = false;
+      };
+      const liveCutOp = crypto.randomUUID();
+      await controller.handle({
+        type: "clipboard.cut",
+        surfaceId: active.surface.id,
+        operationId: liveCutOp,
+        contextId: latestContext.context.contextId,
+        producerId: producer,
+      });
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === liveCutOp),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      // 5) P2 (S2): typing over a selection (input.text with follows: true) is refused when its
+      // preceding selection removal was refused under the same context.
+      clipboardOpenHook = null;
+      liveOk = true;
+      const beforeS2 = sink.messages.filter((message) => message.type === "browser.editing").at(-1);
+      if (beforeS2?.type !== "browser.editing") throw new Error("Missing context for S2");
+      const s2Ctx = beforeS2.context.contextId;
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: s2Ctx, before: "world", after: "", text: "" },
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: s2Ctx, before: "", after: "", text: "X" },
+        follows: true,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.insertText", page)).toHaveLength(0);
+
+      // 6) P3 (S1): under an earlier context of the same field when the live selection is NOT
+      // collapsed, relative insertion, deleteBackward, paste, and cut are all refused.
+      const earlierCtx = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (earlierCtx?.type !== "browser.editing") throw new Error("Missing earlierCtx");
+      cdp.emit("Runtime.bindingCalled", {
+        executionContextId: 7,
+        name: world.name,
+        payload: JSON.stringify({
+          fieldId: "1:control:text:false:false",
+          selectionRevision: 2,
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        }),
+      });
+      await flushMicrotasks();
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (
+          expr.includes("prepare(") ||
+          expr.includes("prepareClipboard(") ||
+          expr.includes("beginInput(")
+        ) {
+          if (expr.includes('"requireCollapsed":true') || expr.includes('"earlier":true')) {
+            return { result: { value: { ok: false, reason: "selection-not-collapsed" } } };
+          }
+          return { result: { value: { ok: true } } };
+        }
+        return { result: { value: false } };
+      });
+      const insertsBefore = commandsNamed("Input.insertText", page).length;
+      const keysBefore = commandsNamed("Input.dispatchKeyEvent", page).length;
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: earlierCtx.context.contextId, before: "", after: "", text: "a" },
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "input.command",
+        surfaceId: active.surface.id,
+        command: "deleteBackward",
+        contextId: earlierCtx.context.contextId,
+        producerId: producer,
+      });
+      const nonCollapsedPasteOp = crypto.randomUUID();
+      const pasteRefused = controller.handle({
+        type: "clipboard.paste-data",
+        surfaceId: active.surface.id,
+        operationId: nonCollapsedPasteOp,
+        items: [{ type: "text/plain", size: data.length }],
+        contextId: earlierCtx.context.contextId,
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "clipboard.part",
+        part: { operationId: nonCollapsedPasteOp, index: 0, data: data.toString("base64") },
+        producerId: producer,
+      });
+      await pasteRefused;
+      const nonCollapsedCutOp = crypto.randomUUID();
+      await controller.handle({
+        type: "clipboard.cut",
+        surfaceId: active.surface.id,
+        operationId: nonCollapsedCutOp,
+        contextId: earlierCtx.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.insertText", page)).toHaveLength(insertsBefore);
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(keysBefore);
+      expect(
+        sink.messages.find(
+          (m) => m.type === "clipboard.result" && m.operationId === nonCollapsedPasteOp,
+        ),
+      ).toMatchObject({ outcome: "refused" });
+      expect(
+        sink.messages.find(
+          (m) => m.type === "clipboard.result" && m.operationId === nonCollapsedCutOp,
+        ),
+      ).toMatchObject({ outcome: "refused" });
+
+      // 7) S7: command() verifies live field in-page (refusing when live field changed/readOnly
+      // even before the binding report arrives).
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (expr.includes("beginInput(")) {
+          return { result: { value: { ok: false, reason: "focus-changed" } } };
+        }
+        return { result: { value: { ok: true } } };
+      });
+      const currentAfterEarlier = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (currentAfterEarlier?.type !== "browser.editing")
+        throw new Error("Missing current context for S7");
+      const keysBeforeS7 = commandsNamed("Input.dispatchKeyEvent", page).length;
+      await controller.handle({
+        type: "input.command",
+        surfaceId: active.surface.id,
+        command: "selectAll",
+        contextId: currentAfterEarlier.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(keysBeforeS7);
+
+      // 8) S6: a refused edit when no field is focused changes NO context and emits NO rotation.
+      cdp.emit("Runtime.bindingCalled", {
+        executionContextId: 7,
+        name: world.name,
+        payload: JSON.stringify({
+          fieldId: null,
+          selectionRevision: 0,
+          field: null,
+          caret: null,
+        }),
+      });
+      await flushMicrotasks();
+      const editingBeforeS6 = sink.messages.filter((m) => m.type === "browser.editing");
+      const noFieldCtx = editingBeforeS6.at(-1);
+      if (noFieldCtx?.type !== "browser.editing" || noFieldCtx.context.field !== null)
+        throw new Error("Expected no-field editing context before S6");
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: noFieldCtx.context.contextId, before: "", after: "", text: "x" },
+        producerId: producer,
+      });
+      const editingAfterS6 = sink.messages.filter((m) => m.type === "browser.editing");
+      expect(editingAfterS6).toHaveLength(editingBeforeS6.length);
+      expect(editingAfterS6.at(-1)).toEqual(noFieldCtx);
+
+      // 9) S7 (no-field branch): a page-level command while observer believes no field is focused
+      // must still verify live in-page that no editable field actually took focus.
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
+        const expr = String(params?.expression ?? "");
+        if (expr.includes("beginInput(") && expr.includes('"fieldId":null')) {
+          return { result: { value: { ok: false, reason: "focus-changed" } } };
+        }
+        return { result: { value: { ok: true } } };
+      });
+      const keysBeforeNoFieldCmd = commandsNamed("Input.dispatchKeyEvent", page).length;
+      await controller.handle({
+        type: "input.command",
+        surfaceId: active.surface.id,
+        command: "selectAll",
+        contextId: noFieldCtx.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(keysBeforeNoFieldCmd);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("reports only the latest human action on its exact target without typed content", async () => {
+    // CZ5: a paste names the field it was made for: the page's context, published with editing.
+    const controller = createController(
+      undefined,
+      {},
+      validClaims({ editingVersion: 2, clipboard: false }),
+    );
+    await controller.start();
+    const active = ledger.active();
+    if (!active) throw new Error("Missing active surface");
+    await vi.waitFor(() =>
+      expect(sink.messages.some((message) => message.type === "browser.editing")).toBe(true),
+    );
+    const published = sink.messages.filter((message) => message.type === "browser.editing").at(-1);
+    if (published?.type !== "browser.editing") throw new Error("Missing editing context");
     await controller.handle({
       type: "clipboard.paste",
       surfaceId: active.surface.id,
       text: "never-include-this-secret-in-activity",
+      contextId: published.context.contextId,
     });
     await controller.handle({
       command: {

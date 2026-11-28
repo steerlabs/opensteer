@@ -77,17 +77,34 @@ describe("Settings → Browser profiles", () => {
         },
         {
           profileId: "bpr_deleted_restart",
-          computerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
+          computerId: RunnerIdSchema.parse("rnr_99999999-9999-4999-8999-999999999999"),
           state: "pending-restart",
         },
       ],
     });
     expect(page.textContent).toContain("Will be erased when Studio Mac is back online");
-    expect(page.textContent).toContain("Erased after Opensteer restarts on Studio Mac");
+    expect(page.textContent).toContain("Erased after Opensteer restarts on Desk Mac");
     expect(rows(page).filter((row) => row.includes("Deleted profile"))).toHaveLength(2);
     expect(page.querySelectorAll('[aria-label^="Manage "]')).toHaveLength(2);
     await setDeletions([]);
     expect(page.textContent).not.toContain("Deleted profile");
+  });
+
+  it("updates the erasure row when only the browser pool wakes", async () => {
+    const computerId = RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888");
+    const parked = {
+      runnerId: computerId,
+      phase: "parked" as const,
+      since: "2026-11-28T00:00:00Z",
+    };
+    const { page, setBrowserPools } = await mount({
+      pools: [parked],
+      deletions: [{ profileId: "bpr_deleted", computerId, state: "pending-computer" }],
+    });
+    expect(page.textContent).toContain("Will be erased when the browser next starts");
+    await setBrowserPools([{ ...parked, phase: "running" }]);
+    expect(page.textContent).not.toContain("Will be erased when the browser next starts");
+    expect(page.textContent).toContain("Not erased yet");
   });
 
   it("renames a profile in place", async () => {
@@ -138,6 +155,7 @@ async function mount(
     readonly manageable?: boolean;
     readonly path?: string;
     readonly deletions?: HostSnapshot["browserProfileDeletions"];
+    readonly pools?: HostSnapshot["browserPools"];
     readonly unreadable?: boolean;
     /** Whether a complete inventory of the profiles was read before the failure. */
     readonly held?: boolean;
@@ -159,23 +177,34 @@ async function mount(
   // Each command's effect on the snapshot is the client's, covered with its patches.
   const dispatch = vi.spyOn(hostClient, "dispatch").mockResolvedValue(undefined as never);
   const base = hostClient.getSnapshot();
-  const snapshot: HostSnapshot = {
+  const snapshot = {
     ...base,
     browserProfileManageAvailable: input.manageable ?? true,
     browserProfileDeletions: input.deletions,
+    browserPools: input.pools,
     machines: [
       {
         ...base.machines[0]!,
         id: "computer-delete",
         selfRunnerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
         name: "Studio Mac",
+        status: input.pools ? "online" : "offline",
+      },
+      {
+        ...base.machines[0]!,
+        id: "restart-device",
+        selfRunnerId: RunnerIdSchema.parse("rnr_99999999-9999-4999-8999-999999999999"),
+        name: "Desk Mac",
+        status: "online",
       },
     ],
     browserProfiles: [
       { homeRunnerId: null, id: "bpr_work", name: "Work" },
       { homeRunnerId: null, id: "bpr_shopping", name: "Shopping" },
     ],
-  };
+  } satisfies HostSnapshot;
+  let liveSnapshot = snapshot;
+  if (input.pools) vi.spyOn(hostClient, "getSnapshot").mockImplementation(() => liveSnapshot);
   const context = { hostClient, snapshot } as unknown as ShellContext;
   const container = document.createElement("div");
   document.body.append(container);
@@ -199,6 +228,10 @@ async function mount(
     );
   await act(async () => paint());
   return {
+    async setBrowserPools(browserPools: HostSnapshot["browserPools"]) {
+      liveSnapshot = { ...liveSnapshot, browserPools };
+      await act(async () => hostClient.setBrowserPools(browserPools));
+    },
     async setDeletions(deletions: HostSnapshot["browserProfileDeletions"]) {
       snapshot.browserProfileDeletions = deletions;
       await act(async () => paint());

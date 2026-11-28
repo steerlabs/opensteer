@@ -93,7 +93,7 @@ export function GeneralSettingsController(): ReactNode {
           : { ...current, runOutcomesEnabled: enabled };
       runNotification(
         () => notifications.registration.setPreferences(next),
-        "That notification setting did not reach your Opensteer Account. Try again.",
+        "That notification setting did not reach your Opensteer account. Try again.",
       );
     },
     [notifications.registration, registrationState.preferences, runNotification],

@@ -8,7 +8,6 @@ import {
   type ComposerChange,
   type ComposerEditorControl,
 } from "./composer-editor.js";
-import type { ComposerScope } from "./composer-editor-document.js";
 import {
   clipboardEvent,
   composerField,
@@ -28,9 +27,8 @@ afterEach(() => {
 });
 
 const task = "[Fix \\[the\\] build 🦊](opensteer:thr_12345678-1234-4234-8234-123456789abc)";
-const channel = "[design](https://team.example/c/tch_12345678-1234-4234-8234-123456789abc)";
 
-function mount(initial: string, scope: ComposerScope = "personal", className?: string) {
+function mount(initial: string, className?: string) {
   const node = document.createElement("div");
   document.body.append(node);
   root = createRoot(node);
@@ -49,7 +47,6 @@ function mount(initial: string, scope: ComposerScope = "personal", className?: s
             render();
           }}
           ref={ref}
-          scope={scope}
           value={value}
         />,
       ),
@@ -69,13 +66,19 @@ function mount(initial: string, scope: ComposerScope = "personal", className?: s
 
 describe("composer editor", () => {
   it("styles the editable element itself, so its whole box takes the caret", () => {
-    const { field } = mount("", "personal", "composer__input");
+    const { field } = mount("", "composer__input");
     expect(field.classList.contains("composer__input")).toBe(true);
     expect(field.isContentEditable || field.getAttribute("contenteditable")).toBeTruthy();
   });
 
+  it("injects no inline style element so strict style-src CSP allows mounting it", () => {
+    const before = document.querySelectorAll("style").length;
+    mount("hello");
+    expect(document.querySelectorAll("style").length).toBe(before);
+  });
+
   it("rebuilds references from Markdown and gives the source back byte for byte", () => {
-    const source = `Before ${task}\nthen ${channel} and \\[not a link\\](x) \`${task}\``;
+    const source = `Before ${task}\nthen [a.ts](/tmp/a.ts:2) and \\[not a link\\](x) \`${task}\``;
     const { editor, field } = mount(source);
     expect(composerText(field)).toBe(source);
     // A caret placed inside a reference lands on its nearer edge.
@@ -122,16 +125,6 @@ describe("composer editor", () => {
     selectSource(field, 4 + task.length);
     pressKey(field, "Backspace");
     expect(composerText(field)).toBe("see  ok");
-  });
-
-  it("keeps personal references as editable source in a team draft", () => {
-    const { field } = mount(`${task} ${channel} `, "team");
-    selectSource(field, task.length);
-    pressKey(field, "Backspace");
-    expect(composerText(field)).toBe(`${task.slice(0, -1)} ${channel} `);
-    selectSource(field, composerText(field).length - 1);
-    pressKey(field, "Backspace");
-    expect(composerText(field)).toBe(`${task.slice(0, -1)}  `);
   });
 
   it("pastes plain-text Markdown as one undo step and never pasted HTML", () => {

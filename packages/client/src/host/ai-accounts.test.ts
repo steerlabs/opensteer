@@ -115,7 +115,6 @@ describe("engineGroups", () => {
     id: "environment-main",
     kind: "main",
     name: "Main",
-    providerStateModes: ["ambient", "isolated"],
     runnerId: "runner-main",
     status: "connected",
   };
@@ -129,6 +128,40 @@ describe("engineGroups", () => {
     runtimeRevision: 1,
     sourceId: driverKind === "claude" ? "anthropic" : "openai",
     stateKind: "isolated",
+  });
+
+  it("offers the engines a computer can run and says how to install the rest", () => {
+    const finds = "Opensteer finds it within a minute; if it doesn't, restart Opensteer.";
+    const refused: Record<string, string> = {
+      claude: `Install Claude Code from https://code.claude.com/docs/en/setup. ${finds}`,
+      cursor: `Cursor's CLI is not installed on this computer. Install it from https://cursor.com/install. ${finds}`,
+      grok: `Grok's CLI is not installed on this computer. Install it from https://x.ai/cli. ${finds}`,
+      muse: `Muse Code's CLI is not installed on this computer. Install it from https://dev.meta.ai/docs/muse-code. ${finds}`,
+    };
+    const home: EnvironmentSummary = {
+      ...environment,
+      harnessDrivers: environment.harnessDrivers.flatMap((driver): HarnessDriverSummary[] => {
+        const reason = refused[driver.driverKind];
+        if (driver.driverKind === "legacy-engine") return [];
+        return reason
+          ? [{ driverKind: driver.driverKind, readiness: "unavailable", reason }]
+          : [driver];
+      }),
+    };
+    const groups = engineGroups(home, []);
+    expect(groups.filter((group) => group.addable).map((group) => group.driverKind)).toEqual([
+      "codex",
+      "antigravity",
+      "opencode",
+      "pi",
+    ]);
+    expect(
+      Object.fromEntries(
+        groups
+          .filter((group) => !group.addable)
+          .map((group) => [group.driverKind, group.unavailableReason]),
+      ),
+    ).toEqual(refused);
   });
 
   it("lists every usable engine in catalog order with its accounts, whether or not it has any", () => {
@@ -204,9 +237,12 @@ describe("engineGroups", () => {
     expect(groups.some((group) => group.driverKind === "legacy-engine")).toBe(false);
   });
 
-  it("offers no adding where the work location cannot hold a private sign-in", () => {
-    const groups = engineGroups({ ...environment, providerStateModes: ["ambient"] }, []);
+  it("offers no adding where the work location runs no engines", () => {
+    const groups = engineGroups({ ...environment, harnessDrivers: [] }, [
+      account("claude", "Claude Code"),
+    ]);
 
+    expect(groups.map((group) => group.driverKind)).toEqual(["claude"]);
     expect(groups.some((group) => group.addable)).toBe(false);
   });
 
@@ -359,7 +395,6 @@ describe("an AI engine row's actions", () => {
     id: "environment-main",
     kind: "main",
     name: "Main",
-    providerStateModes: ["isolated"],
     runnerId: "runner-main",
     status: "connected",
   } satisfies EnvironmentSummary;

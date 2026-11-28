@@ -4,7 +4,7 @@ import { hideMenu } from "expo-dev-client";
 import * as SplashScreen from "expo-splash-screen";
 import * as Clipboard from "expo-clipboard";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button, KeyboardAvoidingView, Platform, Text, View } from "react-native";
+import { Button, KeyboardAvoidingView, Platform, ScrollView, Text, View } from "react-native";
 import type { EditingOperation } from "@opensteer/client/editing";
 import type { WebSocketClient } from "@opensteer/client/host";
 import { DisplayStreams, type DisplayLease } from "@opensteer/client/integrations";
@@ -13,13 +13,16 @@ import type { EditingContext } from "@opensteer/protocol/editing";
 import { PageTyping } from "../../../../src/browser/browser-page.js";
 import { DisplayControls } from "../../../../src/computers/display-input.js";
 import { createMobileClipboardPort } from "../../src/clipboard.js";
+import { FarField } from "../remote-input-port.js";
 
 // This Metro entry is a native viewer boundary fixture, never a shipping entry or a real target.
 const coordinator = `http://${Platform.OS === "android" ? "10.0.2.2" : "127.0.0.1"}:18766`;
 const copiedText = "fixture clipboard 👩‍💻";
 const picture = { generation: 1, width: 200, height: 400 };
-const contextAt = (field: number): EditingContext => ({
-  contextId: `00000000-0000-4000-8000-${String(field).padStart(12, "0")}`,
+const contextId = (field: number) => `00000000-0000-4000-8000-${String(field).padStart(12, "0")}`;
+const contextAt = (field: number): EditingContext => contextFor(contextId(field));
+const contextFor = (id: string): EditingContext => ({
+  contextId: id,
   field: { kind: "text", multiline: true, sensitive: false, autocapitalize: "none" },
   caret: { x: 0.5, y: 0.5, height: 0.02 },
 });
@@ -96,7 +99,15 @@ function NativeEditingJourney() {
   const [context, setContext] = useState(() => contextAt(1));
   const [typing, setTyping] = useState(true);
   const rejectNext = useRef(false);
-  const targets = useRef(new Map<string, string>());
+  /*
+   * The far page: each field is the port's FarField (tests/remote-input-port.ts), the model
+   * tests/editing-far-model.test.ts holds to the real applier in Chromium. It takes an edit only
+   * where its own text matches the edit's before and after, composes, pastes and runs the caret
+   * and deletion commands as a page does, and rotates its context on a refusal. Keyed by every
+   * context it has had; the legacy path's field takes any context.
+   */
+  const fields = useRef(new Map<string, FarField>());
+  const rotations = useRef(0);
   const currentContext = useRef(context);
   currentContext.current = context;
   const field = useRef(1);
@@ -156,6 +167,23 @@ function NativeEditingJourney() {
     setContext(next);
     socket.current?.publish(next);
   };
+  const fieldFor = (id: string) => {
+    let far = fields.current.get(id);
+    if (far) return far;
+    far = new FarField();
+    far.contextId = id === "legacy" ? null : id;
+    // A rotation's context is the page's next one: never a context another field has had.
+    far.nextContextId = () => contextId(1_000_000 + ++rotations.current);
+    far.onRotate = (next) => {
+      fields.current.set(next, far);
+      const rotated = contextFor(next);
+      log("context", rotated);
+      setContext(rotated);
+      socket.current?.publish(rotated);
+    };
+    fields.current.set(id, far);
+    return far;
+  };
   const send = (operation: EditingOperation) => {
     log(
       "browser-operation",
@@ -175,14 +203,22 @@ function NativeEditingJourney() {
       queueMicrotask(change);
       return false;
     }
-    if (operation.kind === "edit" && operation.edit.contextId !== "legacy") {
-      const { contextId, before = "", after = "", text } = operation.edit;
-      const previous = targets.current.get(contextId) ?? "";
-      if (after || !previous.endsWith(before)) throw new Error("Fixture target range mismatch");
-      const value = previous.slice(0, previous.length - before.length) + text;
-      targets.current.set(contextId, value);
-      log("target", { contextId, value });
-    }
+    const id =
+      mode === "baseline"
+        ? "legacy"
+        : operation.kind === "edit"
+          ? operation.edit.contextId
+          : operation.kind === "compose"
+            ? operation.composition.contextId
+            : currentContext.current.contextId;
+    const far = fieldFor(id);
+    const mismatched = far.mismatched.length;
+    const value = far.value;
+    far.take(operation);
+    // A mismatch is a fault upstream, never the person's: the field shows it.
+    if (far.mismatched.length > mismatched) setFault(`Fixture target range mismatch: ${id}`);
+    // One event per change of the field's text, as the walker counts them.
+    if (far.value !== value) log("target", { contextId: id, value: far.value, caret: far.caret });
     if (operation.kind === "copy")
       void clipboard
         .write([{ type: "text/plain", bytes: new TextEncoder().encode(copiedText) }])
@@ -194,63 +230,67 @@ function NativeEditingJourney() {
       style={{ flex: 1, backgroundColor: "#101010", paddingTop: 40 }}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      <Text style={{ color: "white", padding: 8 }}>
-        Native viewer fixture — local protocol target
-      </Text>
-      <View style={{ flexDirection: "row" }}>
-        {(["browser", "baseline", "phone"] as const).map((value) => (
+      {/* The controls scroll and their rows wrap, so at the largest text size they shrink before
+          the typing field does and the field stays inside the window for the walker to reach. */}
+      <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} keyboardShouldPersistTaps="handled">
+        <Text style={{ color: "white", padding: 8 }}>
+          Native viewer fixture — local protocol target
+        </Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+          {(["browser", "baseline", "phone"] as const).map((value) => (
+            <Button
+              key={value}
+              title={value}
+              onPress={() => {
+                setMode(value);
+                setTyping(true);
+                change();
+              }}
+            />
+          ))}
+        </View>
+        <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
           <Button
-            key={value}
-            title={value}
+            title="Refuse next edit"
             onPress={() => {
-              setMode(value);
-              setTyping(true);
-              change();
+              rejectNext.current = true;
             }}
           />
-        ))}
-      </View>
-      <View style={{ flexDirection: "row" }}>
-        <Button
-          title="Refuse next edit"
-          onPress={() => {
-            rejectNext.current = true;
-          }}
-        />
-        <Button title="Open browser keyboard" onPress={() => setTyping(true)} />
-      </View>
-      <View style={{ flexDirection: "row" }}>
-        <Button title="Next field" accessibilityLabel="Next remote field" onPress={change} />
-        <Button
-          title="Seed"
-          accessibilityLabel="Seed system clipboard"
-          onPress={() => {
-            void Clipboard.setStringAsync(copiedText).then(() =>
-              log("clipboard-seeded", { text: copiedText }),
-            );
-          }}
-        />
-        <Button
-          title="Read"
-          accessibilityLabel="Read system clipboard"
-          onPress={() => {
-            void Clipboard.getStringAsync().then((text) => log("clipboard-read", { text }));
-          }}
-        />
-      </View>
-      <Text
-        style={{ color: "white", padding: 4, fontSize: 12 }}
-        accessibilityLabel="Fixture context"
-      >
-        {context.contextId}
-      </Text>
-      <Text
-        style={{ color: fault ? "red" : "white", padding: 8 }}
-        numberOfLines={2}
-        accessibilityLabel="Fixture result"
-      >
-        {fault ?? last}
-      </Text>
+          <Button title="Open browser keyboard" onPress={() => setTyping(true)} />
+        </View>
+        <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+          <Button title="Next field" accessibilityLabel="Next remote field" onPress={change} />
+          <Button
+            title="Seed"
+            accessibilityLabel="Seed system clipboard"
+            onPress={() => {
+              void Clipboard.setStringAsync(copiedText).then(() =>
+                log("clipboard-seeded", { text: copiedText }),
+              );
+            }}
+          />
+          <Button
+            title="Read"
+            accessibilityLabel="Read system clipboard"
+            onPress={() => {
+              void Clipboard.getStringAsync().then((text) => log("clipboard-read", { text }));
+            }}
+          />
+        </View>
+        <Text
+          style={{ color: "white", padding: 4, fontSize: 12 }}
+          accessibilityLabel="Fixture context"
+        >
+          {context.contextId}
+        </Text>
+        <Text
+          style={{ color: fault ? "red" : "white", padding: 8 }}
+          numberOfLines={2}
+          accessibilityLabel="Fixture result"
+        >
+          {fault ?? last}
+        </Text>
+      </ScrollView>
       <View style={{ flex: 1, minHeight: 120 }}>
         {mode === "phone" ? (
           lease && <DisplayControls lease={lease} picture={picture} phone visible />

@@ -5,9 +5,11 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./standard-cdp-limits": "./src/standard-cdp-limits.ts",
     ".": "./src/index.ts",
     "./frame-limits": "./src/browser-frame-limits.ts",
     "./bytes": "./src/bytes.ts",
+    "./bounded-json": "./src/bounded-json.ts",
     "./session-cdp-router": "./src/portable-session-cdp-router.ts",
     "./execution-contexts": "./src/execution-contexts.ts",
     "./key-codes": "./src/key-codes.ts",
@@ -25,5 +27,8 @@
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "dependencies": {
+    "@opensteer/shared": "workspace:*"
   }
 }

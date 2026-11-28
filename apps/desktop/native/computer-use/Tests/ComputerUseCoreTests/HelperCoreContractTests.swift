@@ -62,7 +62,7 @@ final class HelperCoreContractTests: XCTestCase {
     } catch let error as HelperError { XCTAssertEqual(error.code, .appNotAllowed) }
 
     let held = app("com.example.Held")
-    other.add(held, access: .readWrite)
+    other.add(held)
     try runtime.registry.claim(held, for: other)
     do {
       _ = try await runtime.appState(
@@ -71,21 +71,18 @@ final class HelperCoreContractTests: XCTestCase {
     } catch let error as HelperError { XCTAssertEqual(error, SessionRegistry.busy) }
 
     let cached = app("com.example.Mine")
-    mine.add(cached, access: .readWrite)
+    mine.add(cached)
     try runtime.registry.claim(cached, for: mine)
     do {
       _ = try await runtime.appState(
         mine, SessionApp(access: .read, identity: cached.identity), needsControl: true)
       XCTFail("Acting needs Can see and control.")
     } catch let error as HelperError { XCTAssertEqual(error, HelperRuntime.readOnly) }
-    XCTAssertEqual(mine.access[cached.key], .readWrite, "A refusal changes nothing.")
 
-    // The same identity again is the same app state; its access follows the
-    // latest call, which is what the pill reads.
+    // The same identity again is the same app state.
     let again = try await runtime.appState(
       mine, SessionApp(access: .read, identity: cached.identity), needsControl: false)
     XCTAssertTrue(again === cached)
-    XCTAssertEqual(mine.access[cached.key], .read)
 
     // A different identity for the same bundle is resolved again against the
     // installed app, and here there is none.
@@ -111,7 +108,7 @@ final class HelperCoreContractTests: XCTestCase {
     let session = HelperSession(sessionId: "full", connectionID: 1)
     runtime.registry.insert(session)
     for index in 0..<HelperRuntime.maxSessionApps {
-      session.add(app("com.example.App\(index)"), access: .read)
+      session.add(app("com.example.App\(index)"))
     }
     do {
       _ = try await runtime.appState(
@@ -154,7 +151,7 @@ final class HelperCoreContractTests: XCTestCase {
   }
 
   @MainActor
-  func testStopClosesEverySessionAndIdleExpiryRemainsPerSession() throws {
+  func testStopClosesTheSessionsHoldingThatAppAndIdleExpiryRemainsPerSession() throws {
     let runtime = hostRuntime(helperVersion: "test", peerRequirement: .sameUser)
     defer { runtime.stop() }
     let first = HelperSession(sessionId: "first", connectionID: 1)
@@ -167,11 +164,24 @@ final class HelperCoreContractTests: XCTestCase {
     runtime.expireIdleSession()
     XCTAssertEqual(first.cancellation.reason, .closed)
     XCTAssertEqual(runtime.registry.sessions.count, 2)
-    runtime.stopFromOverlay()
-    XCTAssertTrue(runtime.registry.sessions.isEmpty)
-    XCTAssertTrue(runtime.registry.owners.isEmpty)
+    func held(_ bundleId: String, _ session: HelperSession) throws -> AppSessionState {
+      let state = hostApp(
+        identity: AppIdentity(bundleId: bundleId, displayName: bundleId, teamId: nil),
+        path: "/Applications/\(bundleId).app")
+      session.add(state)
+      try runtime.registry.claim(state, for: session)
+      return state
+    }
+    let safari = try held("com.apple.Safari", second)
+    _ = try held("com.apple.Notes", second)
+    _ = try held("com.apple.TextEdit", third)
+    runtime.stopFromOverlay(app: safari.key)
     XCTAssertEqual(second.cancellation.reason, .stoppedByUser)
-    XCTAssertEqual(third.cancellation.reason, .stoppedByUser)
+    XCTAssertNil(third.cancellation.reason, "Another app's agent keeps working.")
+    XCTAssertEqual(Array(runtime.registry.sessions.keys), ["third"])
+    XCTAssertEqual(
+      runtime.registry.owners, ["com.apple.textedit": "third"],
+      "A session ends whole: its other apps are released with it.")
   }
 
   @MainActor
@@ -658,6 +668,178 @@ final class HelperCoreContractTests: XCTestCase {
         elements: [], takenAt: Date()))
     XCTAssertFalse(state.menuShortcuts.isBuilt)
     XCTAssertEqual(state.latest?.observationId, "0123456789abcdef")
+  }
+
+  /// A menu item that was disabled when an earlier shortcut built the index
+  /// (such as Edit › Redo before Undo runs) must re-read the menu bar when
+  /// looked up later, without rebuilding for ordinary shifted keys that no
+  /// menu owns.
+  @WorkActor
+  func testDisabledMenuShortcutRebuildsIndexWhenEnabledLater() throws {
+    let appElement = AXUIElementCreateApplication(getpid())
+    final class State: @unchecked Sendable {
+      var canRedo = false
+      var builds = 0
+    }
+    let state = State()
+    final class Node {
+      let element: AXUIElement
+      let info: MenuShortcutIndex.ItemInfo?
+      let children: [Node]
+      init(_ element: AXUIElement, _ info: MenuShortcutIndex.ItemInfo? = nil, _ children: [Node] = []) {
+        self.element = element
+        self.info = info
+        self.children = children
+      }
+    }
+    let index = MenuShortcutIndex(build: { element in
+      state.builds += 1
+      let canRedo = state.canRedo
+      let bar = Node(element, nil, [
+        Node(element, MenuShortcutIndex.ItemInfo(title: "Apple"), [Node(element)]),
+        Node(element, MenuShortcutIndex.ItemInfo(title: "Fixture"), [Node(element)]),
+        Node(element, MenuShortcutIndex.ItemInfo(title: "File"), [
+          Node(element, nil, [
+            Node(element, MenuShortcutIndex.ItemInfo(
+              combo: try? KeyComboParser.parse("cmd+s"), enabled: true, title: "Save")),
+          ]),
+        ]),
+        Node(element, MenuShortcutIndex.ItemInfo(title: "Edit"), [
+          Node(element, nil, [
+            Node(element, MenuShortcutIndex.ItemInfo(
+              combo: try? KeyComboParser.parse("cmd+z"), enabled: !canRedo, title: "Undo")),
+            Node(element, MenuShortcutIndex.ItemInfo(
+              combo: try? KeyComboParser.parse("cmd+shift+z"), enabled: canRedo, title: "Redo")),
+          ]),
+        ]),
+      ])
+      let collected = MenuShortcutIndex.collect(
+        menuBar: bar, children: { $0.children }, read: { $0.info }, deadline: .distantFuture)
+      var built = MenuShortcutIndex.Built<AXUIElement>()
+      built.shortcuts = collected.shortcuts.mapValues(\.element)
+      built.disabled = collected.disabled.mapValues(\.element)
+      built.reserved = collected.reserved
+      built.complete = collected.complete
+      return built
+    })
+
+    guard case .item = index.lookup(try KeyComboParser.parse("cmd+s"), applicationElement: appElement) else {
+      return XCTFail("Save must resolve from the initial menu index")
+    }
+    XCTAssertEqual(state.builds, 1)
+
+    guard case .none = index.lookup(try KeyComboParser.parse("shift+x"), applicationElement: appElement) else {
+      return XCTFail("An ordinary shifted letter must not match a menu item")
+    }
+    XCTAssertEqual(state.builds, 1, "Unindexed shifted keys must not rebuild the menu bar")
+
+    guard case .item = index.lookup(try KeyComboParser.parse("cmd+z"), applicationElement: appElement) else {
+      return XCTFail("Undo must resolve while enabled")
+    }
+    XCTAssertEqual(state.builds, 1)
+
+    state.canRedo = true
+    guard case .item = index.lookup(try KeyComboParser.parse("cmd+shift+z"), applicationElement: appElement) else {
+      return XCTFail("Redo must rebuild the menu index after being disabled during an earlier lookup")
+    }
+    XCTAssertEqual(state.builds, 2, "Looking up a previously disabled shortcut must rebuild the menu index once")
+  }
+
+  /// P1 fail-first: a menu item that exists in the menu bar and reads disabled at the first read
+  /// (AppKit's 1.0 s `NSMenu` AX validation throttle right after Undo) must resolve to `.menuItem`
+  /// once enabled at the second read, and a truly disabled item ("nothing to redo") must resolve
+  /// to `.disabled` (never `.keystroke`) within its bounded wait.
+  @PersonInputActor
+  func testDisabledAtFirstReadEnabledAtSecondReadResolvesAndTrulyDisabledStaysQuiet() async throws {
+    final class State: @unchecked Sendable {
+      var reads = 0
+      var enableOnRead: Int? = 2
+      var addedShortcut = false
+    }
+    let state = State()
+    final class Node {
+      let element: AXUIElement
+      let info: MenuShortcutIndex.ItemInfo?
+      let children: [Node]
+      init(_ element: AXUIElement, _ info: MenuShortcutIndex.ItemInfo? = nil, _ children: [Node] = []) {
+        self.element = element
+        self.info = info
+        self.children = children
+      }
+    }
+    let policy = OwnerShortcutPolicy(
+      makeIndex: {
+        MenuShortcutIndex(build: { element in
+          state.reads += 1
+          let redoEnabled = state.enableOnRead.map { state.reads >= $0 } ?? false
+          var editItems: [Node] = [
+            Node(element, MenuShortcutIndex.ItemInfo(
+              combo: try? KeyComboParser.parse("cmd+z"), enabled: true, title: "Undo")),
+            Node(element, MenuShortcutIndex.ItemInfo(
+              combo: try? KeyComboParser.parse("cmd+shift+z"), enabled: redoEnabled, title: "Redo")),
+          ]
+          if state.addedShortcut {
+            editItems.append(Node(element, MenuShortcutIndex.ItemInfo(
+              combo: try? KeyComboParser.parse("cmd+k"), enabled: true, title: "Custom")))
+          }
+          let bar = Node(element, nil, [
+            Node(element, MenuShortcutIndex.ItemInfo(title: "Apple"), [Node(element)]),
+            Node(element, MenuShortcutIndex.ItemInfo(title: "Fixture"), [Node(element)]),
+            Node(element, MenuShortcutIndex.ItemInfo(title: "Edit"), [Node(element, nil, editItems)]),
+          ])
+          let collected = MenuShortcutIndex.collect(
+            menuBar: bar, children: { $0.children }, read: { $0.info }, deadline: .distantFuture)
+          var built = MenuShortcutIndex.Built<AXUIElement>()
+          built.shortcuts = collected.shortcuts.mapValues(\.element)
+          built.disabled = collected.disabled.mapValues(\.element)
+          built.reserved = collected.reserved
+          built.complete = collected.complete
+          return built
+        })
+      },
+      isEnabled: { _ in
+        state.reads += 1
+        return state.enableOnRead.map { state.reads >= $0 } ?? false
+      })
+
+    // 1. Disabled at the first read, enabled at the second -> must resolve to `.menuItem`.
+    let redo = try KeyComboParser.parse("cmd+shift+z")
+    let firstResolution = try await policy.route(
+      redo,
+      pid: getpid(),
+      wait: 0.05,
+      pollIntervalNanoseconds: 5_000_000)
+    guard case .menuItem = firstResolution else {
+      return XCTFail(
+        "Redo disabled at first read and enabled at second read resolved to \(firstResolution) instead of .menuItem")
+    }
+
+    // 2. Truly disabled at every read ("nothing to redo") -> must resolve to `.disabled` (never `.keystroke`).
+    state.reads = 0
+    state.enableOnRead = nil
+    let started = ProcessInfo.processInfo.systemUptime
+    let trulyDisabled = try await policy.route(
+      redo,
+      pid: getpid(),
+      wait: 0.04,
+      pollIntervalNanoseconds: 5_000_000)
+    let elapsed = ProcessInfo.processInfo.systemUptime - started
+    guard case .disabled = trulyDisabled else {
+      return XCTFail("Truly disabled Redo resolved to \(trulyDisabled) instead of .disabled")
+    }
+    XCTAssertLessThan(elapsed, 0.5, "Truly disabled shortcut must return promptly within its bound")
+
+    // 3. P3: a shortcut added to the menu bar after an earlier lookup is found on the next cmd chord.
+    state.addedShortcut = true
+    let custom = try KeyComboParser.parse("cmd+k")
+    let addedResolution = try await policy.route(
+      custom,
+      pid: getpid(),
+      wait: 0.04,
+      pollIntervalNanoseconds: 5_000_000)
+    guard case .menuItem = addedResolution else {
+      return XCTFail("Newly added cmd+k shortcut resolved to \(addedResolution) instead of .menuItem")
+    }
   }
 
   /// Posted events to a hidden app are dropped silently; the refusal comes

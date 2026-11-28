@@ -25,7 +25,8 @@ export class DesktopShutdown {
   #installing = false;
   #recoverUpdate: (() => void) | undefined;
   #updateRejected: ((error: Error) => void) | undefined;
-  #quitInstaller: (() => void) | undefined;
+  /** The system is ending this session: nothing hands off to an updater or relaunches. */
+  #systemTerminating = false;
 
   constructor(options: {
     readonly application: Pick<App, "on" | "exit">;
@@ -52,10 +53,10 @@ export class DesktopShutdown {
     });
     options.power.on("shutdown", (event?: { preventDefault(): void }) => {
       event?.preventDefault();
-      this.request("system-shutdown");
+      this.#terminate("system-shutdown");
     });
-    process.on("SIGTERM", () => this.request("SIGTERM"));
-    process.on("SIGINT", () => this.request("SIGINT"));
+    process.on("SIGTERM", () => this.#terminate("SIGTERM"));
+    process.on("SIGINT", () => this.#terminate("SIGINT"));
   }
 
   get requested(): boolean {
@@ -72,10 +73,6 @@ export class DesktopShutdown {
     this.#steps.push(step);
   }
 
-  setUpdateInstaller(install: (() => void) | undefined): void {
-    this.#quitInstaller = install;
-  }
-
   setUpdateRecovery(recover: () => void): void {
     this.#recoverUpdate = recover;
   }
@@ -84,11 +81,21 @@ export class DesktopShutdown {
     if (this.#stopping) return Promise.reject(new Error("The desktop is already shutting down."));
     return new Promise<void>((_resolve, reject) => {
       this.#updateRejected = reject;
-      this.request("restart-to-update", install);
+      this.#begin("restart-to-update", install);
     });
   }
 
-  request(reason: string, install = this.#quitInstaller): void {
+  /** Every quit but an explicit update request: none of them installs or relaunches. */
+  request(reason: string): void {
+    this.#begin(reason, undefined);
+  }
+
+  #terminate(reason: string): void {
+    this.#systemTerminating = true;
+    this.request(reason);
+  }
+
+  #begin(reason: string, install: (() => void) | undefined): void {
     if (this.#stopping) {
       this.#log("desktop.shutdown.request-repeated", { reason });
       return;
@@ -103,7 +110,7 @@ export class DesktopShutdown {
       this.#updateRejected?.(new Error("The desktop update handoff failed."));
       this.#updateRejected = undefined;
       // Relaunch restores the stopped Personal stack; its new incarnation reconciles the journal.
-      if (this.#recoverUpdate) {
+      if (this.#recoverUpdate && !this.#systemTerminating) {
         try {
           this.#recoverUpdate();
         } catch {
@@ -134,7 +141,15 @@ export class DesktopShutdown {
         }
       }
       this.#log("desktop.shutdown.finished", { failed, elapsedMs: performance.now() - started });
-      if (install) {
+      if (install && this.#systemTerminating) {
+        this.#log("desktop.shutdown.update-skipped", {});
+        this.#updateRejected?.(new Error("macOS ended the app before the update could finish."));
+        this.#updateRejected = undefined;
+      } else if (install && failed) {
+        clearTimeout(watchdog);
+        exitFailed();
+        return;
+      } else if (install) {
         // Electron closes windows before before-quit. The caller destroys them
         // after cleanup; allow Squirrel's subsequent app.quit through unchanged.
         this.#installing = true;

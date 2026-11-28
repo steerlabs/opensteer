@@ -1,3 +1,4 @@
+import type { CatalogReadOptions } from "./declarations.ts";
 /** Skill access through an authorized app evaluation and retained version. */
 import { withLegacyKeys } from "@opensteer/plugin-engine-utils/legacy-keys";
 import { Schema } from "effect";
@@ -25,6 +26,10 @@ import {
   AppSkillSource,
   SkillDefinitionInvalid,
 } from "./skill-source.ts";
+
+export interface SkillReadOptions extends CatalogReadOptions {
+  readonly publishedOnly?: true;
+}
 
 /** A configured installation supplies the namespace; skill source never hardcodes it. */
 export const SkillApp = Schema.Struct({ id: AppId, name: Schema.String, slug: AppSlug });

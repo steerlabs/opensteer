@@ -179,9 +179,18 @@ const agentResult = z
       .optional(),
   })
   .catchall(JsonSchema);
+const executionTarget = z.strictObject({
+  plugin: id,
+  version: id,
+  write: z.boolean(),
+  accountSelection: id.optional(),
+});
+export type PluginExecutionTarget = z.infer<typeof executionTarget>;
+
 export const ExecutionSchema = z.strictObject({
   id,
   caller: id,
+  drained: z.literal(true).optional(),
   state: z.enum([
     "running",
     "waiting",
@@ -208,6 +217,7 @@ export const ExecutionSchema = z.strictObject({
     )
     .optional(),
   reason: z.string().optional(),
+  targets: z.array(executionTarget).optional(),
 });
 export type PluginExecution = z.infer<typeof ExecutionSchema>;
 const call = z.strictObject({ path: id, input: JsonSchema });
@@ -446,15 +456,40 @@ export const operations = {
       unavailableApps: z.array(unavailableApp).optional(),
     }),
   },
+  resolveTools: {
+    input: z.strictObject({ paths: z.array(id).min(1).max(100) }),
+    output: z.array(
+      z
+        .strictObject({
+          plugin: id,
+          name: id,
+          version: id,
+          readOnly: z.boolean(),
+          /** There, but kept from running now: what keeps it, in the Home's words. */
+          blocked: BlockedSchema.optional(),
+        })
+        .nullable(),
+    ),
+  },
   call: {
-    input: z.strictObject({ calls: z.union([call, z.array(call).min(1)]) }),
+    input: z.strictObject({
+      calls: z.union([call, z.array(call).min(1)]),
+      executionId: id.optional(),
+    }),
     output: ExecutionSchema,
   },
-  execute: { input: z.strictObject({ code: z.string().max(65536) }), output: ExecutionSchema },
+  execute: {
+    input: z.strictObject({ code: z.string().max(65536), executionId: id.optional() }),
+    output: ExecutionSchema,
+  },
   resume: { input: execution, output: ExecutionSchema },
   answer: { input: z.strictObject({ execution: id, response: answer }), output: ExecutionSchema },
   cancel: { input: execution, output: ExecutionSchema },
   executions: { input: z.strictObject({}), output: z.array(ExecutionSchema) },
+  resultAccess: {
+    input: z.strictObject({ targets: z.array(executionTarget) }),
+    output: z.boolean(),
+  },
   skills: {
     input: z.strictObject({
       app: id.optional(),
@@ -479,6 +514,7 @@ export const operations = {
     output: JsonSchema,
   },
   manage: { input: z.strictObject({ operation: management, input: object }), output: JsonSchema },
+  agentWork: { input: z.strictObject({ stopped: z.boolean() }), output: z.boolean() },
   webhook: {
     input: z.strictObject({ plugin: id, subscription: id, request: raw }),
     output: RawResponseSchema,
@@ -488,6 +524,10 @@ export const operations = {
 export type PluginOperation = keyof typeof operations;
 export type PluginInput<K extends PluginOperation> = z.infer<(typeof operations)[K]["input"]>;
 export type PluginOutput<K extends PluginOperation> = z.infer<(typeof operations)[K]["output"]>;
+export const pluginComputerStoppedReason = "computer_stopped";
+export const pluginComputerStoppedMessage =
+  "Agent work is stopped on the computer hosting this Home.";
+
 export const AuthorizationSchema = z.strictObject({
   ...CallerSchema.shape,
   operation: id,
@@ -495,11 +535,19 @@ export const AuthorizationSchema = z.strictObject({
   tool: id.optional(),
   execution: id.optional(),
   write: z.boolean().optional(),
+  version: id.optional(),
 });
 export type PluginAuthorization = z.infer<typeof AuthorizationSchema>;
 export const AuthorizationResultSchema = z.strictObject({
   allowed: z.boolean(),
+  reason: z.literal("computer_stopped").optional(),
   grants: z.record(z.string(), z.enum(["all", "read-only", "off"])).optional(),
+  /** For a connection's selected grant: the only apps it may learn exist. */
+  visible: z.array(z.string()).optional(),
+  /** Apps a connection's grant holds for reading only: their writes read as absent. */
+  readOnlyGrant: z.array(z.string()).optional(),
+  pinnedVersion: id.optional(),
+  connected: z.literal(true).optional(),
 });
 export type PluginAuthorizationResult = z.infer<typeof AuthorizationResultSchema>;
 export const HostToolSchema = z.strictObject({
@@ -671,6 +719,7 @@ export const EngineInitSchema = z.strictObject({
   secret: z.string().regex(/^[a-f0-9]{64}$/u),
   origin: z.string().url(),
   bridge: id,
+  agentWorkStopped: z.boolean().optional(),
   catalogUrl: z.string().url().optional(),
   npmRegistry: z.string().url().optional(),
   selfOrigin: z.strictObject({ origin: id, address: id }).optional(),

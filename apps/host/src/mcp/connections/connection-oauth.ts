@@ -5,14 +5,30 @@ import {
   type DeploymentId,
 } from "@opensteer/core";
 import type { AgentConnectionStore } from "@opensteer/database";
-import { agentConnectionMcpPath, type HostApiCommand } from "@opensteer/protocol";
+import type {
+  AgentConnectionIdentityAtConsent,
+  AgentDirectoryDocument,
+} from "@opensteer/control-plane-protocol";
+import { isIdentityStillVerified } from "@opensteer/database/agent-directory-verification";
+import {
+  agentConnectionConsentRefusals,
+  agentConnectionVerificationChangedMessage,
+  agentConnectionMcpPath,
+  type HostApiCommand,
+} from "@opensteer/protocol";
 import { randomBytes, sign, verify, timingSafeEqual, type KeyObject } from "node:crypto";
 import { z } from "zod";
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   credentialHash,
   connectionCredentialPrefix,
   ConnectionAuthenticator,
 } from "./connection-authenticator.js";
+import {
+  describeIdentity,
+  resolveConsentIdentity,
+  unverifiedConsentIdentity,
+} from "./consent-identity.js";
 
 export const mcpResourcePath = agentConnectionMcpPath;
 export const mcpIssuerPath = "/oauth/mcp";
@@ -25,7 +41,8 @@ const maximumPending = 1_000;
 const opaqueId = () => randomBytes(32).toString("base64url");
 const verifierPattern = /^[A-Za-z0-9._~-]{43,128}$/;
 const challengePattern = /^[A-Za-z0-9_-]{43}$/;
-const RedirectSchema = z.string().min(1).max(2048).refine(validRedirect);
+const RedirectValueSchema = z.string().min(1).max(2048);
+const RedirectSchema = RedirectValueSchema.refine(validRedirect);
 const ClientSchema = z.object({
   v: z.literal(1),
   issuer: z.string(),
@@ -33,19 +50,33 @@ const ClientSchema = z.object({
   redirects: z.array(RedirectSchema).min(1).max(5),
 });
 type Client = z.infer<typeof ClientSchema>;
+const defaultClientName = "MCP client";
+/** A client's own name enters the Home clean, as every name from outside does. */
+function sanitizeClientName(name: string): string {
+  return outsideName(name, 100);
+}
 const RegistrationSchema = z.object({
-  client_name: z.string().trim().min(1).max(100).default("MCP client"),
-  redirect_uris: z.array(RedirectSchema).min(1).max(5),
+  client_name: z
+    .string()
+    .transform(sanitizeClientName)
+    .pipe(z.string().min(1).max(100))
+    .default(defaultClientName),
+  redirect_uris: z.array(z.string()).min(1).max(5),
 });
+const ScopeSchema = z
+  .string()
+  .max(2048)
+  .regex(/^(?:[\x21\x23-\x5B\x5D-\x7E]+(?: [\x21\x23-\x5B\x5D-\x7E]+)*)?$/u)
+  .optional();
 const AuthorizationSchema = z.object({
   client_id: z.string().max(16_384),
   redirect_uri: RedirectSchema,
   response_type: z.literal("code"),
   code_challenge: z.string().regex(challengePattern),
   code_challenge_method: z.literal("S256"),
-  resource: z.string().max(2048),
+  resource: z.unknown().optional(),
   state: z.string().max(2048).optional(),
-  scope: z.literal("opensteer").optional(),
+  scope: ScopeSchema,
 });
 const TokenSchema = z.object({
   grant_type: z.literal("authorization_code"),
@@ -53,14 +84,15 @@ const TokenSchema = z.object({
   client_id: z.string().max(16_384),
   redirect_uri: RedirectSchema,
   code_verifier: z.string().regex(verifierPattern),
-  resource: z.string().max(2048),
+  resource: z.unknown().optional(),
 });
-type Authorization = z.infer<typeof AuthorizationSchema>;
+type Authorization = Omit<z.infer<typeof AuthorizationSchema>, "resource"> & { resource: string };
 interface Consent {
   readonly authorization: Authorization;
   readonly client: Client;
   readonly origin: string;
   readonly expiresAt: number;
+  readonly identityAtConsent: AgentConnectionIdentityAtConsent;
   decision?: {
     userId: UserId;
     sessionId: AuthSessionId;
@@ -68,6 +100,7 @@ interface Consent {
     connectionId: string | null;
   };
   approving?: boolean;
+  verificationChanged?: boolean;
 }
 interface Code {
   readonly authorization: Authorization;
@@ -91,6 +124,16 @@ interface ConnectionOAuthOptions {
   readonly signingKey: KeyObject;
   readonly verificationKey: KeyObject;
   readonly now?: () => number;
+  readonly onMaintenanceChanged?: () => void;
+  /**
+   * The Account-signed directory of known agents, from the Home's own Account origin. Absent when
+   * the Home has none: every client is then shown as the name it gave itself.
+   */
+  readonly directory?: {
+    issuer?: string;
+    get(): Promise<AgentDirectoryDocument | null>;
+    current(): AgentDirectoryDocument | null;
+  };
 }
 
 export class ConnectionOAuthRedirectError extends ConnectionOAuthError {
@@ -108,6 +151,8 @@ export class ConnectionOAuthRedirectError extends ConnectionOAuthError {
 export class ConnectionOAuth {
   readonly authenticator: ConnectionAuthenticator;
   readonly #consents = new Map<string, Consent>();
+  /** Requests answered and sent back to the agent, so a late read says so instead of "expired". */
+  readonly #answered = new Map<string, number>();
   readonly #codes = new Map<string, Code>();
   readonly #options: ConnectionOAuthOptions;
   constructor(options: ConnectionOAuthOptions) {
@@ -125,20 +170,26 @@ export class ConnectionOAuth {
     for (const [key, value] of this.#consents)
       if (value.expiresAt <= now && !value.approving) this.#consents.delete(key);
     for (const [key, value] of this.#codes) if (value.expiresAt <= now) this.#codes.delete(key);
+    for (const [key, until] of this.#answered) if (until <= now) this.#answered.delete(key);
   }
   close() {
     this.#consents.clear();
+    this.#answered.clear();
     this.#codes.clear();
   }
 
   register(origin: string, input: unknown) {
     const parsed = RegistrationSchema.safeParse(input);
     if (!parsed.success) throw new ConnectionOAuthError("invalid_client_metadata");
+    const redirects = parsed.data.redirect_uris.filter(
+      (uri) => RedirectSchema.safeParse(uri).success,
+    );
+    if (!redirects.length) throw new ConnectionOAuthError("invalid_client_metadata");
     const client: Client = {
       v: 1,
       issuer: origin + mcpIssuerPath,
       name: parsed.data.client_name,
-      redirects: parsed.data.redirect_uris,
+      redirects,
     };
     const body = Buffer.from(JSON.stringify(client)).toString("base64url");
     const signature = sign(
@@ -176,17 +227,15 @@ export class ConnectionOAuth {
         JSON.parse(Buffer.from(body, "base64url").toString("utf8")),
       );
       if (client.issuer !== origin + mcpIssuerPath) throw new Error();
-      return client;
+      return { ...client, name: sanitizeClientName(client.name) || defaultClientName };
     } catch {
       throw new ConnectionOAuthError("invalid_client");
     }
   }
-  authorize(origin: string, input: unknown): string {
-    const boundary = AuthorizationSchema.pick({
-      client_id: true,
-      redirect_uri: true,
-      state: true,
-    }).safeParse(input);
+  async authorize(origin: string, input: unknown): Promise<string> {
+    const boundary = AuthorizationSchema.pick({ client_id: true, state: true })
+      .extend({ redirect_uri: RedirectValueSchema })
+      .safeParse(input);
     if (!boundary.success) throw new ConnectionOAuthError("invalid_request");
     const client = this.#client(boundary.data.client_id, origin);
     if (!client.redirects.some((uri) => redirectMatches(uri, boundary.data.redirect_uri)))
@@ -206,13 +255,20 @@ export class ConnectionOAuth {
       throw refusal(
         response.response_type !== "code"
           ? "unsupported_response_type"
-          : response.scope !== undefined && response.scope !== "opensteer"
+          : !ScopeSchema.safeParse(response.scope).success
             ? "invalid_scope"
             : "invalid_request",
       );
     }
-    const authorization = parsed.data;
-    if (authorization.resource !== origin + mcpResourcePath) throw refusal("invalid_target");
+    const resource = origin + mcpResourcePath;
+    if (!matchesResource(parsed.data.resource, resource)) throw refusal("invalid_target");
+    const authorization = { ...parsed.data, resource };
+    const identity = resolveConsentIdentity({
+      directory: (await this.#options.directory?.get()) ?? null,
+      clientName: client.name,
+      redirectUri: authorization.redirect_uri,
+      now: () => this.#now(),
+    });
     this.#sweep();
     if (this.#consents.size >= maximumPending)
       throw new ConnectionOAuthError("temporarily_unavailable", 503);
@@ -222,30 +278,57 @@ export class ConnectionOAuth {
       client,
       origin,
       expiresAt: this.#now() + consentTtl,
+      identityAtConsent: identity,
     });
     return `/mcp-authorization?request=${id}&deploymentId=${this.#options.deploymentId}`;
   }
   #consent(requestId: string, origin?: string): Consent {
-    const pending = this.#consents.get(credentialHash(requestId));
+    const key = credentialHash(requestId);
+    const pending = this.#consents.get(key);
     if (
       !pending ||
       pending.expiresAt <= this.#now() ||
       (origin !== undefined && pending.origin !== origin)
-    )
+    ) {
+      const answered = (this.#answered.get(key) ?? 0) > this.#now();
       throw new OpensteerError({
         code: "not_found",
-        message: "This agent connection request expired. Start again from the agent.",
+        reason: answered
+          ? agentConnectionConsentRefusals.answered
+          : agentConnectionConsentRefusals.expired,
+        message: answered
+          ? "This agent connection request was already answered."
+          : "This agent connection request expired. Start again from the agent.",
       });
+    }
     return pending;
   }
+  #currentConsentIdentity(pending: Consent): AgentConnectionIdentityAtConsent {
+    const evidence = pending.identityAtConsent;
+    if (evidence.kind === "unverified") return evidence;
+    const directory = this.#options.directory?.current() ?? null;
+    if (isIdentityStillVerified(evidence, directory)) return evidence;
+    pending.verificationChanged = true;
+    return unverifiedConsentIdentity(
+      pending.authorization.redirect_uri,
+      pending.client.name,
+      directory,
+      evidence.recordedAt,
+    );
+  }
+
   async consent(requestId: string, _userId: UserId) {
     const pending = this.#consent(requestId);
+    const identity = this.#currentConsentIdentity(pending);
     return {
       requestId,
       clientName: pending.client.name,
       redirectUri: pending.authorization.redirect_uri,
       resource: pending.authorization.resource,
       expiresAt: new Date(pending.expiresAt).toISOString(),
+      identityAtConsent: identity,
+      identity: presentIdentity(identity),
+      verificationSnapshot: verificationSnapshot(requestId, identity),
     };
   }
   async decide(
@@ -273,18 +356,41 @@ export class ConnectionOAuth {
     } else {
       pending.approving = true;
       try {
-        const connection =
-          command.decision.kind === "deny"
-            ? null
-            : await this.store.create({
-                userId,
-                label: command.decision.label,
-                clientName: pending.client.name,
-                accessMode: command.decision.accessMode,
-                resource: pending.authorization.resource,
-                expiresAt: new Date(this.#now() + connectionTtl),
-              });
-        pending.decision = { userId, sessionId, fingerprint, connectionId: connection?.id ?? null };
+        const decision = command.decision;
+        let connectionId: string | null = null;
+        if (decision.kind === "approve") {
+          const identity = this.#currentConsentIdentity(pending);
+          const expected = verificationSnapshot(command.requestId, identity);
+          if (
+            decision.verificationSnapshot !== undefined
+              ? decision.verificationSnapshot !== expected
+              : pending.verificationChanged
+          ) {
+            throw new OpensteerError({
+              code: "conflict",
+              reason: agentConnectionConsentRefusals.verificationChanged,
+              message: agentConnectionVerificationChangedMessage,
+            });
+          }
+          const connection = await this.store.create({
+            userId,
+            label: decision.label,
+            clientName: pending.client.name,
+            accessMode: decision.accessMode,
+            resource: pending.authorization.resource,
+            expiresAt: new Date(this.#now() + connectionTtl),
+            clientFingerprint: credentialHash(pending.authorization.client_id),
+            redirectUri: pending.authorization.redirect_uri,
+            identityAtConsent: identity,
+            ...(this.#options.directory?.issuer
+              ? { directoryIssuer: this.#options.directory.issuer }
+              : {}),
+            ...(decision.grant ? { grant: decision.grant } : {}),
+          });
+          connectionId = connection.id;
+          this.#options.onMaintenanceChanged?.();
+        }
+        pending.decision = { userId, sessionId, fingerprint, connectionId };
       } finally {
         pending.approving = false;
       }
@@ -305,6 +411,8 @@ export class ConnectionOAuth {
     if (this.#codes.size >= maximumPending)
       throw new ConnectionOAuthError("temporarily_unavailable", 503);
     this.#consents.delete(credentialHash(requestId));
+    if (this.#answered.size < maximumPending)
+      this.#answered.set(credentialHash(requestId), this.#now() + consentTtl);
     const redirect = new URL(pending.authorization.redirect_uri);
     redirect.searchParams.set("iss", origin + mcpIssuerPath);
     if (pending.authorization.state !== undefined)
@@ -339,18 +447,19 @@ export class ConnectionOAuth {
       !pending ||
       pending.expiresAt <= this.#now() ||
       pending.origin !== origin ||
-      token.resource !== origin + mcpResourcePath ||
-      pending.authorization.resource !== token.resource ||
       token.client_id !== pending.authorization.client_id ||
       token.redirect_uri !== pending.authorization.redirect_uri ||
       !equalChallenge(token.code_verifier, pending.authorization.code_challenge)
     )
       throw new ConnectionOAuthError("invalid_grant");
+    const resource = pending.authorization.resource;
+    if (!matchesResource(token.resource, resource))
+      throw new ConnectionOAuthError("invalid_target");
     const credential = connectionCredentialPrefix + opaqueId();
     if (!(await this.store.activate(pending.connectionId, credentialHash(credential))))
       throw new ConnectionOAuthError("invalid_grant");
-    const connection = await this.store.authenticate(credentialHash(credential), token.resource);
-    if (!connection) throw new ConnectionOAuthError("invalid_grant");
+    const connection = await this.store.authenticate(credentialHash(credential), resource);
+    if (!connection?.expiresAt) throw new ConnectionOAuthError("invalid_grant");
     return {
       access_token: credential,
       token_type: "Bearer",
@@ -358,6 +467,21 @@ export class ConnectionOAuth {
       scope: "opensteer",
     };
   }
+}
+function verificationSnapshot(
+  requestId: string,
+  identity: AgentConnectionIdentityAtConsent,
+): string {
+  return credentialHash(`${requestId}:${identity.kind}`);
+}
+
+/** The consent wording for a recorded identity, as the Host API carries it. */
+export function presentIdentity(identity: AgentConnectionIdentityAtConsent) {
+  const presentation = describeIdentity(identity);
+  return { ...presentation, origins: [...presentation.origins] };
+}
+function matchesResource(requested: unknown, canonical: string): boolean {
+  return requested === undefined || requested === canonical || requested === `${canonical}/`;
 }
 function equalChallenge(verifier: string, challenge: string): boolean {
   const actual = Buffer.from(credentialHashBase64(verifier));

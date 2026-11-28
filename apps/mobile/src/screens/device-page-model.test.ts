@@ -3,7 +3,13 @@ import { withDeviceSwitch as withSwitch } from "@opensteer/client/computers";
 import { mockDeviceMachine } from "@opensteer/client/mock";
 import type { MachineAccessPolicy, MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
-import { deviceRemoval, deviceSwitches, homeFixed } from "./device-page-model.js";
+import {
+  deviceReachChoices,
+  deviceRemoval,
+  deviceSwitches,
+  deviceSwitchesFooter,
+  homeFixed,
+} from "./device-page-model.js";
 
 const policy: MachineAccessPolicy = {
   apps: false,
@@ -54,7 +60,23 @@ describe("a device page's switches", () => {
       ["files", true, true],
     ]);
     expect(home.rows[0]?.detail).toBe(homeFixed);
-    expect(home.footer).toBe("Your Opensteer lives on this Mac, so it can't be removed.");
+    expect(home.footer).toBe("Your Opensteer lives on this Mac, so it can’t be removed.");
+  });
+
+  it("never tells a Cloud Computer or a server that it is a Mac", () => {
+    const home = machine({
+      kind: "home",
+      ownership: "deployment",
+      allowedModules: ["agents", "browser", "shell"],
+    });
+    for (const [homeKind, footer] of [
+      ["cloud", "Your Opensteer lives on this Cloud Computer, so it can’t be removed."],
+      ["server", "Your Opensteer lives on this server, so it can’t be removed."],
+    ] as const) {
+      const view = deviceSwitches(home, { devicesAvailable: true, homeKind });
+      expect(view.footer).toBe(footer);
+      expect(view.footer).not.toContain("Mac");
+    }
   });
 
   it("lets an older Host change only files", () => {
@@ -85,19 +107,58 @@ describe("a device page's switches", () => {
   });
 });
 
+describe("under a device's switches", () => {
+  it("says connected agents also need a profile or app chosen, and why switches can't change", () => {
+    const switches = deviceSwitches(machine({}), { devicesAvailable: true });
+    expect(deviceSwitchesFooter(switches)).toBe(
+      "Connected agents also need you to choose this device’s profile or app for them.",
+    );
+    const older = deviceSwitches(machine({}), { devicesAvailable: false });
+    expect(deviceSwitchesFooter(older)).toBe(
+      "Update Opensteer on your Mac to change Browser and Apps. Connected agents also need you to choose this device’s profile or app for them.",
+    );
+    const home = deviceSwitches(
+      machine({
+        kind: "home",
+        ownership: "deployment",
+        allowedModules: ["agents", "browser", "shell"],
+      }),
+      { devicesAvailable: true },
+    );
+    // A Home Mac's Apps switch is real, so the footer belongs under it too.
+    expect(home.rows.some(({ fixed }) => !fixed)).toBe(true);
+    expect(deviceSwitchesFooter(home)).toBe(
+      "Your Opensteer lives on this Mac, so it can’t be removed. Connected agents also need you to choose this device’s profile or app for them.",
+    );
+  });
+
+  it("offers exactly the Reach values the Host reads, with my agents only where it can", () => {
+    expect(deviceReachChoices({ ownerReachAvailable: true }).map(({ value }) => value)).toEqual([
+      "nobody",
+      "owner",
+      "deployment",
+    ]);
+    expect(deviceReachChoices({ ownerReachAvailable: false }).map(({ value }) => value)).toEqual([
+      "nobody",
+      "deployment",
+    ]);
+  });
+});
+
 describe("removing a device", () => {
   it("says what removal does here and elsewhere, and never offers it for Home", () => {
     const none = { noun: "iPhone", profiles: [], thisDevice: false };
     expect(deviceRemoval(machine({}), { ...none, thisDevice: true })).toEqual({
       label: "Sign out and remove this iPhone",
       title: "Sign out and remove this iPhone?",
-      message: "Your agent can no longer use this iPhone. Browser profiles kept here are deleted.",
+      message:
+        "Your own agents can no longer use this iPhone. Browser profiles kept here are deleted.",
     });
     expect(deviceRemoval(machine({ status: "offline" }), none)).toEqual({
       label: "Remove",
       title: "Remove MacBook Pro (2)?",
       message:
-        "It is signed out and your agent can't use it. It finishes the next time it connects. Browser profiles kept on it are deleted.",
+        "It is signed out and your own agents can't use it. It finishes the next time it connects. Browser profiles kept on it are deleted.",
     });
     // The profiles it holds are named, and an away device erases them when it next connects.
     expect(
@@ -116,8 +177,19 @@ describe("removing a device", () => {
         },
       )?.message,
     ).toBe(
-      "It is signed out and your agent can't use it. It finishes the next time it connects. Its browser profile Work and its sign-ins are deleted. MacBook Pro (2) erases it the next time it connects.",
+      "It is signed out and your own agents can't use it. It finishes the next time it connects. Its browser profile Work and its sign-ins are deleted. MacBook Pro (2) erases it the next time it connects.",
     );
     expect(deviceRemoval(machine({ kind: "home" }), none)).toBeNull();
+  });
+
+  it("explains asleep devices calmly and hides the notice for online or offline ones", async () => {
+    const { deviceAsleepDetail } = await import("./device-page-model.js");
+    expect(
+      deviceAsleepDetail(machine({ asleepSince: "2026-04-12T10:15:00.000Z", status: "offline" })),
+    ).toBe("Its tabs and apps wait until it wakes. Agents can’t use it meanwhile.");
+    expect(deviceAsleepDetail(machine({ status: "offline" }))).toBeNull();
+    expect(
+      deviceAsleepDetail(machine({ asleepSince: "2026-04-12T10:15:00.000Z", status: "online" })),
+    ).toBeNull();
   });
 });

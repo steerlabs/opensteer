@@ -106,3 +106,21 @@ it("streams POST bodies and SSE without buffering, forwards HEAD and OPTIONS and
     false,
   );
 });
+
+it("lets only the Mac app frame an app it shows, whatever the Home's response said (M3)", async () => {
+  const handle = createPublishedAppProtocolHandler({
+    streamApp: async () =>
+      new Response("<!doctype html><h1>App</h1>", {
+        headers: {
+          "content-type": "text/html",
+          "x-frame-options": "DENY",
+          "content-security-policy": "frame-ancestors 'none'",
+        },
+      }),
+  });
+  const response = await handle(new Request(url));
+  const policy = response.headers.get("content-security-policy") ?? "";
+  expect(policy).toContain("sandbox allow-scripts allow-popups");
+  expect(policy.match(/frame-ancestors [^;]*/gu)).toEqual(["frame-ancestors app://opensteer"]);
+  expect(response.headers.get("x-frame-options")).toBeNull();
+});

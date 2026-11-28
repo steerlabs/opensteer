@@ -45,7 +45,7 @@ describe("helper wire fixture", () => {
   it("speaks the protocol version this package declares", () => {
     const hello = ComputerUseHelloResultSchema.parse(fixture.results.hello);
     expect(hello.protocolVersion).toBe(computerUseHelperProtocolVersion);
-    expect(hello.minProtocolVersion).toBe(10);
+    expect(hello.minProtocolVersion).toBe(11);
     expect(hello.routes?.windowGroups).toBe(true);
   });
 
@@ -66,9 +66,11 @@ describe("helper wire fixture", () => {
       "permissions.request",
       "session.act",
       "session.bind",
+      "session.bindExisting",
       "session.observe",
       "session.open",
       "session.windows",
+      "session.windowsExisting",
       "view.open",
       "view.windows",
       "window.resolve",

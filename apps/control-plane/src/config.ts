@@ -1,4 +1,9 @@
 import {
+  loadCloudComputerConfig,
+  withManagedHomeConfigFiles,
+  type CloudComputerConfig,
+} from "./cloud-computers/config.js";
+import {
   HostedOAuthProviderRegistrySchema,
   type HostedOAuthProviderApplication,
 } from "./auth/hosted-oauth-provider-registry.js";
@@ -178,6 +183,17 @@ const AccountEnvironmentSchema = z
       .pipe(z.email().max(320))
       .optional(),
     OPENSTEER_APP_REVIEW_PASSWORD: z.string().min(24).max(4_096).optional(),
+    /**
+     * The synthetic purchase's own Account (scripts/synthetic-cloud-computer.mjs), signed in the
+     * same way as App Review but never the same account. Set it only on a stack that sells in
+     * Stripe test mode.
+     */
+    OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: z
+      .string()
+      .transform((value) => value.normalize("NFKC").trim().toLowerCase())
+      .pipe(z.email().max(320))
+      .optional(),
+    OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: z.string().min(24).max(4_096).optional(),
     OPENSTEER_APPLE_SIGN_IN_CLIENT_ID: z.string().min(1).optional(),
     OPENSTEER_APPLE_SIGN_IN_KEY_ID: z
       .string()
@@ -195,6 +211,8 @@ const AccountEnvironmentSchema = z
     OPENSTEER_HOSTED_OAUTH_PROVIDERS: z.string().max(262_144).optional(),
     OPENSTEER_DESKTOP_DOWNLOAD_URL: z.url().optional(),
     OPENSTEER_IOS_APP_URL: z.url().optional(),
+    /** The Opensteer website, the one page origin allowed to read the public Cloud Computer offer. */
+    OPENSTEER_WEBSITE_ORIGIN: BareOriginSchema.default(new URL("https://opensteer.com")),
     OPENSTEER_ANDROID_APP_URL: z.url().optional(),
     OPENSTEER_CONNECT_DOMAIN: DeploymentDomainSchema,
     OPENSTEER_CONNECT_CLOUDFLARE_ACCOUNT_ID: CloudflareIdentifierSchema,
@@ -216,12 +234,6 @@ const AccountEnvironmentSchema = z
       .regex(/^[a-z][a-z0-9]*(?:\.[a-z0-9][a-z0-9-]*)+$/u)
       .optional(),
     OPENSTEER_FCM_SERVICE_ACCOUNT_JSON: FcmServiceAccountSchema.optional(),
-    OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL: z
-      .email()
-      .refine((value) => value.endsWith(".iam.gserviceaccount.com"), {
-        message: "Expected a Google service account email",
-      })
-      .optional(),
     OPENSTEER_CONTROL_PLANE_HOST: z.string().min(1).default("127.0.0.1"),
     OPENSTEER_CONTROL_PLANE_PORT: z.coerce.number().int().min(1).max(65_535).default(4142),
   })
@@ -237,6 +249,8 @@ export interface ControlPlaneConfig {
   readonly googleClientId: string;
   readonly googleClientSecret: string;
   readonly appReview?: AppReviewSignInConfig;
+  /** The synthetic purchase's own Account; see `OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL`. */
+  readonly syntheticSignIn?: AppReviewSignInConfig;
   readonly appleSignIn?: AppleSignInConfig;
   readonly hostedOAuth?: {
     readonly encryptionPrivateKey: string;
@@ -252,6 +266,8 @@ export interface ControlPlaneConfig {
    */
   readonly desktopDownloadUrl?: string;
   readonly iosAppUrl?: string;
+  /** The Opensteer website's origin: it reads the public Cloud Computer offer from its pages. */
+  readonly websiteOrigin?: URL;
   readonly androidAppUrl?: string;
   readonly connectCloudflare: {
     readonly accountId: string;
@@ -276,11 +292,7 @@ export interface ControlPlaneConfig {
       readonly tokenUri: string;
     };
   };
-  /**
-   * Hosted team servers are offered only when the provisioner's Google service account is
-   * named; that identity alone may read desired teams and report their status.
-   */
-  readonly hostedTeams?: { readonly provisionerEmail: string };
+  readonly cloudComputers?: CloudComputerConfig;
   readonly listenHost: string;
   readonly listenPort: number;
 }
@@ -320,7 +332,22 @@ export function loadControlPlaneConfig(
   if (parsed.OPENSTEER_PORTAL_ORIGIN.origin === parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL.origin) {
     throw new Error("Account and portal origins must differ");
   }
+  const managedHomeEnvironment = withManagedHomeConfigFiles(environment);
+  const cloudComputers = loadCloudComputerConfig(managedHomeEnvironment);
+  // The synthetic purchase's door opens only on a stack that says it is a test stack: one whose
+  // Stripe secret key is present and in test mode, whether or not anything else is configured.
+  if (
+    (parsed.OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL || parsed.OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD) &&
+    !(cloudComputers?.stripeKey ?? "").startsWith("sk_test_")
+  )
+    throw new Error(
+      "The synthetic purchase's sign-in needs a test-mode Stripe secret key (sk_test_) beside it",
+    );
+  if (cloudComputers && parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL.protocol !== "https:") {
+    throw new Error("Cloud Computers require an HTTPS Account origin");
+  }
   const config = {
+    ...(cloudComputers ? { cloudComputers } : {}),
     environment: parsed.NODE_ENV,
     databaseUrl: parsed.OPENSTEER_CONTROL_PLANE_DATABASE_URL,
     publicOrigin: parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL,
@@ -337,6 +364,7 @@ export function loadControlPlaneConfig(
           },
         }
       : {}),
+    ...(syntheticSignInConfig(parsed) ? { syntheticSignIn: syntheticSignInConfig(parsed)! } : {}),
     ...(appleSignInConfig(parsed) ? { appleSignIn: appleSignInConfig(parsed)! } : {}),
     ...(hostedOAuthConfig(parsed) ? { hostedOAuth: hostedOAuthConfig(parsed)! } : {}),
     portalOrigin: parsed.OPENSTEER_PORTAL_ORIGIN,
@@ -345,6 +373,7 @@ export function loadControlPlaneConfig(
       ? { desktopDownloadUrl: parsed.OPENSTEER_DESKTOP_DOWNLOAD_URL }
       : {}),
     ...(parsed.OPENSTEER_IOS_APP_URL ? { iosAppUrl: parsed.OPENSTEER_IOS_APP_URL } : {}),
+    websiteOrigin: parsed.OPENSTEER_WEBSITE_ORIGIN,
     ...(parsed.OPENSTEER_ANDROID_APP_URL
       ? { androidAppUrl: parsed.OPENSTEER_ANDROID_APP_URL }
       : {}),
@@ -357,14 +386,24 @@ export function loadControlPlaneConfig(
     },
     nativeOAuthClients: opensteerAccountNativeOAuthClients,
     ...(pushConfig(parsed) ? { push: pushConfig(parsed)! } : {}),
-    ...(parsed.OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL
-      ? { hostedTeams: { provisionerEmail: parsed.OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL } }
-      : {}),
     listenHost: parsed.OPENSTEER_CONTROL_PLANE_HOST,
     listenPort: parsed.OPENSTEER_CONTROL_PLANE_PORT,
   } satisfies ControlPlaneConfig;
   assertNativeOAuthConfig(config);
   return config;
+}
+
+function syntheticSignInConfig(
+  parsed: z.infer<typeof AccountEnvironmentSchema>,
+): AppReviewSignInConfig | undefined {
+  const email = parsed.OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL;
+  const password = parsed.OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD;
+  if (!email && !password) return undefined;
+  if (!email || !password)
+    throw new Error("The synthetic purchase's sign-in needs its email and password together");
+  if (email === parsed.OPENSTEER_APP_REVIEW_EMAIL)
+    throw new Error("The synthetic purchase's account must not be the App Review account");
+  return { email, password };
 }
 
 function appleSignInConfig(

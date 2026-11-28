@@ -12,6 +12,7 @@ import {
   realBrowserTests,
   windowsTestInclude,
 } from "../.github/scripts/ci-test-files.mjs";
+import { webJourneys } from "../apps/web/scripts/journeys.js";
 import { mergeLockGraphs, writeLockGraph } from "./ci-lock-merge.js";
 const directory = process.argv[2]!;
 // Each artifact downloads into its own folder, and each file is read only from the job that
@@ -85,14 +86,30 @@ for (const lane of ["tests", "integration"] as const) {
   )
     throw new Error(`${lane} discovery differs from the planned files`);
 }
+// The browser lane's shards ran every real-browser file and every listed web journey.
 if (verifies("browser-journeys")) {
-  const inventory = read("browser-journeys", "browser-1.inventory.json");
-  checkInventories([inventory], 1, "browser");
+  const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8")) as {
+    jobs: Record<string, { strategy: { matrix: { shard: number[] } } }>;
+  };
+  const count = workflow.jobs["browser-journeys"]!.strategy.matrix.shard.length;
+  const shards = (name: string) =>
+    Array.from({ length: count }, (_, i) =>
+      read(`browser-journeys-${i + 1}`, `${name}-${i + 1}.inventory.json`),
+    );
+  const browser = shards("browser");
+  checkInventories(browser, count, "browser");
   if (
-    JSON.stringify([...inventory.discovered].sort()) !==
+    JSON.stringify([...browser[0].discovered].sort()) !==
     JSON.stringify([...realBrowserTests].sort())
   )
     throw new Error("Browser discovery differs from the required files");
+  const journeys = shards("journeys");
+  checkInventories(journeys, count, "journeys");
+  if (
+    JSON.stringify([...journeys[0].discovered].sort()) !==
+    JSON.stringify(webJourneys.map((journey) => journey.name).sort())
+  )
+    throw new Error("Web journey discovery differs from the listed journeys");
 }
 // One task runs the Darwin-only files; Swift-only tasks upload no inventory.
 if (verifies("native-mac") && plan.nativeMac?.includes(darwinTask)) {

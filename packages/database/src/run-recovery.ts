@@ -12,6 +12,7 @@ import {
 import { createHash } from "node:crypto";
 import {
   createId,
+  runTerminationUnprovenCode,
   utf8Prefix,
   MessageContentSchema,
   messageContentMaxSerializedBytes,
@@ -32,9 +33,9 @@ import {
   jsonValue,
   lockThreadRow,
   systemPrincipalId,
-  threadExecutionIsAvailableToUser,
   type ChannelLinks,
 } from "./store-primitives.js";
+import { lineageExecutionStanding } from "./execution-authority.js";
 import { messageFromRow } from "./thread-row-mappers.js";
 
 export async function recoverLostRunTransaction(
@@ -111,7 +112,21 @@ export async function recoverLostRunTransaction(
   ) {
     return fail("interrupted");
   }
-  if (!(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))) {
+  const standing = await lineageExecutionStanding(transaction, {
+    threadId: run.threadId,
+    userId: run.requestedBy,
+    agentConnectionId: run.connectionId ?? thread.originConnectionId,
+  });
+  if (standing.kind === "held") {
+    return fail("failed", {
+      code: runTerminationUnprovenCode,
+      message:
+        "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+      retryable: false,
+      status: "failed",
+    });
+  }
+  if (standing.kind !== "admitted") {
     return fail("failed", {
       code: "task_access_revoked",
       message: "Task execution authority ended before the Run reached a terminal event",
@@ -294,6 +309,7 @@ export async function recoverLostRunTransaction(
     const receipt = await transaction
       .insertInto("threadInputs")
       .values({
+        ...(run.connectionId ? { connectionId: run.connectionId } : {}),
         actorPrincipalId: systemPrincipalId,
         assignmentId: run.assignmentId,
         authoritySource: jsonValue({

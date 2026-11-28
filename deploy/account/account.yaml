@@ -147,6 +147,12 @@ spec:
                 if (typeof value !== "string" || value.length === 0) throw new Error(`Missing ${key}`);
                 writeFileSync(`/var/run/opensteer-runtime/secrets/${key}`, value, { mode: 0o600 });
               }
+              // The managed Home offers are optional. Mount only keys configured in the secret.
+              for (const [key, value] of Object.entries(document)) {
+                if (!/^OPENSTEER_CLOUD_COMPUTER_[A-Z0-9_]+$/.test(key) || key.endsWith("_FILE")) continue;
+                if (typeof value !== "string" || value.length === 0) throw new Error(`Invalid ${key}`);
+                writeFileSync(`/var/run/opensteer-runtime/secrets/${key}`, value, { mode: 0o600 });
+              }
               writeFileSync(
                 "/var/run/opensteer-runtime/secrets/OPENSTEER_CONTROL_PLANE_AUTH_SECRET",
                 readFileSync("/var/run/opensteer-raw/account-auth"),
@@ -173,6 +179,10 @@ spec:
           envFrom:
             - configMapRef: { name: account-env }
           env:
+            - {
+                name: OPENSTEER_MANAGED_HOME_CONFIG_DIRECTORY,
+                value: /var/run/opensteer-runtime/secrets,
+              }
             - {
                 name: OPENSTEER_APP_REVIEW_PASSWORD_FILE,
                 value: /var/run/opensteer-runtime/secrets/OPENSTEER_APP_REVIEW_PASSWORD,

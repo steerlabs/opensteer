@@ -73,19 +73,27 @@ describe("Opensteer tool inputs", () => {
     expect(schema.safeParse({ ...base, delivery: "turn" }).success).toBe(false);
     expect(schema.safeParse({ ...base, delivery: "notify" }).success).toBe(false);
   });
-  it("requires version 4 for authored automation programs", () => {
+  it("rejects relative interpreter paths for authored automation scripts", () => {
     const input = tool("opensteer_automation_create").input;
-    for (const version of [1, 2, 3])
+    for (const interpreter of [["./node"], ["../bin/python3"], ["sub/sh"]])
       expect(
         input.safeParse({
           name: "test",
-          program: {
-            language: "javascript",
-            source: "export default () => {}",
-            toolContractVersion: version,
+          script: {
+            interpreter,
+            text: "console.log('hi')",
           },
           source: { kind: "webhook" },
         }).success,
       ).toBe(false);
+    expect(
+      input.safeParse({
+        name: "test",
+        script: {
+          text: "console.log('hi')",
+        },
+        source: { kind: "webhook" },
+      }).success,
+    ).toBe(true);
   });
 });

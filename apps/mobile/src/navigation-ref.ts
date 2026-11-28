@@ -1,8 +1,13 @@
-import { StackActions, createNavigationContainerRef } from "@react-navigation/native";
+import {
+  StackActions,
+  createNavigationContainerRef,
+  type InitialState,
+} from "@react-navigation/native";
 import type { RootParamList } from "./navigation.js";
-import { routeSide, sideMemory } from "./side-memory.js";
+import type { PendingDestination } from "./pending-destination.js";
+import { sideMemory } from "./side-memory.js";
 import type { TopLevelTarget } from "./top-level.js";
-import { deploymentRoot, deploymentsRoot } from "./navigation-state.js";
+import { deploymentRoot, deploymentsRoot, selectionRootTransition } from "./navigation-state.js";
 
 /**
  * The one handle the app root has on navigation. A deep link and a
@@ -11,12 +16,58 @@ import { deploymentRoot, deploymentsRoot } from "./navigation-state.js";
  */
 export const navigationRef = createNavigationContainerRef<RootParamList>();
 
-export function resetToDeployments(): void {
-  if (navigationRef.isReady()) navigationRef.resetRoot(deploymentsRoot());
+/** Whether the root stack is already the bare Home screen for `deploymentId`. */
+function isAtDeploymentRoot(deploymentId: string): boolean {
+  if (!navigationRef.isReady()) return false;
+  const state = navigationRef.getRootState();
+  if (state === undefined || state.routes.length !== 1 || state.index !== 0) return false;
+  const route = state.routes[0];
+  return (
+    route?.name === "Home" &&
+    route.params !== undefined &&
+    "deploymentId" in route.params &&
+    route.params.deploymentId === deploymentId
+  );
 }
 
+export function resetRoot(state: InitialState): void {
+  if (navigationRef.isReady()) navigationRef.resetRoot(state);
+}
+
+/** Moves the root stack when the client's published selection changes, outside deferred modals. */
+export function reconcileRootSelection(input: {
+  readonly destinations: Pick<PendingDestination, "reconciled" | "selectionToReconcile">;
+  readonly selection: { readonly deploymentId: string | null; readonly status: string };
+}): void {
+  const { destinations, selection } = input;
+  if (
+    selection.status !== "ready" ||
+    !navigationRef.isReady() ||
+    !destinations.selectionToReconcile(selection.deploymentId)
+  )
+    return;
+  const state = navigationRef.getRootState();
+  if (state === undefined) return;
+  const base = state.routes[0];
+  const baseId = base?.params && "deploymentId" in base.params ? base.params.deploymentId : null;
+  const transition = selectionRootTransition({
+    activeRouteName: state.routes[state.index]?.name ?? null,
+    baseDeploymentId: typeof baseId === "string" ? baseId : null,
+    baseRouteName: base?.name ?? null,
+    deploymentId: selection.deploymentId,
+  });
+  if (transition === "defer") return;
+  destinations.reconciled(selection.deploymentId);
+  if (transition !== null) resetRoot(transition);
+}
+
+export function resetToDeployments(): void {
+  resetRoot(deploymentsRoot());
+}
+
+/** Arrives at the bare Home root for `deploymentId`; does nothing if already there. */
 export function resetToDeployment(deploymentId: string): void {
-  if (navigationRef.isReady()) navigationRef.resetRoot(deploymentRoot(deploymentId));
+  if (!isAtDeploymentRoot(deploymentId)) resetRoot(deploymentRoot(deploymentId));
 }
 
 /** Opens a subagent's own view over whatever is in front, from outside a screen's tree. */
@@ -24,7 +75,7 @@ export function pushSubagent(params: RootParamList["Subagent"]): void {
   if (navigationRef.isReady()) navigationRef.dispatch(StackActions.push("Subagent", params));
 }
 
-/** Links, notifications, Voice and cross-side destinations share the root entry. */
+/** Links, notifications and Voice share the root entry. */
 export function enterSide(target: TopLevelTarget): boolean {
   if (!navigationRef.isReady()) return false;
   let state = navigationRef.getRootState();
@@ -48,21 +99,4 @@ export function enterSide(target: TopLevelTarget): boolean {
   if (action === null) return false;
   navigationRef.dispatch(action);
   return true;
-}
-
-export function forgetTeamSide(teamId: string): void {
-  if (!navigationRef.isReady()) return;
-  const state = navigationRef.getRootState();
-  if (state === undefined) return;
-  // Without a selected computer there is no Home to resume; the team's screens just close.
-  if (state.routes[0]?.name !== "Home") {
-    const routes = state.routes
-      .filter((route) => routeSide(route) !== teamId)
-      .map(({ key, name, params }) => ({ key, name, params }));
-    if (routes.length > 0 && routes.length < state.routes.length)
-      navigationRef.resetRoot({ index: routes.length - 1, routes });
-    return;
-  }
-  const action = sideMemory.forget(state, teamId);
-  if (action !== null) navigationRef.dispatch(action);
 }

@@ -1,10 +1,18 @@
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { outsideName } from "@opensteer/shared/outsideName";
+import {
+  commitPersonalMutation,
+  threadPendingRequestsCount,
+  wakeExecutionCommands,
+  wakeTriggerSchedules,
+} from "./personal-mutation.js";
+import { closeAgentOperationRequestsAboveMode } from "./agent-session-store.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { lockThreadProviderSession } from "./run-projection-locks.js";
 import { compactionReturnHint } from "./compaction-eligibility.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
-import { type TaskPurpose, type TeamTaskOrigin, type ThreadDoneBy } from "@opensteer/core";
+import { type TaskPurpose, type ThreadDoneBy } from "@opensteer/core";
 import { changedTasksSubquery } from "./changed-tasks.js";
+import { connectionRequests } from "./request-agent-response.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { MemoryPassExecution } from "./memory-pass-store.js";
 import { getThreadNamingInput } from "./execution-store.js";
@@ -12,6 +20,7 @@ import { environmentIsAvailableToUser } from "./environment-store.js";
 import {
   assertThreadCaller,
   lockThreadCaller,
+  threadCallerLineageId,
   withThreadCallerTransaction,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
@@ -46,6 +55,7 @@ import {
   type AssignmentSummary,
   DEFAULT_THREAD_ACCESS_MODE,
   ThreadAccessModeSchema,
+  threadAccessModeAtMost,
   ThreadTitleSchema,
   GeneratedThreadTitleSchema,
   type ThreadTitleSource,
@@ -99,10 +109,12 @@ import {
 } from "./store-primitives.js";
 import { isDeepStrictEqual } from "node:util";
 import {
+  keptMessageSql,
   threadPendingRequestsSelection,
   threadVisitSelection,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
+  threadStartedByOtherSelection,
   threadFromRow,
   threadsFromRows,
   assignmentFromRow,
@@ -132,9 +144,12 @@ import {
   lockThreadInputIdempotency,
   steerThreadInputInTransaction,
   cancelThreadInputInTransaction,
+  cancelDisconnectedThreadInputInTransaction,
   moveThreadInputInTransaction,
   readThreadInputQueue,
 } from "./thread-inbox.js";
+import { lineagePersonalContext } from "./resource-access.js";
+import { personTaskReader, readerSees, type TaskReader } from "./task-reader.js";
 import {
   projectThreadState,
   publishRunQueue,
@@ -150,7 +165,6 @@ export interface CreateThreadInput {
   readonly environmentId: EnvironmentId;
   readonly harnessInstanceId: HarnessInstanceId;
   readonly purpose?: TaskPurpose;
-  readonly teamOrigin?: TeamTaskOrigin;
   readonly generateTitle?: true;
   readonly id?: ThreadId;
   readonly idempotencyKey: string;
@@ -175,13 +189,14 @@ export interface ThreadUpdateResult {
  * Thread and Run copied from the sending Run's authenticated capability, never
  * a value the sending model supplied.
  */
+export interface BridgeChatSource {
+  readonly conversationId: string;
+  /** The bridge's revision when the message was admitted; any other is refused. */
+  readonly revision: number;
+  /** Who wrote it on the provider: whether that is the person is read, never claimed. */
+  readonly sender: { readonly displayName: string; readonly externalUserId: string };
+}
 export type ThreadInputSource =
-  | {
-      readonly kind: "team-member";
-      readonly teamId: import("@opensteer/core").DeploymentId;
-      readonly requestId: import("@opensteer/core").TeamAgentRequestId;
-      readonly resumeRunId?: RunId;
-    }
   | {
       readonly kind: "human";
       readonly clientSessionId?: string;
@@ -191,6 +206,11 @@ export type ThreadInputSource =
   | {
       readonly kind: "connection";
       readonly connectionId: string;
+      /**
+       * A message that came through a messaging bridge: the conversation the reply goes back
+       * to and who wrote it. Set by the Home from the chat, never from a tool's input.
+       */
+      readonly chat?: BridgeChatSource;
     }
   | {
       readonly kind: "agent";
@@ -222,23 +242,12 @@ export type ThreadInputSource =
       readonly kind: "automation";
       readonly noticeId: string;
       readonly triggerId: TriggerId;
-    }
-  | {
-      readonly kind: "channel";
-      readonly conversationId: string;
-      readonly ingressId: string;
-      readonly principalId: string;
     };
 export interface EnqueueThreadInputRequest {
   readonly compaction?: import("@opensteer/core").CompactionSendChoice;
   readonly maintenance?: import("@opensteer/core").RunMaintenance;
   readonly maintenanceNowMs?: number;
   readonly freshContext?: boolean;
-  readonly teamRequest?: {
-    readonly id: import("@opensteer/core").TeamAgentRequestId;
-    readonly triggerMessageId: import("@opensteer/core").TeamMessageId;
-    readonly source: import("@opensteer/core").TeamSource;
-  };
   readonly requireUnassigned?: true;
   readonly authority?: ThreadCallerAuthority;
   readonly quotedMessageId?: MessageId;
@@ -419,6 +428,11 @@ export type AgentThreadListScope =
     }
   | {
       readonly kind: "personal";
+    }
+  /** Only the tasks in one connected agent's lineage. */
+  | {
+      readonly kind: "connection";
+      readonly connectionId: string;
     };
 async function findExistingThreadCreation(
   transaction: Transaction<DatabaseSchema>,
@@ -495,7 +509,6 @@ function canonicalCreateThreadInput(input: CreateThreadInput): Readonly<Record<s
       : {}),
     title: input.title,
     purpose: input.purpose ?? "task",
-    teamOrigin: input.teamOrigin ?? null,
   };
 }
 async function resolveCreateThreadAccessMode(
@@ -557,12 +570,9 @@ function assertThreadMutationAdmission(
     return;
   }
   const sourceMatches = message
-    ? input.source.kind === "watch" &&
-      input.source.activationId === admission.request.activationId &&
-      input.source.observationId === admission.request.observationId
+    ? input.source.kind === "watch" && input.source.activationId === admission.request.activationId
     : input.origin.kind === "watch" &&
       input.origin.activationId === admission.request.activationId &&
-      input.origin.observationId === admission.request.observationId &&
       input.origin.parentThreadId === admission.request.anchorThreadId;
   const userMatches =
     (message ? input.requestedBy : input.createdBy) === admission.request.createdBy;
@@ -682,17 +692,35 @@ export async function getAssignmentForOwner(
   input: {
     readonly assignmentId: AssignmentId;
     readonly ownerId: UserId;
+    /** Who reads: one whose worker its reader may not read is null, as a missing one. */
+    readonly reader: TaskReader;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   },
-): Promise<AssignmentView | null> {
+): Promise<(AssignmentView & { readonly pendingRequests?: number }) | null> {
   return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
+      const visibleRequests = input.connectionAuthority
+        ? await connectionRequests(transaction, input.connectionAuthority, { ownerVerified: true })
+        : undefined;
       const row = await transaction
         .selectFrom("delegations")
         .innerJoin("threads as workerThread", "workerThread.id", "delegations.childThreadId")
         .selectAll("delegations")
+        .$if(visibleRequests !== undefined, (query) =>
+          query.select(
+            sql<number>`(
+              select count(*)::int from (${visibleRequests!}) as visible_requests
+              where visible_requests.originating_thread_id = ${sql.ref("workerThread.id")}
+                and visible_requests.status = 'pending'
+            )`.as("pendingRequests"),
+          ),
+        )
         .where("delegations.id", "=", input.assignmentId)
+        .$if(input.reader.kind === "work", (query) =>
+          query.where(readerSees(input.reader, sql.ref("workerThread.origin_connection_id"))),
+        )
         .executeTakeFirst();
       if (!row) return null;
       const parent = await transaction
@@ -700,7 +728,13 @@ export async function getAssignmentForOwner(
         .select("threads.id")
         .where("threads.id", "=", row.parentThreadId)
         .executeTakeFirst();
-      return parent ? assignmentFromRow(row) : null;
+      if (!parent) return null;
+      return {
+        ...assignmentFromRow(row),
+        ...(visibleRequests !== undefined
+          ? { pendingRequests: Number((row as { pendingRequests?: number }).pendingRequests ?? 0) }
+          : {}),
+      };
     },
     "repeatable read",
   );
@@ -845,8 +879,13 @@ export async function agentThreadPageForOwner(
     readonly scopeId: string;
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
+    readonly nativeOnly?: boolean;
+    /** Who reads: a memory pass's lineage sees only tasks with personal context. */
+    readonly reader: TaskReader;
     readonly done?: boolean;
     readonly hasPendingRequests?: boolean;
+    readonly omitPendingRequests?: boolean;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   },
 ): Promise<AgentThreadListPage> {
   const maxItems = boundedWindowLimit(input.maxItems, 50);
@@ -866,6 +905,13 @@ export async function agentThreadPageForOwner(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
+      const visibleRequests =
+        input.connectionAuthority &&
+        (since !== null || input.hasPendingRequests !== undefined || !input.omitPendingRequests)
+          ? await connectionRequests(transaction, input.connectionAuthority, {
+              ownerVerified: true,
+            })
+          : undefined;
       const lineageRootThreadId =
         scope.kind === "lineage"
           ? (
@@ -879,9 +925,18 @@ export async function agentThreadPageForOwner(
       let base = transaction
         .selectFrom("threads")
         .where("threads.removedAt", "is", null)
+        .$if(input.nativeOnly === true, (q) => q.where("threads.worker", "=", "native"))
+        .$if(input.reader.kind === "work", (query) =>
+          query.where(readerSees(input.reader, sql.ref("threads.origin_connection_id"))),
+        )
         .$if(since !== null, (query) =>
-          query.innerJoin(changedTasksSubquery(transaction, since!).as("changed"), (join) =>
-            join.onRef("changed.threadId", "=", "threads.id"),
+          query.innerJoin(
+            changedTasksSubquery(
+              transaction,
+              since!,
+              visibleRequests ? { visibleRequests } : {},
+            ).as("changed"),
+            (join) => join.onRef("changed.threadId", "=", "threads.id"),
           ),
         );
       if (input.parentThreadId) {
@@ -901,20 +956,36 @@ export async function agentThreadPageForOwner(
       if (scope.kind === "lineage") {
         base = base.where("threads.lineageRootThreadId", "=", lineageRootThreadId!);
       }
+      if (scope.kind === "connection") {
+        base = base.where("threads.originConnectionId", "=", scope.connectionId);
+      }
       if (input.done !== undefined) {
         base = input.done
           ? base.where("threads.doneAt", "is not", null)
           : base.where("threads.doneAt", "is", null);
       }
       if (input.hasPendingRequests !== undefined) {
-        const pendingExists = sql<boolean>`exists (
+        if (visibleRequests) {
+          base = base.where((eb) => {
+            const pendingExists = eb.exists(
+              eb
+                .selectFrom(visibleRequests.as("visible_requests"))
+                .select("visible_requests.id")
+                .whereRef("visible_requests.originatingThreadId", "=", "threads.id")
+                .where("visible_requests.status", "=", "pending"),
+            );
+            return input.hasPendingRequests ? pendingExists : eb.not(pendingExists);
+          });
+        } else {
+          const pendingExists = sql<boolean>`exists (
           select 1 from requests
           where requests.originating_thread_id = threads.id
             and requests.status = 'pending'
         )`;
-        base = base.where(
-          input.hasPendingRequests ? pendingExists : sql<boolean>`not ${pendingExists}`,
-        );
+          base = base.where(
+            input.hasPendingRequests ? pendingExists : sql<boolean>`not ${pendingExists}`,
+          );
+        }
       }
       if (pattern && search) {
         base = base.where(
@@ -923,6 +994,7 @@ export async function agentThreadPageForOwner(
             where messages.thread_id = threads.id
               and messages.published
               and messages.kind <> 'continuation'
+              and ${keptMessageSql()}
               and jsonb_to_tsvector('simple', jsonb_path_query_array(messages.content, '$[*] ? (@.type == "text").text'), '["string"]') @@ plainto_tsquery('simple', ${search})
           ))`,
         );
@@ -980,8 +1052,20 @@ export async function agentThreadPageForOwner(
               .whereRef("visibleParent.id", "=", "threads.parentThreadId")
               .as("parentThreadId"),
           )
+          .$if(visibleRequests !== undefined && !input.omitPendingRequests, (query) =>
+            query.select((eb) =>
+              eb
+                .selectFrom(visibleRequests!.as("visible_requests"))
+                .select(sql<number>`count(*)::int`.as("count"))
+                .whereRef("visible_requests.originatingThreadId", "=", "threads.id")
+                .where("visible_requests.status", "=", "pending")
+                .as("pendingRequests"),
+            ),
+          )
+          .$if(visibleRequests === undefined && !input.omitPendingRequests, (query) =>
+            query.select(threadPendingRequestsSelection),
+          )
           .select([
-            threadPendingRequestsSelection,
             threadVisitSelection,
             threadProviderSessionSelection,
             threadContinuationIdentitySelection,
@@ -1020,6 +1104,7 @@ export async function agentThreadPageForOwner(
                 questionsDismissed === undefined ? 0 : Number(questionsDismissed);
               return {
                 ...row,
+                pendingRequests: row.pendingRequests ?? 0,
                 updatedAt: row.updatedAt.toISOString(),
                 doneAt: row.doneAt?.toISOString() ?? null,
                 doneBy: row.doneBy ?? null,
@@ -1057,25 +1142,81 @@ export async function agentThreadPageForOwner(
     "repeatable read",
   );
 }
-export async function getThreadForOwner(
+/** A task as the person reads it. Work reading a task reads it through `readTask`. */
+export function getThreadForOwner(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
   ownerId: UserId,
+  lineageConnectionId?: string,
+  nativeOnly?: boolean,
+  connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>,
 ): Promise<Thread | null> {
+  return readTask(database, personTaskReader, threadId, ownerId, {
+    ...(lineageConnectionId === undefined ? {} : { lineageConnectionId }),
+    ...(nativeOnly === undefined ? {} : { nativeOnly }),
+    ...(connectionAuthority === undefined ? {} : { connectionAuthority }),
+  });
+}
+/**
+ * A task as its reader may see it: one a memory pass's lineage may not read is null, exactly as
+ * a task that does not exist.
+ */
+export async function readTask(
+  database: Kysely<DatabaseSchema>,
+  reader: TaskReader,
+  threadId: ThreadId,
+  ownerId: UserId,
+  options: {
+    readonly lineageConnectionId?: string;
+    readonly nativeOnly?: boolean;
+    /**
+     * Only a task this connection's lineage may change: its own, or the person's. With Everything a
+     * connection reads every task but changes only those, so a change reads any other as missing.
+     */
+    readonly writableBy?: string;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+  } = {},
+): Promise<Thread | null> {
+  const { lineageConnectionId, nativeOnly, writableBy, connectionAuthority } = options;
   return withPersonalReadTransaction(database, async (tx) => {
     await requirePersonalOwner(tx, ownerId);
+    const visibleRequests = connectionAuthority
+      ? await connectionRequests(tx, connectionAuthority, { ownerVerified: true })
+      : undefined;
     const row = await tx
       .selectFrom("threads")
       .selectAll("threads")
       .select([
-        threadPendingRequestsSelection,
+        visibleRequests
+          ? sql<number>`(
+              select count(*)::int from (${visibleRequests}) as visible_requests
+              where visible_requests.originating_thread_id = threads.id
+                and visible_requests.status = 'pending'
+            )`.as("pendingRequests")
+          : threadPendingRequestsSelection,
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
+        threadStartedByOtherSelection,
       ])
       .where("threads.id", "=", threadId)
       .where("threads.createdBy", "=", ownerId)
       .where("threads.removedAt", "is", null)
+      .$if(nativeOnly === true, (query) => query.where("threads.worker", "=", "native"))
+      .$if(lineageConnectionId !== undefined, (query) =>
+        query.where("threads.originConnectionId", "=", lineageConnectionId!),
+      )
+      .$if(writableBy !== undefined, (query) =>
+        query.where((eb) =>
+          eb.or([
+            eb("threads.originConnectionId", "=", writableBy!),
+            eb("threads.originConnectionId", "is", null),
+          ]),
+        ),
+      )
+      .$if(reader.kind === "work", (query) =>
+        query.where(readerSees(reader, sql.ref("threads.origin_connection_id"))),
+      )
       .executeTakeFirst();
     return row
       ? { ...threadFromRow(row), returnHint: await compactionReturnHint(tx, threadId) }
@@ -1114,6 +1255,7 @@ export async function readThreadForOwner(
           threadVisitSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
+          threadStartedByOtherSelection,
         ])
         .where("threads.id", "=", threadId)
         .where("threads.removedAt", "is", null)
@@ -1192,7 +1334,13 @@ export async function createThreadInTransaction(
     : null;
   const actorPrincipalId = await principalIdForUser(transaction, input.createdBy);
   const purpose = input.purpose ?? "task";
+  // Lineage is fixed at creation: the creator's connection, otherwise the parent task's.
+  const originConnectionId =
+    (input.authority ? await threadCallerLineageId(transaction, input.authority) : null) ??
+    parent?.originConnectionId ??
+    null;
   const thread = await insertThread({
+    ...(originConnectionId ? { originConnectionId } : {}),
     accessMode: resolvedInput.accessMode,
     createdByPrincipalId: actorPrincipalId,
     id,
@@ -1201,16 +1349,18 @@ export async function createThreadInTransaction(
     modelSelection: jsonValue(ModelSelectionSchema.parse(input.modelSelection)),
     parentThreadId: input.parentThreadId ?? null,
     purpose,
-    teamId: input.teamOrigin?.teamId ?? null,
-    channelId: input.teamOrigin?.channelId ?? null,
-    threadRootId: input.teamOrigin?.threadRootId ?? null,
     status: "idle",
-    title: input.title,
+    // A title may come from a chat's message: it enters clean, as every name from outside.
+    title: outsideName(input.title, 240) || "Task",
     titleSource: input.generateTitle ? "provisional" : "chosen",
     icon: input.icon ?? null,
     iconSource: input.icon ? "chosen" : "provisional",
   });
-  await ensureSelectedProviderSession(transaction, thread);
+  // Work in a lineage without the person's personal context never has a personal session.
+  await ensureSelectedProviderSession(transaction, thread, {
+    personalContext: await lineagePersonalContext(transaction, originConnectionId),
+    personLineage: originConnectionId === null,
+  });
   if (purpose === "voice")
     await transaction
       .updateTable("personalSettings")
@@ -1582,6 +1732,12 @@ export async function updateThreadExecutionSelection(
             id: providerSessionId,
             leaseExpiresAt: null,
             leaseTokenHash: null,
+            // Whether it may use the person's personal context or own lineage, from its first row:
+            // never widen from the prior session or from the task's lineage.
+            personalContext:
+              (selected?.personalContext ?? true) &&
+              (await lineagePersonalContext(transaction, thread.originConnectionId)),
+            personLineage: (selected?.personLineage ?? true) && thread.originConnectionId === null,
             providerSessionReference: null,
             runnerBootId: null,
             runnerId: null,
@@ -1641,6 +1797,52 @@ export async function updateThreadExecutionSelection(
     }),
   );
 }
+/**
+ * A chat that is back wakes the work it held: each task in its lineage with a message waiting
+ * starts it, in queue order, each in its own transaction (the task first, then what its Run
+ * needs, as any queued Run is started); its Runs that were held, unlisted, while it waited are
+ * listed again, and its automations' schedules are due again (both loops are woken once). The Home's messages that waited are woken by
+ * the service with this (`ChannelService`).
+ */
+export async function wakeChatQueues(
+  database: Kysely<DatabaseSchema>,
+  channelConnectionId: string,
+): Promise<void> {
+  const tasks = await database
+    .selectFrom("threads")
+    .innerJoin("agentConnections", "agentConnections.id", "threads.originConnectionId")
+    .innerJoin("channelAccounts", "channelAccounts.id", "agentConnections.bridgeAccountId")
+    .select("threads.id")
+    .where("channelAccounts.connectionId", "=", channelConnectionId as never)
+    .where(({ exists, selectFrom }) =>
+      exists(
+        selectFrom("threadInputs")
+          .select("threadInputs.messageId")
+          .whereRef("threadInputs.threadId", "=", "threads.id")
+          .where("threadInputs.state", "=", "pending")
+          .where("threadInputs.policy", "=", "queue"),
+      ),
+    )
+    .orderBy("threads.id")
+    .execute();
+  for (const task of tasks)
+    await commitPersonalMutation(database, async (transaction) => {
+      await lockThreadRow(transaction, task.id);
+      const thread = await transaction
+        .selectFrom("threads")
+        .selectAll()
+        .where("id", "=", task.id)
+        .executeTakeFirst();
+      if (thread) await ensureQueuedRun(transaction, thread);
+    });
+  // Its held Runs are listed again, and its automations' schedules, which did not fire while it
+  // waited, are due again: both loops are woken by this commit.
+  await commitPersonalMutation(database, async (transaction) => {
+    await wakeExecutionCommands(transaction);
+    await wakeTriggerSchedules(transaction);
+  });
+}
+
 export async function resumeThreadInputQueue(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -1828,7 +2030,7 @@ export async function renameThread(
       const row = await transaction
         .updateTable("threads")
         .set({
-          title,
+          title: outsideName(title, 240) || thread.title,
           titleSource: "chosen",
           updatedAt: new Date(),
         })
@@ -2042,7 +2244,7 @@ export async function applyGeneratedThreadName(
           : await transaction
               .updateTable("threads")
               .set({
-                title,
+                title: outsideName(title, 240) || "Task",
                 titleSource: "generated",
                 updatedAt: new Date(),
               })
@@ -2090,7 +2292,7 @@ export async function updateThreadAccessMode(
   return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("threads")
-      .select("id")
+      .select(["id", "worker", "accessMode", "environmentId"])
       .where("id", "=", input.threadId)
       .where("removedAt", "is", null)
       .executeTakeFirst();
@@ -2100,24 +2302,31 @@ export async function updateThreadAccessMode(
         message: "Task not found",
       });
     await requirePersonalOwner(transaction, input.requestedBy);
+    await requireExecutionEnvironmentAccess(
+      transaction,
+      observed.environmentId,
+      input.requestedBy,
+      "Only the execution owner can change this task's access mode",
+    );
+    const lowersDirectWork =
+      observed.worker === "external" && !threadAccessModeAtMost(observed.accessMode, accessMode);
+    if (lowersDirectWork)
+      await closeAgentOperationRequestsAboveMode(transaction, observed.id, accessMode, new Date());
     const thread = await transaction
       .selectFrom("threads")
       .selectAll()
       .select([
-        threadPendingRequestsSelection,
+        lowersDirectWork
+          ? threadPendingRequestsCount.as("pendingRequests")
+          : threadPendingRequestsSelection,
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
+        threadStartedByOtherSelection,
       ])
       .where("id", "=", input.threadId)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
-    await requireExecutionEnvironmentAccess(
-      transaction,
-      thread.environmentId,
-      input.requestedBy,
-      "Only the execution owner can change this task's access mode",
-    );
     if (thread.accessMode === accessMode)
       return {
         asOfSequence: await threadMutationHead(transaction, observed.id),
@@ -2176,6 +2385,7 @@ export async function enqueueThreadInput(
     const result = await enqueueThreadInputInTransaction(transaction, input);
     await assertThreadCaller(transaction, input.authority, {
       threadId: input.threadId,
+      enqueue: input.authority?.kind === "connection" && input.policy === "queue",
     });
     return result;
   });
@@ -2195,13 +2405,27 @@ export async function steerThreadInput(
     return result;
   });
 }
+async function lockQueueCaller(
+  transaction: Transaction<DatabaseSchema>,
+  input: CancelThreadInputRequest | MoveThreadInputRequest,
+): Promise<void> {
+  // A Run caller and the target's active Runs are locked in one statement, in ID order. The
+  // Personal mutation fence keeps that set stable until the queue projection locks it again.
+  await lockThreadCaller(
+    transaction,
+    input.authority,
+    [],
+    false,
+    input.authority?.kind === "run" ? input.threadId : undefined,
+  );
+}
 export async function cancelThreadInput(
   database: Kysely<DatabaseSchema>,
   input: CancelThreadInputRequest,
 ): Promise<CancelledThreadInput> {
   return commitPersonalMutation(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
-    await lockThreadCaller(transaction, input.authority);
+    await lockQueueCaller(transaction, input);
     const result = await cancelThreadInputInTransaction(transaction, input);
     await assertThreadCaller(transaction, input.authority, {
       threadId: input.threadId,
@@ -2209,13 +2433,21 @@ export async function cancelThreadInput(
     return result;
   });
 }
+export async function cancelDisconnectedThreadInput(
+  database: Kysely<DatabaseSchema>,
+  input: { readonly threadId: ThreadId; readonly messageId: MessageId },
+) {
+  return commitPersonalMutation(database, (transaction) =>
+    cancelDisconnectedThreadInputInTransaction(transaction, input),
+  );
+}
 export async function moveThreadInput(
   database: Kysely<DatabaseSchema>,
   input: MoveThreadInputRequest,
 ): Promise<MovedThreadInput> {
   return commitPersonalMutation(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
-    await lockThreadCaller(transaction, input.authority);
+    await lockQueueCaller(transaction, input);
     const result = await moveThreadInputInTransaction(transaction, input);
     await assertThreadCaller(transaction, input.authority, {
       threadId: input.threadId,

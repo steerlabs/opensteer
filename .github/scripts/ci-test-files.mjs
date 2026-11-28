@@ -15,20 +15,31 @@ export const realBrowserTests = [
   "apps/browser-runtime/src/browser/chromium-clipboard.test.ts",
   "apps/browser-runtime/src/browser/chromium-follow-view.test.ts",
   "apps/browser-runtime/src/browser/chromium-popup-follow.test.ts",
+  "apps/browser-runtime/src/browser/chromium-renderer-leak.test.ts",
   "apps/browser-runtime/src/browser/chromium-runtime.test.ts",
+  "apps/browser-runtime/src/browser/chromium-restart.test.ts",
+  "apps/browser-runtime/src/browser/chromium-tab-identity.test.ts",
+  "apps/browser-runtime/src/browser/chromium-tab-sleep.test.ts",
   "apps/browser-runtime/src/browser/chromium-teardown.test.ts",
+  "apps/browser-runtime/src/browser/chromium-viewport-capture.test.ts",
   "apps/browser-runtime/src/browser/drag-cancel.test.ts",
   "apps/browser-runtime/src/browser/editing.test.ts",
   "apps/browser-runtime/src/browser/favicon.test.ts",
   "apps/browser-runtime/src/browser/harness-actions-deadlines.test.ts",
   "apps/browser-runtime/src/browser/harness-actions-input-lifecycle.test.ts",
   "apps/browser-runtime/src/browser/harness-actions.test.ts",
+  "apps/browser-runtime/src/browser/home-refusal.test.ts",
   "apps/browser-runtime/src/browser/navigation.test.ts",
   "apps/browser-runtime/src/browser/passkey-provider.test.ts",
   "apps/browser-runtime/src/browser/person-save.test.ts",
+  "apps/browser-runtime/src/browser/playwright-cdp.test.ts",
   "apps/browser-runtime/src/browser/session-files.test.ts",
   "apps/web/src/components/apps/app-isolation.test.ts",
+  "apps/web/src/ui/address-text.chromium.test.tsx",
   "apps/web/src/components/workspace/workspace-tabs-chromium.interaction.test.tsx",
+  "tests/browser-repl.test.ts",
+  "tests/editing-far-model.test.ts",
+  "tests/home-samesite.chromium.test.ts",
   "tests/passkey-relay-provider.test.ts",
   "tests/passkey-routing.test.ts",
 ];
@@ -55,13 +66,14 @@ export const darwinOnlyTests = [
   "apps/desktop/scripts/codesign-requirement.test.ts",
 ];
 // Opt-in measurements that skip every case unless their benchmark command supplies options, so
-// integration discovery leaves them out: `pnpm bench:mobile-network`, OPENSTEER_TEAM_PERF=1,
-// OPENSTEER_PERSONAL_STATE_PERF=1 and OPENSTEER_PERSONAL_WRITE_PERF=1.
+// integration discovery leaves them out: `pnpm bench:mobile-network`,
+// OPENSTEER_PERSONAL_STATE_PERF=1 and OPENSTEER_PERSONAL_WRITE_PERF=1. The pool's real-host
+// proof is the same kind: it runs only where OPENSTEER_POOL_REAL_HOST names a real pool host's
+// endpoints, so no shard can execute it and the lane's inventory must not count it.
 export const optInIntegrationBenchmarks = [
   "packages/database/src/personal-state-performance.integration.test.ts",
   "packages/database/src/personal-write-performance.integration.test.ts",
-  "tests/team-mobile-network.integration.test.ts",
-  "tests/team-performance.integration.test.ts",
+  "tests/browser-pool-guest.real-host.integration.test.ts",
 ];
 // These write and verify a package of the most files one may hold, over 10,000 real files
 // each. They need the integration lane's time, not its database.

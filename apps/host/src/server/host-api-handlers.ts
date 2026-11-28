@@ -1,8 +1,4 @@
-import {
-  handlePluginOAuthCommand,
-  isPluginOAuthCommand,
-  pluginOAuthHandlers,
-} from "../plugins/plugin-oauth-routes.js";
+import { pluginOAuthHandlers } from "../plugins/plugin-oauth-routes.js";
 import type { PluginOAuthService } from "../plugins/plugin-oauth-service.js";
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
@@ -15,26 +11,17 @@ import {
   type HostApiCommandOutput,
   type HostApiHandlers,
   type HostApiServerContext,
-  type PluginCommand,
 } from "@opensteer/protocol";
 import type { IdentityRpcHandlers } from "../identity/identity-routes.js";
-import { handleTriggerCommand } from "../triggers/trigger-routes.js";
 import type { TriggerService } from "../triggers/trigger-service.js";
-import {
-  handleDeviceCommand,
-  type DeviceCommand,
-  type DeviceRpcOptions,
-} from "../devices/device-routes.js";
-import { handleChannelCommand, type ChannelCommand } from "../channels/channel-handlers.js";
-import { isPluginCommand, type PluginOwnerApi } from "../plugins/plugin-owner-api.js";
+import type { DeviceRpcOptions } from "../devices/device-routes.js";
+import type { PluginOwnerApi } from "../plugins/plugin-owner-api.js";
 import type { ChannelService } from "../channels/channel-service.js";
-
-import {
-  handleBrowserSourceCommand,
-  isBrowserSourceCommand,
-  type BrowserSourceCommand,
-  type BrowserSourceRpcOptions,
-} from "./browser-source-registration.js";
+import type { BrowserSourceRpcOptions } from "./browser-source-registration.js";
+import { personActor, type CommandProposal, type PersonActor } from "../commands/actor.js";
+import { dispatchCommand, type CommandDoor } from "../commands/dispatch.js";
+import type { CommandRequestService } from "../commands/requests.js";
+import { createCommandRegistry, type CoreCommand } from "../commands/registry.js";
 
 export function createHostApiHandlers(
   identityHandlers: IdentityRpcHandlers,
@@ -46,7 +33,6 @@ export function createHostApiHandlers(
     | "integration.platform.get"
     | "integration.grants.list"
     | "integration.computer.apps.installed"
-    | "integration.computer.session.stop"
     | "integration.computer.setup.review"
     | "integration.computer.setup.list"
     | "integration.computer.policy.get"
@@ -77,6 +63,7 @@ export function createHostApiHandlers(
     | "tabs.get"
     | "tabs.state"
     | "machines.list"
+    | "problems.get"
     | "assignment.get"
     | "thread.assignments.list"
     | "browser.searchSuggestions.get"
@@ -91,9 +78,6 @@ export function createHostApiHandlers(
     | "attachment.content"
     | "attention.get"
     | "needsYou.get"
-    | "teams.links.list"
-    | "teams.threadTask.get"
-    | "teams.replyTask.get"
     | "harness.authentication.get"
     | "automaticModels.get"
     | "harness.catalog.refresh"
@@ -120,17 +104,60 @@ export function createHostApiHandlers(
   handleCoreCommand: (
     command: CoreCommand,
     context: HostApiServerContext,
+    readmit?: CommandProposal["readmit"],
   ) => Promise<HostApiCommandOutput>,
-  computerViews?: ComputerViewService,
-  plugins?: PluginOwnerApi,
-  pluginOAuth?: PluginOAuthService,
+  computerViews: ComputerViewService | undefined,
+  plugins: PluginOwnerApi | undefined,
+  pluginOAuth: PluginOAuthService | undefined,
+  commandRequests: CommandRequestService | undefined,
+  secretDigestKey: Buffer,
 ): Omit<
   HostApiHandlers,
   | "personal.remoteAccess.get"
+  | "personal.accountLink.get"
   | "connections.list"
   | "connections.authorization.get"
+  | "connections.activity"
+  | "threads.activity"
   | `team.${string}`
 > {
+  const door: CommandDoor = {
+    registry: createCommandRegistry({
+      ...(commandRequests
+        ? {
+            // The person's approval runs the proposed command through this same door, as them.
+            approveCommand: async (actor, command, context) => ({
+              type: command.type,
+              outcome: await commandRequests.approve(
+                actor,
+                {
+                  requestId: command.requestId,
+                  expectedRevision: command.expectedRevision,
+                  idempotencyKey: command.idempotencyKey,
+                },
+                (person, approved) => dispatchCommand(person, approved, door, context),
+                (proposal) => personActor(context, proposal),
+              ),
+            }),
+          }
+        : {}),
+      triggers,
+      devices,
+      channels,
+      browserSources,
+      handleCoreCommand,
+      computerViews,
+      plugins,
+      pluginOAuth,
+      secretDigestKey,
+    }),
+    ...(commandRequests
+      ? {
+          afterPerson: (actor: PersonActor, command: HostApiCommand) =>
+            commandRequests.settleDoneByPerson(actor.userId, command),
+        }
+      : {}),
+  };
   return {
     ...pluginOAuthHandlers(pluginOAuth),
     "plugins.overview.get": async (_input, context) => {
@@ -167,88 +194,34 @@ export function createHostApiHandlers(
     ...channelHandlers,
     ...browserSourceHandlers,
     ...coreHandlers,
-    "commands.dispatch": async (command, context) => {
-      if (isTeamCommand(command))
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Team commands require a team Host",
-        });
-      if (command.type === "computer.view.close" || command.type === "computer.view.renew") {
-        const owner = requireSession(context).user.id;
-        if (!computerViews)
-          throw new OpensteerError({
-            code: "conflict",
-            reason: "computer-view-unsupported",
-            message: "This Host does not support owner views.",
-          });
-        return rpcSuccess(
-          hostApi["commands.dispatch"].success.parse({
-            type: command.type,
-            view: await computerViews.command(owner, command),
-          }),
-        );
-      }
-      if (isPluginCommand(command)) {
-        if (!plugins)
-          throw new OpensteerError({ code: "not_found", message: "Plugins are unavailable." });
-        return rpcSuccess(
-          hostApi["commands.dispatch"].success.parse(await plugins.command(command, context)),
-        );
-      }
-      if (isBrowserSourceCommand(command)) {
-        return rpcSuccess(
-          hostApi["commands.dispatch"].success.parse(
-            await handleBrowserSourceCommand(browserSources, command, context),
-          ),
-        );
-      }
-      // Plugin account sign-in.
-      if (isPluginOAuthCommand(command))
-        return rpcSuccess(
-          hostApi["commands.dispatch"].success.parse(
-            await handlePluginOAuthCommand(pluginOAuth, command, context),
-          ),
-        );
-      if (isTriggerCommand(command)) {
-        const output = await handleTriggerCommand(triggers, command, context);
-        return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
-      }
-      if (isDeviceCommand(command)) {
-        const output = await handleDeviceCommand(devices, command, context);
-        return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
-      }
-      if (isChannelCommand(command)) {
-        const output = await handleChannelCommand(channels, command, context);
-        return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
-      }
-      const output = await handleCoreCommand(command, context);
-      return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
-    },
+    "commands.dispatch": async (command, context) =>
+      rpcSuccess(
+        hostApi["commands.dispatch"].success.parse(
+          await dispatchCommand(personActor(context), command, door, context),
+        ),
+      ),
   } satisfies Omit<
     HostApiHandlers,
     | "machines.list"
+    | "problems.get"
     | "tabs.get"
     | "tabs.state"
     | "apps.list"
     | "apps.get"
     | "personal.remoteAccess.get"
+    | "personal.accountLink.get"
     | "connections.list"
     | "connections.authorization.get"
+    | "connections.activity"
+    | "threads.activity"
+    | "connections.activity"
+    | "threads.activity"
     | `team.${string}`
     | `team.${string}`
   >;
 }
 
-type TriggerCommand = Extract<HostApiCommand, { readonly type: `trigger.${string}` }>;
-export type CoreCommand = Exclude<
-  HostApiCommand,
-  | Extract<HostApiCommand, { type: `computer.view.${string}` | "phone.tab.close" }>
-  | TriggerCommand
-  | DeviceCommand
-  | ChannelCommand
-  | BrowserSourceCommand
-  | PluginCommand
->;
+export type { CoreCommand } from "../commands/registry.js";
 
 function pluginsUnavailable(): ReturnType<PluginOwnerApi["reads"]> {
   const refuse = async (): Promise<never> => {
@@ -272,36 +245,4 @@ function pluginsUnavailable(): ReturnType<PluginOwnerApi["reads"]> {
     "plugins.workflow.runs": refuse,
     "plugins.webhook.setup.get": refuse,
   };
-}
-
-type TeamCommand = Extract<HostApiCommand, { readonly type: `team.${string}` }>;
-function isTeamCommand(command: HostApiCommand): command is TeamCommand {
-  return command.type.startsWith("team.");
-}
-
-function isTriggerCommand(command: HostApiCommand): command is TriggerCommand {
-  return command.type.startsWith("trigger.");
-}
-
-function isDeviceCommand(command: HostApiCommand): command is DeviceCommand {
-  switch (command.type) {
-    case "plugin.remove":
-    case "integration.disconnect":
-    case "integration.computer.setup.request":
-    case "integration.computer.setup.cancel":
-    case "integration.computer.setup.set":
-    case "integration.computer.setup.respond":
-    case "integration.computer.policy.set":
-    case "integration.computer.app.block":
-    case "integration.grant.create":
-    case "integration.grant.revoke":
-    case "integration.server.secrets.set":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function isChannelCommand(command: HostApiCommand): command is ChannelCommand {
-  return command.type.startsWith("channel.");
 }

@@ -332,18 +332,6 @@
   opacity: 0.65;
 }
 
-/* The teams share the detail line; a long list ends in an ellipsis, never a new line. */
-.place-row__teams svg {
-  width: 11px;
-  height: 11px;
-  margin-right: var(--space-4);
-  vertical-align: -1px;
-}
-
-.place-row__dot {
-  margin: 0 var(--space-4);
-}
-
 .place-row__needs {
   height: 20px;
   font-size: var(--text-xs);

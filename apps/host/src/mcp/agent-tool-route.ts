@@ -1,13 +1,15 @@
 import { agentToolFailureResult } from "@opensteer/agent-tools";
-import { createToolOutput, type RunId } from "@opensteer/core";
+import { createToolOutput, opensteerToolNamespace, type RunId } from "@opensteer/core";
 import {
   AgentToolRelayRequestSchema,
   agentToolHostRoutePath,
   type AgentToolRelayResponse,
 } from "@opensteer/protocol/agent-tool-relay";
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import type { FastifyInstance } from "fastify";
 import type { AgentToolActivityStore } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
+import { digestToolArgumentsWithSecrets } from "../commands/secret-digest.js";
 import type { AgentCallerResolver, RunCaller } from "./agent-caller.js";
 import type { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { fingerprint } from "./operations.js";
@@ -28,14 +30,25 @@ export function registerAgentToolRoute(
   app: FastifyInstance,
   options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
-    readonly service: Pick<OpensteerMcpService, "callToolResult" | "validateToolInput">;
+    readonly service: Pick<
+      OpensteerMcpService,
+      "callToolResult" | "validateToolInput" | "assertToolOffered" | "authorizeReplay"
+    >;
     readonly activity: Pick<AgentToolActivityStore, "start" | "complete">;
     readonly realtime: Pick<RealtimeHub, "observeScopes">;
+    readonly secretDigestKey: Buffer;
   },
 ): void {
+  if (options.secretDigestKey.byteLength === 0) {
+    throw new Error("Agent tool relay route requires a non-empty secretDigestKey.");
+  }
   const active = new Map<
     string,
-    { fingerprint: string; result: Promise<AgentToolRelayResponse> }
+    {
+      fingerprint: string;
+      result: Promise<AgentToolRelayResponse>;
+      admitted: string | undefined;
+    }
   >();
   const controllers = new Map<AbortController, { token: string; runId: RunId }>();
   const unobserve = options.realtime.observeScopes(["authority"], () => {
@@ -91,6 +104,24 @@ export function registerAgentToolRoute(
     } catch {
       // Rejected input is never persisted; its failed call still gets an activity pair.
     }
+    // An earlier result is returned only under the authority it was produced under: the call's
+    // own checks pass again now, and a lineaged Run's grant revision and mode are unchanged.
+    const admitted = admittedUnder(caller);
+    const replayable = async (
+      producedUnder: string | undefined,
+    ): Promise<AgentToolRelayResponse | null> => {
+      if (admitted !== undefined && producedUnder !== admitted)
+        return agentToolFailureResult({
+          code: "access_denied",
+          message:
+            "This agent's access changed after the call ran, so its earlier result is not returned. Check the current state.",
+          next: null,
+        });
+      return options.service.authorizeReplay(caller, name, input).then(
+        () => null,
+        (error: unknown) => agentToolFailureResult(agentToolFailure(error, "write")),
+      );
+    };
     const requestFingerprint = fingerprint({ name, input });
     const pending = active.get(callId);
     if (pending) {
@@ -100,7 +131,11 @@ export function registerAgentToolRoute(
           message: "This callId already names different arguments.",
           next: null,
         });
-      return pending.result;
+      // Checked before joining and again before answering: authority can end while it waits.
+      const early = await replayable(pending.admitted);
+      if (early) return early;
+      const joined = await pending.result;
+      return (await replayable(pending.admitted)) ?? joined;
     }
     const deadline = request.headers["x-opensteer-deadline"];
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -124,18 +159,43 @@ export function registerAgentToolRoute(
       let started: Awaited<ReturnType<AgentToolActivityStore["start"]>>["handle"] | undefined;
       try {
         controller.signal.throwIfAborted();
-        const activity = await options.activity.start(context, callId, name, args);
+        const recordedArgs = redactToolArgumentsForStorage(args, {
+          namespace: opensteerToolNamespace,
+          name,
+        });
+        const argumentDigest =
+          recordedArgs !== args
+            ? digestToolArgumentsWithSecrets(options.secretDigestKey, { toolName: name, args })
+            : undefined;
+        const activity = await options.activity.start(
+          context,
+          callId,
+          name,
+          recordedArgs,
+          argumentDigest,
+        );
         started = activity.handle;
         if (activity.completed) {
           // Durable output is bounded and sanitized like every engine-reported tool result.
           if (activity.completed.output.truncation) return unknownOutcome();
+          let replay: AgentToolRelayResponse;
           try {
-            const replay = JSON.parse(activity.completed.output.text) as AgentToolRelayResponse;
-            if (replay._meta?.["opensteer/harness-activity-only"]) return unknownOutcome();
-            return replay;
+            replay = JSON.parse(activity.completed.output.text) as AgentToolRelayResponse;
           } catch {
             return unknownOutcome();
           }
+          const meta = replay._meta as Record<string, unknown> | undefined;
+          const producedUnder = meta?.[admittedKey];
+          const refused = await replayable(
+            typeof producedUnder === "string" ? producedUnder : undefined,
+          );
+          if (refused) return refused;
+          if (meta?.["opensteer/harness-activity-only"]) return unknownOutcome();
+          const { [admittedKey]: _admitted, ...rest } = meta ?? {};
+          const { _meta: _stored, ...result } = replay;
+          return (
+            Object.keys(rest).length ? { ...result, _meta: rest } : result
+          ) as AgentToolRelayResponse;
         }
         const response = activity.replay
           ? unknownOutcome()
@@ -145,7 +205,7 @@ export function registerAgentToolRoute(
             });
         await options.activity.complete(
           started,
-          activityOutput(response),
+          activityOutput(response, admitted),
           response.isError === true,
         );
         return response;
@@ -161,7 +221,7 @@ export function registerAgentToolRoute(
         controllers.delete(controller);
       }
     })();
-    active.set(callId, { fingerprint: requestFingerprint, result });
+    active.set(callId, { fingerprint: requestFingerprint, result, admitted });
     try {
       return await result;
     } finally {
@@ -170,17 +230,28 @@ export function registerAgentToolRoute(
   });
 }
 
-function activityOutput(response: AgentToolRelayResponse) {
+/** Where a stored result records the authority it was produced under. */
+const admittedKey = "opensteer/admitted-under";
+/** A lineaged Run's grant revision and mode; undefined for the person's own work. */
+function admittedUnder(caller: RunCaller): string | undefined {
+  return caller.agentConnection
+    ? `${caller.agentConnection.grantRevision}:${caller.accessMode}`
+    : undefined;
+}
+
+function activityOutput(response: AgentToolRelayResponse, admitted?: string) {
   // Inline image bytes stay on the result transport, never in incidental task activity.
+  const image = response.content.some((block) => block.type === "image");
+  const meta = {
+    ...response._meta,
+    ...(admitted !== undefined ? { [admittedKey]: admitted } : {}),
+    ...(image ? { "opensteer/harness-activity-only": true } : {}),
+  };
   return createToolOutput(
     JSON.stringify({
       ...response,
-      ...(response.content.some((block) => block.type === "image")
-        ? {
-            structuredContent: undefined,
-            _meta: { ...response._meta, "opensteer/harness-activity-only": true },
-          }
-        : {}),
+      ...(Object.keys(meta).length ? { _meta: meta } : {}),
+      ...(image ? { structuredContent: undefined } : {}),
       content: response.content.map((block) =>
         block.type === "image"
           ? { type: "text", text: "[Tool image omitted from activity]" }

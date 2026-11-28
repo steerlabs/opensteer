@@ -1,6 +1,12 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
-import { OpensteerError, type BrowserProfileId, type RunnerId, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  type BrowserProfileId,
+  type RunnerId,
+  type TabId,
+  type UserId,
+} from "@opensteer/core";
 import {
   BrowserProfileStorageSchema,
   type BrowserProfileStorage,
@@ -11,13 +17,20 @@ import {
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { randomUUID } from "node:crypto";
-import { deleteBrowserProfileInTransaction } from "./browser-session-store.js";
+import {
+  deleteBrowserProfileInTransaction,
+  markPooledProfileSessionsClosing,
+  type BrowserSessionRecord,
+} from "./browser-session-store.js";
+import { removeProfileTabs } from "./tab-store.js";
 
 import { databaseOperationOptions } from "./operation-budget.js";
 import type { BrowserProfileDeletionTable, BrowserProfileTable, DatabaseSchema } from "./schema.js";
 
 export interface NativeProfileDeletionResult {
   readonly sessionIds: readonly BrowserSessionId[];
+  readonly sessions?: readonly BrowserSessionRecord[];
+  readonly retiredTabIds?: readonly TabId[];
   readonly deletion?: PendingBrowserProfileDeletion;
 }
 
@@ -243,19 +256,25 @@ export async function reconcileBrowserProfileInventory(
       conflict(
         "This computer holds an unknown browser profile. Restore its Host ownership records before opening it.",
       );
-    await validateBindingOwner(transaction, claim.binding, row.ownerId);
-    const storage = profileStorage(row);
-    if (storage.kind !== "local" || !sameProfileBinding(storage.binding, claim.binding))
-      conflict(
-        "This computer's browser profile binding conflicts with the Host. Restore the matching storage instance.",
-      );
     if (claim.phase === "deleted") {
+      // Lock order: mark pooled sessions closing (browser_sessions 123), then retire tabs
+      // (tab_layouts 125 -> personal_tabs 126) before validateBindingOwner locks runners (137).
+      await markPooledProfileSessionsClosing(transaction, row.id);
+      const retiredTabIds = await removeProfileTabs(transaction, row.ownerId, row.id);
+      await validateBindingOwner(transaction, claim.binding, row.ownerId);
+      const storage = profileStorage(row);
+      if (storage.kind !== "local" || !sameProfileBinding(storage.binding, claim.binding))
+        conflict(
+          "This computer's browser profile binding conflicts with the Host. Restore the matching storage instance.",
+        );
       // Retain the tombstone identity when rolling forward a pre-conversion database.
       await deleteBrowserProfileInTransaction(transaction, {
         ownerId: row.ownerId,
         profileId: row.id,
         deletionId: claim.deletionId,
         binding: claim.binding,
+        retiredTabIds,
+        pooledSessionsMarkedClosing: true,
       });
       const deletion = await transaction
         .selectFrom("browserProfileDeletions")
@@ -278,6 +297,12 @@ export async function reconcileBrowserProfileInventory(
       }
       return { archived: row.archivedAt === null };
     }
+    await validateBindingOwner(transaction, claim.binding, row.ownerId);
+    const storage = profileStorage(row);
+    if (storage.kind !== "local" || !sameProfileBinding(storage.binding, claim.binding))
+      conflict(
+        "This computer's browser profile binding conflicts with the Host. Restore the matching storage instance.",
+      );
     if (row.archivedAt) {
       await recordBrowserProfileDeletion(transaction, claim.binding);
       mutation.bumpResource("browser-profile");

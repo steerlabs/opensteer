@@ -1,6 +1,6 @@
 import { maximumPreviewMessage } from "./notification-preview.test-support.js";
 import { generateKeyPairSync } from "node:crypto";
-import { createId, TeamMessageIdSchema } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import { decodeProtectedHeader, decodeJwt } from "jose";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ApnsClient, type ApnsTransport } from "./apns-client.js";
@@ -120,66 +120,27 @@ describe("ApnsClient", () => {
     expect(payload.body).not.toHaveProperty("preview");
   });
 
-  it("keeps the destination and drops only the preview when a team link would overflow APNs", async () => {
-    const transport = vi.fn<ApnsTransport>(async () => ({ body: "", status: 200 }));
-    const preview = maximumPreviewMessage().data;
-    const teamId = createId("deployment");
-    const message = notificationMessage({
-      deploymentId: teamId,
-      kind: "team-message",
-      requestId: null,
-      threadId: null,
-      teamTarget: {
-        kind: "team-message",
-        origin: `https://${["a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(57)].join(".")}.io`,
-        teamId,
-        channelId: createId("teamChannel"),
-        messageId: TeamMessageIdSchema.parse("9223372036854775807"),
-      },
-      preview: {
-        notificationId: preview.notificationId!,
-        installationId: preview.installationId!,
-        expiresAt: new Date(preview.expiresAt!),
-        envelope: JSON.parse(preview.preview!),
-      },
-    });
-    await client(transport).send({
-      apsEnvironment: "development",
-      expiresAt,
-      message,
-      collapseKey: "osn1_" + "x".repeat(43),
-      token,
-    });
-    const request = transport.mock.calls[0]![0];
-    expect(Buffer.byteLength(request.body)).toBeLessThanOrEqual(4096);
-    const payload = JSON.parse(request.body);
-    expect(payload.body).toEqual({ deepLink: message.data.deepLink });
-    expect(payload).not.toHaveProperty("preview");
-    expect(payload.aps).not.toHaveProperty("mutable-content");
-  });
-
-  it.each([
-    { threadId: "thread", channelId: "channel", noticeId: "notice", expected: "thread" },
-    { channelId: "channel", noticeId: "notice", expected: "channel" },
-    { noticeId: "notice", expected: "notice" },
-  ])("groups by the most specific target: $expected", async ({ expected, ...target }) => {
-    const transport = vi.fn<ApnsTransport>(async () => ({ body: "", status: 200 }));
-    const message = notificationMessage({
-      deploymentId,
-      kind: "request-opened",
-      requestId: null,
-      threadId: null,
-    });
-    await client(transport).send({
-      apsEnvironment: "development",
-      expiresAt,
-      message: { ...message, data: { ...message.data, ...target } },
-      collapseKey: "group",
-      token,
-    });
-    const payload = JSON.parse(transport.mock.calls[0]![0].body);
-    expect(payload.aps["thread-id"]).toBe(`${deploymentId}:${expected}`);
-  });
+  it.each([{ threadId: "thread", expected: "thread" }])(
+    "groups by the most specific target: $expected",
+    async ({ expected, ...target }) => {
+      const transport = vi.fn<ApnsTransport>(async () => ({ body: "", status: 200 }));
+      const message = notificationMessage({
+        deploymentId,
+        kind: "request-opened",
+        requestId: null,
+        threadId: null,
+      });
+      await client(transport).send({
+        apsEnvironment: "development",
+        expiresAt,
+        message: { ...message, data: { ...message.data, ...target } },
+        collapseKey: "group",
+        token,
+      });
+      const payload = JSON.parse(transport.mock.calls[0]![0].body);
+      expect(payload.aps["thread-id"]).toBe(`${deploymentId}:${expected}`);
+    },
+  );
 
   it("does not expose arbitrary provider or transport text", async () => {
     const secret = "private-ciphertext";

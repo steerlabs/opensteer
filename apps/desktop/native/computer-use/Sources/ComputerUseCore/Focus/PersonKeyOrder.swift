@@ -17,6 +17,40 @@ final class PersonKeyOrder: @unchecked Sendable {
   /// so the person's keys stop following it.
   static let lost: TimeInterval = 1
 
+  /// Retiring a process tap between input rounds can discard a key already routed to it.
+  final class ForegroundWatch: Sendable {
+    private let order: PersonKeyOrder
+    private let current = Locked<(pid: pid_t?, stopped: Bool)>((nil, false))
+
+    init(order: PersonKeyOrder = .shared) { self.order = order }
+
+    func keep(_ pid: pid_t) -> Bool {
+      current.withLock { state in
+        guard !state.stopped else { return false }
+        if state.pid == pid { return true }
+        guard order.hold(pid) else { return false }
+        if let old = state.pid { order.release(old) }
+        state.pid = pid
+        return true
+      }
+    }
+
+    func forget(_ pid: pid_t) {
+      current.withLock { state in
+        guard state.pid == pid else { return }
+        state.pid = nil
+        order.release(pid)
+      }
+    }
+
+    func stop() {
+      current.withLock { state in
+        if let pid = state.pid { order.release(pid) }
+        state = (nil, true)
+      }
+    }
+  }
+
   typealias Post = (pid_t, CGEvent) -> Void
   /// Watches keys on their way to one process; returns how to stop watching.
   typealias Install = (pid_t, @escaping (CGEvent) -> CGEvent?) -> (() -> Void)?

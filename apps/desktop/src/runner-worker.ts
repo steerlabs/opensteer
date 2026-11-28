@@ -1,8 +1,9 @@
-import { safeMessage } from "@opensteer/shared/safeMessage";
-import { runRunnerDaemon } from "@opensteer/runner";
+import { networkCredentialSecrets, safeMessage } from "@opensteer/shared/safeMessage";
+import { runRunnerDaemon, type RunnerShutdownProof } from "@opensteer/runner";
 import { refuseInspectorSignal } from "./supervisor/inspector-signal.js";
 import {
   RunnerWorkerEnginesRecheckMessageSchema,
+  RunnerWorkerPowerMessageSchema,
   RunnerWorkerSecretsMessageSchema,
 } from "./supervisor/runner-worker-secrets.js";
 
@@ -25,11 +26,12 @@ const delivered = new Promise<Readonly<Record<string, string>> | null>((resolveP
 // Before the daemon's first connection there is nothing to recheck: its hello
 // reads the engines fresh.
 let recheckEngines: () => void = () => undefined;
-
+let notifySleeping: () => void = () => undefined;
+let notifyAwake: () => void = () => undefined;
 parent.on("message", (event) => {
-  const value = event.data as { type?: unknown };
+  const value = event.data as { type?: unknown; restart?: unknown };
   if (value?.type === "runner.worker.stop") {
-    shutdown.abort(new Error("The Opensteer desktop app is stopping local execution."));
+    shutdown.abort(new Error(value.restart === true ? "device-restarting" : "Runner stopping"));
     deliverSecrets(null);
     return;
   }
@@ -37,16 +39,43 @@ parent.on("message", (event) => {
     recheckEngines();
     return;
   }
+  const power = RunnerWorkerPowerMessageSchema.safeParse(event.data);
+  if (power.success) {
+    if (power.data.type === "runner.worker.power.sleeping") notifySleeping();
+    else notifyAwake();
+    return;
+  }
   const secrets = RunnerWorkerSecretsMessageSchema.safeParse(event.data);
   if (secrets.success) deliverSecrets(secrets.data.secrets);
 });
 
+let proof: RunnerShutdownProof | undefined;
 void delivered
   .then(async (secrets) => {
     if (secrets === null) return;
     await runRunnerDaemon(process.env, shutdown.signal, {
+      // This Runner is the Opensteer app's on this Mac: the Home names it a computer.
+      app: "opensteer",
       control: (control) => {
+        notifySleeping = control.notifySleeping;
+        notifyAwake = control.notifyAwake;
         recheckEngines = control.recheckEngines;
+      },
+      onStarted: (control) => parent.postMessage({ type: "runner.worker.ready", control }),
+      onShutdown: (result) => {
+        proof = result;
+      },
+      onActivity: (runs) => {
+        parent.postMessage({
+          runs: runs.map(({ runId, threadId, startedAt, purpose, engine }) => ({
+            runId,
+            threadId,
+            startedAt,
+            purpose,
+            engine,
+          })),
+          type: "runner.worker.activity",
+        });
       },
       onConnected: ({ environmentId, runnerId }) => {
         parent.postMessage({ environmentId, runnerId, type: "runner.worker.connected" });
@@ -61,7 +90,7 @@ void delivered
     });
   })
   .then(() => {
-    parent.postMessage({ type: "runner.worker.stopped" });
+    parent.postMessage({ type: "runner.worker.stopped", ...(proof ? { proof } : {}) });
   })
   .catch((error: unknown) => {
     parent.postMessage({
@@ -73,6 +102,7 @@ void delivered
 
 const safeMessageOptions = {
   fallback: "The local Runner failed.",
+  secrets: networkCredentialSecrets(process.env),
   redactions: [
     { pattern: /Bearer\s+\S+/giu, replacement: "Bearer [redacted]" },
     { pattern: /os_secret_[A-Za-z0-9_-]+/gu, replacement: "os_secret_[redacted]" },

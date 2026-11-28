@@ -3,6 +3,7 @@ import "./connection.js";
 import {
   agentDelegationMaxDepth,
   threadAccessModeAtMost,
+  minThreadAccessMode,
   OpensteerError,
   type EnvironmentId,
   type RunId,
@@ -14,9 +15,10 @@ import {
   type TriggerWatchActivationId,
   type UserId,
 } from "@opensteer/core";
-import { sql, type Kysely, type Transaction } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import { assertActiveGrant } from "./execution-authority.js";
-import { WATCH_OBSERVATIONS_PER_HOUR } from "@opensteer/triggers";
+import { admitExecution, bindingAgentConnectionId } from "./resource-access.js";
+import { lockLineageConnection } from "./thread-caller.js";
 import { assertActiveTriggerExecutionBinding, assertActiveWatchBinding } from "./trigger-store.js";
 import type { DatabaseSchema } from "./schema.js";
 export const runToolMaxDelegationDepth = agentDelegationMaxDepth;
@@ -49,6 +51,11 @@ export type RunToolActionClass = Exclude<RunToolAction, "person.message">;
 type TriggerControlAction = RunToolAction;
 export type TriggerControlActionClass = RunToolActionClass;
 export interface RunToolAdmissionInput {
+  /**
+   * The door's last admission of the command this write is (rule 2, A3), run in admit mode in the
+   * write's own transaction: a change since the door admitted it refuses.
+   */
+  readonly commandAdmit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
   readonly targetThreadIds?: readonly ThreadId[];
   readonly action: RunToolAction;
@@ -67,6 +74,11 @@ export interface RunToolAdmissionResult {
   readonly wasDuplicate: boolean;
 }
 export interface TriggerControlAdmissionInput {
+  /**
+   * The door's last admission of the command this write is (rule 2, A3), run in admit mode in the
+   * write's own transaction: a change since the door admitted it refuses.
+   */
+  readonly commandAdmit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
   readonly targetThreadIds?: readonly ThreadId[];
   readonly action: TriggerControlAction;
@@ -85,6 +97,11 @@ export interface TriggerControlAdmissionResult {
   readonly wasDuplicate: boolean;
 }
 export interface WatchControlAdmissionInput {
+  /**
+   * The door's last admission of the command this write is (rule 2, A3), run in admit mode in the
+   * write's own transaction: a change since the door admitted it refuses.
+   */
+  readonly commandAdmit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
   readonly targetThreadIds?: readonly ThreadId[];
   readonly action: "thread.delegate" | "thread.message";
@@ -93,7 +110,6 @@ export interface WatchControlAdmissionInput {
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
   readonly executionGeneration: number;
-  readonly observationId: string;
   readonly requestFingerprint: string;
   readonly requestId: string;
   readonly revisionId: TriggerRevisionId;
@@ -153,7 +169,12 @@ export async function admitRunToolCallInTransaction(
   if (!/^[0-9a-f]{64}$/.test(input.requestFingerprint)) {
     throw new TypeError("Tool request fingerprint must be a SHA-256 hex digest");
   }
+  if (mode === "admit") await input.commandAdmit?.(transaction);
   const actionClass = actionClasses[input.action];
+  await lockLineageConnection(
+    transaction,
+    await bindingAgentConnectionId(transaction, `run:${input.runId}`),
+  );
   {
     const run = await transaction
       .selectFrom("runs")
@@ -197,7 +218,7 @@ export async function admitRunToolCallInTransaction(
       },
       executionNow,
     );
-    await assertOperationTargets(transaction, input.sourceThreadId, input);
+    await assertOperationTargets(transaction, input.sourceThreadId, input, `run:${input.runId}`);
     const existing = await transaction
       .selectFrom("agentControlRequests")
       .selectAll()
@@ -260,7 +281,14 @@ export async function admitTriggerControlRequestInTransaction(
   if (!/^[0-9a-f]{64}$/.test(input.requestFingerprint)) {
     throw new TypeError("Trigger-control request fingerprint must be a SHA-256 hex digest");
   }
+  if (mode === "admit") await input.commandAdmit?.(transaction);
   const actionClass = actionClasses[input.action];
+  const notFound = () =>
+    new OpensteerError({ code: "not_found", message: "Automation occurrence not found" });
+  await lockLineageConnection(
+    transaction,
+    await bindingAgentConnectionId(transaction, `trigger:${input.occurrenceId}`, notFound),
+  );
   {
     const occurrence = await transaction
       .selectFrom("triggerOccurrences")
@@ -268,12 +296,7 @@ export async function admitTriggerControlRequestInTransaction(
       .where("id", "=", input.occurrenceId)
       .$if(mode === "admit", (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
-    if (!occurrence) {
-      throw new OpensteerError({
-        code: "not_found",
-        message: "Automation occurrence not found",
-      });
-    }
+    if (!occurrence) throw notFound();
     await assertActiveTriggerExecutionBinding(transaction, {
       environmentId: input.environmentId,
       executionGeneration: input.executionGeneration,
@@ -283,7 +306,12 @@ export async function admitTriggerControlRequestInTransaction(
       runnerId: input.runnerId,
       threadId: input.threadId,
     });
-    await assertOperationTargets(transaction, input.threadId, input);
+    await assertOperationTargets(
+      transaction,
+      input.threadId,
+      input,
+      `trigger:${input.occurrenceId}`,
+    );
     const existing = await transaction
       .selectFrom("triggerControlRequests")
       .selectAll()
@@ -340,6 +368,11 @@ export async function admitWatchControlRequestInTransaction(
   if (!/^[0-9a-f]{64}$/.test(input.requestFingerprint)) {
     throw new TypeError("Watch-control request fingerprint must be a SHA-256 hex digest");
   }
+  if (mode === "admit") await input.commandAdmit?.(transaction);
+  await lockLineageConnection(
+    transaction,
+    await bindingAgentConnectionId(transaction, `watch:${input.activationId}`),
+  );
   const activation = await transaction
     .selectFrom("triggerWatchActivations")
     .select("id")
@@ -353,73 +386,15 @@ export async function admitWatchControlRequestInTransaction(
     });
   }
   await assertActiveWatchBinding(transaction, input);
-  await assertOperationTargets(transaction, input.anchorThreadId, input);
-  const existing = await transaction
-    .selectFrom("watchControlRequests")
-    .selectAll()
-    .where("activationId", "=", input.activationId)
-    .where("observationId", "=", input.observationId)
-    .executeTakeFirst();
-  if (existing) {
-    if (
-      existing.action !== input.action ||
-      existing.requestFingerprint !== input.requestFingerprint
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        details: {
-          observationId: input.observationId,
-        },
-        message: "Watch observation ID was already used with different input",
-      });
-    }
-    return {
-      wasDuplicate: true,
-    };
-  }
-  const window = await transaction
-    .selectFrom("watchControlRequests")
-    .select(({ fn }) => fn.countAll<string>().as("count"))
-    .where("activationId", "=", input.activationId)
-    // created_at is the database's default: compare it on the database's clock.
-    .where("createdAt", ">=", sql<Date>`now() - interval '1 hour'`)
-    .executeTakeFirstOrThrow();
-  if (safeCount(window.count) >= WATCH_OBSERVATIONS_PER_HOUR) {
-    throw new OpensteerError({
-      code: "resource_exhausted",
-      details: {
-        limit: WATCH_OBSERVATIONS_PER_HOUR,
-      },
-      message: `Watch observation limit of ${WATCH_OBSERVATIONS_PER_HOUR} per hour was reached for this activation`,
-    });
-  }
-  if (mode === "check")
-    return {
-      wasDuplicate: false,
-    };
-  await transaction
-    .insertInto("watchControlRequests")
-    .values({
-      action: input.action,
-      activationId: input.activationId,
-      observationId: input.observationId,
-      requestFingerprint: input.requestFingerprint,
-      requestId: input.requestId,
-    })
-    .executeTakeFirstOrThrow();
+  await assertOperationTargets(
+    transaction,
+    input.anchorThreadId,
+    { ...input, requestedBy: input.createdBy },
+    `watch:${input.activationId}`,
+  );
   return {
     wasDuplicate: false,
   };
-}
-function safeCount(value: string): number {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new OpensteerError({
-      code: "internal",
-      message: "Invalid admission count",
-    });
-  }
-  return parsed;
 }
 function requestIdConflict(requestId: string): OpensteerError {
   return new OpensteerError({
@@ -439,34 +414,52 @@ function triggerRequestIdConflict(requestId: string): OpensteerError {
     message: "Automation control request ID was already used with different input",
   });
 }
+/**
+ * The caller's mode as its whole lineage now allows it, against each target's mode as it would run.
+ * Work for a connection reaches only its own lineage's tasks, or the person's own with `everything`.
+ */
 async function assertOperationTargets(
   transaction: Transaction<DatabaseSchema>,
   sourceThreadId: ThreadId,
   input: {
     readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
     readonly targetThreadIds?: readonly ThreadId[];
+    readonly requestedBy: import("@opensteer/core").UserId;
   },
+  bindingId: string,
 ): Promise<void> {
   if (!input.accessMode) return;
-  const source = await transaction
-    .selectFrom("threads")
-    .selectAll()
-    .where("id", "=", sourceThreadId)
-    .executeTakeFirstOrThrow();
-  if (!threadAccessModeAtMost(input.accessMode, source.accessMode))
+  const execution = await admitExecution(transaction, {
+    ownerUserId: input.requestedBy,
+    subject: { kind: "binding", bindingId },
+    threadId: sourceThreadId,
+  });
+  const callerMode = execution.agentConnection ? execution.mode : execution.taskMode!;
+  if (!threadAccessModeAtMost(input.accessMode, callerMode))
     throw new OpensteerError({
       code: "forbidden",
       message: "Caller access mode was reduced",
     });
+  const connection = execution.agentConnection;
   for (const id of input.targetThreadIds ?? []) {
     const target = await transaction
       .selectFrom("threads")
       .selectAll()
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
+    const own = connection !== null && target.originConnectionId === connection.agentConnectionId;
     if (
-      !threadAccessModeAtMost(target.accessMode, input.accessMode) ||
-      !threadAccessModeAtMost(target.accessMode, source.accessMode)
+      connection &&
+      !own &&
+      (connection.grant.scope === "selected" || target.originConnectionId !== null)
+    )
+      throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
+    const targetMode = own
+      ? minThreadAccessMode(target.accessMode, connection.accessMode)
+      : target.accessMode;
+    if (
+      !threadAccessModeAtMost(targetMode, callerMode) ||
+      !threadAccessModeAtMost(targetMode, input.accessMode)
     )
       throw new OpensteerError({
         code: "forbidden",

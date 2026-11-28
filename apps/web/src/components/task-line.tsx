@@ -152,7 +152,8 @@ export function DelegationLine({
   const title =
     snapshot.threads.find(({ id }) => id === delegation.childThread.id)?.title ??
     delegation.childThread.title;
-  const result = delegation.failure?.message ?? delegation.resultPreview;
+  const result =
+    delegation.failure?.ownerMessage ?? delegation.failure?.message ?? delegation.resultPreview;
   const summary = [title, presentation.word, result?.split("\n").find(Boolean)]
     .filter(Boolean)
     .join(" · ");

@@ -1,6 +1,12 @@
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { createPublicHttpsFetch } from "@opensteer/access/host";
-import { createLocalJWKSet, decodeProtectedHeader, jwtVerify, type JSONWebKeySet } from "jose";
+import {
+  createLocalJWKSet,
+  decodeProtectedHeader,
+  jwtVerify,
+  type JSONWebKeySet,
+  type JWTVerifyOptions,
+} from "jose";
 import { z } from "zod";
 
 const maximumJwksBytes = 64 * 1_024;
@@ -42,8 +48,7 @@ interface CachedJwks {
 
 export class AccountJwksUnavailableError extends Error {}
 
-export class RemoteAccountJwksVerifier {
-  readonly #audience: string;
+export class AccountJwksVerifier {
   readonly #fetch: typeof globalThis.fetch;
   readonly #issuer: string;
   readonly #jwksUrl: URL;
@@ -51,13 +56,8 @@ export class RemoteAccountJwksVerifier {
   #lastForcedRefreshAt = 0;
   #refresh: Promise<CachedJwks> | undefined;
 
-  constructor(options: {
-    readonly audience: string;
-    readonly fetch?: typeof globalThis.fetch;
-    readonly issuer: URL;
-  }) {
+  constructor(options: { readonly fetch?: typeof globalThis.fetch; readonly issuer: URL }) {
     this.#issuer = publicHttpsOrigin(options.issuer).origin;
-    this.#audience = options.audience;
     this.#jwksUrl = new URL("/api/auth/jwks", this.#issuer);
     this.#fetch =
       options.fetch ??
@@ -72,20 +72,18 @@ export class RemoteAccountJwksVerifier {
     return this.#issuer;
   }
 
-  async verify(token: string, maxTokenAge: string) {
+  async verify(token: string, options: Omit<JWTVerifyOptions, "algorithms" | "issuer">) {
     const header = decodeProtectedHeader(token);
     if (header.alg !== "EdDSA" || typeof header.kid !== "string" || !header.kid) {
-      throw new Error("Account grant header is invalid");
+      throw new Error("Account token header is invalid");
     }
     let jwks = await this.#loadJwks(false);
     if (!jwks.keyIds.has(header.kid)) jwks = await this.#loadJwks(true);
     if (!jwks.keyIds.has(header.kid)) throw new Error("Account signing key is unknown");
     return jwtVerify(token, jwks.resolve, {
+      ...options,
       algorithms: ["EdDSA"],
-      audience: this.#audience,
-      clockTolerance: 5,
       issuer: this.#issuer,
-      maxTokenAge,
     });
   }
 
@@ -146,6 +144,32 @@ export class RemoteAccountJwksVerifier {
       keyIds: new Set(parsed.keys.map((key) => key.kid)),
       resolve: createLocalJWKSet(jwks),
     };
+  }
+}
+
+export class RemoteAccountJwksVerifier {
+  readonly #verifier: AccountJwksVerifier;
+  readonly #audience: string;
+
+  constructor(
+    options: ConstructorParameters<typeof AccountJwksVerifier>[0] & {
+      readonly audience: string;
+    },
+  ) {
+    this.#verifier = new AccountJwksVerifier(options);
+    this.#audience = options.audience;
+  }
+
+  get issuer(): string {
+    return this.#verifier.issuer;
+  }
+
+  verify(token: string, maxTokenAge: string) {
+    return this.#verifier.verify(token, {
+      audience: this.#audience,
+      clockTolerance: 5,
+      maxTokenAge,
+    });
   }
 }
 

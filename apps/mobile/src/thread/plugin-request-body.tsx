@@ -1,4 +1,5 @@
 import type { HostClient } from "@opensteer/client/host";
+import { AddressText } from "../ui/address-text.js";
 import {
   pluginAuthorText,
   pluginConsentLines,
@@ -65,9 +66,15 @@ export function PluginRequestBody(props: {
           pluginName: view.plugin.name,
           providerName: null,
         }).map((line) => (
-          <AppText key={line.key} role="secondary" tone={line.key === "trust" ? "default" : "soft"}>
-            {line.text}
-          </AppText>
+          <View key={line.key} style={styles.consentLine}>
+            <AppText role="secondary" tone={line.key === "trust" ? "default" : "soft"}>
+              {line.text}
+            </AppText>
+            {/* A decision: each site whole, as an address, apart from the plugin's names. */}
+            {line.sites.map((site) => (
+              <AddressText key={site} role="secondary" value={site} />
+            ))}
+          </View>
         ))}
         {status}
         <AnswerRow>
@@ -132,7 +139,7 @@ export function PluginRequestBody(props: {
     <View style={styles.section}>
       {who}
       <AppText role="secondary" tone="muted">
-        Only {view.plugin.name} receives your answer. The agent never sees it.
+        Only {view.plugin.name} receives your answer. Opensteer doesn’t pass it to the agent.
       </AppText>
       {view.form.fields.map((field) => (
         <InputField
@@ -260,5 +267,6 @@ const styles = StyleSheet.create({
     paddingVertical: space[12],
   },
   monoText: { color: color.textSoft, fontFamily: monoFontFamily },
+  consentLine: { gap: space[2] },
   section: { gap: space[10] },
 });

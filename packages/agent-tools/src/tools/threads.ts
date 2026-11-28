@@ -90,7 +90,7 @@ export const opensteer_task_read = defineAgentTool({
   targetFields: ["taskId"],
   title: "Read a task",
   description:
-    "Read a task with its AI account, model, access mode, doneBy, lastVisitedAt and pendingRequests; omit taskId for this task. The messages view returns published messages and settled non-secret questions, newest first; activity adds places, apps, all settled Requests and one item per tool call. A message from a team carries teamSource, its channel and audience. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their `link`, verbatim.",
+    "Read a task with its AI account, model, access mode, doneBy, lastVisitedAt and pendingRequests; omit taskId for this task. The messages view returns published messages and settled non-secret questions, newest first; activity adds places, apps, all settled Requests and one item per tool call. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their `link`, verbatim.",
   input: readInput,
   output: ThreadReadOutputSchema,
   access: "read",
@@ -135,13 +135,6 @@ export const opensteer_task_delegate = defineAgentTool({
       model: DelegationModelChoiceSchema.optional().describe(
         "New task model selectors/options from opensteer_ai_account_list.",
       ),
-      observationId: z
-        .string()
-        .trim()
-        .min(1)
-        .max(255)
-        .optional()
-        .describe("Watch observation identity; reuse for the same observation."),
       places: z
         .array(PlaceContentPartSchema)
         .max(63)
@@ -196,7 +189,7 @@ export const opensteer_delegation_cancel = defineAgentTool({
   input: z.strictObject({ delegationId: AssignmentIdSchema }),
   output: TaskSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   destructive: true,
 });
 
@@ -220,13 +213,6 @@ export const opensteer_task_send = defineAgentTool({
         .trim()
         .min(1)
         .max(256 * 1_024),
-      observationId: z
-        .string()
-        .trim()
-        .min(1)
-        .max(255)
-        .optional()
-        .describe("Watch observation identity; reuse for the same observation."),
       taskId: ThreadIdSchema,
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() })

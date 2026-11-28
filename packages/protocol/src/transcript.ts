@@ -11,9 +11,6 @@ import {
   MessageViewSchema,
   MessageAuthorViewSchema,
   MessageEditViewSchema,
-  TeamSourceSchema,
-  TeamAudienceViewSchema,
-  TeamRunDeliveryViewSchema,
   IntegrationCallSubjectViewSchema,
   ToolIdentityViewSchema,
   ToolOutputViewSchema,
@@ -22,6 +19,7 @@ import {
   RunRetryViewSchema,
   RunUsageViewSchema,
   RunFailureViewSchema,
+  RunInterruptedCauseSchema,
   RequestKindSchema,
   AnsweredQuestionSchema,
   AssignmentSummarySchema,
@@ -69,10 +67,6 @@ export const TranscriptPlaceSchema = z.strictObject({
   site: z.string().max(2048).nullable(),
 });
 const TranscriptPlaceViewSchema = z.object(TranscriptPlaceSchema.shape);
-const TeamSourceViewSchema = z.object({
-  ...TeamSourceSchema.shape,
-  audience: TeamAudienceViewSchema,
-});
 const card = {
   id: TranscriptItemIdSchema,
   revision: PersonalRevisionSchema,
@@ -154,7 +148,6 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     messageKind: z.enum(["assistant", "input", "continuation"]).optional(),
     author: MessageAuthorViewSchema.optional(),
     edit: MessageEditViewSchema.optional(),
-    teamSource: TeamSourceViewSchema.optional(),
     delivery: z
       .object({
         status: z.enum(["failed", "unconfirmed"]),
@@ -178,8 +171,9 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     kind: z.literal("run"),
     runId: RunIdSchema,
     replyMessageId: MessageIdSchema.nullable().optional(),
-    delivery: TeamRunDeliveryViewSchema.optional(),
     endedAt: z.iso.datetime().optional(),
+    interruptedCause: RunInterruptedCauseSchema.optional(),
+    stopConfirmedAt: z.iso.datetime().optional(),
     usage: RunUsageViewSchema.optional(),
     failure: RunFailureViewSchema.optional(),
     retry: RunRetryViewSchema.optional(),

@@ -5,6 +5,11 @@ import {
   SessionCdpRouter,
 } from "@opensteer/browser-core";
 import {
+  assertProfileContract,
+  PlatformScripts,
+  refusedProfileMessage,
+} from "./test-support/profile-probe.js";
+import {
   BrowserController,
   BrowserRuntime,
   BrowserRuntimeServer,
@@ -38,7 +43,7 @@ import {
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -54,6 +59,12 @@ import { DesktopAppOriginPolicy } from "../src/app/navigation-policy.js";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 import { idleCpuPhase } from "./electron-idle-cpu-smoke.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard(
+  process.env.OPENSTEER_IDLE_CPU_SMOKE === "1" ? "idle" : "browser",
+  process.env.OPENSTEER_IDLE_CPU_SMOKE === "1" ? 300_000 : 360_000,
+);
 
 const smokeDownloads = smokeDesktopDownloads();
 
@@ -78,16 +89,63 @@ void withTimeout(run(), 90_000, {
   async () => {
     smokeFinished = true;
     clearInterval(smokeLiveness);
-    process.stdout.write(`${JSON.stringify({ event: "electron-browser-smoke.passed" })}\n`);
-    await rm(smokeProfile, { recursive: true, force: true });
+    // Chromium may still be writing into the profile as it winds down, so the removal retries
+    // for a moment. A profile that still cannot go fails the smoke at once, naming what is left
+    // and which of this smoke's child processes still run, instead of hanging or passing.
+    const removal = await rm(smokeProfile, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    if (removal !== null) {
+      const left = await readdir(smokeProfile, { recursive: true }).catch(() => []);
+      process.stderr.write(
+        `${JSON.stringify({
+          event: "electron-browser-smoke.failed",
+          castFirstFrameTimeouts: castFirstFrameTimeouts.length,
+          castFirstFrameTimeoutsAt: castFirstFrameTimeouts.slice(0, 20),
+          message: `The smoke's browser profile could not be removed: ${String(removal)}`,
+          left: left.slice(0, 50),
+          leftCount: left.length,
+          children: app
+            .getAppMetrics()
+            .filter((metric) => metric.type !== "Browser")
+            .map((metric) => ({ pid: metric.pid, type: metric.type, name: metric.name ?? null })),
+        })}\n`,
+      );
+      app.exit(1);
+      return;
+    }
+    process.stdout.write(
+      `${JSON.stringify({
+        event: "electron-browser-smoke.passed",
+        castFirstFrameTimeouts: castFirstFrameTimeouts.length,
+        castFirstFrameTimeoutsAt: castFirstFrameTimeouts.slice(0, 20),
+      })}\n`,
+    );
     app.quit();
   },
   (error: unknown) => {
     smokeFinished = true;
     clearInterval(smokeLiveness);
+    // What the follow view and each tab's debugger did up to the failure, whichever check it was.
+    if (followEvidence)
+      try {
+        process.stderr.write(
+          `${JSON.stringify({ event: "electron-browser-smoke.follow-evidence", ...followEvidence() })}\n`,
+        );
+      } catch {
+        // The evidence is a help; the failure below is the result.
+      }
     process.stderr.write(
       `${JSON.stringify({
         event: "electron-browser-smoke.failed",
+        castFirstFrameTimeouts: castFirstFrameTimeouts.length,
+        castFirstFrameTimeoutsAt: castFirstFrameTimeouts.slice(0, 20),
         message: error instanceof Error ? error.stack : String(error),
       })}\n`,
     );
@@ -195,6 +253,16 @@ async function run(): Promise<void> {
         .end(JSON.stringify({ cookie: request.headers.cookie ?? "" }));
       return;
     }
+    if (new URL(request.url ?? "/", "http://fixture").pathname === "/slow-load") {
+      // A document that commits and draws at once and loads for three seconds more.
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.write(
+        `<!doctype html><title>Slow load</title><body style="margin:0;background:#00c000"><p>Loading</p>${" ".repeat(2_048)}`,
+      );
+      const end = setTimeout(() => response.end("<p>Loaded</p></body>"), 3_000);
+      response.on("close", () => clearTimeout(end));
+      return;
+    }
     if (new URL(request.url ?? "/", "http://fixture").pathname === "/follow") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(followPage);
       return;
@@ -235,10 +303,11 @@ async function run(): Promise<void> {
   }
   await hostNetwork.clearDeploymentSession(cookieDeployment);
   progress("host-session-cookie-passed");
+  const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002");
   const request: BrowserLaunchRequest = {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000001",
-    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002"),
+    sessionId,
     storage: { kind: "guest" },
   };
   const launcher = new ElectronBrowserLauncher({
@@ -261,15 +330,15 @@ async function run(): Promise<void> {
   // the ledger registers, a tab the person opens included, is claimed for it.
   const cdpRouter = new SessionCdpRouter(first.cdp);
   const sessionFiles = new SessionFiles(
-    path.join(await mkdtemp(path.join(tmpdir(), "opensteer-smoke-files-")), request.sessionId),
+    path.join(await mkdtemp(path.join(tmpdir(), "opensteer-smoke-files-")), sessionId),
   );
   let ledger = new SurfaceLedger(first.context, {
-    claimTarget: (targetId) => cdpRouter.claimTarget(request.sessionId, targetId),
+    claimTarget: (targetId) => cdpRouter.claimTarget(sessionId, targetId),
     initialViewport: request.initialViewport,
   });
   const firstLedger = ledger;
   cdpRouter.registerSession(
-    request.sessionId,
+    sessionId,
     await firstPage.targetId(),
     (targetId) => firstLedger.resolveTarget(targetId),
     sessionFiles.root,
@@ -332,12 +401,20 @@ async function run(): Promise<void> {
   );
   const vectorIcon = ledger.snapshot().find((surface) => surface.url === `${origin}/`)?.favicon;
   progress("cross-site-svg-csp-read");
+  /**
+   * The root tab at `url`, loaded, as a person sees it before they act on it. Chromium can report
+   * a document's commit before it takes commands for it ("Not attached to an active page", the
+   * walker's run 2 on 4ecf539ae, a command sent as the ledger listed the address); the ledger
+   * reads the tab's history again when its loading stops.
+   */
+  const rootLoaded = (url: string) =>
+    waitFor(() =>
+      ledger
+        .snapshot()
+        .some((surface) => surface.openerId == null && surface.url === url && !surface.loading),
+    );
   await platformCdp.send("Page.navigate", { url: `${origin}/history` });
-  await waitFor(() =>
-    ledger
-      .snapshot()
-      .some((surface) => surface.openerId == null && surface.url === `${origin}/history`),
-  );
+  await rootLoaded(`${origin}/history`);
   const history = (await platformCdp.send("Page.getNavigationHistory")) as {
     currentIndex?: unknown;
     entries?: Array<{ id?: unknown }>;
@@ -348,9 +425,7 @@ async function run(): Promise<void> {
     entryId: previousEntry,
   });
   await waitFor(() => firstPage.url() === `${origin}/`);
-  await waitFor(() =>
-    ledger.snapshot().some((surface) => surface.openerId == null && surface.url === `${origin}/`),
-  );
+  await rootLoaded(`${origin}/`);
   progress("history-metadata-synchronized");
   const blockedNavigation = (await platformCdp.send("Page.navigate", {
     url: "file:///etc/passwd",
@@ -363,6 +438,7 @@ async function run(): Promise<void> {
   }
   await platformCdp.send("Page.navigate", { url: origin });
   await waitFor(() => firstPage.url() === `${origin}/`);
+  await rootLoaded(`${origin}/`);
   await platformCdp.send("Runtime.evaluate", {
     expression: `document.cookie = "session=electron-cookie; SameSite=Lax";
       localStorage.setItem("account", "desktop");`,
@@ -433,15 +509,89 @@ async function run(): Promise<void> {
       "Profiler.start ran without an enabled Profiler; the order probe proves nothing.",
     );
   }
+  // The platform's own record of every script and world, kept from before the
+  // profile starts, so a returned profile can be checked without the guard.
+  const platformScripts = new PlatformScripts();
+  const recordContext = (parameters: unknown) =>
+    platformScripts.observe("Runtime.executionContextCreated", parameters);
+  const recordScript = (parameters: unknown) =>
+    platformScripts.observe("Debugger.scriptParsed", parameters);
+  platformCdp.on("Runtime.executionContextCreated", recordContext);
+  platformCdp.on("Debugger.scriptParsed", recordScript);
+  // Enabling again reports every context the page has, with its world's name.
+  await platformCdp.send("Runtime.disable");
+  await platformCdp.send("Runtime.enable");
+  await platformCdp.send("Debugger.enable");
+  await platformCdp.send("Debugger.setSkipAllPauses", { skip: true });
   const profilerOwner = await first.cdp.attach(await firstPage.targetId());
   await profilerOwner.send("Profiler.enable");
   const released = profilerOwner.close();
   const enabled = profilerProbe.send("Profiler.enable");
   const started = profilerProbe.send("Profiler.start");
   await Promise.all([released, enabled, started]);
-  await profilerProbe.send("Profiler.stop");
+  // What this profile holds is whatever V8 sampled while the probe waited: on
+  // a busy machine that can be Opensteer's own worlds, which the guard must
+  // refuse. Either outcome keeps the contract; anything else breaks it.
+  const stopped = await profilerProbe.send("Profiler.stop").then(
+    (result: unknown) => ({ result }),
+    (error: unknown) => ({ error }),
+  );
+  const outcome = assertProfileContract(stopped, platformScripts);
+  process.stdout.write(`${JSON.stringify({ event: "electron-browser-smoke.profile", outcome })}\n`);
   await profilerProbe.close();
+  await platformCdp.send("Debugger.setSkipAllPauses", { skip: false });
+  await platformCdp.send("Debugger.disable");
+  platformCdp.off("Runtime.executionContextCreated", recordContext);
+  platformCdp.off("Debugger.scriptParsed", recordScript);
   progress("domain-order-kept");
+
+  // The profile's private inventory keeps Debugger on in the page; it must
+  // never pause it. A debugger statement runs straight through.
+  const pageValue = async (expression: string) =>
+    asEvaluationValue(
+      await platformCdp.send("Runtime.evaluate", { expression, returnByValue: true }),
+    );
+  /** A profile is returned or refused in the agent's words; its frames were checked above. */
+  const stopKeepsAgentWords = async (channel: { send(method: string): Promise<unknown> }) => {
+    const refused = await channel.send("Profiler.stop").then(
+      () => null,
+      (error: unknown) => error as { code?: unknown; message?: unknown },
+    );
+    if (refused && (refused.code !== "forbidden" || refused.message !== refusedProfileMessage))
+      throw new Error(`Profiler.stop failed: ${String(refused.message)}`);
+  };
+  const profiled = await first.cdp.attach(await firstPage.targetId());
+  await profiled.send("Profiler.enable");
+  await profiled.send("Profiler.start");
+  await pageValue(
+    "window.pausedThrough = false; setTimeout(() => { debugger; window.pausedThrough = true; }, 0); true",
+  );
+  await waitForAsync(async () => (await pageValue("window.pausedThrough")) === true, 5_000);
+  await stopKeepsAgentWords(profiled);
+  await profiled.close();
+  progress("profile-never-pauses-page");
+
+  // An agent's own breakpoint, set before its profile starts, still pauses
+  // for that agent: the inventory's skipping is its session's alone.
+  await pageValue(
+    "window.breakHere = function breakHere() {\n  return 1;\n};\n//# sourceURL=smoke-break.js",
+  );
+  const debuggee = await first.cdp.attach(await firstPage.targetId());
+  let pausedAt: unknown = null;
+  debuggee.onEvent((method, parameters) => {
+    if (method === "Debugger.paused") pausedAt = parameters;
+  });
+  await debuggee.send("Debugger.enable");
+  await debuggee.send("Debugger.setBreakpointByUrl", { url: "smoke-break.js", lineNumber: 1 });
+  await debuggee.send("Profiler.enable");
+  await debuggee.send("Profiler.start");
+  await pageValue("setTimeout(() => window.breakHere(), 0); true");
+  await waitFor(() => pausedAt !== null, 5_000);
+  await debuggee.send("Debugger.resume");
+  await stopKeepsAgentWords(debuggee);
+  await debuggee.send("Debugger.disable");
+  await debuggee.close();
+  progress("agent-breakpoint-kept");
 
   // Exercise the same controller path used by remote Web and Electron panels,
   // not only Electron's raw debugger mechanics.
@@ -453,6 +603,9 @@ async function run(): Promise<void> {
       operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
       remainingBudgetMs: 18_000,
       wireVersion: 2,
+      // An editing session, as the Electron panel's: its contexts are what a paste is made for.
+      editingVersion: 2,
+      clipboard: false,
       access: "read-write",
       audience: "opensteer-browser-runtime",
       creationOrigin: "person",
@@ -467,14 +620,7 @@ async function run(): Promise<void> {
     files: sessionFiles,
     replaceSiteCookies: (site, cookies, deadline) =>
       first.replaceSiteCookies(site, cookies, deadline),
-    signIns: new HostSignIns({
-      state: { run: (work) => work() },
-      writeCookies: () => Promise.resolve(),
-      deliveryTimeoutMs: 1_000,
-      executor: undefined,
-      fresh: true,
-      runtimeId: "electron-smoke",
-    }),
+    signIns: new HostSignIns({ authority: undefined, runtimeId: "electron-smoke" }),
     ledger,
     sink: {
       sendFrame: async (frame) => {
@@ -877,6 +1023,7 @@ async function run(): Promise<void> {
     surfaceId: rootSurface.id,
     text: pasted,
     type: "clipboard.paste",
+    contextId: await fieldContext(routedMessages, rootSurface.id),
   });
   const afterTyping = await targetInfo(rootTargetId);
   const typingActivity = asRecord(afterTyping.userActivity);
@@ -1210,66 +1357,8 @@ async function run(): Promise<void> {
   removeAgentFrameListener();
   await agentCdp.close();
 
-  const snapshot = await first.exportSnapshot();
-  progress("snapshot-exported");
-  if (!snapshot.cookies.some((cookie) => cookie.name === "session")) {
-    throw new Error("Electron profile did not export cookies.");
-  }
-  if (!snapshot.origins.some((state) => state.origin === origin && state.indexedDB?.length)) {
-    throw new Error("Electron profile did not export origin storage.");
-  }
-  await ledger.close();
-  await first.close();
-
-  first = await launcher.launch({ ...request, storage: { kind: "legacy", snapshot } });
-  progress("second-launched");
-  ledger = new SurfaceLedger(first.context, {
-    initialViewport: request.initialViewport,
-  });
-  await ledger.start();
-  const restoredPage = first.context.pages()[0];
-  if (!restoredPage) throw new Error("Restored Electron profile did not start.");
-  const restoredCdp = await restoredPage.cdp();
-  await restoredCdp.send("Page.navigate", { url: origin });
-  await waitFor(() => restoredPage.url() === `${origin}/`);
-  progress("second-navigated");
-  const restored = asEvaluationValue(
-    await restoredCdp.send("Runtime.evaluate", {
-      awaitPromise: true,
-      expression: `new Promise((resolve, reject) => {
-        const opening = indexedDB.open("opensteer-electron");
-        opening.onerror = () => reject(opening.error);
-        opening.onsuccess = () => {
-          const database = opening.result;
-          const reading = database.transaction("tokens").objectStore("tokens").get("access");
-          reading.onerror = () => reject(reading.error);
-          reading.onsuccess = () => {
-            resolve({
-              cookie: document.cookie,
-              indexedDB: { ...reading.result, count: String(reading.result.count) },
-              localStorage: localStorage.getItem("account"),
-            });
-            database.close();
-          };
-        };
-      })`,
-      returnByValue: true,
-    }),
-  );
-  const restoredRecord = restored as {
-    cookie?: unknown;
-    indexedDB?: { count?: unknown; token?: unknown };
-    localStorage?: unknown;
-  };
-  if (
-    restoredRecord.cookie !== "session=electron-cookie" ||
-    restoredRecord.indexedDB?.count !== "2" ||
-    restoredRecord.indexedDB.token !== "portable" ||
-    restoredRecord.localStorage !== "desktop"
-  ) {
-    throw new Error(`Electron profile restore mismatch: ${JSON.stringify(restored)}`);
-  }
-
+  // Portable legacy profile snapshots (`exportSnapshot` / `storage.kind: "legacy"`)
+  // were removed in 2fa8004e2; native profile persistence is covered by profile-restore.
   await ledger.close();
   await first.close();
   await transportAgentSizePhase(origin);
@@ -1561,6 +1650,15 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
  * with a styled scrollbar, through a sustained drag. Writes frames and a JSON
  * report beside the other browser artifacts.
  */
+/** Set while the follow-view phase runs: what to report if the smoke fails inside it. */
+let followEvidence: (() => Record<string, unknown>) | null = null;
+/**
+ * Each time the follow view gave up waiting for a cast's first picture (R10), with when in the
+ * phase and the tab's address: counted on every run, passed or failed. None is expected on a
+ * quiet machine; any under load is evidence about the time it gives.
+ */
+const castFirstFrameTimeouts: string[] = [];
+
 async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string): Promise<void> {
   const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000009");
   const browser = await launcher.launch({
@@ -1577,30 +1675,122 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     readonly at: number;
     readonly height: unknown;
     readonly method: string;
+    /** For a cast start, who sent it: the nearest frames of the sender's stack. */
+    readonly sender?: readonly string[];
+    /** For a cast start, the settings it asked Chromium for. */
+    readonly cast?: Record<string, unknown>;
+    readonly target: Debugger;
+    readonly width: unknown;
+    /** When Chromium's answer came back, for a cast start or stop. */
+    answeredAt?: number;
+    /** When, and why, Chromium refused it instead. */
+    refusedAt?: number;
+    refusal?: string;
+    readonly sessionId?: string;
+  }> = [];
+  /** Every frame each page's debugger sent: its id, the size it says, and when. */
+  const debuggerFrames: Array<{
+    readonly at: number;
+    readonly frame: unknown;
+    readonly height: unknown;
+    readonly sessionId?: string;
     readonly target: Debugger;
     readonly width: unknown;
   }> = [];
+  /** Each debugger's page address as of its latest recorded command: a closed tab keeps one. */
+  const debuggerUrls = new Map<Debugger, string>();
   const watchDebugger = (target: Debugger) => {
     const send = target.sendCommand.bind(target);
+    target.on("message", (_event, method, parameters, sessionId) => {
+      if (method !== "Page.screencastFrame") return;
+      const record = asRecord(parameters);
+      const metadata = asRecord(record.metadata);
+      debuggerFrames.push({
+        at: performance.now(),
+        frame: record.sessionId,
+        height: metadata.deviceHeight,
+        ...(typeof sessionId === "string" && sessionId ? { sessionId } : {}),
+        target,
+        width: metadata.deviceWidth,
+      });
+    });
     target.sendCommand = (method: string, parameters?: unknown, sessionId?: string) => {
       if (
         method === "Emulation.setVisibleSize" ||
         method === "Emulation.setDeviceMetricsOverride" ||
         method === "Emulation.clearDeviceMetricsOverride" ||
-        method === "Page.startScreencast"
+        method === "Page.startScreencast" ||
+        method === "Page.stopScreencast"
       ) {
         const { height, width } = asRecord(parameters);
-        debuggerCommands.push({
+        const address = webContents
+          .getAllWebContents()
+          .find((contents) => contents.debugger === target)
+          ?.getURL();
+        if (address) debuggerUrls.set(target, address);
+        const entry: (typeof debuggerCommands)[number] = {
           at: performance.now(),
           height,
           method,
+          ...(method === "Page.startScreencast"
+            ? {
+                cast: asRecord(parameters),
+                sender: (new Error().stack ?? "")
+                  .split("\n")
+                  .slice(2, 8)
+                  .map((frame) => frame.trim()),
+              }
+            : {}),
+          ...(sessionId ? { sessionId } : {}),
           target,
           width,
-        });
+        };
+        debuggerCommands.push(entry);
+        const response = send(method, parameters, sessionId) as Promise<unknown>;
+        void response.then(
+          () => {
+            entry.answeredAt = performance.now();
+          },
+          (error: unknown) => {
+            entry.refusedAt = performance.now();
+            entry.refusal = error instanceof Error ? error.message : String(error);
+          },
+        );
+        return response;
       }
       return send(method, parameters, sessionId);
     };
   };
+  /**
+   * One page's casts as its debugger saw them since `since`, in order: each start and stop with
+   * when Chromium answered it, each size set, and each frame with its id and the size it says.
+   */
+  const castTimeline = (target: Debugger | undefined, since: number) =>
+    [
+      ...debuggerCommands
+        .filter((command) => command.target === target && command.at >= since)
+        .map((command) => ({
+          at: command.at,
+          entry: `${command.method}${command.sessionId ? ` in ${command.sessionId}` : ""}${
+            command.width === undefined ? "" : ` ${String(command.width)}x${String(command.height)}`
+          }${command.cast ? ` ${String(command.cast.maxWidth)}x${String(command.cast.maxHeight)}` : ""}${
+            command.answeredAt !== undefined
+              ? ` (answered +${Math.round(command.answeredAt - command.at)}ms)`
+              : command.refusedAt !== undefined
+                ? ` (refused +${Math.round(command.refusedAt - command.at)}ms: ${command.refusal ?? ""})`
+                : " (unanswered)"
+          }`,
+        })),
+      ...debuggerFrames
+        .filter((frame) => frame.target === target && frame.at >= since)
+        .map((frame) => ({
+          at: frame.at,
+          entry: `frame ${String(frame.frame)}${frame.sessionId ? ` in ${frame.sessionId}` : ""} ${String(frame.width)}x${String(frame.height)}`,
+        })),
+    ]
+      .sort((a, b) => a.at - b.at)
+      .slice(0, 120)
+      .map(({ at, entry }) => `${Math.round(at - since)}ms ${entry}`);
   for (const contents of webContents.getAllWebContents()) watchDebugger(contents.debugger);
   const onContentsCreated = (_event: Electron.Event, contents: Electron.WebContents) =>
     watchDebugger(contents.debugger);
@@ -1679,14 +1869,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     ledger,
     replaceSiteCookies: (site, cookies, deadline) =>
       browser.replaceSiteCookies(site, cookies, deadline),
-    signIns: new HostSignIns({
-      state: { run: (work) => work() },
-      writeCookies: () => Promise.resolve(),
-      deliveryTimeoutMs: 1_000,
-      executor: undefined,
-      fresh: true,
-      runtimeId: "electron-smoke",
-    }),
+    signIns: new HostSignIns({ authority: undefined, runtimeId: "electron-smoke" }),
     sink: {
       sendFrame: async (frame) => {
         frames.push({ ...frame, at: performance.now() });
@@ -1696,6 +1879,153 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         messageTimes.push(performance.now());
       },
     },
+  });
+  /**
+   * What each refused agent command was refused for before the controller put it into a runtime
+   * error: `normalizeControllerError` keeps only "The browser runtime could not complete the
+   * command." on the wire for anything that is not already one, and the cause stays behind. Read
+   * here from the two places a command's error comes out of: the controller's dispatch (by the
+   * command's request) and the ledger's hold on the tab around it (by the tab, and when).
+   */
+  const dispatchErrors = new Map<string, readonly Record<string, unknown>[]>();
+  const ledgerErrors: Array<{
+    readonly at: number;
+    readonly surfaceId: string;
+    readonly error: readonly Record<string, unknown>[];
+  }> = [];
+  /** The error and each of its causes, outermost first: name, message, code, reason. */
+  const errorChain = (error: unknown): readonly Record<string, unknown>[] => {
+    const chain: Record<string, unknown>[] = [];
+    for (let cause = error; cause !== undefined && chain.length < 6;) {
+      if (!(cause instanceof Error)) {
+        chain.push({ value: String(cause) });
+        break;
+      }
+      const { code, reason } = cause as Error & { code?: unknown; reason?: unknown };
+      chain.push({
+        name: cause.name,
+        message: cause.message.slice(0, 500),
+        ...(code === undefined ? {} : { code }),
+        ...(reason === undefined ? {} : { reason }),
+      });
+      cause = cause.cause;
+    }
+    return chain;
+  };
+  {
+    const internals = controller as unknown as {
+      dispatch(
+        message: Parameters<BrowserController["handle"]>[0],
+        admitted: unknown,
+      ): Promise<void>;
+    };
+    const dispatch = internals.dispatch.bind(controller);
+    internals.dispatch = (message, admitted) =>
+      dispatch(message, admitted).catch((error: unknown) => {
+        if (message.type === "cdp.command")
+          dispatchErrors.set(message.requestId, errorChain(error));
+        throw error;
+      });
+    const use = ledger.use.bind(ledger);
+    ledger.use = <T>(
+      id: Parameters<SurfaceLedger["use"]>[0],
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      let fromOperation = false;
+      return use(id, () =>
+        operation().catch((error: unknown) => {
+          fromOperation = true;
+          throw error;
+        }),
+      ).catch((error: unknown) => {
+        // Only the ledger's own refusals: an operation's error is the dispatch's to record.
+        if (!fromOperation)
+          ledgerErrors.push({ at: performance.now(), error: errorChain(error), surfaceId: id });
+        throw error;
+      });
+    };
+  }
+  /** Every agent command in this phase that came back refused, with what it was refused for. */
+  const agentRefusals: Array<Record<string, unknown>> = [];
+  const phaseStart = performance.now();
+  // The follow view's record with when each entry came and the address of the tab it is for, then.
+  const followTimed: Array<{
+    readonly at: number;
+    readonly entry: string;
+    readonly surfaceId: string | null;
+  }> = [];
+  {
+    const list = (
+      controller as unknown as { readonly screencast: { readonly diagnostics: unknown[] } }
+    ).screencast.diagnostics;
+    const push = list.push.bind(list);
+    list.push = (...entries: unknown[]) => {
+      for (const value of entries) {
+        const entry = asRecord(value);
+        const entrySurfaceId = typeof entry.surfaceId === "string" ? entry.surfaceId : null;
+        const tab = entrySurfaceId
+          ? ledger.binding(entrySurfaceId as typeof surfaceId)?.surface.url
+          : undefined;
+        // Seen twice (Nov 24): a person's start waited 5 s for a new tab to paint while the
+        // agent's own cast of it had frames, and its retry took a frame at once. What that page's
+        // paint wait depended on then goes on the line, so the next time says which held it.
+        const paint =
+          entry.stage === "cast-paint-timeout" && entrySurfaceId
+            ? (
+                ledger.binding(entrySurfaceId as typeof surfaceId)?.page as
+                  { paintEvidence?: () => Record<string, unknown> } | undefined
+              )?.paintEvidence?.()
+            : undefined;
+        const line = `${String(entry.stage)}${entry.reason === undefined ? "" : ` ${String(entry.reason)}`}${entry.castId === undefined ? "" : ` #${String(entry.castId)}`}${tab ? ` ${tab.replace(origin, "")}` : ""}${paint ? ` paint ${JSON.stringify(paint)}` : ""}`;
+        followTimed.push({ at: performance.now(), entry: line, surfaceId: entrySurfaceId });
+        if (entry.stage === "cast-first-frame-timeout")
+          castFirstFrameTimeouts.push(
+            `${Math.round(performance.now() - phaseStart)}ms after ${String(entry.durationMs)}ms ${line}`,
+          );
+        if (followTimed.length > 4_000) followTimed.shift();
+      }
+      return push(...entries);
+    };
+  }
+  /**
+   * The follow view's record since `since` (optionally for one tab only), each entry with when it
+   * came and its tab's address. Read by time: the follow view keeps its own record in a ring of
+   * 256, whose length stops growing once it is full, so an index taken earlier reads nothing (the
+   * walker's runs on 8890420c6, never-shown-tab and slow-load-tab).
+   */
+  const followSince = (since: number, tabId?: string) =>
+    followTimed
+      .filter(
+        ({ at, surfaceId: entrySurfaceId }) => at >= since && (!tabId || entrySurfaceId === tabId),
+      )
+      .map(({ at, entry }) => `${Math.round(at - since)}ms ${entry}`);
+  /**
+   * A tab that must be cast counted its start, and exported that start's record with its reason:
+   * none counted is a failure, as when its debugger was missed (re-check 10, S6).
+   */
+  const recordsItsStarts = (starts: number, followView: readonly string[]) =>
+    starts > 0 && followView.some((entry) => / cast-start /u.test(entry));
+  /** What the follow view and each tab's debugger did since `since`, each tab by its address. */
+  const evidenceSince = (since: number) => ({
+    followView: followTimed
+      .filter(({ at }) => at >= since)
+      .slice(-150)
+      .map(({ at, entry }) => `${Math.round(at - since)}ms ${entry}`),
+    tabs: [...new Set(debuggerCommands.map((command) => command.target))]
+      .map((target) => ({
+        url:
+          webContents
+            .getAllWebContents()
+            .find((contents) => contents.debugger === target)
+            ?.getURL() ?? debuggerUrls.get(target),
+        timeline: castTimeline(target, since),
+      }))
+      .filter(({ timeline }) => timeline.length > 0),
+  });
+  followEvidence = () => ({
+    agentRefusals: agentRefusals.slice(-20),
+    // The last fifteen seconds of it, or since the phase began.
+    ...evidenceSince(Math.max(phaseStart, performance.now() - 15_000)),
   });
   await controller.start();
   const root = ledger.active();
@@ -1921,7 +2251,8 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     throw new Error(`Person geometry used fake metrics: ${JSON.stringify(personGeometryCommands)}`);
   }
   await saveFrame("follow-large-1400x900", largePicture);
-  progress("follow-large-page-passed");
+  let timeoutsMark = castFirstFrameTimeouts.length;
+  progress("follow-large-page-passed", { castFirstFrameTimeouts: timeoutsMark });
 
   // A styled scrollbar takes width from the page's layout; the picture
   // still shows the whole viewport, and a click beside the scrollbar lands.
@@ -1951,7 +2282,10 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       `A styled-scrollbar page did not stream or take a click: ${JSON.stringify({ largeState, edge, edgeClick })}`,
     );
   }
-  progress("follow-styled-scrollbar-passed");
+  progress("follow-styled-scrollbar-passed", {
+    castFirstFrameTimeouts: castFirstFrameTimeouts.length - timeoutsMark,
+  });
+  timeoutsMark = castFirstFrameTimeouts.length;
 
   // The same size while the person holds the button ends nothing.
   await read("window.pointerLog = []");
@@ -1965,7 +2299,10 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
   if (heldThroughNoOp?.type !== "mousemove" || heldThroughNoOp.buttons !== 1) {
     throw new Error(`A same-size write ended a held press: ${JSON.stringify(heldThroughNoOp)}`);
   }
-  progress("follow-held-press-passed");
+  progress("follow-held-press-passed", {
+    castFirstFrameTimeouts: castFirstFrameTimeouts.length - timeoutsMark,
+  });
+  timeoutsMark = castFirstFrameTimeouts.length;
 
   // A sustained drag keeps pictures coming, and the last size is
   // pictured soon after; a press aimed at an old picture is refused.
@@ -2025,25 +2362,35 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
   await saveFrame("follow-drag-final-1000x700", finalPicture);
   const midDrag = dragFrames[Math.floor(dragFrames.length / 2)];
   if (midDrag) await saveFrame("follow-drag-middle", midDrag);
-  progress("follow-drag-passed");
+  progress("follow-drag-passed", {
+    castFirstFrameTimeouts: castFirstFrameTimeouts.length - timeoutsMark,
+  });
 
   // Each check below is recorded; the run reports them all, then fails on any.
   const failures: string[] = [];
   const results: Record<string, unknown> = {};
   const section = async (name: string, run: () => Promise<Record<string, unknown>>) => {
     const since = performance.now();
+    const timeoutsBefore = castFirstFrameTimeouts.length;
     progress(`follow-${name}-started`);
     try {
-      results[name] = { ...(await run()), passed: true };
-      progress(`follow-${name}-passed`);
+      const outcome = await run();
+      const firstFrameTimeouts = castFirstFrameTimeouts.length - timeoutsBefore;
+      results[name] = { ...outcome, castFirstFrameTimeouts: firstFrameTimeouts, passed: true };
+      progress(`follow-${name}-passed`, { castFirstFrameTimeouts: firstFrameTimeouts });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const firstFrameTimeouts = castFirstFrameTimeouts.length - timeoutsBefore;
       failures.push(`${name}: ${message}`);
       results[name] = {
         passed: false,
+        castFirstFrameTimeouts: firstFrameTimeouts,
         failure: message,
         castLog: castLog(since),
+        // The follow view and every tab's debugger from this check's start, as it failed.
+        evidence: evidenceSince(since),
       };
+      progress(`follow-${name}-failed`, { castFirstFrameTimeouts: firstFrameTimeouts });
     }
   };
   const settles = (operation: Promise<unknown>, timeoutMs = 5_000) =>
@@ -2058,6 +2405,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     sessionId?: string,
   ): Promise<unknown> => {
     const requestId = randomUUID();
+    const sentAt = performance.now();
     await controller.handle({
       command: {
         method,
@@ -2073,9 +2421,19 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         message.requestId === requestId,
     );
     if (reply?.type === "cdp.error") {
-      throw Object.assign(new Error(reply.error.message), {
-        code: reply.error.code,
+      const cause = {
+        dispatch: dispatchErrors.get(requestId) ?? null,
+        ledger: ledgerErrors.filter((entry) => entry.at >= sentAt),
+      };
+      agentRefusals.push({
+        at: Math.round(sentAt - phaseStart),
+        cause,
+        method,
+        refusedAfterMs: Math.round(performance.now() - sentAt),
+        wire: reply.error,
+        ...(sessionId ? { sessionId } : {}),
       });
+      throw Object.assign(new Error(reply.error.message), { code: reply.error.code, cause });
     }
     if (reply?.type !== "cdp.result") throw new Error(`${method} was not answered.`);
     return reply.result;
@@ -2794,11 +3152,31 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     const agentTabCasts = {
       castStarts: castStartsOn(agentTabDebugger, turnSince, performance.now()),
       redraws: redrawsBetween(turnSince, performance.now(), agentTabDebugger),
+      followView: followSince(turnSince, agentTab),
     };
     await controller.handle({ surfaceId, type: "surface.activate" });
     await agent("Target.closeTarget", { targetId: created.targetId });
 
     const openSince = performance.now();
+    // Each ledger event for the tab, as the follow view is given it: whether its document had
+    // committed, and was still loading, when each start was asked for and refused.
+    const ledgerEvents: Array<{ readonly surfaceId: string | null; readonly entry: string }> = [];
+    const documents = new Map<string, number>();
+    const stopLedgerEvents = ledger.subscribe((event) => {
+      const at = `${Math.round(performance.now() - openSince)}ms`;
+      if (event.type === "changed") {
+        const surface = event.surface;
+        const shown = surface.documentId ?? "none";
+        if (!documents.has(shown)) documents.set(shown, documents.size);
+        ledgerEvents.push({
+          entry: `${at} changed ${event.change} document ${documents.get(shown)} revision ${surface.geometryRevision}${surface.loading ? " loading" : ""}${surface.active ? " active" : ""} ${surface.url}`,
+          surfaceId: surface.id,
+        });
+      } else if (event.type === "resized" || event.type === "geometry" || event.type === "dialog")
+        ledgerEvents.push({ entry: `${at} ${event.type}`, surfaceId: event.surfaceId });
+      else if (event.type === "snapshot")
+        ledgerEvents.push({ entry: `${at} snapshot`, surfaceId: null });
+    });
     await controller.handle({
       type: "surface.open",
       url: `${origin}/follow?person-opened`,
@@ -2833,7 +3211,29 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     const personTabCasts = {
       castStarts: castStartsOn(personTabDebugger, openSince, performance.now()),
       redraws: redrawsBetween(openSince, performance.now(), personTabDebugger),
+      // What the tab's debugger saw, start to stop, so a count over the bound shows why.
+      timeline: castTimeline(personTabDebugger, openSince),
+      // The follow view's own reason for each start it asked for, and each it set aside.
+      followView: followSince(openSince, personTab.surface.id),
+      ledgerEvents: ledgerEvents
+        .filter((event) => event.surfaceId === null || event.surfaceId === personTab.surface.id)
+        .slice(0, 40)
+        .map((event) => event.entry),
+      // Who started each cast, so a count over the bound names its senders.
+      senders: debuggerCommands
+        .filter(
+          (command) =>
+            command.method === "Page.startScreencast" &&
+            command.target === personTabDebugger &&
+            command.at >= openSince,
+        )
+        .map((command) => ({
+          afterMs: Math.round(command.at - openSince),
+          cast: command.cast,
+          from: command.sender,
+        })),
     };
+    stopLedgerEvents();
     await controller.handle({
       surfaceId: personTab.surface.id,
       type: "surface.close",
@@ -2860,14 +3260,91 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         // The engine supplies the first picture without synthetic redraws.
         agentTabCasts.redraws === 0 &&
         agentTabCasts.castStarts <= 1 + agentTabCasts.redraws &&
+        recordsItsStarts(agentTabCasts.castStarts, agentTabCasts.followView) &&
         personPagePictured === true &&
         personTabCasts.redraws === 0 &&
         // Opening can restart once after the initial viewport is sized.
         personTabCasts.castStarts <= 2 &&
+        recordsItsStarts(personTabCasts.castStarts, personTabCasts.followView) &&
         outcome.errors.length === 0,
       outcome,
     );
     return outcome;
+  });
+
+  // A tab the person opens on a page that loads for seconds is pictured as soon as its document
+  // commits, not when its load ends: within half a second of the commit, with at most two starts
+  // (one refused while Chromium's browser side had not taken the document, one answered).
+  await section("slow-load-tab", async () => {
+    const from = messages.length;
+    const openSince = performance.now();
+    const url = `${origin}/slow-load`;
+    const events: Array<{ readonly at: number; readonly entry: string; readonly id: string }> = [];
+    let committedAt: number | null = null;
+    let loadedAt: number | null = null;
+    const stopEvents = ledger.subscribe((event) => {
+      if (event.type !== "changed") return;
+      const at = performance.now();
+      const surface = event.surface;
+      if (surface.url === url && committedAt === null) committedAt = at;
+      if (surface.url === url && committedAt !== null && !surface.loading && loadedAt === null)
+        loadedAt = at;
+      events.push({
+        at,
+        entry: `${Math.round(at - openSince)}ms changed ${event.change} revision ${surface.geometryRevision}${surface.loading ? " loading" : ""} ${surface.url}`,
+        id: surface.id,
+      });
+    });
+    let opened: typeof surfaceId | null = null;
+    try {
+      await controller.handle({ type: "surface.open", url });
+      const tab = ledger.active();
+      if (!tab || tab.surface.id === surfaceId) throw new Error("The slow tab did not open.");
+      const id = tab.surface.id;
+      opened = id;
+      const green = (frame: TimedFrame) => {
+        const pixel = framePixel(
+          frame,
+          frame.header.viewportWidth - 30,
+          frame.header.viewportHeight - 30,
+        );
+        return pixel.green > 150 && pixel.green - pixel.red > 60 && pixel.green - pixel.blue > 60;
+      };
+      const shows = (frame: TimedFrame) =>
+        frame.at >= openSince && frame.header.surfaceId === id && green(frame);
+      await waitFor(() => frames.some(shows), 5_000).catch(() => undefined);
+      const picture = frames.find(shows) ?? null;
+      const tabDebugger = debuggerOf(url);
+      const pictureAt = picture?.at ?? null;
+      const outcome = {
+        committedMs: committedAt === null ? null : Math.round(committedAt - openSince),
+        pictureMs: pictureAt === null ? null : Math.round(pictureAt - openSince),
+        pictureAfterCommitMs:
+          pictureAt === null || committedAt === null ? null : Math.round(pictureAt - committedAt),
+        loadedMs: loadedAt === null ? null : Math.round(loadedAt - openSince),
+        castStarts: castStartsOn(tabDebugger, openSince, performance.now()),
+        timeline: castTimeline(tabDebugger, openSince),
+        followView: followSince(openSince, id),
+        ledgerEvents: events.filter((event) => event.id === id).map((event) => event.entry),
+        errors: errorsFrom(from),
+      };
+      ensure(
+        committedAt !== null &&
+          pictureAt !== null &&
+          pictureAt - committedAt < 500 &&
+          // Pictured while it still loaded: the picture did not wait for the load to end.
+          (loadedAt === null || pictureAt < loadedAt) &&
+          outcome.castStarts <= 2 &&
+          recordsItsStarts(outcome.castStarts, outcome.followView) &&
+          outcome.errors.length === 0,
+        outcome,
+      );
+      return outcome;
+    } finally {
+      stopEvents();
+      if (opened) await controller.handle({ surfaceId: opened, type: "surface.close" });
+      await controller.handle({ surfaceId, type: "surface.activate" });
+    }
   });
 
   /**
@@ -2976,6 +3453,18 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
   // answer answers it.
   await section("stale-dialog-answers", async () => {
     const from = messages.length;
+    const sectionSince = performance.now();
+    const sinceSection = () => `${Math.round(performance.now() - sectionSince)}ms`;
+    // The follow view's own record from B's opening on, each entry with when and for which tab.
+    const followLog: Array<{ readonly at: string; readonly entry: Record<string, unknown> }> = [];
+    const diagnostics = (
+      controller as unknown as { readonly screencast: { readonly diagnostics: unknown[] } }
+    ).screencast.diagnostics;
+    const keep = diagnostics.push.bind(diagnostics);
+    diagnostics.push = (...entries: unknown[]) => {
+      for (const entry of entries) followLog.push({ at: sinceSection(), entry: asRecord(entry) });
+      return keep(...entries);
+    };
     await controller.handle({
       type: "surface.open",
       url: `${origin}/follow?dialog-b`,
@@ -2983,6 +3472,38 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     const other = ledger.active();
     if (!other || other.surface.id === surfaceId) throw new Error("The second tab did not open.");
     const tabB = other.surface.id;
+    // The hub's part for B, from both its sides: what the follow view asked it on B's channel and
+    // how it answered, and each frame it handed that channel. A start it answered with no start
+    // reaching B's debugger (debuggerLog) is one it joined to a running cast; a refusal says why.
+    const hubForB: string[] = [];
+    {
+      const send = other.cdp.send.bind(other.cdp);
+      other.cdp.send = ((method: string, parameters?: Record<string, unknown>) => {
+        const sent = send(method, parameters);
+        if (method === "Page.startScreencast" || method === "Page.stopScreencast") {
+          const askedAt = performance.now();
+          hubForB.push(`${sinceSection()} asked ${method}`);
+          void sent.then(
+            () =>
+              hubForB.push(
+                `${sinceSection()} answered ${method} +${Math.round(performance.now() - askedAt)}ms`,
+              ),
+            (error: unknown) =>
+              hubForB.push(
+                `${sinceSection()} refused ${method}: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+          );
+        }
+        return sent;
+      }) as typeof other.cdp.send;
+      other.cdp.on("Page.screencastFrame", (parameters: unknown) => {
+        const frame = asRecord(parameters);
+        const metadata = asRecord(frame.metadata);
+        hubForB.push(
+          `${sinceSection()} handed frame ${String(frame.sessionId)} ${String(metadata.deviceWidth)}x${String(metadata.deviceHeight)}`,
+        );
+      });
+    }
     const readB = async (expression: string) =>
       asEvaluationValue(
         await other.cdp.send("Runtime.evaluate", {
@@ -3071,6 +3592,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         answerA: await answerOf(surfaceId, read),
         dialogBShown: ledger.dialogOf(tabB)?.id === dialogB,
       };
+      // What the follow view did from here, in its own words (its diagnostics, newest last).
       const answeredAt = performance.now();
       const own = await answerWith(dialogB, false);
       await waitForAsync(async () => (await answerOf(tabB, readB)) !== null, 2_000).catch(
@@ -3089,6 +3611,15 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
           turnedToB: Math.round(turnedToBAt - turnedAwayAt),
           answeredB: Math.round(answeredAt - turnedAwayAt),
         },
+        followView: followSince(answeredAt),
+        // From B's opening, the follow view's record for B (and the tab it turned to between).
+        followViewSinceOpening: followLog
+          .slice(-120)
+          .map(
+            ({ at, entry }) =>
+              `${at} ${String(entry.stage)}${entry.reason === undefined ? "" : ` ${String(entry.reason)}`}${entry.castId === undefined ? "" : ` #${String(entry.castId)}`}${entry.surfaceId === tabB ? " B" : entry.surfaceId === surfaceId ? " A" : ""}`,
+          ),
+        hub: hubForB.slice(-60),
         debuggerLog: watchB.log(turnedAwayAt),
         streamed: frames
           .filter((frame) => frame.at >= answeredAt && frame.header.surfaceId === tabB)
@@ -3137,6 +3668,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       );
       return outcome;
     } finally {
+      diagnostics.push = keep;
       watchB?.stop();
       for (const surface of [surfaceId, tabB]) {
         const open = ledger.dialogOf(surface);
@@ -3577,7 +4109,10 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         },
         (error: unknown) => {
           writeSettledAt = performance.now();
-          return error instanceof Error ? error.message : String(error);
+          // The wire's sentence, and what the controller was given before it said it.
+          return error instanceof Error
+            ? { message: error.message, cause: error.cause ?? null }
+            : String(error);
         },
       );
       await waitFor(() => dialogOpenedAt !== null, 5_000).catch(() => undefined);
@@ -4197,6 +4732,153 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     }
   });
 
+  // The read of 564ca7424..5d197dfbc, finding 9: two casts in different settings on one tab, the
+  // person's (the follow view's own) and an agent's PNG in a session of its own, across a
+  // confirm(). The page's own session still gets the dialog and answers it, and both casts go
+  // on afterwards, each in its own format.
+  await section("two-casts-across-dialog", async () => {
+    const from = messages.length;
+    const panel = { height: 700, width: 1_000 };
+    const created = asRecord(
+      await agent("Target.createTarget", { url: `${origin}/follow?two-casts` }),
+    );
+    const targetId = String(created.targetId);
+    const tab = ledger.surfaceIdForTarget(targetId);
+    if (!tab) throw new Error("The agent's tab is not one of the session's pages.");
+    const session = String(
+      asRecord(await agent("Target.attachToTarget", { flatten: true, targetId })).sessionId,
+    );
+    const evaluate = async (expression: string) =>
+      asEvaluationValue(
+        await agent("Runtime.evaluate", { expression, returnByValue: true }, session),
+      );
+    await waitForAsync(async () => (await evaluate("document.readyState")) === "complete");
+    await evaluate(`(() => {
+      const button = document.createElement("button");
+      button.textContent = "Delete listing";
+      button.style.cssText = "position:fixed;left:0;top:0;width:200px;height:200px";
+      window.answers = [];
+      button.addEventListener("click", () => window.answers.push(confirm("Delete this listing?")));
+      document.body.append(button);
+    })()`);
+    const shownSince = performance.now();
+    await controller.handle({ surfaceId: tab, type: "surface.activate" });
+    await controller.handle({ ...panel, surfaceId: tab, type: "viewport.follow" });
+    const personBefore = await pictureWithin(panel, shownSince, tab);
+
+    const agentFrames: { at: number; format: string; width: number; height: number }[] = [];
+    let scanned = messages.length;
+    const collect = () => {
+      for (; scanned < messages.length; scanned += 1) {
+        const message = messages[scanned]!;
+        if (
+          message.type !== "cdp.event" ||
+          message.event.method !== "Page.screencastFrame" ||
+          message.event.sessionId !== session
+        )
+          continue;
+        agentFrames.push({
+          at: messageTimes[scanned]!,
+          ...encodedImage(String(message.event.parameters.data)),
+        });
+        void agent(
+          "Page.screencastFrameAck",
+          { sessionId: message.event.parameters.sessionId },
+          session,
+        ).catch(() => undefined);
+      }
+      return agentFrames;
+    };
+    const agentFrameAfter = async (since: number) => {
+      await waitFor(() => collect().some((frame) => frame.at >= since), 5_000).catch(
+        () => undefined,
+      );
+      return collect().find((frame) => frame.at >= since) ?? null;
+    };
+    const ask = { format: "png", maxHeight: 240, maxWidth: 320 };
+    const agentSince = performance.now();
+    await agent("Page.startScreencast", ask, session);
+    const agentBefore = await agentFrameAfter(agentSince);
+
+    // The page's own session hears the dialog and answers it, with the agent's cast running.
+    await agent("Page.enable", {}, session);
+    const dialogFrom = messages.length;
+    const values = { button: "left", clickCount: 1, x: 50, y: 50 };
+    await agent("Input.dispatchMouseEvent", { ...values, type: "mousePressed" }, session);
+    const released = agent(
+      "Input.dispatchMouseEvent",
+      { ...values, type: "mouseReleased" },
+      session,
+    ).catch(() => undefined);
+    await waitFor(
+      () =>
+        messages
+          .slice(dialogFrom)
+          .some(
+            (message) =>
+              message.type === "cdp.event" &&
+              message.event.sessionId === session &&
+              message.event.method === "Page.javascriptDialogOpening",
+          ),
+      5_000,
+    ).catch(() => undefined);
+    const opened = messages
+      .slice(dialogFrom)
+      .some(
+        (message) =>
+          message.type === "cdp.event" &&
+          message.event.sessionId === session &&
+          message.event.method === "Page.javascriptDialogOpening",
+      );
+    const answered = await settles(agent("Page.handleJavaScriptDialog", { accept: true }, session));
+    await released;
+    const answers = asEvaluationValue(
+      await agent(
+        "Runtime.evaluate",
+        { expression: "window.answers", returnByValue: true },
+        session,
+      ),
+    );
+    await agent("Page.disable", {}, session);
+
+    // Both go on, each in its own format: the page changes, and each is pictured again.
+    const afterSince = performance.now();
+    await evaluate("document.body.style.background = 'rgb(20, 160, 60)'");
+    const personAfter = await pictureWithin(panel, afterSince, tab);
+    const agentAfter = await agentFrameAfter(afterSince);
+    await agent("Page.stopScreencast", {}, session);
+    await controller.handle({ surfaceId, type: "surface.activate" });
+    await agent("Target.closeTarget", { targetId });
+    const outcome = {
+      agentAsked: ask,
+      personBefore: pictureSummary(personBefore, shownSince),
+      agentBefore,
+      dialogOpenedOnThePagesSession: opened,
+      dialogAnswered: answered,
+      answers,
+      personAfter: pictureSummary(personAfter, afterSince),
+      agentAfter,
+      agentFormats: [...new Set(agentFrames.map((frame) => frame.format))],
+      errors: errorsFrom(from),
+    };
+    ensure(
+      personBefore !== null &&
+        agentBefore?.format === "png" &&
+        opened &&
+        answered &&
+        JSON.stringify(answers) === "[true]" &&
+        personAfter !== null &&
+        agentAfter !== null &&
+        agentAfter.format === "png" &&
+        agentAfter.width <= ask.maxWidth &&
+        agentAfter.height <= ask.maxHeight &&
+        agentFrames.every((frame) => frame.format === "png") &&
+        outcome.errors.length === 0,
+      outcome,
+    );
+    return outcome;
+  });
+
   await section("inline-popup-dialogs", async () => {
     await controller.handle({ type: "surface.activate", surfaceId });
     const size = { width: 930, height: 670 };
@@ -4649,10 +5331,10 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
 }
 </script>`;
 
-function progress(stage: string): void {
+function progress(stage: string, extra?: Record<string, unknown>): void {
   lastStage = stage;
   process.stdout.write(
-    `${JSON.stringify({ event: "electron-browser-smoke.progress", stage, at: performance.now() })}\n`,
+    `${JSON.stringify({ event: "electron-browser-smoke.progress", stage, at: performance.now(), ...extra })}\n`,
   );
 }
 
@@ -4683,4 +5365,23 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
     if (Date.now() >= deadline) throw new Error("Electron browser smoke condition timed out.");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+/** The page's latest editing context once a field holds focus: a paste is made for it (CZ5). */
+async function fieldContext(
+  messages: readonly BrowserRuntimeServerMessage[],
+  surfaceId: string,
+): Promise<string> {
+  let contextId: string | undefined;
+  await waitFor(() => {
+    const published = messages
+      .filter((message) => message.type === "browser.editing" && message.surfaceId === surfaceId)
+      .at(-1);
+    contextId =
+      published?.type === "browser.editing" && published.context.field !== null
+        ? published.context.contextId
+        : undefined;
+    return contextId !== undefined;
+  });
+  return contextId!;
 }

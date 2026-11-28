@@ -26,7 +26,7 @@ describe("DesktopProtectedAuthStore", () => {
     const host = { ...hostCredential(), accountIdentity: null };
     await store.setAccount(accountCredential());
     await store.setHost(host);
-    await store.setTeamSignOutSuppression(host.deploymentId, true);
+    await store.setHostSignOutSuppression(host.deploymentId, true);
     const envelope = JSON.parse(await readFile(store.filePath, "utf8"));
     const plaintext = await cryptography.decryptStringAsync(
       Buffer.from(envelope.ciphertext, "base64"),

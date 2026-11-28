@@ -9,7 +9,7 @@ import {
   opensteerAgentSkillsFor,
   platformGuideForRun,
 } from "@opensteer/agent-tools";
-import type { ThreadAccessMode, TaskPurpose } from "@opensteer/core";
+import type { AgentGrant, ThreadAccessMode, TaskPurpose } from "@opensteer/core";
 import {
   agentHomeSettingsErrorText,
   type AgentHomeSettingsError,
@@ -24,19 +24,18 @@ export function agentToolsPlanForRun(input: {
   readonly token: string;
   readonly purpose: TaskPurpose;
   readonly accessMode: ThreadAccessMode;
-  readonly teamsAvailable?: boolean;
   readonly personalContext?: boolean;
-  /** The owner is in a team and this Run may use their personal context. */
-  readonly knowledge?: boolean;
   /** Why settings.json in Agent home is invalid, for the agent that can fix it. */
   readonly settingsError?: AgentHomeSettingsError | undefined;
+  /** The grant of the connection whose lineage this Run is in. */
+  readonly grant?: AgentGrant;
 }): RunAgentToolsPlan {
   const runTools = toolsFor({
     kind: "run",
+    ...(input.grant ? { grant: input.grant } : {}),
     capabilities: input.capabilities,
     accessMode: input.accessMode,
-    teamsAvailable: input.teamsAvailable === true,
-    knowledge: input.knowledge === true,
+    personalContext: input.personalContext !== false,
   });
   const runToolsCatalog = runTools.map((tool) => ({
     name: tool.name,
@@ -49,9 +48,7 @@ export function agentToolsPlanForRun(input: {
     platformGuideForRun({
       purpose: input.purpose,
       capabilities: input.capabilities,
-      teamsAvailable: input.teamsAvailable === true,
       personalContext: input.personalContext !== false,
-      knowledge: input.knowledge === true,
     }) +
     (input.voiceCall ? `\n\n${voiceGuide}` : "") +
     (input.settingsError
@@ -81,8 +78,15 @@ export function advertisedToolInputSchema(tool: {
   readonly input: Parameters<typeof toJsonSchemaCompat>[0];
   readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;
 }): Record<string, unknown> {
-  return advertisedJsonSchema(
-    tool.advertisedInputSchema ??
-      toJsonSchemaCompat(tool.input, { strictUnions: true, pipeStrategy: "input" }),
+  if (tool.advertisedInputSchema) return advertisedJsonSchema(tool.advertisedInputSchema);
+  const schema = advertisedJsonSchema(
+    toJsonSchemaCompat(tool.input, { strictUnions: true, pipeStrategy: "input" }),
   );
+  const properties = schema.properties;
+  // A receipt ID continues a connection's own work, outside the Run and program contract.
+  if (properties && typeof properties === "object" && "operationId" in properties) {
+    const { operationId: _operationId, ...remaining } = properties;
+    return { ...schema, properties: remaining };
+  }
+  return schema;
 }

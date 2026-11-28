@@ -1,8 +1,10 @@
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   lockThreadCaller,
+  lockLineageConnection,
+  threadCallerLineageId,
   assertThreadCaller,
   callerAuthoritySource,
   type ThreadCallerAuthority,
@@ -18,6 +20,8 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
+import { jsonArrayFrom } from "kysely/helpers/postgres";
+import { endAgentSessionRows } from "./agent-session-store.js";
 import { TransactionScopeChanged } from "./connection.js";
 import type { DatabaseSchema, ThreadRow } from "./schema.js";
 import {
@@ -29,7 +33,7 @@ import { finalizeRunTransaction } from "./run-finalization.js";
 import { revokeRunGrants } from "./run-grants.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { cancelPending } from "./request-cancellation.js";
-import { pauseTriggerInTransaction } from "./trigger-store.js";
+import { pauseTriggerInTransaction, type RunningFiringRef } from "./trigger-store.js";
 import {
   idempotencyConflict,
   jsonValue,
@@ -44,7 +48,6 @@ import {
   threadVisitSelection,
   threadProviderSessionSelection,
 } from "./thread-row-mappers.js";
-import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import {
   projectThreadState,
   publishRunQueue,
@@ -53,6 +56,7 @@ import {
 } from "./thread-status.js";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
 import { threadIsQuiet } from "./quiet-tasks.js";
+import { bindingAgentConnectionId } from "./resource-access.js";
 export interface ThreadWriteActor {
   readonly authority?: ThreadCallerAuthority;
   readonly requestedBy: UserId;
@@ -168,6 +172,19 @@ async function discoverDoneScope(
     .where("anchorThreadId", "in", threadIds)
     .orderBy("id")
     .execute();
+  const activeTriggerOccurrences = triggers.length
+    ? await transaction
+        .selectFrom("triggerOccurrences")
+        .select("id")
+        .where(
+          "triggerId",
+          "in",
+          triggers.map(({ id }) => id),
+        )
+        .where("status", "in", ["pending", "running"])
+        .orderBy("id")
+        .execute()
+    : [];
   const requests = await transaction
     .selectFrom("requests")
     .select(["id"])
@@ -188,6 +205,7 @@ async function discoverDoneScope(
     threadIds,
     runs,
     triggers,
+    activeTriggerOccurrences,
     requests,
     inputs,
   };
@@ -199,7 +217,7 @@ export async function setThreadDone(
 ) {
   return commitPersonalMutation(
     database,
-    async (transaction) => {
+    async (transaction, mutation) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
       const payload = {
         threadId: input.threadId,
@@ -227,6 +245,53 @@ export async function setThreadDone(
       )
         throw idempotencyConflict(input.idempotencyKey);
       const scope = await discoverDoneScope(transaction, input);
+      const selfDone =
+        input.actorRunId &&
+        scope.runs.some((run) => run.id === input.actorRunId && run.threadId === input.threadId);
+      const observed = await transaction
+        .selectFrom("threads")
+        .select("threads.id")
+        .$if(!existing && input.done && !selfDone, (query) =>
+          query.select((eb) =>
+            jsonArrayFrom(
+              eb
+                .selectFrom("agentSessions")
+                .select("agentSessions.id")
+                .where("agentSessions.threadId", "in", scope.threadIds)
+                .where("agentSessions.userId", "=", input.requestedBy)
+                .where("agentSessions.status", "=", "active")
+                .$if(scope.threadIds.length === 1, (sessions) =>
+                  sessions.where("threads.worker", "=", "external"),
+                )
+                .orderBy("agentSessions.id"),
+            ).as("activeSessions"),
+          ),
+        )
+        .where("threads.id", "=", input.threadId)
+        .executeTakeFirst();
+      const sessions = observed?.activeSessions;
+      const checkedQuietAt = sessions?.length && input.quiet ? new Date() : undefined;
+      const quietWithSessions = checkedQuietAt
+        ? !input.actorRunId && (await threadIsQuiet(transaction, input.threadId, checkedQuietAt))
+        : undefined;
+      if (input.admission && !input.authority)
+        await lockLineageConnection(
+          transaction,
+          await bindingAgentConnectionId(transaction, `run:${input.admission.runId}`),
+        );
+      if (sessions?.length && quietWithSessions !== false) {
+        if (input.authority)
+          await lockLineageConnection(
+            transaction,
+            await threadCallerLineageId(transaction, input.authority),
+          );
+        const ended = await endAgentSessionRows(
+          transaction,
+          sessions.map(({ id }) => id),
+          "done",
+        );
+        mutation.sessionsEndedByDone(ended.map(({ id }) => id));
+      }
       await lockThreadCaller(
         transaction,
         input.authority,
@@ -245,43 +310,33 @@ export async function setThreadDone(
             .forNoKeyUpdate()
             .execute()
         : [];
+      const activeTriggerOccurrences = scope.activeTriggerOccurrences.length
+        ? await transaction
+            .selectFrom("triggerOccurrences")
+            .select([
+              "commandId",
+              "environmentId",
+              "executionGeneration",
+              "id",
+              "runnerBootId",
+              "runnerId",
+              "status",
+            ])
+            .where(
+              "id",
+              "in",
+              scope.activeTriggerOccurrences.map(({ id }) => id),
+            )
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute()
+        : [];
       await admitThreadWrite(transaction, input);
-      const observed = await transaction
-        .selectFrom("threads")
-        .selectAll()
-        .where("id", "=", input.threadId)
-        .executeTakeFirst();
       if (!observed)
         throw new OpensteerError({
           code: "not_found",
           message: "Task not found",
         });
-      await lockThreadChannelAuthorities(transaction, scope.threadIds);
-      // Active bindings must not rotate into this set while scope is checked.
-      const conversations = await transaction
-        .selectFrom("channelConversations")
-        .selectAll()
-        .where("activeThreadId", "in", scope.threadIds)
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute();
-      if (input.done && conversations.length) {
-        const active = await transaction
-          .selectFrom("channelBindings")
-          .select("id")
-          .where(
-            "id",
-            "in",
-            conversations.map((row) => row.bindingId),
-          )
-          .where("status", "=", "active")
-          .executeTakeFirst();
-        if (active)
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "An active Messaging conversation's task must stay open",
-          });
-      }
       const threads = await transaction
         .selectFrom("threads")
         .selectAll()
@@ -326,11 +381,16 @@ export async function setThreadDone(
         throw new TransactionScopeChanged("Task changed while being marked Done");
 
       const interruptCommands = [];
+      const runningTriggerFirings: RunningFiringRef[] = [];
       let doneWhenRunEnds = false;
       const now = new Date();
       const stillQuiet =
         !input.quiet ||
-        (input.done && !input.actorRunId && (await threadIsQuiet(transaction, thread.id, now)));
+        (input.done &&
+          !input.actorRunId &&
+          (await threadIsQuiet(transaction, thread.id, checkedQuietAt ?? now)));
+      if (quietWithSessions !== undefined && quietWithSessions !== stillQuiet)
+        throw new TransactionScopeChanged("Task changed while being marked Done");
       const authoritySource = jsonValue(
         input.quiet
           ? {
@@ -402,7 +462,12 @@ export async function setThreadDone(
                 .execute();
           }
           if (input.done) {
-            for (const trigger of triggers) await pauseTriggerInTransaction(transaction, trigger);
+            for (const trigger of triggers) {
+              await pauseTriggerInTransaction(transaction, trigger, {
+                pauseReason: "Paused because its task was marked done.",
+                pausedBy: "system",
+              });
+            }
             for (const row of threads) {
               if (!row.inputQueuePaused) continue;
               await refreshInputQueue(transaction, row.id);
@@ -436,6 +501,63 @@ export async function setThreadDone(
             });
             for (const assignment of cancelledAssignments)
               await publishAssignmentSummaries(transaction, assignment, true);
+            const pendingTriggerOccurrences = activeTriggerOccurrences.filter(
+              (row) => row.status === "pending",
+            );
+            for (const row of activeTriggerOccurrences) {
+              if (row.status === "running" && row.runnerId && row.runnerBootId) {
+                runningTriggerFirings.push({
+                  commandId: row.commandId,
+                  environmentId: row.environmentId,
+                  executionGeneration: row.executionGeneration,
+                  occurrenceId: row.id,
+                  runnerBootId: row.runnerBootId,
+                  runnerId: row.runnerId,
+                });
+              }
+            }
+            if (pendingTriggerOccurrences.length) {
+              await transaction
+                .selectFrom("commands")
+                .select("id")
+                .where(
+                  "id",
+                  "in",
+                  pendingTriggerOccurrences.map(({ commandId }) => commandId),
+                )
+                .orderBy("id", "asc")
+                .forNoKeyUpdate()
+                .execute();
+              const cancellation = {
+                code: "canceled_by_task_done",
+                message: "Automation occurrence was canceled because its task was marked done",
+              };
+              for (const row of pendingTriggerOccurrences) {
+                const command = await transaction
+                  .updateTable("commands")
+                  .set({
+                    lastError: jsonValue(cancellation),
+                    status: "failed",
+                    updatedAt: now,
+                  })
+                  .where("id", "=", row.commandId)
+                  .where("status", "=", "pending")
+                  .executeTakeFirst();
+                if (command.numUpdatedRows !== 1n) continue;
+                await transaction
+                  .updateTable("triggerOccurrences")
+                  .set({
+                    completedAt: now,
+                    error: jsonValue(cancellation),
+                    status: "canceled",
+                    updatedAt: now,
+                  })
+                  .where("id", "=", row.id)
+                  .where("status", "=", "pending")
+                  .execute();
+              }
+              await wakeExecutionCommands(transaction);
+            }
             for (const run of runs) {
               if (
                 !scope.threadIds.includes(run.threadId) ||
@@ -529,6 +651,7 @@ export async function setThreadDone(
         thread: threadFromRow(current),
         interruptCommands,
         revokedGrants,
+        runningTriggerFirings,
         wasDuplicate: !!existing,
         doneWhenRunEnds,
       };

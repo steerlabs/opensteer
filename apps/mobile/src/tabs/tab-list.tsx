@@ -1,4 +1,5 @@
 import {
+  chromeTabUsedBy,
   browserTabPicture,
   tabGroupOf,
   type HostClient,
@@ -30,7 +31,13 @@ import { NeedsYouTag } from "../threads/task-row.js";
 import { RowSubtitle } from "../ui/action-line.js";
 import { screenAction, useScreenAction } from "../ui/client-feedback.js";
 import { AppText, Field, SecondaryButton } from "../ui/primitives.js";
-import { closeTabs, tabActionKey, tabActionSpecs, type TabActionKind } from "./tab-actions.js";
+import {
+  closeTabGroup,
+  closeTabs,
+  tabActionKey,
+  tabActionSpecs,
+  type TabActionKind,
+} from "./tab-actions.js";
 import { Symbol } from "../ui/symbol.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { TabPicture } from "../screens/tab-picture.js";
@@ -43,6 +50,8 @@ import {
   tabTitle,
 } from "./tab-entries.js";
 import { useTabListSpans } from "./use-tabs.js";
+import { tabSiteLabel } from "../browser/site-label.js";
+import { HostLine } from "../ui/address-text.js";
 
 /** Chrome's group tints, as the web draws them. */
 export const tabGroupTint: Record<TabGroupColor, string> = {
@@ -223,18 +232,14 @@ export function TabList(props: TabListProps): ReactNode {
           onPress: () =>
             act("changeGroup", group.groupId, () => client.deleteTabGroup(group.groupId)),
         },
-        ...(group.tabIds.length === 0
-          ? []
-          : [
-              {
-                destructive: true,
-                icon: "xmark.circle" as const,
-                id: "close",
-                label: "Close tabs in group",
-                onPress: () =>
-                  act("closeGroup", group.groupId, () => closeTabs(client, group.tabIds)),
-              },
-            ]),
+        {
+          destructive: true,
+          icon: "xmark.circle" as const,
+          id: "close",
+          label: "Close group",
+          onPress: () =>
+            act("closeGroup", group.groupId, () => closeTabGroup(client, group.groupId)),
+        },
       ],
     ],
     [act, client],
@@ -541,7 +546,23 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
   const agents = usePlaceAgents(hostClient, place.key);
   const picture =
     props.shown && tab.kind === "page" ? browserTabPicture(hostClient, tab.tabId) : null;
+  const sharedUsers = tab.sharedByPerson
+    ? chromeTabUsedBy(agents.agents.map((agent) => agent.connectedAgentName ?? agent.title))
+    : null;
   const detail = tabDetail(tab, props);
+  // A page's line leads with its host: one line that keeps the host's end, never wrapped.
+  const site = tab.kind === "page" ? tabSiteLabel(tab.url ?? null) : null;
+  const subtitle =
+    site !== null && detail[0] === site ? (
+      <HostLine
+        after={detail.length > 1 ? ` · ${detail.slice(1).join(" · ")}` : ""}
+        host={site}
+        role="caption"
+        tone="muted"
+      />
+    ) : (
+      detail.join(" · ")
+    );
   const unavailable = tab.state === "unavailable";
   const movingThis =
     props.moving !== null &&
@@ -573,7 +594,10 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
           accessibilityLabel={[
             title,
             ...detail,
-            agents.agents.length > 0 ? agents.agents.map((agent) => agent.title).join(", ") : null,
+            sharedUsers ??
+              (agents.agents.length > 0
+                ? agents.agents.map((agent) => agent.title).join(", ")
+                : null),
             props.needsYou ? "needs you" : null,
           ]
             .filter((part) => part !== null)
@@ -610,8 +634,13 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
               {title}
             </AppText>
             {detail.length === 0 && line === null ? null : (
-              <RowSubtitle line={line} subtitle={detail.join(" · ")} />
+              <RowSubtitle line={line} subtitle={subtitle} />
             )}
+            {sharedUsers ? (
+              <AppText numberOfLines={1} role="caption" tone="muted">
+                {sharedUsers}
+              </AppText>
+            ) : null}
           </View>
           {props.needsYou ? <NeedsYouTag /> : null}
           {agents.agents.length > 0 ? (

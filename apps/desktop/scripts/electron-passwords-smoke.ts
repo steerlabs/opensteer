@@ -60,6 +60,9 @@ import {
   verifySameUserPeer,
 } from "../src/passwords/test-support/fake-broker-server.js";
 import { PasswordLoginFixture } from "./electron-passwords-fixture.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("passwords", 300000);
 
 const smokeDownloads = smokeDesktopDownloads();
 
@@ -148,7 +151,6 @@ const journeys: Journey[] = [
   ["5", "No field and page-bound admission"],
   ["6", "Lease checks"],
   ["7", "Platform leak scan"],
-  ["8", "Profile reopen"],
   ["9-oopif", "Focus leaves OOPIF"],
   ["9-navigation", "Navigation during release"],
   ["9-cancel", "Cancel during release"],
@@ -214,7 +216,12 @@ async function waitFor(
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     try {
-      if (await predicate()) return;
+      // A predicate that never settles (a capture Viz never answers) is held to the same deadline.
+      const settled = await Promise.race([
+        Promise.resolve(predicate()),
+        delay(Math.max(0, deadline - Date.now())).then(() => false),
+      ]);
+      if (settled) return;
     } catch {
       /* A navigation can destroy the observed context. */
     }
@@ -402,7 +409,7 @@ async function harness(options: { profile?: string; personalLease?: boolean } = 
       "Personal consent carries no browser identity",
       !Object.hasOwn(request.params, "sessionId") &&
         !Object.hasOwn(request.params, "runtimeId") &&
-        request.params.permissionVersion === 5,
+        request.params.permissionVersion === 6,
     );
     broker.answer("signin.request", {
       decision: "authorized",
@@ -696,12 +703,18 @@ async function harness(options: { profile?: string; personalLease?: boolean } = 
     let png: Buffer = Buffer.alloc(0);
     // Authentication can finish before Viz has a capturable surface. Keep the
     // evidence requirement, waiting for an actual picture rather than a sleep.
-    await waitFor(`nonempty ${name} screenshot`, async () => {
+    const captured = await waitFor(`nonempty ${name} screenshot`, async () => {
       const image = await contents.capturePage();
       if (image.isEmpty()) return false;
       png = image.toPNG();
       return png.length > 0;
-    });
+    }).then(
+      () => true,
+      () => false,
+    );
+    // Evidence that could not be taken is a failure of the evidence, said by name, never a
+    // journey held until the stall bound.
+    check(`${name} screenshot captured`, captured);
     await writeFile(path.join(artifactDirectory, `${currentCase}-${name}.png`), png);
   };
   const observe = async () => {
@@ -849,7 +862,32 @@ async function releaseRace(
   await waitFor("release in flight", () => h.broker.received("signin.release").length > before);
   const held = z.object({ id: z.number() }).parse(h.broker.received("signin.release").at(-1));
   if (action) {
+    // A frame's executeJavaScript issued while its document is replaced can stay pending
+    // forever, so a reload or navigation is evaluated only once the replacement document
+    // has finished loading.
+    const loaded =
+      action === "reload" || action === "navigate"
+        ? new Promise<void>((resolve, reject) => {
+            const onFinish = () => {
+              if (action === "navigate" && !h.contents.mainFrame.url.includes("/replacement"))
+                return;
+              clearTimeout(timer);
+              h.contents.off("did-finish-load", onFinish);
+              resolve();
+            };
+            const timer = setTimeout(() => {
+              h.contents.off("did-finish-load", onFinish);
+              reject(
+                new Error(
+                  `Timed out: the ${action === "reload" ? "reloaded" : "replacement"} document finished loading`,
+                ),
+              );
+            }, 12_000);
+            h.contents.on("did-finish-load", onFinish);
+          })
+        : undefined;
     fixture.signal(id);
+    await loaded;
     await waitFor("race happened before release answer", async () => {
       try {
         return (
@@ -997,6 +1035,10 @@ async function run(): Promise<void> {
       ),
     );
     await h.clickAt(point.x, point.y);
+    await waitFor(
+      "browser focused site B frame",
+      () => h.contents.focusedFrame?.origin === fixture.origin("other.test"),
+    );
     check(
       "browser focused site B frame",
       h.contents.focusedFrame?.origin === fixture.origin("other.test"),
@@ -1016,6 +1058,10 @@ async function run(): Promise<void> {
         .every((a) => !a.passwordReceived),
     );
     await h.clickAt(point.x, point.y);
+    await waitFor(
+      "browser refocused site B frame",
+      () => h.contents.focusedFrame?.origin === fixture.origin("other.test"),
+    );
     const child = await h.authorize("https://other.test");
     check("lease for B fills focused B", (await h.fill(child, "password")) === "filled");
     await h.screenshot("oopif");
@@ -1203,16 +1249,28 @@ async function run(): Promise<void> {
     async () => {
       const h = await harness();
       await h.navigate("/parent");
-      await waitFor("iframe ready", () => h.contents.mainFrame.frames.length > 0);
+      // As case 4: a click before the child holds its cross-site document lands in the frame's
+      // first, same-site blank document, which the cross-site one then replaces.
+      await waitFor("cross-site frame", () =>
+        h.contents.mainFrame.frames.some((f) => f.url.startsWith(fixture.origin("other.test"))),
+      );
       const point = coordinate.parse(
         await h.evaluate(
           "(()=>{const r=document.querySelector('#child').getBoundingClientRect();return{x:r.left+100,y:r.top+35}})()",
         ),
       );
+      record("child-frame-at-click", {
+        urls: h.contents.mainFrame.frames.map((f) => f.url),
+      });
       await h.clickAt(point.x, point.y);
+      await waitFor(
+        "child initially focused",
+        () => h.contents.focusedFrame?.origin === fixture.origin("other.test"),
+      );
       const childFrame = h.contents.focusedFrame;
       check("child initially focused", childFrame?.origin === fixture.origin("other.test"));
       await h.click("#outside");
+      await waitFor("focus left the child frame", () => h.contents.focusedFrame !== childFrame);
       check("focus left the child frame", h.contents.focusedFrame !== childFrame);
       // Whether Chromium keeps the departed frame's input locally active is
       // recorded, not assumed: the fill must refuse either way.

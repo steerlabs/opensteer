@@ -1,6 +1,6 @@
 import { RunIdSchema } from "@opensteer/core";
 import { z } from "zod";
-import { RunnerConnectionFenceSchema } from "./runner-identity.js";
+import { RunnerConnectionFenceSchema, type RunnerConnectionFence } from "./runner-identity.js";
 
 /**
  * Files an agent's Run exchanges with an app on another Runner.
@@ -23,6 +23,28 @@ export const RunFileTransferSchema = z.strictObject({
   token: z.string().min(32).max(128),
 });
 export type RunFileTransfer = z.infer<typeof RunFileTransferSchema>;
+
+export const runFileProofHeader = "x-opensteer-file-proof";
+
+export type RunFileTransferBinding = RunnerConnectionFence & { readonly requestId: string };
+
+export function runFileTransferProofPayload(
+  binding: RunFileTransferBinding,
+  id: string,
+  method: "GET" | "PUT",
+): string {
+  return JSON.stringify([
+    "opensteer-file-transfer-v1",
+    binding.runnerId,
+    binding.bootId,
+    binding.connectionId,
+    binding.connectionGeneration,
+    binding.connectionLeaseId,
+    binding.requestId,
+    id,
+    method,
+  ]);
+}
 
 /** One live execution of one Run: a resumed Run is a different one. */
 export const RunFileExecutionSchema = z.strictObject({

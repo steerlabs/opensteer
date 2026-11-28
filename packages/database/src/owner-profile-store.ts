@@ -8,6 +8,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { hostingComputerNotReady } from "./personal-settings-store.js";
 import type { DatabaseSchema } from "./schema.js";
 
 /** The Account a linked Host's owner name came from. */
@@ -44,7 +45,7 @@ export class OwnerProfileStore {
     this.#database = database;
   }
 
-  /** Null on a team Host, which has no personal owner. */
+  /** Null before the Home has an owner. */
   async read(): Promise<OwnerProfile | null> {
     return ownerProfile(this.#database);
   }
@@ -230,8 +231,7 @@ async function lockOwnerPrincipal(transaction: Transaction<DatabaseSchema>, owne
 
 async function lockedProfile(transaction: Transaction<DatabaseSchema>): Promise<OwnerProfile> {
   const profile = await ownerProfile(transaction, true);
-  if (!profile)
-    throw new OpensteerError({ code: "conflict", message: "The hosting computer is not ready." });
+  if (!profile) throw hostingComputerNotReady();
   return profile;
 }
 

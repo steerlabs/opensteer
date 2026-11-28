@@ -1,8 +1,10 @@
 import { harnessCatalog } from "@opensteer/core";
+import { networkEnvironmentNames } from "@opensteer/shared/safeMessage";
 import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
-import { userInfo, type UserInfo } from "node:os";
+import { mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
+import { tmpdir, userInfo, type UserInfo } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 
@@ -11,6 +13,21 @@ const maximumProbeBytes = 1 * 1_024 * 1_024;
 const defaultProbeTimeoutMs = 4_000;
 const maximumProbeTimeoutMs = 5_000;
 const maximumWindowsVariableLength = 32_767;
+/**
+ * A registry export runs in tens of milliseconds; this bound only ends a reg.exe that hangs, and
+ * no slow or cold PC plausibly reaches it.
+ */
+const windowsRegistryTimeoutMs = 30_000;
+/** One key's export: a long PATH as hex(2) text in UTF-16 is about 400 KB. */
+const maximumWindowsRegistryExportBytes = 8 * 1_024 * 1_024;
+/** The pause before an export that failed is tried once more. */
+const windowsRegistryRetryPauseMs = 250;
+const maximumRegistryStderrBytes = 4_096;
+/** The keys a new logon's environment comes from: the machine's, then the person's. */
+const windowsEnvironmentKeys = {
+  machine: "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+  user: "HKEY_CURRENT_USER\\Environment",
+} as const;
 const maximumExpansionDepth = 32;
 
 /**
@@ -40,6 +57,10 @@ const allowedEnvironmentNames = new Set([
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",
+  // How an engine reaches the network, so it works behind a company proxy as
+  // it does in the person's own terminal. A proxy address can carry a
+  // password; nothing prints these values.
+  ...networkEnvironmentNames,
 ]);
 
 export interface PersonalUserEnvironmentPort {
@@ -58,11 +79,22 @@ export type LoginShellProbe = (spec: LoginShellProbeSpec) => Promise<Buffer>;
 export interface WindowsRegistryProbeSpec {
   readonly environment: Readonly<Record<string, string>>;
   readonly maximumOutputBytes: number;
-  readonly powershell: string;
+  /** `%SystemRoot%\System32\reg.exe`. */
+  readonly reg: string;
   readonly timeoutMs: number;
+  /** Where a retried export and a temporary directory left behind are told. */
+  readonly log?: (event: string, fields: Readonly<Record<string, unknown>>) => void;
 }
 
-export type WindowsRegistryProbe = (spec: WindowsRegistryProbeSpec) => Promise<Buffer>;
+/** Each environment key as `reg.exe export` writes it: a .reg file in UTF-16LE. */
+export interface WindowsRegistryExports {
+  readonly machine: Uint8Array;
+  readonly user: Uint8Array;
+}
+
+export type WindowsRegistryProbe = (
+  spec: WindowsRegistryProbeSpec,
+) => Promise<WindowsRegistryExports>;
 
 const windowsRegistryValuesSchema = z
   .array(
@@ -180,13 +212,14 @@ export class NativePersonalUserEnvironment implements PersonalUserEnvironmentPor
     const inherited = definedEnvironment(this.#environment);
     let registry: readonly WindowsRegistryValue[] = [];
     try {
-      const output = await this.#registryProbe({
+      const exports = await this.#registryProbe({
         environment: inherited,
-        maximumOutputBytes: maximumProbeBytes,
-        powershell: windowsPowerShellExecutable(inherited),
-        timeoutMs: this.#timeoutMs,
+        maximumOutputBytes: maximumWindowsRegistryExportBytes,
+        reg: windowsRegExecutable(inherited),
+        timeoutMs: windowsRegistryTimeoutMs,
+        log: this.#log,
       });
-      registry = parseWindowsRegistryEnvironment(output);
+      registry = parseWindowsRegistryEnvironment(exports);
     } catch (error) {
       this.#log("personal.user_environment.windows_registry_unavailable", {
         detail:
@@ -230,32 +263,153 @@ export async function probeLoginShell(spec: LoginShellProbeSpec): Promise<Buffer
 }
 
 /**
- * Reads machine then user environment values with their registry kinds,
- * unexpanded, as UTF-8 JSON. The bytes go to the raw standard output stream so
- * the encoding never depends on a console code page.
+ * Exports the machine's and the person's environment keys with `reg.exe export`, which writes
+ * each as a .reg file whose bytes are defined: UTF-16LE with a byte-order mark, and every
+ * REG_EXPAND_SZ value as its unexpanded UTF-16LE bytes (`hex(2):`). Nothing goes through a
+ * console code page, and no PowerShell starts.
+ *
+ * One export at a time, each into a file of its own: each takes tens of milliseconds, and no
+ * reg.exe is ever still writing when the next starts or when the directory goes. An export that
+ * fails is tried once more, after a pause and into a new file, with why it failed logged: a
+ * scanner that opens a .reg file the moment it is written can hold it. Its failure names the
+ * key and carries what reg.exe said. The temporary directory is removed only once every reg.exe
+ * has ended, and its removal never decides the read: it is retried, then logged if it stays.
  */
-const windowsRegistryScript = [
-  "$ErrorActionPreference='Stop'",
-  "$entries=New-Object System.Collections.Generic.List[object]",
-  "foreach($scope in @(@('machine',[Microsoft.Win32.Registry]::LocalMachine,'System\\CurrentControlSet\\Control\\Session Manager\\Environment'),@('user',[Microsoft.Win32.Registry]::CurrentUser,'Environment'))){$key=$scope[1].OpenSubKey($scope[2]);if($null -eq $key){continue};try{foreach($name in $key.GetValueNames()){if($name -eq ''){continue};$kind=$key.GetValueKind($name);if($kind -ne [Microsoft.Win32.RegistryValueKind]::String -and $kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString){continue};$entries.Add([pscustomobject]@{scope=$scope[0];name=$name;kind=$kind.ToString();value=[string]$key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)})}}finally{$key.Close()}}",
-  "$bytes=(New-Object System.Text.UTF8Encoding $false).GetBytes((ConvertTo-Json -InputObject $entries.ToArray() -Compress))",
-  "$stdout=[Console]::OpenStandardOutput()",
-  "$stdout.Write($bytes,0,$bytes.Length)",
-  "$stdout.Flush()",
-].join(";");
-
 export async function probeWindowsRegistryEnvironment(
   spec: WindowsRegistryProbeSpec,
-): Promise<Buffer> {
-  return runBoundedProbe(
-    spec.powershell,
-    ["-NoProfile", "-NonInteractive", "-Command", windowsRegistryScript],
-    spec,
-    {
-      description: "Windows registry environment",
-      failure: "Windows PowerShell could not read the registry environment",
-    },
-  );
+): Promise<WindowsRegistryExports> {
+  const log = spec.log ?? (() => undefined);
+  // The long form of the directory (not an 8.3 name such as OPENST~1) is what reg.exe is given.
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), "opensteer-environment-")));
+  try {
+    let files = 0;
+    const exportKey = async (scope: keyof typeof windowsEnvironmentKeys) => {
+      const key = windowsEnvironmentKeys[scope];
+      for (let attempt = 1; ; attempt++) {
+        const file = path.join(directory, `${scope}-${++files}.reg`);
+        const ended = await runWindowsRegistryExport(spec, key, file);
+        if (ended.kind === "exported") {
+          let size: number;
+          try {
+            size = (await stat(file)).size;
+          } catch (missing) {
+            throw new PersonalUserEnvironmentError(
+              `Windows could not export the registry environment (reg.exe export ${key} wrote no file: ${(missing as NodeJS.ErrnoException).code ?? "unknown"}).`,
+              { cause: missing },
+            );
+          }
+          if (size > spec.maximumOutputBytes) {
+            throw new PersonalUserEnvironmentError(
+              "The Windows registry environment response is too large.",
+            );
+          }
+          return readFile(file);
+        }
+        if (ended.kind === "timed-out") {
+          throw new PersonalUserEnvironmentError(
+            "The Windows registry environment probe timed out.",
+          );
+        }
+        const reason = `reg.exe export ${key} ended with ${ended.status}${ended.said ? `: ${ended.said}` : ""}`;
+        if (attempt === 2) {
+          throw new PersonalUserEnvironmentError(
+            `Windows could not export the registry environment (${reason}).`,
+          );
+        }
+        log("personal.user_environment.windows_registry_export_retried", { key, reason });
+        await new Promise((resolvePause) => setTimeout(resolvePause, windowsRegistryRetryPauseMs));
+      }
+    };
+    const machine = await exportKey("machine");
+    const user = await exportKey("user");
+    return { machine, user };
+  } finally {
+    try {
+      await rm(directory, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
+    } catch (cleanup) {
+      log("personal.user_environment.windows_registry_cleanup_failed", {
+        code: (cleanup as NodeJS.ErrnoException).code ?? "unknown",
+        directory,
+      });
+    }
+  }
+}
+
+type WindowsRegistryExportEnd =
+  | { readonly kind: "exported" }
+  | { readonly kind: "timed-out" }
+  | { readonly kind: "failed"; readonly said: string; readonly status: string };
+
+/**
+ * Runs one `reg.exe export` and settles only once the process has ended, so its file is closed:
+ * a reg.exe stopped at the bound is waited for too, up to a few seconds more.
+ */
+function runWindowsRegistryExport(
+  spec: WindowsRegistryProbeSpec,
+  key: string,
+  file: string,
+): Promise<WindowsRegistryExportEnd> {
+  return new Promise<WindowsRegistryExportEnd>((resolvePromise) => {
+    const child = spawn(spec.reg, ["export", key, file, "/y"], {
+      env: { ...spec.environment },
+      shell: false,
+      stdio: ["ignore", "ignore", "pipe"],
+      windowsHide: true,
+    });
+    const stderr: Buffer[] = [];
+    let stderrBytes = 0;
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderrBytes >= maximumRegistryStderrBytes) return;
+      stderr.push(chunk);
+      stderrBytes += chunk.byteLength;
+    });
+    let settled = false;
+    let timedOut = false;
+    let abandon: ReturnType<typeof setTimeout> | undefined;
+    const settle = (end: WindowsRegistryExportEnd) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(abandon);
+      resolvePromise(end);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+      abandon = setTimeout(() => settle({ kind: "timed-out" }), 5_000);
+      abandon.unref?.();
+    }, spec.timeoutMs);
+    timer.unref?.();
+    child.once("error", (error) =>
+      settle({
+        kind: "failed",
+        said: "",
+        status: (error as NodeJS.ErrnoException).code ?? "an error",
+      }),
+    );
+    child.once("close", (code, signal) => {
+      if (timedOut) settle({ kind: "timed-out" });
+      else if (code === 0) settle({ kind: "exported" });
+      else
+        settle({
+          kind: "failed",
+          said: registryStderr(Buffer.concat(stderr)),
+          status: signal ?? `exit ${code}`,
+        });
+    });
+  });
+}
+
+/**
+ * What reg.exe said, for the log: its own words, in one line and bounded. reg.exe writes in the
+ * console's code page; text that is not UTF-8 shows as replacement characters, never as bytes.
+ */
+function registryStderr(bytes: Buffer): string {
+  return new TextDecoder("utf-8")
+    .decode(bytes.subarray(0, maximumRegistryStderrBytes))
+    .replace(/[\p{Control}\s]+/gu, " ")
+    .trim()
+    .slice(0, 300);
 }
 
 function runBoundedProbe(
@@ -314,23 +468,133 @@ function runBoundedProbe(
   });
 }
 
-export function parseWindowsRegistryEnvironment(output: Uint8Array): WindowsRegistryValue[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output));
-  } catch (error) {
-    throw new PersonalUserEnvironmentError(
-      "Windows PowerShell did not return a readable registry environment.",
-      { cause: error },
-    );
-  }
-  const values = windowsRegistryValuesSchema.safeParse(parsed);
+/**
+ * The machine's then the person's REG_SZ and REG_EXPAND_SZ values, unexpanded, from their
+ * exports. Other kinds, the unnamed default value and subkeys are not environment variables.
+ */
+export function parseWindowsRegistryEnvironment(
+  exports: WindowsRegistryExports,
+): WindowsRegistryValue[] {
+  const values = windowsRegistryValuesSchema.safeParse([
+    ...parseRegistryExport(exports.machine, windowsEnvironmentKeys.machine, "machine"),
+    ...parseRegistryExport(exports.user, windowsEnvironmentKeys.user, "user"),
+  ]);
   if (!values.success) {
     throw new PersonalUserEnvironmentError(
-      "Windows PowerShell returned an unrecognized registry environment.",
+      "Windows returned an unrecognized registry environment.",
     );
   }
   return values.data;
+}
+
+/**
+ * Reads one key's values from a .reg export as reg.exe and regedit write it: a UTF-16LE
+ * byte-order mark, `Windows Registry Editor Version 5.00`, then `[key]` sections of
+ * `"name"=data` lines, CRLF between lines. A name or REG_SZ data is quoted with `\\` and `\"`
+ * escaped; other data is `dword:`, or `hex:`/`hex(n):` comma-separated bytes that wrap onto
+ * indented lines after a trailing backslash. `hex(2)` is REG_EXPAND_SZ and `hex(1)` a REG_SZ
+ * regedit could not quote, both UTF-16LE; Windows reads either up to its first NUL.
+ */
+function parseRegistryExport(
+  bytes: Uint8Array,
+  key: string,
+  scope: WindowsRegistryValue["scope"],
+): WindowsRegistryValue[] {
+  const unreadable = (cause?: unknown) =>
+    new PersonalUserEnvironmentError("Windows did not return a readable registry environment.", {
+      cause,
+    });
+  if (bytes[0] !== 0xff || bytes[1] !== 0xfe) throw unreadable();
+  let text: string;
+  try {
+    text = new TextDecoder("utf-16le", { fatal: true, ignoreBOM: false }).decode(bytes);
+  } catch (error) {
+    throw unreadable(error);
+  }
+  const header = "Windows Registry Editor Version 5.00";
+  if (!text.startsWith(header)) throw unreadable();
+  const values: WindowsRegistryValue[] = [];
+  let section: string | undefined;
+  let sawKey = false;
+  let at = header.length;
+  const fail = () => unreadable(new Error(`Malformed .reg data at character ${at}.`));
+  const quoted = () => {
+    // At an opening quote: the text up to the closing one, unescaped.
+    let value = "";
+    at++;
+    for (;;) {
+      const char = text[at];
+      if (char === undefined) throw fail();
+      at++;
+      if (char === '"') return value;
+      if (char === "\\" && (text[at] === "\\" || text[at] === '"')) {
+        value += text[at];
+        at++;
+      } else value += char;
+    }
+  };
+  const restOfLine = () => {
+    const end = text.indexOf("\n", at);
+    const line = text.slice(at, end === -1 ? text.length : end).replace(/\r$/u, "");
+    at = end === -1 ? text.length : end + 1;
+    return line;
+  };
+  while (at < text.length) {
+    const char = text[at];
+    if (char === "\r" || char === "\n" || char === " " || char === "\t") {
+      at++;
+      continue;
+    }
+    if (char === "[") {
+      const line = restOfLine();
+      if (!line.endsWith("]")) throw fail();
+      section = line.slice(1, -1);
+      if (section.toLowerCase() === key.toLowerCase()) sawKey = true;
+      continue;
+    }
+    if (char !== '"' && char !== "@") throw fail();
+    const name = char === "@" ? (at++, "") : quoted();
+    if (text[at] !== "=") throw fail();
+    at++;
+    let kind: WindowsRegistryValue["kind"] | undefined;
+    let value: string | undefined;
+    if (text[at] === '"') {
+      kind = "String";
+      value = quoted();
+      const trailing = restOfLine();
+      if (trailing.trim()) throw fail();
+    } else {
+      let data = restOfLine();
+      // A hex list wraps: a line that ends with a backslash continues on the next, indented.
+      while (data.endsWith("\\")) data = data.slice(0, -1) + restOfLine().trimStart();
+      const hex = /^hex(?:\(([0-9a-f]+)\))?:([0-9a-f,\s]*)$/iu.exec(data);
+      if (hex) {
+        const type = hex[1] === undefined ? 3 : Number.parseInt(hex[1], 16);
+        const list = hex[2]!.replace(/\s/gu, "");
+        const pairs = list ? list.split(",") : [];
+        if (pairs.some((pair) => !/^[0-9a-f]{2}$/iu.test(pair))) throw fail();
+        if (type === 1 || type === 2) {
+          kind = type === 2 ? "ExpandString" : "String";
+          const raw = Uint8Array.from(pairs, (pair) => Number.parseInt(pair, 16));
+          const decoded = new TextDecoder("utf-16le").decode(
+            raw.subarray(0, raw.byteLength - (raw.byteLength % 2)),
+          );
+          const nul = decoded.indexOf("\0");
+          value = nul === -1 ? decoded : decoded.slice(0, nul);
+        }
+      } else if (!/^dword:[0-9a-f]{8}$/iu.test(data)) throw fail();
+    }
+    if (
+      kind !== undefined &&
+      value !== undefined &&
+      name !== "" &&
+      section?.toLowerCase() === key.toLowerCase()
+    ) {
+      values.push({ kind, name, scope, value });
+    }
+  }
+  if (!sawKey) throw unreadable();
+  return values;
 }
 
 /**
@@ -450,14 +714,14 @@ function windowsPathKey(entry: string): string {
   return trimmed.toLowerCase();
 }
 
-function windowsPowerShellExecutable(environment: Readonly<Record<string, string>>): string {
+function windowsRegExecutable(environment: Readonly<Record<string, string>>): string {
   const systemRoot = Object.entries(environment).find(
     ([name]) => name.toUpperCase() === "SYSTEMROOT",
   )?.[1];
   if (!systemRoot || !path.win32.isAbsolute(systemRoot)) {
     throw new PersonalUserEnvironmentError("SystemRoot does not name the Windows directory.");
   }
-  return path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  return path.win32.join(systemRoot, "System32", "reg.exe");
 }
 
 function definedEnvironment(source: NodeJS.ProcessEnv): Record<string, string> {

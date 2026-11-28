@@ -1,3 +1,4 @@
+import { discover } from "./discover.js";
 import { tabTools } from "./tabs.js";
 import { appTools } from "./apps.js";
 import { aiAccountTools } from "./ai-accounts.js";
@@ -9,13 +10,6 @@ import {
 } from "./requests.js";
 import { pluginTools } from "./plugins.js";
 import { localServerTools } from "./local-servers.js";
-import { messagingBridgeTools } from "./messaging-bridges.js";
-import {
-  opensteer_team_file_download,
-  opensteer_team_read,
-  opensteer_team_search,
-  opensteer_team_post,
-} from "./team.js";
 import {
   opensteer_task_create,
   opensteer_delegation_wait,
@@ -44,14 +38,9 @@ import {
   opensteer_automation_list,
   opensteer_automation_create,
 } from "./triggers.js";
-import {
-  opensteer_knowledge_search,
-  opensteer_knowledge_remove,
-  opensteer_knowledge_read,
-  opensteer_knowledge_topic_list,
-  opensteer_knowledge_save,
-} from "./knowledge.js";
+import { commandTools } from "./commands.js";
 export const agentTools = [
+  ...commandTools,
   ...aiAccountTools,
   ...tabTools,
   ...appTools,
@@ -59,7 +48,6 @@ export const agentTools = [
   ...browserTools,
   ...pluginTools,
   ...localServerTools,
-  ...messagingBridgeTools,
   opensteer_request_list,
   opensteer_request_read,
   opensteer_request_answer,
@@ -88,17 +76,8 @@ export const agentTools = [
   opensteer_automation_control,
   opensteer_automation_list,
   opensteer_automation_create,
-  opensteer_team_file_download,
-  opensteer_team_read,
-  opensteer_team_search,
-  opensteer_team_post,
-  opensteer_knowledge_topic_list,
-  opensteer_knowledge_search,
-  opensteer_knowledge_remove,
-  opensteer_knowledge_read,
-  opensteer_knowledge_save,
 ] as const;
-export type AgentTool = (typeof agentTools)[number];
+export type AgentTool = (typeof agentTools)[number] | typeof discover;
 export type AgentToolName = AgentTool["name"];
 
 /** The tools that open a Request, and so hold their call for a person. */
@@ -106,18 +85,16 @@ export const requestToolNames: readonly AgentToolName[] = agentTools
   .filter((tool) => "opensRequest" in tool && tool.opensRequest === true)
   .map(({ name }) => name);
 
+export { connectionStateAreas, connectionStateDescription, type StateArea } from "./commands.js";
 export * from "./apps.js";
 export * from "./browser.js";
 export * from "./computer.js";
 export * from "./ai-accounts.js";
-export * from "./messaging-bridges.js";
 export * from "./person.js";
 export * from "./plugins.js";
 export * from "./local-servers.js";
-export * from "./team.js";
 export * from "./requests.js";
 export * from "./threads.js";
 export * from "./triggers.js";
-export * from "./knowledge.js";
 
 export * from "./tabs.js";

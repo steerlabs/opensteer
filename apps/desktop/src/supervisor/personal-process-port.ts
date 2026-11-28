@@ -5,6 +5,7 @@ import {
 } from "@opensteer/shared/processControl";
 import { ensurePrivateDirectorySync } from "@opensteer/shared/privateFiles";
 import { noFollowFlag } from "@opensteer/shared/privateFiles";
+import { networkCredentialSecrets, redactUrlCredentials } from "@opensteer/shared/safeMessage";
 import {
   encodeProcessSecrets,
   processSecretsDescriptorVariable,
@@ -508,7 +509,7 @@ export class BoundedPersonalLog {
       throw new TypeError("Personal runtime log bound is invalid.");
     }
     this.#maximumBytes = maximumBytes;
-    this.#sensitiveValues = [...new Set(sensitiveValues.filter((value) => value.length >= 8))].sort(
+    this.#sensitiveValues = [...new Set(sensitiveValues.filter(Boolean))].sort(
       (left, right) => right.length - left.length,
     );
   }
@@ -570,13 +571,12 @@ export class BoundedPersonalLog {
 }
 
 function redact(value: string, sensitiveValues: readonly string[]): string {
-  let safe = value
+  for (const sensitive of sensitiveValues) value = value.split(sensitive).join("[redacted]");
+  return redactUrlCredentials(value)
     .replace(/Bearer\s+[^\s]+/giu, "Bearer [redacted]")
     .replace(/(password|token|secret)=([^\s&]+)/giu, "$1=[redacted]")
     .replace(/(postgres(?:ql)?:\/\/[^:\s/]+:)[^@\s/]+@/giu, "$1[redacted]@")
     .replace(/os_secret_[A-Za-z0-9_-]+/gu, "os_secret_[redacted]");
-  for (const sensitive of sensitiveValues) safe = safe.split(sensitive).join("[redacted]");
-  return safe;
 }
 
 export function processSensitiveValues(spec: PersonalProcessSpec): readonly string[] {
@@ -593,7 +593,10 @@ export function processSensitiveValues(spec: PersonalProcessSpec): readonly stri
       // Most secret environment values are opaque tokens rather than URLs.
     }
   }
-  return values;
+  return [
+    ...values.filter((value) => value.length >= 8),
+    ...networkCredentialSecrets(spec.environment),
+  ];
 }
 
 /**

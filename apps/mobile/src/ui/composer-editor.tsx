@@ -22,6 +22,7 @@ import { Keyboard, useWindowDimensions, type StyleProp, type ViewStyle } from "r
 import { KeyboardController } from "react-native-keyboard-controller";
 import { discardPastedImage } from "../../modules/composer-editor/files.js";
 import {
+  editorFunctions,
   NativeComposerEditor,
   type NativeComposerEditorRef,
   type NativeComposerState,
@@ -39,8 +40,6 @@ export interface ComposerEditorProps {
   readonly value: string;
   readonly onChangeText: (value: string) => void;
   readonly onSelectionChange?: (selection: ComposerSelection) => void;
-  /** Which links become chips: a team composer shows only its team's pages as references. */
-  readonly scope: "personal" | "team";
   readonly placeholder: string;
   readonly accessibilityLabel: string;
   readonly editable?: boolean;
@@ -110,11 +109,11 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
   // Tokens advance from the previous text, so removing the space after a chip keeps it a chip.
   const [confirmed, setConfirmed] = useState(() => ({
     text,
-    tokens: collectComposerTokens(text, { commitTrailing: true, scope: props.scope }),
+    tokens: collectComposerTokens(text, { commitTrailing: true }),
   }));
   let tokens = confirmed.tokens;
   if (confirmed.text !== text) {
-    tokens = collectComposerTokens(text, { previous: confirmed.tokens, scope: props.scope });
+    tokens = collectComposerTokens(text, { previous: confirmed.tokens });
     setConfirmed({ text, tokens });
   }
 
@@ -165,7 +164,7 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
 
   // Offsets for the text native holds now, which can run ahead of the last render.
   const tokensNow = (): readonly ComposerToken[] =>
-    collectComposerTokens(latest.current.text, { previous: tokens, scope: props.scope });
+    collectComposerTokens(latest.current.text, { previous: tokens });
 
   const show = (shown: string | null, at: ComposerSelection): void => {
     preview.current = shown;
@@ -175,8 +174,14 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
   };
 
   useImperativeHandle(props.ref, (): ComposerEditorHandle => ({
-    focus: () => void native.current?.focus().catch(() => undefined),
-    blur: () => void native.current?.blur().catch(() => undefined),
+    focus: () =>
+      void editorFunctions(native.current)
+        ?.focus()
+        .catch(() => undefined),
+    blur: () =>
+      void editorFunctions(native.current)
+        ?.blur()
+        .catch(() => undefined),
     containsFocus: () => focused.current,
     readSnapshot: snapshot,
     replace: (range, insert) => {
@@ -190,7 +195,9 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
     },
     setSelection: (range) => {
       const snapped = snapComposerSelection(latest.current.text, range, tokensNow());
-      void native.current?.setSelection(snapped.start, snapped.end).catch(() => undefined);
+      void editorFunctions(native.current)
+        ?.setSelection(snapped.start, snapped.end)
+        .catch(() => undefined);
     },
     preview: (next) => show(next.text, next.selection),
     // `value` is the draft, and the parent has already set it; a newer generation makes
@@ -201,7 +208,9 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
     },
     flushPendingInput: async (generation) => {
       if (generation !== revision.generation) throw new Error("The composer was reset.");
-      const state = await native.current?.readState().catch(() => undefined);
+      const state = await editorFunctions(native.current)
+        ?.readState()
+        .catch(() => undefined);
       if (generation !== revision.generation) throw new Error("The composer was reset.");
       // Native has not applied the latest reset yet: what JS holds is the answer.
       if (state === undefined || state.generation < generation) return snapshot();
@@ -273,11 +282,6 @@ const nouns: Readonly<Record<string, string>> = {
   automation: "Automation",
   computer: "Computer",
   attachment: "Attachment",
-  channel: "Channel",
-  thread: "Thread",
-  "knowledge-topic": "Topic",
-  "knowledge-note": "Note",
-  invite: "Invite",
 };
 
 /** How a reference reads as a chip, by what it points at. */
@@ -286,12 +290,7 @@ function referencePresentation(href: string): {
   readonly noun: string;
 } {
   const classified = classifyHref(href);
-  const kind =
-    classified.kind === "reference"
-      ? classified.reference.kind
-      : classified.kind === "team-page"
-        ? classified.page.target.kind
-        : null;
+  const kind = classified.kind === "reference" ? classified.reference.kind : null;
   const icon = hrefIcon(href);
   return {
     symbol: referenceSymbols[icon],

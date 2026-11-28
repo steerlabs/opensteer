@@ -31,19 +31,57 @@ describe("where cloud agents reach this Deployment", () => {
     });
   });
 
-  it("never offers ChatGPT or Claude a private network address, but still gives it to any other agent", () => {
+  it("blocks cloud-only guides on a private network, but still gives it to local and generic guides", () => {
     const reach = externalAgentsReach({
       identity: personal,
       remote: remote("private", "https://mac.tailnet.example"),
     });
     if (reach.kind !== "ready") throw new Error("Expected an address");
-    const [chatgpt, claude, other] = externalAgentGuides;
-    expect(guideAddress(chatgpt, reach).kind).toBe("blocked");
-    expect(guideAddress(claude, reach).kind).toBe("blocked");
-    expect(guideAddress(other, reach)).toEqual({
-      kind: "address",
-      url: "https://mac.tailnet.example/internal/v1/mcp",
+    const ids = externalAgentGuides.map((entry) => entry.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.at(-1)).toBe("other");
+
+    const internetGuides = externalAgentGuides.filter((entry) => entry.reach === "internet");
+    const anyGuides = externalAgentGuides.filter((entry) => entry.reach === "any");
+    expect(internetGuides.map((entry) => entry.id)).toEqual([
+      "chatgpt",
+      "claude",
+      "grok",
+      "perplexity",
+      "mistral",
+    ]);
+    expect(anyGuides.map((entry) => entry.id)).toEqual([
+      "claude-code",
+      "codex",
+      "cursor",
+      "vscode",
+      "gemini-cli",
+      "zed",
+      "devin-local",
+      "other",
+    ]);
+
+    for (const guide of internetGuides) {
+      expect(guideAddress(guide, reach).kind, guide.id).toBe("blocked");
+    }
+    for (const guide of anyGuides) {
+      expect(guideAddress(guide, reach), guide.id).toEqual({
+        kind: "address",
+        url: "https://mac.tailnet.example/internal/v1/mcp",
+      });
+    }
+
+    const internetReach = externalAgentsReach({
+      identity: personal,
+      remote: remote("connect", "https://mac.connect.example"),
     });
+    if (internetReach.kind !== "ready") throw new Error("Expected an internet address");
+    for (const guide of externalAgentGuides) {
+      expect(guideAddress(guide, internetReach), guide.id).toEqual({
+        kind: "address",
+        url: "https://mac.connect.example/internal/v1/mcp",
+      });
+    }
   });
 
   it("gives a networked Host's own origin without reading Remote access", () => {

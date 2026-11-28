@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { createId, ToolBlockedError } from "@opensteer/core";
+import { createId, DeviceIdSchema, ToolBlockedError } from "@opensteer/core";
+import { DeviceAccessRefusal } from "../administration/device-access.js";
 import { resolveIntegrationReadiness } from "@opensteer/integration-core/readiness";
 import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
@@ -43,6 +44,7 @@ it.each([false, true])(
       store,
       devices: {
         withAvailability: async (entries: unknown) => entries,
+        localDeviceAccessBlocked: async () => undefined,
         localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
         callTool: async () => {
           failed = true;
@@ -180,6 +182,7 @@ it.each([false, true])(
       store,
       devices: {
         withAvailability: async (entries: unknown) => entries,
+        localDeviceAccessBlocked: async () => undefined,
         localDiscoveryFacts: () => ({
           connectionFor: store.getDeviceComputerConnectionForCall,
           localServers: store.localMcp.list,
@@ -201,12 +204,12 @@ it.each([false, true])(
     // The reason is said once, in the tool's blocker; its description stays its own.
     for (const tool of provider?.tools ?? [])
       expect(tool.description).not.toMatch(/Blocked|ceiling/u);
-    expect(provider?.toolBlockers).toMatchObject({
-      create_event: {
-        code: "read_only_task",
-        next: expect.stringContaining("task's access mode"),
-      },
-    });
+    // A data app approved for reading only says so before the task's own read-only mode
+    // (pluginToolReason's order); a local server, which has no approval, says the task's.
+    const change = server
+      ? { code: "read_only_task", next: expect.stringContaining("task's access mode") }
+      : { code: "access_denied", message: expect.stringContaining("allows reading only") };
+    expect(provider?.toolBlockers).toMatchObject({ create_event: change });
     expect(provider?.toolBlockers).not.toHaveProperty(read.name);
     await expect(
       providers.call(
@@ -224,7 +227,9 @@ it.each([false, true])(
       ),
     ).resolves.toMatchObject({
       kind: "blocked",
-      blocked: { code: "read_only_task", next: expect.stringContaining("task's ceiling") },
+      blocked: server
+        ? { code: "read_only_task", next: expect.stringContaining("task's ceiling") }
+        : change,
     });
   },
 );
@@ -265,6 +270,7 @@ it.each([
     },
     devices: {
       withAvailability: async (entries: unknown) => entries,
+      localDeviceAccessBlocked: async () => undefined,
       localDiscoveryFacts: () => ({ localServers: async () => [] }),
     },
     localServers: { callTool: async () => mcp },
@@ -325,6 +331,7 @@ it.each([
       },
       devices: {
         withAvailability: async (entries: unknown) => entries,
+        localDeviceAccessBlocked: async () => undefined,
         localDiscoveryFacts: () => ({ localServers: async () => [] }),
       },
     } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
@@ -358,8 +365,8 @@ it.each([
     },
     {
       code: "unavailable",
-      message: "apple-calendar is unavailable: Update Opensteer on Test iPhone to use its apps.",
-      next: "Continue without it and tell the person what the message says.",
+      message: "Update Opensteer on Test iPhone to use its apps.",
+      next: "The person finishes this on Test iPhone. Tell them what the message says, and continue without Calendar on Test iPhone until then.",
     },
   ],
 ] as const)(
@@ -410,7 +417,10 @@ it.each([
     const context = { caller: "test", mode: "automatic" as const };
     const [provider] = await providers.providers(context);
     expect(provider).toMatchObject({ blocked: expected });
-    expect(provider).not.toHaveProperty("toolBlockers");
+    // Each of its operations is kept by what keeps the app, said on each as on the app.
+    expect(Object.values(provider?.toolBlockers ?? {})).toEqual(
+      provider!.tools.map(() => provider!.blocked),
+    );
     // Its tools come from Opensteer's definition, whatever keeps them now.
     if (!isComputerAppDefinition(definition)) throw new Error("Calendar is a computer app");
     expect(provider!.tools.map(({ name }) => name)).toEqual(
@@ -462,6 +472,7 @@ it("lists a server awaiting its approved launch as blocked, and refuses its call
     },
     devices: {
       withAvailability: async (entries: unknown) => entries,
+      localDeviceAccessBlocked: async () => undefined,
       localDiscoveryFacts: () => ({
         localServers: async () => [
           {
@@ -503,3 +514,280 @@ it("lists a server awaiting its approved launch as blocked, and refuses its call
   ).toEqual({ kind: "blocked", blocked: waiting });
   expect(callTool).not.toHaveBeenCalled();
 });
+
+it.each([
+  ["a connected agent", true],
+  ["a task of the person's", false],
+] as const)("words the apps switch turned off mid-call for %s", async (_, connection) => {
+  const definition = deviceDefinitions.find((definition) => definition.id === "apple-calendar")!;
+  const callable = computerCallable("read", definition);
+  const readiness = {
+    code: "READY",
+    serverId: callable.server.id,
+    connectionId: callable.grant.connectionId,
+    requiredAccess: null,
+    detail: null,
+  };
+  const store = {
+    listDiscoveryInventory: async () => [
+      {
+        installation: callable.installation,
+        servers: [callable.server],
+        accounts: [{ connectionId: callable.grant.connectionId }],
+        tools: [callable.tool],
+        readiness: { servers: [readiness], tools: [{ toolId: callable.tool.id, readiness }] },
+      },
+    ],
+    listCallableTools: async () => [callable],
+    grantedDeviceApprovals: async () => [],
+    getDeviceComputerConnectionForCall: async () => ({
+      deviceId: "dev_mac",
+      runnerName: "Studio Mac",
+      access: "read",
+    }),
+  };
+  const userId = createId("user");
+  const providers = new LocalProviders({
+    store,
+    devices: {
+      withAvailability: async (entries: unknown) => entries,
+      localDeviceAccessBlocked: async () => undefined,
+      localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
+      // The person turns the Mac's apps off after the call was admitted, before it is sent.
+      callTool: async () => {
+        throw new DeviceAccessRefusal(
+          "device-access-off",
+          DeviceIdSchema.parse(createId("runner")),
+          "apps",
+          "Studio Mac",
+        );
+      },
+    },
+    localServers: {},
+    authority: {
+      caller: () =>
+        connection
+          ? { kind: "connection", userId, connectionId: "connection", key: "connection:x" }
+          : { kind: "run", userId, thread: { id: createId("thread") } },
+      session: () =>
+        connection
+          ? { operation: { bindingId: "session:x", taskId: createId("thread") } }
+          : undefined,
+    },
+  } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+  const context = { caller: "test", mode: "automatic" as const };
+  const [provider] = await providers.providers(context);
+  const called = await providers.call(
+    {
+      ...context,
+      execution: "execution",
+      plugin: provider!.id,
+      tool: callable.tool.name,
+      input: {},
+    },
+    AbortSignal.timeout(5000),
+    async () => {
+      throw new Error("Unexpected approval");
+    },
+  );
+  expect(called).toMatchObject({
+    kind: "blocked",
+    blocked: {
+      message: connection
+        ? "Apps access is off on Studio Mac. The person can turn it on in Opensteer."
+        : "apps is off. Use computer_access_request if needed.",
+    },
+  });
+  if (connection) expect(JSON.stringify(called)).not.toContain("computer_access_request");
+});
+
+it.each([
+  [
+    "its device lacks a permission",
+    {
+      code: "INTEGRATION_UNAVAILABLE",
+      detail:
+        "Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
+      requiredAccess: null,
+    },
+    {
+      code: "unavailable",
+      message:
+        "Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
+      next: "The person finishes this on Studio Mac. Tell them what the message says, and continue without Calendar on Studio Mac until then.",
+    },
+  ],
+  [
+    "its task has no grant yet",
+    { code: "ACCESS_GRANT_REQUIRED", detail: null, requiredAccess: "read" },
+    {
+      code: "access_required",
+      message: "Calendar on Studio Mac requires an access grant.",
+      next: expect.stringContaining("app_access_request"),
+    },
+  ],
+] as const)(
+  "gives each operation of a device app none of whose operations can run its own reason when %s, never the task's read-only mode for a read",
+  async (_, readState, readReason) => {
+    const definition = deviceDefinitions.find(({ id }) => id === "apple-calendar")!;
+    const callable = computerCallable("read", definition);
+    const read = callable.tool;
+    const write = {
+      ...read,
+      id: "tool_write",
+      name: "create_event",
+      annotations: { readOnlyHint: false },
+    };
+    const state = (value: object) => ({
+      ...value,
+      serverId: callable.server.id,
+      connectionId: callable.grant.connectionId,
+    });
+    // A supervised task: its write operation is read-only, and it is listed first.
+    const readOnlyTask = state({ code: "READ_ONLY_TASK", detail: null, requiredAccess: null });
+    const store = {
+      listDiscoveryInventory: async () => [
+        {
+          installation: callable.installation,
+          servers: [callable.server],
+          accounts: [{ connectionId: callable.grant.connectionId }],
+          tools: [write, read],
+          readiness: {
+            servers: [readOnlyTask],
+            tools: [
+              { toolId: write.id, readiness: readOnlyTask },
+              { toolId: read.id, readiness: state(readState) },
+            ],
+          },
+        },
+      ],
+      listCallableTools: async () => [],
+      getDeviceComputerConnectionForCall: async () => ({
+        deviceId: "dev_mac",
+        runnerName: "Studio Mac",
+        access: "read-write",
+      }),
+    };
+    const callTool = vi.fn();
+    const providers = new LocalProviders({
+      store,
+      devices: {
+        withAvailability: async (entries: unknown) => entries,
+        localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
+        localDeviceAccessBlocked: async () => undefined,
+        callTool,
+      },
+      localServers: {},
+      authority: {
+        caller: () => ({
+          kind: "run",
+          userId: createId("user"),
+          thread: { id: createId("thread") },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+    const context = { caller: "test", mode: "automatic" as const };
+    const [provider] = await providers.providers(context);
+    // The app's one line puts what keeps its reads before the task's mode.
+    expect(provider?.blocked).toEqual(readReason);
+    const call = (tool: string) =>
+      providers.call(
+        { ...context, execution: "execution", plugin: provider!.id, tool, input: {} },
+        AbortSignal.timeout(5_000),
+        async () => {
+          throw new Error("Unexpected approval");
+        },
+      );
+    expect(await call(read.name)).toEqual({ kind: "blocked", blocked: readReason });
+    expect(await call("create_event")).toMatchObject({
+      kind: "blocked",
+      blocked: { code: "read_only_task" },
+    });
+    expect(callTool).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  ["a Run", false],
+  ["a connected agent", true],
+] as const)(
+  "gives %s's call the listing's reason when the device's driver is not loaded, never the raw error",
+  async (_, connection) => {
+    const definition = deviceDefinitions.find((definition) => definition.id === "apple-calendar")!;
+    const callable = computerCallable("read", definition);
+    // The device reports the app cannot run (its apps stream has not attached).
+    const readiness = {
+      code: "INTEGRATION_UNAVAILABLE",
+      serverId: callable.server.id,
+      connectionId: callable.grant.connectionId,
+      requiredAccess: null,
+      detail: "Opensteer's integrations service is unavailable on Studio Mac.",
+    };
+    const store = {
+      listDiscoveryInventory: async () => [
+        {
+          installation: callable.installation,
+          servers: [callable.server],
+          accounts: [{ connectionId: callable.grant.connectionId }],
+          tools: [callable.tool],
+          readiness: { servers: [readiness], tools: [{ toolId: callable.tool.id, readiness }] },
+        },
+      ],
+      listCallableTools: async () => [callable],
+      grantedDeviceApprovals: async () => [],
+      getDeviceComputerConnectionForCall: async () => ({
+        deviceId: "dev_mac",
+        runnerName: "Studio Mac",
+        access: "read",
+      }),
+    };
+    const userId = createId("user");
+    const providers = new LocalProviders({
+      store,
+      devices: {
+        withAvailability: async (entries: unknown) => entries,
+        // Its driver is not loaded: the device check itself cannot answer.
+        localDeviceAccessBlocked: async () => {
+          throw new Error("Active self Runner not found");
+        },
+        localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
+        callTool: async () => {
+          throw new Error("Unexpected send");
+        },
+      },
+      localServers: {},
+      authority: {
+        caller: () =>
+          connection
+            ? { kind: "connection", userId, connectionId: "connection", key: "connection:x" }
+            : { kind: "run", userId, thread: { id: createId("thread") } },
+        session: () =>
+          connection
+            ? { operation: { bindingId: "session:x", taskId: createId("thread") } }
+            : undefined,
+      },
+    } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+    const context = { caller: "test", mode: "automatic" as const };
+    const [provider] = await providers.providers(context);
+    expect(provider?.blocked?.message).toBe(
+      "Opensteer's integrations service is unavailable on Studio Mac.",
+    );
+    const called = await providers.call(
+      {
+        ...context,
+        execution: "execution",
+        plugin: provider!.id,
+        tool: callable.tool.name,
+        input: {},
+      },
+      AbortSignal.timeout(5000),
+      async () => {
+        throw new Error("Unexpected approval");
+      },
+    );
+    expect(called).toEqual({
+      kind: "blocked",
+      blocked: provider!.toolBlockers?.[callable.tool.name] ?? provider!.blocked,
+    });
+  },
+);

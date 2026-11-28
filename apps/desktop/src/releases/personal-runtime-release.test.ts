@@ -90,6 +90,7 @@ describe("Personal runtime release", () => {
   it.each([
     "services/plugin-engine.mjs",
     "services/plugin-engine-bridge.json",
+    "services/plugin-engine-bridge.json.modules/compiler/build.wasm",
     "services/node_modules/@cloudflare/workerd-linux-arm64/bin/workerd",
   ])("pins plugin runtime bytes for %s", async (file) => {
     const directory = await releaseDirectory();
@@ -314,6 +315,7 @@ async function releaseDirectory(
   for (const [relative, mode, content] of [
     ["services/plugin-engine.mjs", "code", Buffer.from("export {};\n")],
     ["services/plugin-engine-bridge.json", "data", Buffer.from("[]\n")],
+    ["services/plugin-engine-bridge.json.modules/compiler/build.wasm", "data", Buffer.from("wasm")],
     [
       "services/node_modules/@cloudflare/workerd-linux-arm64/bin/workerd",
       "executable",

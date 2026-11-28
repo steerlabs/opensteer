@@ -20,6 +20,7 @@ import {
   type IphoneRunnerResult,
   type IphoneRunnerOwner,
   type IphoneRunnerPort,
+  type IphoneRunnerConnection,
   type IphoneRunnerEvent,
 } from "@opensteer/protocol/iphone-bridge";
 import type { IphoneNativeTransport } from "./bridge-client.js";
@@ -55,17 +56,42 @@ type ProbeWork = {
   rerun: boolean;
 };
 type Session = {
-  key: object;
+  key: SessionOwner;
   binding: Binding;
   sessionId: string;
   runId: string;
   access: "observe" | "control";
   controller: AbortController;
 };
-type Slot = { owner: IphoneRunnerOwner; assignments: readonly Assignment[]; key: object };
+type SessionClose = {
+  session: Session;
+  native: IphoneNativeTransport | undefined;
+  receipt: Promise<void>;
+  retry: boolean;
+};
+type SessionOwner = {
+  readonly closing: Set<Promise<boolean>>;
+  readonly sessionCloses: Map<string, SessionClose>;
+  closeFailed: boolean;
+};
+
+function sessionCloseKey(params: IphoneRunnerParams<"iphone.session.close">): string {
+  return JSON.stringify([params.deviceId, params.driverGeneration, params.sessionId, params.runId]);
+}
+
+// The desktop's close also says whether the native side confirmed it, for Stop's proof. Not an
+// extension of the protocol's interface: its close returns nothing.
+export type DesktopIphoneRunnerConnection = Omit<IphoneRunnerConnection, "close"> & {
+  close(): void | Promise<boolean>;
+};
+export type DesktopIphoneRunnerPort = Omit<IphoneRunnerPort, "connect"> & {
+  connect(...args: Parameters<IphoneRunnerPort["connect"]>): DesktopIphoneRunnerConnection;
+};
+
+type Slot = { owner: IphoneRunnerOwner; assignments: readonly Assignment[]; key: SessionOwner };
 type DisplayParams = Extract<IphoneRunnerParams<IphoneRunnerMethod>, { streamId: string }>;
 type DisplayStream = {
-  key: object;
+  key: SessionOwner;
   binding: Binding;
   native: IphoneNativeTransport;
   ref: { bindingToken: string; nativeEpoch: number; streamId: string };
@@ -86,7 +112,6 @@ function displayRefusal(reason: string | undefined) {
   const parsed = DisplayInputRefusalSchema.safeParse(reason);
   return { reason: parsed.success ? parsed.data : ("unavailable" as const) };
 }
-
 export interface IphoneServiceOptions {
   readonly store: IphoneStore;
   readonly startNative: () => Promise<{
@@ -573,13 +598,18 @@ export class IphoneService {
         };
       });
   }
-  forSlot(owner: IphoneRunnerOwner): IphoneRunnerPort {
+  forSlot(owner: IphoneRunnerOwner): DesktopIphoneRunnerPort {
     const { deploymentId } = owner;
     return {
       claimMediaAttachment: (token) => this.#claimMediaAttachment(owner, token),
       connect: (emit) => {
-        const key = {};
+        const key: SessionOwner = {
+          closing: new Set(),
+          sessionCloses: new Map(),
+          closeFailed: false,
+        };
         let alive = true;
+        let closed: Promise<boolean> | undefined;
         const listener = (slot: string, event: IphoneRunnerEvent) => {
           if (
             alive &&
@@ -636,7 +666,7 @@ export class IphoneService {
                   } else this.#cleanup(this.#release(record, false));
                 }
               }
-              if (old && old.key !== key) this.#closeOwner(old.key);
+              if (old && old.key !== key) void this.#closeOwner(old.key);
               if (this.#records.some((r) => r.phase === "bound")) await this.discover();
               for (const record of this.#records.filter(
                 (r) =>
@@ -662,10 +692,10 @@ export class IphoneService {
             return iphoneRunnerResults[method].parse(result) as IphoneRunnerResult<M>;
           },
           close: () => {
-            if (!alive) return;
+            if (closed) return closed;
             alive = false;
             this.#listeners.delete(listener);
-            this.#closeOwner(key);
+            closed = this.#closeOwner(key);
             if (this.#slots.get(deploymentId)?.key === key) {
               this.#slots.delete(deploymentId);
               for (const record of this.#records)
@@ -673,6 +703,7 @@ export class IphoneService {
               this.#syncMacWatch();
               for (const listener of this.#invalidatedSlots) listener(deploymentId);
             }
+            return closed;
           },
         };
       },
@@ -680,7 +711,7 @@ export class IphoneService {
   }
   async #runtime(
     deploymentId: string,
-    key: object,
+    key: SessionOwner,
     method: IphoneRunnerMethod,
     params: IphoneRunnerParams<IphoneRunnerMethod>,
     options: { deadline: number; signal?: AbortSignal },
@@ -698,7 +729,11 @@ export class IphoneService {
           (a) => a.deviceId === r.deviceId && a.generation === r.driverGeneration,
         ),
     );
-    if (!record || slot?.key !== key) throw new IphoneServiceError("no-session");
+    if (!record || slot?.key !== key) {
+      if (method === "iphone.session.close" || method === "iphone.cancel")
+        throw new IphoneServiceError("phone-disconnected", "unknown");
+      throw new IphoneServiceError("no-session");
+    }
     if (method === "iphone.media") return { available: false, reason: "unsupported" };
     if (
       method === "iphone.display.stop" &&
@@ -712,17 +747,18 @@ export class IphoneService {
       throw new IphoneServiceError("deadline-exceeded");
     let session = this.#sessions.get(record.udid);
     if (method === "iphone.session.close" || method === "iphone.cancel") {
-      if (session && session.key !== key) throw new IphoneServiceError("no-session");
-      if (
-        session &&
-        "sessionId" in params &&
-        (session.sessionId !== params.sessionId || session.runId !== params.runId)
-      )
-        throw new IphoneServiceError("no-session");
-      if (session) {
-        this.#end(session, "cancelled");
-        await this.#drain();
+      const ref = iphoneRunnerParams[method].parse(params);
+      const closing = key.sessionCloses.get(sessionCloseKey(ref));
+      if (closing) {
+        await (closing.retry && method === "iphone.session.close"
+          ? this.#closeSession(closing.session, closing.native)
+          : closing.receipt);
+        return {};
       }
+      if (session && session.key !== key) throw new IphoneServiceError("no-session");
+      if (session && (session.sessionId !== ref.sessionId || session.runId !== ref.runId))
+        throw new IphoneServiceError("no-session");
+      if (session) await this.#end(session, "cancelled");
       return {};
     }
     if (
@@ -740,7 +776,7 @@ export class IphoneService {
         throw new IphoneServiceError("no-session");
     }
     if (method === "iphone.session.open" && session) throw new IphoneServiceError("phone-in-use");
-    const binding = await this.#binding(record);
+    const binding = await this.#binding(record, options.signal);
     if (method === "iphone.session.open" || method === "iphone.installedApps")
       this.#cancelProbe(record.udid);
     const native = await this.#connect();
@@ -838,7 +874,7 @@ export class IphoneService {
         binding.epoch = ref.nativeEpoch;
         return { nativeEpoch: ref.nativeEpoch };
       } catch (error) {
-        this.#end(session, "no-session");
+        void this.#end(session, "no-session");
         throw error;
       }
     }
@@ -889,7 +925,7 @@ export class IphoneService {
   async #display(
     method: IphoneRunnerMethod,
     params: DisplayParams,
-    key: object,
+    key: SessionOwner,
     binding: Binding,
     native: IphoneNativeTransport,
     localPhoneId: string,
@@ -1355,11 +1391,12 @@ export class IphoneService {
       timeoutMs: 2000,
     });
   }
-  #end(session: Session, reason: "cancelled" | "no-session" | "phone-disconnected"): void {
+  #end(session: Session, reason: "cancelled" | "no-session" | "phone-disconnected") {
     if (this.#sessions.get(session.binding.record.udid) !== session) return;
     this.#sessions.delete(session.binding.record.udid);
     session.controller.abort();
     const record = session.binding.record;
+    const receipt = this.#closeSession(session, this.#native);
     this.#emit(record.deploymentId, {
       kind: "event",
       event: "iphone.sessionEnded",
@@ -1372,23 +1409,65 @@ export class IphoneService {
         reason,
       },
     });
-    const cleanup = this.#native?.request(
-      "session.close",
-      { bindingToken: session.binding.token, sessionId: session.sessionId },
-      empty,
-      { timeoutMs: 2000 },
+    return receipt;
+  }
+  #closeSession(session: Session, native: IphoneNativeTransport | undefined): Promise<void> {
+    const { binding } = session;
+    const id = sessionCloseKey({
+      deviceId: binding.record.deviceId!,
+      driverGeneration: binding.record.driverGeneration!,
+      sessionId: session.sessionId,
+      runId: session.runId,
+    });
+    const key = session.key;
+    const receipt: Promise<void> = Promise.resolve().then(async () => {
+      if (!native || this.#native !== native || this.#bindings.get(binding.record.udid) !== binding)
+        throw new IphoneServiceError("phone-disconnected", "unknown");
+      try {
+        await native.request(
+          "session.close",
+          { bindingToken: binding.token, sessionId: session.sessionId },
+          empty,
+          { timeoutMs: 2000 },
+        );
+      } catch (error) {
+        if (error instanceof IphoneServiceError) {
+          if (error.effect === "not-started" && error.code === "no-session") return;
+          if (error.effect === "not-started" && error.code !== "phone-disconnected")
+            closing.retry = true;
+          throw error;
+        }
+        throw new IphoneServiceError("phone-disconnected", "unknown");
+      }
+    });
+    const closing: SessionClose = { session, native, receipt, retry: false };
+    key.sessionCloses.set(id, closing);
+    const closed = receipt.then(
+      () => {
+        key.sessionCloses.delete(id);
+        return true;
+      },
+      () => {
+        key.closeFailed = true;
+        return false;
+      },
     );
-    if (cleanup) this.#cleanup(cleanup);
+    key.closing.add(closed);
+    void closed.then(() => key.closing.delete(closed));
+    this.#cleanup(closed);
+    return receipt;
   }
   #cleanup(work: Promise<unknown>): void {
     this.#cleanups.add(work);
     void work.finally(() => this.#cleanups.delete(work)).catch(() => undefined);
   }
-  #closeOwner(key: object): void {
+  async #closeOwner(key: SessionOwner): Promise<boolean> {
     for (const display of this.#displays.values())
       if (display.key === key) void this.#stopDisplay(display);
     for (const session of Array.from(this.#sessions.values()))
-      if (session.key === key) this.#end(session, "no-session");
+      if (session.key === key) void this.#end(session, "no-session");
+    await Promise.all(key.closing);
+    return !key.closeFailed;
   }
   #invalidate(
     record: IphoneMapping,
@@ -1398,7 +1477,7 @@ export class IphoneService {
     for (const display of this.#displays.values())
       if (display.binding.record.udid === record.udid) void this.#stopDisplay(display);
     const session = this.#sessions.get(record.udid);
-    if (session) this.#end(session, reason);
+    if (session) void this.#end(session, reason);
     if (record.deviceId && record.driverGeneration)
       this.#emit(record.deploymentId, {
         kind: "event",
@@ -1535,7 +1614,7 @@ export class IphoneService {
     const slot = this.#slots.get(deploymentId);
     this.#slots.delete(deploymentId);
     for (const listener of this.#invalidatedSlots) listener(deploymentId);
-    if (slot) this.#closeOwner(slot.key);
+    if (slot) await this.#closeOwner(slot.key);
     for (const record of this.#records.filter((r) => r.deploymentId === deploymentId)) {
       this.#invalidate(record, "no-session");
       await this.#release(record, false);
@@ -1590,7 +1669,8 @@ export class IphoneService {
       this.#stopMacWatch();
       this.#cancelAllProbes();
       for (const display of this.#displays.values()) void this.#stopDisplay(display);
-      for (const session of Array.from(this.#sessions.values())) this.#end(session, "cancelled");
+      for (const session of Array.from(this.#sessions.values()))
+        void this.#end(session, "cancelled");
       await this.#starting?.catch(() => undefined);
       await this.#drain();
       const native = this.#native;

@@ -2,6 +2,7 @@ import { clientSendKeyWireReserve } from "@opensteer/protocol/transcript";
 import type { DatabaseSchema } from "./schema.js";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
+  AgentSessionId,
   DeploymentId,
   EnvironmentId,
   ExecutionNodeId,
@@ -20,6 +21,7 @@ import {
 import {
   isConstraintViolation,
   isTransactionConflict,
+  runDatabaseTransactionOnce,
   withDatabaseTransaction,
 } from "./connection.js";
 import { inheritExecutionClock } from "./personal-transaction.js";
@@ -91,7 +93,7 @@ function validChangeScope(identity: ChangeIdentity) {
   return true;
 }
 
-interface CommitNotice {
+export interface CommitNotice {
   readonly deploymentId: DeploymentId;
   readonly head: string;
   readonly floor: string;
@@ -99,6 +101,8 @@ interface CommitNotice {
   readonly resourceKinds: ReadonlySet<DurablePersonalResourceKind>;
   /** The catalog tabs this commit changed, so a listener can tell whose they are. */
   readonly changedTabs: ReadonlySet<string>;
+  /** Clear the in-memory places of sessions ended by Done before waking the task's readers. */
+  readonly doneAgentSessions?: readonly AgentSessionId[];
 }
 
 export type PersonalCommitReaction =
@@ -110,6 +114,8 @@ export type PersonalCommitReaction =
   | { readonly type: "grantsRevoked"; readonly grants: readonly RevokedRunGrant[] }
   | { readonly type: "runnerRevoked"; readonly runnerId: RunnerId }
   | { readonly type: "triggerSchedulesChanged" }
+  | { readonly type: "triggerPaused" }
+  | { readonly type: "watchesChanged"; readonly environmentId: EnvironmentId }
   | { readonly type: "authorityChanged"; readonly scopes: ReadonlySet<ScopeAuthority> }
   | {
       readonly type: "requestChanged";
@@ -231,6 +237,7 @@ class Mutation {
   readonly #resetScopes = new Set<PersonalScopeKey>();
   readonly #reactions = new Set<() => void | Promise<unknown>>();
   readonly #ownerReactions: PersonalCommitReaction[] = [];
+  #doneAgentSessions?: readonly AgentSessionId[];
   readonly #transcript = new Map<
     string,
     { placement?: TranscriptPlacement; writes: ProjectionWrite[] }
@@ -240,6 +247,7 @@ class Mutation {
     { kind: PersonalAttentionTable["kind"] | null; write: ProjectionWrite }
   >();
   readonly #receipts: ((head: string) => Promise<void>)[] = [];
+  #afterProjectionWrites?: ProjectionWrite[];
   readonly touchedThreads = new Set<ThreadId>();
   readonly #summaries = new Set<ThreadId>();
   readonly #queues = new Map<ThreadId, Set<MessageId>>();
@@ -415,6 +423,9 @@ class Mutation {
   reaction(dispatch: () => void | Promise<unknown>) {
     this.#reactions.add(dispatch);
   }
+  sessionsEndedByDone(ids: readonly AgentSessionId[]) {
+    if (ids.length) this.#doneAgentSessions = [...(this.#doneAgentSessions ?? []), ...ids];
+  }
   react(reaction: PersonalCommitReaction) {
     if (
       (reaction.type === "executionCommandsChanged" || reaction.type === "deadlinesChanged") &&
@@ -425,6 +436,10 @@ class Mutation {
   }
   receipt(write: (head: string) => Promise<void>) {
     this.#receipts.push(write);
+  }
+  /** Stage a write whose lock ranks after the Personal projections. */
+  afterProjectionWrites(write: ProjectionWrite) {
+    (this.#afterProjectionWrites ??= []).push(write);
   }
   /** A Request or approval-gated input of this task changed; its pending count is recounted. */
   deferQueue(threadId: ThreadId, left: readonly MessageId[]) {
@@ -589,12 +604,16 @@ class Mutation {
         .where("deploymentId", "=", deploymentId)
         .execute();
     }
+    if (this.#afterProjectionWrites) {
+      for (const write of this.#afterProjectionWrites) await write();
+    }
     return {
       deploymentId,
       head,
       floor,
       resourceKinds: this.resourceKinds,
       changedTabs: this.changedTabs,
+      ...(this.#doneAgentSessions ? { doneAgentSessions: this.#doneAgentSessions } : {}),
       changedScopes: new Set([
         ...this.#scopes.keys(),
         ...(Object.values(this.#counters).some(Boolean) || this.#pendingRequestsChanged
@@ -634,9 +653,11 @@ export type PersonalMutation = Pick<
   | "pendingRequestsChanged"
   | "bumpResource"
   | "changeTabs"
+  | "sessionsEndedByDone"
   | "purge"
   | "fence"
   | "receipt"
+  | "afterProjectionWrites"
   | "touchThread"
   | "deferSummary"
   | "deferQueue"
@@ -662,7 +683,12 @@ export async function commitPersonalMutation<Result>(
   database: TargetDb,
   action: (tx: PersonalMutationTransaction, mutation: PersonalMutation) => Promise<Result>,
   retryDiscovery?: (error: unknown) => boolean,
-  mode?: "non-retrying",
+  /**
+   * `non-retrying`: one attempt, as the command store needs it. `once-bounded`: one attempt under
+   * the operation's transaction budget, every statement's timeout and its cancel on the signal
+   * included (the pooled browser's store, P17); no other caller uses it.
+   */
+  mode?: "non-retrying" | "once-bounded",
 ): Promise<Result> {
   if (database.isTransaction) {
     const tx = database as PersonalMutationTransaction;
@@ -723,18 +749,25 @@ export async function commitPersonalMutation<Result>(
             rollback(error);
             throw error;
           })
-      : await withDatabaseTransaction(database, actionUnderFence, undefined, rollback);
+      : mode === "once-bounded"
+        ? await runDatabaseTransactionOnce(database, actionUnderFence).catch((error: unknown) => {
+            rollback(error);
+            throw error;
+          })
+        : await withDatabaseTransaction(database, actionUnderFence, undefined, rollback);
   if (suspended) notify(listener, "authority", () => suspended?.committed());
   committed.mutation.publish(listener, committed.notice);
   return committed.result;
 }
 
-/** Requests and approval-gated inputs both wait on the person. */
-async function recountPendingRequests(tx: PersonalMutationTransaction, threadId: ThreadId) {
-  const pending = sql<number>`(select count(*) from requests
+/** The Requests that wait on the person. */
+export const threadPendingRequestsCount = sql<number>`(
+    (select count(*) from requests
       where originating_thread_id = threads.id and status = 'pending')
-    + (select count(*) from thread_inputs
-      where thread_id = threads.id and state = 'awaiting-approval')`;
+  )::integer`;
+
+async function recountPendingRequests(tx: PersonalMutationTransaction, threadId: ThreadId) {
+  const pending = threadPendingRequestsCount;
   const changed = await tx
     .updateTable("threads")
     .set({ pendingRequestCount: pending })
@@ -755,6 +788,20 @@ export function wakeExecutionCommands(tx: PersonalMutationTransaction) {
 export function wakeTriggerSchedules(tx: PersonalMutationTransaction) {
   return commitPersonalMutation(tx, async (_tx, mutation) => {
     mutation.react({ type: "triggerSchedulesChanged" });
+  });
+}
+
+/** An automation was paused; the Host interrupts any running firing for it until settled (AA10). */
+export function wakePausedTriggerInterrupts(tx: PersonalMutationTransaction) {
+  return commitPersonalMutation(tx, async (_tx, mutation) => {
+    mutation.react({ type: "triggerPaused" });
+  });
+}
+
+/** A task's hold state changed; the Host reconciles Watches on its environment. */
+export function wakeWatches(tx: PersonalMutationTransaction, environmentId: EnvironmentId) {
+  return commitPersonalMutation(tx, async (_tx, mutation) => {
+    mutation.react({ type: "watchesChanged", environmentId });
   });
 }
 

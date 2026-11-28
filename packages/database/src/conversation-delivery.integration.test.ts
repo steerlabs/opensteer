@@ -626,7 +626,6 @@ integration.sequential("conversation delivery", () => {
             ],
 
             maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
           },
         },
       };
@@ -1956,7 +1955,8 @@ integration.sequential("conversation delivery", () => {
       runId,
       state: "unknown",
     });
-    expect((await handOffs(runId)).find(({ id }) => id === bCommand.id)?.status).toBe("failed");
+    // Unknown stays unknown across recovery and finish (never rewritten to failed).
+    expect((await handOffs(runId)).find(({ id }) => id === bCommand.id)?.status).toBe("unknown");
     await start(f, runId);
     // Successor cleanup must never turn the retired command into a refusal receipt.
     await finish(f, runId);
@@ -1964,6 +1964,7 @@ integration.sequential("conversation delivery", () => {
       runId,
       state: "unknown",
     });
+    expect((await handOffs(runId)).find(({ id }) => id === bCommand.id)?.status).toBe("unknown");
     const frame = await nextFrame(f);
     expect(frame.inputs).toEqual([c.message.id, d.message.id]);
     expect(

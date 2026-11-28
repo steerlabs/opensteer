@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $EUID == 0 ]] || { echo 'Run opensteer-home as root.' >&2; exit 1; }
+# This command is a release's, <home>/releases/<id>/opensteer-home, run through the Home's `current`.
+# The Home's directory is checked before anything in it is read or removed.
+own=$(readlink -f -- "$0")
+home_dir=${own%/releases/*}
+if [[ $own != "$home_dir"/releases/*/opensteer-home || ! $home_dir =~ ^/[a-zA-Z0-9._/-]+$ || $home_dir == / ||
+  $home_dir =~ (^|/)\.\.?(/|$) || ! -d $home_dir || $(stat -c '%u:%a' "$home_dir") != 0:700 ]]; then
+  echo "No Home is installed at ${own%/*}." >&2
+  exit 1
+fi
+export OPENSTEER_HOME_DIR="$home_dir"
+command_args=("$@")
+# shellcheck source=deploy/home/common.sh
+source "${own%/*}/common.sh"
+
+# A failed first install can be removed before it wrote its configuration.
+[[ -f "$home_dir/config.env" || ( ${1:-} == uninstall && -d $home_dir ) ]] ||
+  fail "No Home configuration was found at $home_dir."
+
+# shellcheck source=deploy/home/backup.sh
+source "$release_dir/backup.sh"
+# shellcheck source=deploy/home/update.sh
+source "$release_dir/update.sh"
+# shellcheck source=deploy/home/machine-status.sh
+source "$release_dir/machine-status.sh"
+
+# lock_release: the Home's lock; a command that waited while an update switched runs as the current release.
+lock_release() {
+  local current
+  lock_home
+  current=$(current_release) || exit
+  if [[ ${current##*/} != "${release_dir##*/}" ]]; then
+    exec 9>&-
+    exec "$current/opensteer-home" "${command_args[@]}"
+  fi
+}
+
+recover_home() {
+  restore_rollback
+  recover_switch
+  if [[ -f "$home_dir/backup.resume" ]]; then
+    start_pod
+    rm -f -- "$home_dir/backup.resume"
+  fi
+}
+
+case "${1:-}" in
+  release-prepare|release-gate)
+    # A step of a switch to this release, run under the lock of the update (or installer) switching.
+    [[ $# == 1 && ${OPENSTEER_HOME_SWITCHING:-} == "${release_dir##*/}" ]] ||
+      fail "Usage: opensteer-home $1 (only from a switch to this release)"
+    if [[ $1 == release-prepare ]]; then prepare_release; else gate_release; fi
+    ;;
+  release-own)
+    # This release, current after a switch (or one undone), owns the Home as the main unit had it,
+    # under the lock of the update (or installer) that switched.
+    [[ $# == 2 && $2 =~ ^(active|inactive|failed)$ && ${OPENSTEER_HOME_SWITCHING:-} == "${release_dir##*/}" ]] ||
+      fail "Usage: opensteer-home release-own active|inactive|failed (only from a switch to this release)"
+    own_release "$2"
+    ;;
+  status)
+    [[ $# == 1 ]] || fail "Usage: opensteer-home status"
+    # shellcheck source=/dev/null
+    source "$release_dir/images.env"
+    printf 'Version %s\n' "$OPENSTEER_HOME_VERSION"
+    compose ps --all
+    state=$(claimed_state) || fail "The Home's claim state is unavailable."
+    if [[ $state == complete ]]; then echo 'Claimed'; else echo 'Unclaimed'; fi
+    ;;
+  setup-link)
+    [[ $# == 1 ]] || fail "Usage: opensteer-home setup-link"
+    lock_release
+    [[ ! -f "$home_dir/managed" ]] || fail "The Opensteer Account issues claims for this managed Home."
+    recover_home
+    state=$(claimed_state) || fail "Start the Home before issuing a setup link."
+    [[ $state == required ]] || fail "This Home is already claimed."
+    token=$(random_secret)
+    compose down
+    printf '%s' "$token" | digest | save_secret "$home_dir/secrets/setup_digest"
+    start_pod
+    [[ $(claimed_state) == required ]] || fail "The Home was claimed before its setup link could be replaced."
+    print_setup_link "$token"
+    ;;
+  start)
+    lock_release
+    recover_home
+    start_pod
+    refresh_units || echo "This Home's units could not be refreshed; the next start tries again." >&2
+    ;;
+  maintain)
+    lock_release
+    recover_home
+    snapshot=$(pod_snapshot) || snapshot=''
+    pid=$(snapshot_host_pid "$snapshot") || pid=''
+    if ! { [[ -n $pid && -f "$home_dir/host.pid" && $pid == "$(cat "$home_dir/host.pid")" ]] &&
+      { check_firewall "$pid" || { apply_firewall "$pid" && check_firewall "$pid"; }; } &&
+      pod_healthy "$snapshot"; }; then
+      compose down
+      start_pod
+      snapshot=$(pod_snapshot) || snapshot=''
+    fi
+    # A Cloud Computer follows the pool network its account gives now (checked as at boot).
+    if refresh_pool_network && pid=$(host_pid); then
+      apply_firewall "$pid" && check_firewall "$pid"
+    fi
+    if [[ -f "$home_dir/managed" ]]; then
+      # shellcheck source=deploy/home/managed-egress.sh
+      source "$release_dir/managed-egress.sh"
+      maintain_managed_egress
+    fi
+    publish_machine_status "$snapshot"
+    ;;
+  stop)
+    lock_release
+    compose down
+    ;;
+  update|scheduled-update)
+    # update --retry: one more try of a release that failed its check here (a timer never retries).
+    retry_failed=false
+    if [[ $1 == update && ${2:-} == --retry ]]; then retry_failed=true; set -- update "${@:3}"; fi
+    if [[ -f "$home_dir/managed" && $# != 1 ]]; then fail 'Managed Homes update only from the Account feed.'; fi
+    lock_release
+    recover_home
+    rm -f -- "$home_dir/update.recorded"
+    update_status=0
+    update_home "$@" || update_status=$?
+    if ((update_status != 0)) && [[ ! -f "$home_dir/update.recorded" ]]; then record_update_result failed; fi
+    exit "$update_status"
+    ;;
+  rollback)
+    [[ $# == 1 ]] || fail "Usage: opensteer-home rollback"
+    lock_release
+    recover_home
+    rollback_home
+    ;;
+  snapshots)
+    backup_command "$@"
+    ;;
+  backup|scheduled-backup|restore)
+    lock_release
+    recover_home
+    backup_command "$@"
+    ;;
+  logs)
+    [[ $# == 2 ]] || fail "Usage: opensteer-home logs <service>"
+    case "$2" in
+      postgres|host|gateway|runner|browser-runtime|browser-egress|channel-runtime)
+        compose logs --tail 200 "$2" ;;
+      *) fail "Unknown Home service." ;;
+    esac
+    ;;
+  uninstall)
+    [[ $# == 1 || ( $# == 2 && $2 == --purge ) ]] || fail "Usage: opensteer-home uninstall [--purge]"
+    unit=${OPENSTEER_HOME_UNIT_PREFIX:-$(installed_unit_prefix)}
+    export OPENSTEER_HOME_UNIT_PREFIX=$unit
+    [[ $unit =~ ^opensteer-home(-[a-z0-9-]+)?$ ]] || fail "Invalid Home systemd unit prefix."
+    system_files="/etc/systemd/system/$unit"
+    if [[ -f "$system_files-managed.service" ]] &&
+       grep -Fxq "ExecStart=$home_dir/boot/install.sh --resume-managed" "$system_files-managed.service"; then
+      systemctl disable --now "$unit-managed.service"
+    fi
+    if [[ -f "$system_files.service" ]] &&
+       grep -Fxq "ExecStart=$home_dir/current/opensteer-home start" "$system_files.service"; then
+      for timer in update backup maintain; do
+        if [[ -f "$system_files-$timer.timer" ]]; then
+          systemctl disable --now "$unit-$timer.timer"
+        fi
+      done
+      systemctl disable --now "$unit.service"
+    fi
+    lock_home
+    if [[ $# == 2 ]]; then
+      echo 'Removing Home configuration, database, keys, agent work, and browser profiles.'
+      if [[ -f "$home_dir/config.env" ]]; then compose_down_home --volumes; fi
+      remove_runner_apparmor
+      if [[ -f "$system_files.service" ]] &&
+         grep -Fxq "ExecStart=$home_dir/current/opensteer-home start" "$system_files.service"; then
+        rm -f -- "$system_files"{.service,-update.service,-update.timer,-backup.service,-backup.timer,-maintain.service,-maintain.timer}
+      fi
+      if owns_operator_command; then rm -f /usr/local/bin/opensteer-home; fi
+      if [[ -f "$system_files-managed.service" ]] &&
+         grep -Fxq "ExecStart=$home_dir/boot/install.sh --resume-managed" "$system_files-managed.service"; then
+        rm -f -- "$system_files-managed.service"
+      fi
+      if command -v systemctl >/dev/null; then systemctl daemon-reload; fi
+      remove_home_files
+      rmdir -- "$home_dir" 2>/dev/null || true
+    else
+      if [[ -f "$home_dir/config.env" ]]; then compose_down_home; fi
+      echo "Stopped. Home data and configuration are retained in Docker volumes and $home_dir."
+    fi
+    ;;
+  *) fail "Usage: opensteer-home {status|setup-link|update [--retry]|rollback|logs <service>|backup|snapshots|restore|uninstall [--purge]}" ;;
+esac

@@ -3,7 +3,12 @@ import { nodeApp } from "../../scripts/tsup-node-app.js";
 
 export default defineConfig(
   nodeApp({
-    entry: ["src/main.ts", "src/migrate-main.ts", "src/hosted-team-operator-main.ts"],
+    entry: [
+      "src/main.ts",
+      "src/migrate-main.ts",
+      "src/cloud-computers/cloud-computer-operator-main.ts",
+      "src/agent-directory/agent-directory-operator-main.ts",
+    ],
     external: [
       // One schema registry per process: bundled copies fail instanceof checks.
       "zod",

@@ -19,12 +19,13 @@ import { isOfflineSettlement } from "./personal-transaction.js";
 import { refreshLatestRunCompletion, unreadTaskSql } from "./personal-attention-store.js";
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 import {
+  taskExternalWorkSelection,
   taskPageThreadSelections,
   taskPageThreadsFromRows,
   threadProviderRetry,
   threadRunQueued,
 } from "./personal-task-store.js";
-import { detailThreadValue } from "./personal-snapshot-store.js";
+import { detailThreadValue, endedOriginForThread, taskView } from "./personal-snapshot-store.js";
 import { publishThreadQueues } from "./personal-queue-view.js";
 
 type Tx = Transaction<DatabaseSchema>;
@@ -58,28 +59,11 @@ export async function writeThreadSummary(
       .returningAll()
       .returning(taskPageThreadSelections())
       .returning(threadRunQueued.as("runQueued"))
+      .returning(taskExternalWorkSelection)
       .returning(threadProviderRetry.as("retry"))
       .executeTakeFirstOrThrow();
     const threadScope = `thread:${threadId}` as const;
-    const view = {
-      id: row.id,
-      title: row.title,
-      revision: row.revision,
-      status: row.status,
-      inputQueuePaused: row.inputQueuePaused,
-      purpose: row.purpose,
-      askedAt: row.askedAt.toISOString(),
-      doneAt: row.doneAt?.toISOString() ?? null,
-      doneReason: row.doneReason,
-      pendingRequestCount: row.pendingRequestCount,
-      lastReplyPreview: row.lastReplyPreview,
-      failurePreview: row.failurePreview,
-      latestRunCompletedAt: row.latestRunCompletedAt?.toISOString() ?? null,
-      environmentId: row.environmentId,
-      harnessInstanceId: row.harnessInstanceId,
-      runQueued: row.runQueued,
-      retry: row.retry ?? null,
-    };
+    const view = taskView(row);
     const thread = row.removedAt
       ? undefined
       : (await taskPageThreadsFromRows(tx, [row])).get(threadId);
@@ -91,9 +75,10 @@ export async function writeThreadSummary(
         operation: "remove",
       });
     } else {
+      const endedOrigin = await endedOriginForThread(tx, row.createdBy, row.originConnectionId);
       mutation.change(
         { scopeKey: threadScope, entityKind: "thread", entityId: threadId, operation: "upsert" },
-        () => ({ ...view, thread }),
+        () => ({ ...view, thread, endedOrigin }),
       );
     }
     if (row.listed && row.status !== "archived" && !row.removedAt) {
@@ -205,7 +190,10 @@ export async function projectThreadState(
         (eb) =>
           eb
             .selectFrom("runs")
-            .select("runs.status as activeStatus")
+            .select([
+              "runs.status as activeStatus",
+              "runs.startHoldReason as activeStartHoldReason",
+            ])
             .where("runs.threadId", "=", threadId)
             .where("runs.maintenance", "is", null)
             .where("runs.status", "in", nonTerminalRunStatuses)
@@ -230,11 +218,23 @@ export async function projectThreadState(
         (join) => join.onTrue(),
       )
       .select([
+        sql<string | null>`(
+          select case when exists (
+            select 1 from requests
+            where requests.originating_agent_session_id = agent_sessions.id
+              and requests.status = 'pending'
+          ) then 'waiting' else 'active' end
+          from agent_sessions
+          where agent_sessions.thread_id = threads.id and agent_sessions.status = 'active'
+        )`.as("agentSession"),
         "threads.status",
         "threads.inputQueuePaused",
+        "threads.failureCode",
         "threads.failurePreview",
+        "threads.runStartHoldReason",
         "threads.latestRunCompletedAt",
         "active.activeStatus",
+        "active.activeStartHoldReason",
         "last.lastStatus",
         "last.lastMaintenance",
         "last.lastFailure",
@@ -244,7 +244,9 @@ export async function projectThreadState(
       .executeTakeFirstOrThrow();
     const before = Number(row.unread ?? false);
     const thread = row;
-    const active = row.activeStatus ? { status: row.activeStatus } : undefined;
+    const active = row.activeStatus
+      ? { status: row.activeStatus, startHoldReason: row.activeStartHoldReason }
+      : undefined;
     const last = row.lastStatus
       ? { status: row.lastStatus, maintenance: row.lastMaintenance, failure: row.lastFailure }
       : undefined;
@@ -256,17 +258,35 @@ export async function projectThreadState(
             earliestActiveRunStatus: active?.status ?? null,
             inputQueuePaused: thread.inputQueuePaused,
             lastRunFailed: failed,
+            agentSession: row.agentSession as "active" | "waiting" | null,
           });
     const failure = last?.failure;
+    const failureCode = failed && failure ? failure.code : null;
     const failurePreview =
-      failed && failure ? plainTextExcerpt(failure.message, taskLineMaxLength) : null;
-    const changed = status !== thread.status || failurePreview !== thread.failurePreview;
+      failed && failure
+        ? plainTextExcerpt(failure.ownerMessage ?? failure.message, taskLineMaxLength)
+        : null;
+    // A Run waiting for another keeps that reason through each offer its Runner refuses
+    // (queued, starting, queued again): the task is not rewritten per offer. It ends when the
+    // Run starts (run.started clears it) or ends.
+    const runStartHoldReason =
+      active?.status === "queued" ||
+      (active?.status === "starting" && active.startHoldReason === "waiting-for-run")
+        ? (active.startHoldReason ?? null)
+        : null;
+    const changed =
+      status !== thread.status ||
+      failureCode !== thread.failureCode ||
+      failurePreview !== thread.failurePreview ||
+      runStartHoldReason !== thread.runStartHoldReason;
     if (changed || force) {
       await tx
         .updateTable("threads")
         .set({
           status,
+          failureCode,
           failurePreview,
+          runStartHoldReason,
           ...(last?.maintenance ? {} : { updatedAt }),
         })
         .where("id", "=", threadId)

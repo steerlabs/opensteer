@@ -4,16 +4,53 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { createId } from "@opensteer/core";
+import type { RunnerIdentity } from "@opensteer/orchestration";
 import { HostMessageSchema } from "./engine-protocol.js";
+import { engineInventoryEmpty } from "./engine-storage.js";
 import { PluginService } from "./plugin-service.js";
+import { PluginStopCoordinator } from "./plugin-stop-coordinator.js";
+import { firstToGoUnderMemoryPressure, memoryKills } from "./memory-pressure.js";
 
 vi.mock("node:child_process", () => ({ fork: vi.fn() }));
 vi.mock("./engine-resources.js", () => ({ pluginEngineUnavailableReason: async () => undefined }));
+vi.mock("./memory-pressure.js", () => ({
+  firstToGoUnderMemoryPressure: vi.fn(() => true),
+  memoryKills: vi.fn((): number | undefined => undefined),
+}));
 const active = vi.hoisted(() => new Map<string, string>());
 vi.mock("./engine-storage.js", () => ({
   engineActiveVersions: async () => active,
   engineDemand: async () => ({ busy: false, dueInMs: null }),
+  engineInventoryEmpty: vi.fn(async () => false),
 }));
+
+it("lists through the engine when the installed inventory cannot be read", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-inventory-test-"));
+  const service = new PluginService({
+    processEntry: new URL("file:///unused.js"),
+    databaseUrl: "postgres://unused.invalid/unused",
+    dataDirectory: directory,
+    owner: "owner",
+    credentialKey: new Uint8Array(32),
+    origin: "https://fixture.invalid",
+  });
+  const caller = { caller: "personal", mode: "automatic" } as const;
+  const request = vi.spyOn(service, "request").mockResolvedValue([]);
+  vi.mocked(engineInventoryEmpty).mockRejectedValueOnce(new Error("Inventory read failed"));
+  try {
+    await expect(service.list({}, caller)).resolves.toEqual([]);
+    expect(engineInventoryEmpty).toHaveBeenCalledWith(
+      "postgres://unused.invalid/unused",
+      "apps",
+      "owner",
+    );
+    expect(request).toHaveBeenCalledExactlyOnceWith("list", {}, caller, undefined, undefined);
+  } finally {
+    await service.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it("makes the skill record follow the active version, and repairs a refresh that failed", async () => {
   const plugin = "app_252169e9-de1b-4743-a005-50b6ed1b1fa0";
@@ -155,4 +192,247 @@ it("writes no skill record for a version a later change replaced while it was re
     await service.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it("uses the matching engine drain report when the stop reply is lost", async () => {
+  active.clear();
+  const id = "execution";
+  const context = { caller: "owner", mode: "automatic" as const };
+  const state = { id, caller: context.caller, interaction: null };
+  const stopSent = Promise.withResolvers<void>();
+  const child = Object.assign(new EventEmitter(), {
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send(raw: unknown) {
+      const message = HostMessageSchema.parse(raw);
+      if (message.type === "init") child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
+      if (message.type === "stop") child.emit("exit");
+      if (message.type !== "request") return;
+      if (message.operation === "call")
+        child.emit("message", {
+          type: "result",
+          id: message.id,
+          operation: message.operation,
+          result: { ...state, state: "running" },
+        });
+      if (message.operation === "cancel") stopSent.resolve();
+    },
+  });
+  vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-stop-"));
+  const service = new PluginService({
+    processEntry: new URL("file:///unused.js"),
+    databaseUrl: "postgres://unused.invalid/unused",
+    dataDirectory: directory,
+    owner: "owner",
+    credentialKey: new Uint8Array(32),
+    origin: "https://fixture.invalid",
+  });
+  try {
+    await service.call(
+      { executionId: id, calls: { path: "tools.fixture.wait", input: {} } },
+      context,
+    );
+    const stopping = service.stopExecution(id, context, false);
+    await stopSent.promise;
+    const receipt = { ...state, state: "cancelled", drained: true };
+    child.emit("message", { type: "execution", execution: { ...receipt, caller: "another" } });
+    child.emit("message", { type: "execution", execution: receipt });
+    await expect(stopping).resolves.toEqual(receipt);
+  } finally {
+    await service.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("proves idle Stop without launching the engine, and starts a later engine with agentWorkStopped: true", async () => {
+  const initConfigs: Array<{ agentWorkStopped?: boolean | undefined }> = [];
+  const child = Object.assign(new EventEmitter(), {
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send(raw: unknown) {
+      const message = HostMessageSchema.parse(raw);
+      if (message.type === "init") {
+        initConfigs.push({ agentWorkStopped: message.config.agentWorkStopped });
+        child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
+      }
+      if (message.type === "stop") child.emit("exit");
+      if (message.type === "request" && message.operation === "health") {
+        child.emit("message", {
+          type: "result",
+          id: message.id,
+          operation: message.operation,
+          result: { pid: 1, rss: 1, startupMs: 0 },
+        });
+      }
+    },
+  });
+  vi.mocked(fork).mockClear();
+  vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-idle-stop-"));
+  let stopped = true;
+  const service = new PluginService({
+    processEntry: new URL("file:///unused.js"),
+    databaseUrl: "postgres://unused.invalid/unused",
+    dataDirectory: directory,
+    owner: "owner",
+    credentialKey: new Uint8Array(32),
+    origin: "https://fixture.invalid",
+    agentWorkStopped: () => stopped,
+  });
+  const runnerId = createId("runner");
+  const stoppedAt = "2026-11-22T09:00:00.000Z";
+  const coordinator = new PluginStopCoordinator({
+    pluginService: () => service,
+    pluginExecutions: () => ({ stopAgentWork: async () => true }),
+    hasUnfinishedWorkflows: async () => false,
+    isCurrent: () => true,
+    log: { warn: vi.fn() },
+  });
+  try {
+    await service.start();
+    expect(service.state().status).toBe("idle");
+    coordinator.onHostingRunnerRegistered({
+      runnerId,
+      runnerKind: "main",
+      agentsStoppedSince: stoppedAt,
+    } as unknown as RunnerIdentity);
+    await vi.waitFor(() => expect(coordinator.proofFor(runnerId, stopped)).toBe(stoppedAt));
+    expect(fork).not.toHaveBeenCalled();
+
+    // Starting the engine later while still stopped initializes it with agentWorkStopped: true.
+    await service.health({}, { caller: "owner", mode: "automatic" });
+    expect(fork).toHaveBeenCalledOnce();
+    // The engine it started is the OOM killer's first choice, not the Host.
+    expect(firstToGoUnderMemoryPressure).toHaveBeenCalledWith(
+      vi.mocked(fork).mock.results[0]?.value.pid,
+    );
+    expect(initConfigs).toEqual([{ agentWorkStopped: true }]);
+  } finally {
+    coordinator.close();
+    stopped = false;
+    await service.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("tells a waiting call the engine ran out of memory only on the kernel's record of a memory kill", async () => {
+  /** A call waiting on an engine that then ends by `signal`, with the kernel's memory-kill counts. */
+  const ended = async (
+    kills: readonly [number | undefined, number | undefined],
+    signal: string,
+  ) => {
+    const child = Object.assign(new EventEmitter(), {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send(raw: unknown) {
+        const message = HostMessageSchema.parse(raw);
+        if (message.type === "init") child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
+        // A health request is never answered: it is waiting when the engine ends.
+      },
+    });
+    vi.mocked(fork).mockReset();
+    vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
+    vi.mocked(memoryKills).mockReset();
+    vi.mocked(memoryKills).mockReturnValueOnce(kills[0]).mockReturnValueOnce(kills[1]);
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-memory-kill-"));
+    const service = new PluginService({
+      processEntry: new URL("file:///unused.js"),
+      databaseUrl: "postgres://unused.invalid/unused",
+      dataDirectory: directory,
+      owner: "owner",
+      credentialKey: new Uint8Array(32),
+      origin: "https://fixture.invalid",
+    });
+    try {
+      await service.start();
+      const waiting = service.health({}, { caller: "owner", mode: "automatic" });
+      await vi.waitFor(() => expect(service.state().status).toBe("ready"));
+      child.emit("exit", null, signal);
+      const message = await waiting.then(
+        () => "answered",
+        (error: Error) => error.message,
+      );
+      return { message, state: service.state(), forks: vi.mocked(fork).mock.calls.length };
+    } finally {
+      await service.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  };
+  // The kernel's count of memory kills in the Host's cgroup grew while this engine ran: the
+  // caller hears a memory kill, and the engine is not started again by itself.
+  const memory = await ended([4, 5], "SIGKILL");
+  expect(memory.message).toMatch(
+    /^The plugin engine ran out of memory and was killed before it replied\. Earlier calls may have taken effect/u,
+  );
+  expect(memory.state).toMatchObject({
+    status: "unavailable",
+    reason: "The plugin engine ran out of memory and was killed.",
+  });
+  expect(memory.forks).toBe(1);
+  // Killed, but not on the kernel's record, or the record cannot be read: a kill, said as one.
+  for (const kills of [
+    [5, 5],
+    [undefined, undefined],
+  ] as const) {
+    const kill = await ended(kills, "SIGKILL");
+    expect(kill.message, `${kills}`).toMatch(
+      /^The plugin engine was killed before it replied\. Earlier calls may have taken effect/u,
+    );
+    expect(kill.state).toMatchObject({
+      status: "unavailable",
+      reason: "The plugin engine was killed.",
+    });
+  }
+  // Ended otherwise: the engine stopped, and it is started again after a delay.
+  const stopped = await ended([5, 6], "SIGTERM");
+  expect(stopped.message).toMatch(/^Plugin engine stopped; earlier calls may have taken effect/u);
+  expect(stopped.state.status).toBe("restarting");
+});
+
+it("starts the engine with the old space its Home sized for it, or its own 1,024 MiB", async () => {
+  const started = async (engineOldSpaceMb?: number) => {
+    const child = Object.assign(new EventEmitter(), {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send(raw: unknown) {
+        const message = HostMessageSchema.parse(raw);
+        if (message.type === "init") child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
+        if (message.type === "stop") child.emit("exit");
+        if (message.type === "request" && message.operation === "health")
+          child.emit("message", {
+            type: "result",
+            id: message.id,
+            operation: message.operation,
+            result: { pid: 1, rss: 1, startupMs: 0 },
+          });
+      },
+    });
+    vi.mocked(fork).mockReset();
+    vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-old-space-"));
+    const service = new PluginService({
+      processEntry: new URL("file:///unused.js"),
+      databaseUrl: "postgres://unused.invalid/unused",
+      dataDirectory: directory,
+      owner: "owner",
+      credentialKey: new Uint8Array(32),
+      origin: "https://fixture.invalid",
+      ...(engineOldSpaceMb === undefined ? {} : { engineOldSpaceMb }),
+    });
+    try {
+      await service.start();
+      await service.health({}, { caller: "owner", mode: "automatic" });
+      return vi.mocked(fork).mock.calls[0]?.[2]?.execArgv;
+    } finally {
+      await service.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  };
+  expect(await started(711)).toEqual(["--max-old-space-size=711", "--max-semi-space-size=16"]);
+  expect(await started()).toEqual(["--max-old-space-size=1024", "--max-semi-space-size=16"]);
 });

@@ -88,7 +88,6 @@ export async function connectComputerAppMachine(
               environmentIds: [options.personalMain.environmentId],
               harnessDrivers: [],
               maxConcurrentRuns: 1,
-              providerStateModes: ["isolated"],
             },
           }
         : {}),

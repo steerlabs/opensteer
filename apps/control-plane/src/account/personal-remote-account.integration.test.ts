@@ -20,7 +20,7 @@ import {
   ControlPlaneAccountIdSchema,
   HostAccountAdoptionProofCredentialSchema,
   HostAccountAdoptionProofIdSchema,
-  PersonalHostAccessAuthoritySchema,
+  PersonalHostAccountAuthoritySchema,
   PersonalHostAccessRouteEnvelopeSchema,
   PersonalHostAccountLinkChallengeIdSchema,
   PersonalHostAccountLinkProofEnvelopeSchema,
@@ -561,6 +561,42 @@ integration("Personal remote Account PostgreSQL boundary", () => {
     ).resolves.toMatchObject({ id: host.authority.deploymentId });
   });
 
+  it("links a Home on its own server at its HTTPS origin and lists it there", async () => {
+    const home = "https://home.personal.test.invalid";
+    const host = hostAuthority(home);
+    const linked = await linkedPersonalHost(service, ownerA, host);
+    await expect(
+      database
+        .selectFrom("deployments")
+        .select(["canonicalOrigin", "reachability"])
+        .where("id", "=", host.authority.deploymentId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ canonicalOrigin: home, reachability: "canonical" });
+    const directory = new ControlPlaneStore(database, issuer, {
+      portalOrigin: new URL("https://connect.personal.test.invalid"),
+    });
+    // Clients reach it at its own address, as they reach a team; there is no route.
+    await expect(directory.listDeployments(ownerA)).resolves.toMatchObject([
+      {
+        access: "owner",
+        canonicalOrigin: home,
+        id: host.authority.deploymentId,
+        reachability: "canonical",
+      },
+    ]);
+    // Its link credential is what push and the hosted OAuth broker authenticate.
+    await expect(
+      directory.authenticateHostCredential(`Bearer ${linked.hostCredential}`),
+    ).resolves.toMatchObject({ deploymentId: host.authority.deploymentId });
+    await expect(
+      service.unlinkPersonalHost(`Bearer ${linked.hostCredential}`, {
+        challengeId: linked.challengeId,
+        linkGeneration: linked.linkGeneration,
+      }),
+    ).resolves.toMatchObject({ unlinked: true });
+    await expect(directory.listDeployments(ownerA)).resolves.toEqual([]);
+  });
+
   it("tombstones a Host unlink of an active link as unlinked, not cancelled", async () => {
     const host = hostAuthority();
     const linked = await linkedPersonalHost(service, ownerA, host);
@@ -876,11 +912,11 @@ integration("Personal remote Account PostgreSQL boundary", () => {
   });
 });
 
-function hostAuthority() {
+function hostAuthority(canonicalOrigin = "http://127.0.0.1:4310") {
   const keys = generateKeyPairSync("ed25519");
   const spki = keys.publicKey.export({ format: "der", type: "spki" });
-  const authority = PersonalHostAccessAuthoritySchema.parse({
-    canonicalOrigin: "http://127.0.0.1:4310",
+  const authority = PersonalHostAccountAuthoritySchema.parse({
+    canonicalOrigin,
     deploymentId: createId("deployment"),
     hostInstanceId: createId("hostInstance"),
     hostKey: {

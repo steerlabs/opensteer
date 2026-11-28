@@ -51,7 +51,7 @@ are stored by the driver.
 
 ### Models served by a model server
 
-Discovery contacts only loopback, on native-user Runners, and never sends a stored key. A fake
+Discovery contacts only loopback and never sends a stored key. A fake
 listener can imitate a server, so importing oMLX's key needs the person's explicit action, and the
 key never returns to Host or client; prefer its sub key and never read `secret_key`, which grants
 admin login. A rejected stored key never falls back to anonymous access. Pi loads custom models only
@@ -131,19 +131,13 @@ verifies it and publishes an immutable SHA-256-addressed release
 refuses the Run. Cursor's CLI MCP configuration has no per-server tool timeout, so the harness
 writes only the server URL and authorization header and cannot pin a Cursor tool-call timeout.
 
-## Shared Runner sandbox
+## Where engines run
 
-OpenCode and Pi have no per-command sandbox and refuse shared (`isolated-service`) Runners. Cursor,
-Grok, Antigravity and Muse Code refuse too, with their sign-ins and updates: their sign-ins live in
-the service account's files or keychain, so a shared Runner would spend whichever person's plan it
-holds, and Cursor API keys are no substitute because model commands can read the harness
-environment. Never advertise a sign-in whose OAuth callback port a Runner cannot reach.
-
-On shared Runners, per-command isolation keeps model commands from private credential state, and
-Linux binds only this Run's profile, Thread state, Agent home and launch directory. Native-user
-Runners omit both layers, because their owner owns the machine and credentials
-([harness-sandbox.ts](../apps/runner/src/sandbox/harness-sandbox.ts)). Boot probes must prove
-isolation, and Runner death must end inspection subprocesses too.
+Every Runner runs its engines as its own user, under each engine's own sandbox and safety modes;
+nothing asks what kind of Runner it is. OpenCode and Pi have no per-command sandbox, so their modes
+decide only what is asked about. An installed engine a computer lacks reports how to install it.
+Never advertise a sign-in whose OAuth callback port a Runner cannot reach, and Runner death must end
+inspection subprocesses too.
 
 ## Opensteer tools through the Runner
 
@@ -181,7 +175,7 @@ its own rather than inferring it from the ACP version.
 
 Providers cache the prompt as an exact prefix (tools, then system text, then history), so tool
 lists and system or developer text must be byte-identical from Run to Run; anything that changes
-per Run (time, computers, team source, reports) travels with the turn. A person's app and time
+per Run (time, computers, reports) travels with the turn. A person's app and time
 zone belong to the message they sent (`origin`), never to the person, so devices in different zones
 never overwrite each other, and a stored input renders the same header bytes whenever it is
 replayed. Codex gets application context as keyed turn values, each under its silent 1,000-token

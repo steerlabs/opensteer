@@ -1,7 +1,7 @@
 import { readTestResource } from "../server/test-host-api-request.js";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,7 @@ import {
   type ModelSelection,
   type ThreadId,
 } from "@opensteer/core";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AutomaticModelsView } from "@opensteer/protocol";
@@ -76,6 +76,7 @@ integration("Task naming through the Runner", () => {
   let stack: VerticalStack | undefined;
   const scratches: string[] = [];
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await stack?.close();
     stack = undefined;
     for (const path of scratches.splice(0))
@@ -87,6 +88,13 @@ integration("Task naming through the Runner", () => {
   async function start() {
     const scratch = await mkdtemp(join(tmpdir(), "opensteer-naming-"));
     scratches.push(scratch);
+    const codexHome = join(scratch, "codex-home");
+    await mkdir(codexHome, { recursive: true, mode: 0o700 });
+    await writeFile(
+      join(codexHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "sk-naming-fixture", auth_mode: "apikey" }),
+    );
+    vi.stubEnv("CODEX_HOME", codexHome);
     const captureFile = join(scratch, "capture.jsonl");
     const scriptFile = join(scratch, "titles.json");
     stack = await startVerticalStack({
@@ -96,7 +104,7 @@ integration("Task naming through the Runner", () => {
         config: {},
         driverKind: "codex",
         sourceId: "openai",
-        stateKind: "isolated",
+        stateKind: "ambient",
       },
       harnesses: () => {
         const registry = new HarnessRegistry();
@@ -118,7 +126,6 @@ integration("Task naming through the Runner", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
     const active = stack;
@@ -324,6 +331,42 @@ integration("Task naming through the Runner", () => {
     await f.send(unnamed, "Start with the hotel ones");
     await named(unnamed, "March receipts");
     expect((await models()).slice(8)).toEqual(["gpt-6-luna"]);
+  });
+  it("names a task whose next Run asked while its failing naming was still running", async () => {
+    // The next Run's request came while the last attempt was out (on workbench-1, during its
+    // catalog refresh): it joined that job, which ended unnamed, and nothing asked again.
+    const f = await start();
+    const last = f.hold("last-attempt");
+    await f.script({
+      "gpt-6-luna": { error: "You've hit your usage limit." },
+      "gpt-5.6-luna": { error: "Model unavailable." },
+      "gpt-5.6-sol": { error: "You've hit your usage limit.", hold: last },
+    });
+    const threadId = await f.task("Sort the receipts from March");
+    await f.send(threadId, "Sort the receipts from March");
+    await vi.waitFor(
+      async () =>
+        expect((await f.turns()).map((turn) => turn.model)).toEqual([
+          "gpt-6-luna",
+          "gpt-5.6-luna",
+          "gpt-5.6-sol",
+        ]),
+      waitOptions,
+    );
+    // The last attempt is out; the task's next Run asks for its name meanwhile.
+    await f.script({ "gpt-6-luna": { reply: "March receipts\nmail" } });
+    await f.send(threadId, "Start with the hotel ones");
+    expect(await f.thread(threadId)).toMatchObject({ titleSource: "provisional" });
+    await f.release(last);
+    await vi.waitFor(
+      async () =>
+        expect(await f.thread(threadId)).toMatchObject({
+          title: "March receipts",
+          titleSource: "generated",
+        }),
+      waitOptions,
+    );
+    expect((await f.turns()).map((turn) => turn.model).slice(3)).toEqual(["gpt-6-luna"]);
   });
   it("keeps a person's rename made while naming is in flight", async () => {
     const f = await start();

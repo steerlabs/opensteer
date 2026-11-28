@@ -1,8 +1,17 @@
 import { presentClientIssue } from "@opensteer/client/feedback";
-import { getBrowserLastPicture, rememberBrowserLastPicture } from "@opensteer/client/host";
+import {
+  browserWakeLine,
+  getBrowserLastPicture,
+  rememberBrowserLastPicture,
+} from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
 import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
-import { useBrowserPresentationWait, useBrowserTabAwake } from "@opensteer/client/react";
+import {
+  useBrowserPresentationWait,
+  useBrowserSleep,
+  useBrowserTabAwake,
+  useViewerGrace,
+} from "@opensteer/client/react";
 import type {
   BrowserCommand,
   BrowserFrameStore,
@@ -22,6 +31,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  AccessibilityInfo,
   Image,
   PanResponder,
   Platform,
@@ -35,7 +45,7 @@ import {
 } from "react-native";
 import { color, material, radius, space, type as textType } from "../theme.js";
 import { usePaneGeometry } from "../ui/pane.js";
-import { dim, exit } from "../ui/motion.js";
+import { appear, dim, exit } from "../ui/motion.js";
 import { LastPictureChip } from "../ui/last-picture-chip.js";
 import Animated from "react-native-reanimated";
 import {
@@ -52,6 +62,7 @@ import {
 } from "./browser-frame.js";
 import { nativePictureView } from "../computers/phone-display-native.js";
 import { browserPictureFence, useNativeBrowserPicture } from "./native-browser-picture.js";
+import { pictureTraceEnabled, pictureWait, tracePicture } from "./picture-trace.js";
 
 export interface BrowserStreamProps {
   /** On screen in the foreground: pictures flow while it is. */
@@ -261,16 +272,34 @@ function BrowserStreamView({
       return;
     }
   }, [active, attempt, awake, hostClient, interactive, native, session.id, sharedWatch, tabId]);
-  // Held apart from the picture, so the picture coming and going reuses this socket.
+  // Held apart from the picture, so the picture coming and going reuses this socket. Off screen
+  // it is still a viewer to the Home, which keeps the browser awake for it, so once nobody has
+  // seen the page for the grace the hold keeps only the page and its last picture, with no
+  // socket. The new hold is taken before the old one goes, so the page is never let go between.
+  const seenRecently = useViewerGrace(active);
+  const keptHold = useRef<(() => void) | null>(null);
   useEffect(() => {
-    if (!kept) return;
-    try {
-      return hostClient.retainBrowserViewer(session.id, tabId, { picture: false });
-    } catch {
-      // A Host without pictureless control reconnects when the picture returns.
-      return;
-    }
-  }, [hostClient, kept, session.id, tabId]);
+    const previous = keptHold.current;
+    keptHold.current = null;
+    if (kept)
+      try {
+        keptHold.current = hostClient.retainBrowserViewer(
+          session.id,
+          tabId,
+          seenRecently ? { picture: false } : { picture: false, connect: false },
+        );
+      } catch {
+        // A Host without pictureless control reconnects when the picture returns.
+      }
+    previous?.();
+  }, [hostClient, kept, seenRecently, session.id, tabId]);
+  useEffect(
+    () => () => {
+      keptHold.current?.();
+      keptHold.current = null;
+    },
+    [],
+  );
 
   const finish = useCallback(
     (delivery: BrowserFrameView) => {
@@ -737,23 +766,72 @@ function BrowserStreamView({
     if (shownWidth !== null && shownHeight !== null)
       onPageSize?.({ height: shownHeight, width: shownWidth });
   }, [onPageSize, shownHeight, shownWidth]);
+  // A Cloud Computer's browser waking, for the person's own view of the page; a Watch shows its
+  // last picture as it always does. Every other browser is `not-pooled` and shows nothing new.
+  const sleep = useBrowserSleep(hostClient, interactive && !sharedWatch ? (tabId ?? null) : null);
+  const pooled = sleep.browser.kind !== "not-pooled";
+  const browserWaits =
+    sleep.browser.kind === "waking" ||
+    sleep.browser.kind === "starting" ||
+    sleep.browser.kind === "restarting";
+  const pictureWaits =
+    interactive && !sharedWatch && displayed !== null && feedState !== "synchronized";
+  // A tap on the picture while it wakes is not sent, and the picture says so.
+  const [refused, setRefused] = useState(false);
+  useEffect(() => {
+    if (!pictureWaits) setRefused(false);
+  }, [pictureWaits]);
+  const wakeOnPicture =
+    pooled && pictureWaits
+      ? browserWakeLine(sleep.browser, sleep.elapsedMs, { picture: true, refused })
+      : null;
+  const wakeAlone =
+    browserWaits && displayed === null
+      ? browserWakeLine(sleep.browser, sleep.elapsedMs, { picture: false })
+      : null;
+  const wakeWords = wakeOnPicture?.text ?? wakeAlone?.text ?? null;
+  useEffect(() => {
+    if (wakeWords !== null) AccessibilityInfo.announceForAccessibility(wakeWords);
+  }, [wakeWords]);
+  // A development build says what a page that will not paint is waiting for.
+  const waiting = usePictureWait({
+    describe: () =>
+      `surface=${tabId} feed=${feed.status} ${pictureWait(
+        picture.tally,
+        frames.get(session.id, tabId) !== null,
+      )}`,
+    waiting:
+      native &&
+      drawn &&
+      ready &&
+      !sharedWatch &&
+      displayed === null &&
+      feedState === "synchronized",
+  });
   if (!requestedActive && !kept) return null;
   // The page as it last was, while it isn't arriving: marked as such, and
   // input waits for it to be readmitted. A tap there pulses the chip.
-  const stale = interactive && !sharedWatch && displayed !== null && feedState !== "synchronized";
+  const stale = pictureWaits;
   const pulse = tapped + stalePulse;
   const words = sharedWatch
     ? null
     : (presentationError ??
       leaseError ??
-      (displayed === null ? streamLabel(session.state, feedState, feedError) : null));
+      (displayed === null
+        ? browserWaits && feedError === null
+          ? (wakeAlone?.text ?? null)
+          : withPictureWait(streamLabel(session.state, feedState, feedError), waiting)
+        : null));
 
   return (
     <View
       accessibilityLabel={label}
       onTouchStart={(event) => {
         trackContacts(event.nativeEvent.touches.length);
-        if (stale) setTapped((count) => count + 1);
+        if (stale) {
+          setTapped((count) => count + 1);
+          if (pooled) setRefused(true);
+        }
       }}
       onTouchEnd={(event) => trackContacts(event.nativeEvent.touches.length)}
       onTouchCancel={(event) => {
@@ -932,8 +1010,16 @@ function BrowserStreamView({
         />
       ) : null}
       {stale ? (
-        <Animated.View entering={dim} exiting={exit} pointerEvents="none" style={styles.stale}>
-          <LastPictureChip pulse={pulse} />
+        <Animated.View
+          entering={wakeOnPicture?.dimNow ? appear : dim}
+          exiting={exit}
+          pointerEvents="none"
+          style={styles.stale}
+        >
+          <LastPictureChip
+            pulse={pulse}
+            {...(wakeOnPicture ? { label: wakeOnPicture.text } : {})}
+          />
         </Animated.View>
       ) : null}
       {words === null ? null : (
@@ -1162,3 +1248,38 @@ const styles = StyleSheet.create({
   },
   retryLabel: { ...textType.secondaryMedium, color: color.text },
 });
+
+/** How long "Loading the page…" stands before a development build says what it waits for. */
+export const pictureWaitMs = 4000;
+
+/**
+ * Development builds only: once a page has waited `pictureWaitMs` for its picture, one trace
+ * line says what it is waiting for, and the wait is returned for its label to say too.
+ */
+function usePictureWait(input: {
+  readonly describe: () => string;
+  readonly waiting: boolean;
+}): string | null {
+  const [said, setSaid] = useState<string | null>(null);
+  const describe = useRef(input.describe);
+  describe.current = input.describe;
+  const tracing = pictureTraceEnabled();
+  useEffect(() => {
+    if (!tracing || !input.waiting) {
+      setSaid(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      const line = describe.current();
+      tracePicture(`waiting ${line}`);
+      setSaid(line.replace(/^surface=\S+ feed=\S+ /u, ""));
+    }, pictureWaitMs);
+    return () => clearTimeout(timer);
+  }, [input.waiting, tracing]);
+  return input.waiting ? said : null;
+}
+
+/** "Loading the page…", and in a development build what it has waited for. */
+function withPictureWait(label: string, waiting: string | null): string {
+  return waiting === null ? label : `${label} (development: ${waiting})`;
+}

@@ -1,7 +1,7 @@
 import type { KeyObject } from "node:crypto";
 import { createServer, request } from "node:http";
 import type { Socket } from "node:net";
-import { RunnerChallengeSchema } from "@opensteer/protocol";
+import { RunnerChallengeSchema, runnerRestartingCloseCode } from "@opensteer/protocol";
 import {
   createRunnerAuthenticationSignature,
   createRunnerEnrollmentSignature,
@@ -18,6 +18,8 @@ export interface RunnerWireOptions {
    * Runner's own advertisement passes through untouched.
    */
   readonly contained?: () => boolean;
+  readonly observeAuxiliary?: true;
+  readonly shellData?: (authorization: string | undefined, socket: WebSocket) => void;
   readonly filter?: (direction: "host" | "runner", frame: WireRecord) => boolean;
 }
 
@@ -32,6 +34,7 @@ export class RunnerWire {
   #blocked = false;
   #keys = new Map<string, KeyObject>();
   #upstream: WebSocket | undefined;
+  readonly #receivers = new Map<string, WebSocket>();
 
   private constructor(port: number, options: RunnerWireOptions) {
     this.#options = options;
@@ -66,20 +69,29 @@ export class RunnerWire {
         return;
       }
       this.#websockets.handleUpgrade(incoming, socket, head, (downstream) => {
+        if (options.shellData && incoming.url === "/internal/v1/shell/data") {
+          options.shellData(incoming.headers.authorization, downstream);
+          return;
+        }
         const upstream = new WebSocket(`ws://127.0.0.1:${port}${incoming.url}`, {
           perMessageDeflate: false,
         });
         this.#connections.add(downstream);
         this.#connections.add(upstream);
         const primary = incoming.url === "/internal/v1/runners";
+        const receiver = primary
+          ? "primary"
+          : incoming.url?.match(/^\/internal\/v1\/runners\/auxiliary\/(\w+)$/u)?.[1];
         if (primary) this.#upstream = upstream;
+        if (receiver && (primary || options.observeAuxiliary))
+          this.#receivers.set(receiver, downstream);
         let challenge: z.infer<typeof RunnerChallengeSchema> | undefined;
         const pending: { readonly data: Buffer; readonly binary: boolean }[] = [];
         const forward = (destination: WebSocket, data: Buffer, binary: boolean) => {
           if (destination.readyState === WebSocket.OPEN) destination.send(data, { binary });
         };
         const frame = (direction: "host" | "runner", data: Buffer, binary: boolean) => {
-          if (binary || !primary) return data;
+          if (binary || (!primary && !(options.observeAuxiliary && receiver))) return data;
           let value = wireRecordSchema.parse(JSON.parse(data.toString()));
           if (value.type === "host.challenge") challenge = RunnerChallengeSchema.parse(value);
           if (value.type === "runner.authenticate" || value.type === "runner.enroll") {
@@ -136,10 +148,20 @@ export class RunnerWire {
           upstream.terminate();
           this.#connections.delete(downstream);
           this.#connections.delete(upstream);
+          if (receiver && this.#receivers.get(receiver) === downstream)
+            this.#receivers.delete(receiver);
         };
         downstream.on("error", end);
         upstream.on("error", end);
-        downstream.on("close", end);
+        downstream.on("close", (code, reason) => {
+          if (
+            options.observeAuxiliary &&
+            upstream.readyState === WebSocket.OPEN &&
+            code === runnerRestartingCloseCode
+          )
+            upstream.close(code, reason);
+          else end();
+        });
         upstream.on("close", end);
       });
     });
@@ -157,6 +179,12 @@ export class RunnerWire {
   }
   useKey(key: KeyObject, runnerId: string): void {
     this.#keys.set(runnerId, key);
+  }
+  sendHost(channel: string, frame: WireRecord): void {
+    const downstream = this.#receivers.get(channel);
+    if (downstream?.readyState !== WebSocket.OPEN)
+      throw new Error(`Runner ${channel} wire is disconnected`);
+    downstream.send(JSON.stringify(frame));
   }
   sendRunner(frame: WireRecord): void {
     if (this.#upstream?.readyState !== WebSocket.OPEN)

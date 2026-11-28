@@ -6,10 +6,14 @@ import {
 } from "@opensteer/core";
 import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { stat } from "node:fs/promises";
 import {
+  compareRevisionVersions,
+  compareVersions,
   EngineInstallationResolver,
   type ResolvedEngineInstallation,
 } from "./engine-installation.js";
+import { meetsMinimumVersion } from "./installed-engine.js";
 import { profileHarnessProviderStoreScope } from "./types.js";
 import type {
   HarnessAdapter,
@@ -29,7 +33,6 @@ import type {
   HarnessProviderStoreScope,
   HarnessModelCommandContext,
   HarnessProcessLaunchWrapper,
-  HarnessRuntimeBoundary,
   HarnessSourceDescriptor,
 } from "./types.js";
 
@@ -40,6 +43,19 @@ interface RegisteredDriver {
   /** One driver per executable the person's CLI was found at. */
   readonly installedDrivers: Map<string, HarnessDriver>;
   readonly readiness: HarnessDriverReadiness;
+  /** Which of the person's copies runs, as of the copies' last change on disk. */
+  choice?: InstalledChoice;
+}
+
+interface InstalledChoice {
+  /** The copies and what each file is on disk, so a change is noticed. */
+  readonly key: string;
+  /** The person's copy that runs, unless Opensteer's own copy does. */
+  readonly executable: string | undefined;
+  /** Every copy here is too old, so the copy Opensteer ships runs. */
+  readonly shipped: boolean;
+  /** The newest version found here, when Opensteer's own copy runs instead. */
+  readonly newestFound?: string;
 }
 
 interface RegistryEntry {
@@ -116,7 +132,9 @@ export class HarnessRegistry {
       ((registered.installed.scope ?? "ambient") === "ambient" && stateKind !== "ambient")
     )
       return registered.driver;
-    const executable = registered.installed.locate();
+    const choice = registered.choice;
+    if (choice?.shipped) return registered.driver;
+    const executable = choice?.executable ?? registered.installed.locate();
     if (!executable) return { unavailable: registered.installed.missing };
     let driver = registered.installedDrivers.get(executable);
     if (!driver) {
@@ -124,6 +142,70 @@ export class HarnessRegistry {
       registered.installedDrivers.set(executable, driver);
     }
     return driver;
+  }
+
+  /**
+   * Reads which copy of the person's CLI runs: the newest one at or above the
+   * engine's minimum, else, for an engine Opensteer also ships, Opensteer's
+   * own copy, else the first on PATH, whose own check then says what to
+   * update. Versions are read again only when a copy changes on disk. Every
+   * caller of `#runningDriver` awaits this first.
+   */
+  async #chooseInstalled(registered: RegisteredDriver): Promise<void> {
+    const installed = registered.installed;
+    const facts = installed?.update;
+    if (!installed?.copies || !installed.version || !facts) return;
+    const paths = installed.copies();
+    const key = (
+      await Promise.all(
+        paths.map(async (path) => {
+          const file = await stat(path).catch(() => undefined);
+          return file ? `${path}:${file.ino}:${file.size}:${file.mtimeMs}` : path;
+        }),
+      )
+    ).join("\n");
+    if (registered.choice?.key === key) return;
+    const read = (
+      await Promise.all(
+        paths.map(async (path) => ({
+          path,
+          version: await installed.version!(path).catch(() => undefined),
+        })),
+      )
+    ).flatMap(({ path, version }) => (version ? [{ path, version }] : []));
+    const compare = facts.comparison === "revision" ? compareRevisionVersions : compareVersions;
+    const newest = (copies: typeof read) =>
+      copies.reduce<(typeof read)[number] | undefined>(
+        (best, copy) => (!best || compare(copy.version, best.version) > 0 ? copy : best),
+        undefined,
+      );
+    const supported = newest(
+      read.filter(({ version }) => meetsMinimumVersion(version, facts.minimumVersion)),
+    );
+    const shipped =
+      !supported &&
+      read.length > 0 &&
+      (installed.scope ?? "ambient") === "ambient" &&
+      installed.shippedVersion !== undefined;
+    registered.choice = {
+      executable: supported?.path ?? (shipped ? undefined : paths[0]),
+      key,
+      shipped,
+      ...(shipped ? { newestFound: newest(read)!.version } : {}),
+    };
+  }
+
+  /**
+   * The one line an engine shows when Opensteer's own copy runs the person's
+   * sign-in because every copy of theirs is too old.
+   */
+  async installationNotice(kind: HarnessId): Promise<string | undefined> {
+    const registered = this.#drivers.get(kind);
+    if (!registered?.installed) return undefined;
+    await this.#chooseInstalled(registered);
+    const { choice, installed } = registered;
+    if (!choice?.shipped || !installed.update || !installed.shippedVersion) return undefined;
+    return `Using Opensteer’s own ${installed.update.executableName} ${installed.shippedVersion}: the one on this computer (${choice.newestFound}) is too old.`;
   }
 
   #availability(registered: RegisteredDriver): {
@@ -184,6 +266,7 @@ export class HarnessRegistry {
     context: HarnessModelCommandContext,
   ): Promise<HarnessProcessLaunchWrapper> {
     const registered = this.#drivers.get(kind);
+    if (registered) await this.#chooseInstalled(registered);
     const driver = registered && this.#runningDriver(registered, context.providerState.kind);
     if (driver && "unavailable" in driver) {
       throw new OpensteerError({ code: "not_found", message: driver.unavailable });
@@ -257,14 +340,22 @@ export class HarnessRegistry {
   }
 
   async driverInstallation(kind: HarnessId): Promise<ResolvedEngineInstallation | undefined> {
-    const installed = this.#drivers.get(kind)?.installed;
-    const executable = installed?.locate();
-    if (!installed?.update || !executable) return undefined;
-    return this.#installationResolver.resolve(
+    const registered = this.#drivers.get(kind);
+    const installed = registered?.installed;
+    if (!registered || !installed?.update) return undefined;
+    const notice = await this.installationNotice(kind);
+    // The copy an update reaches: the one that runs, or, while Opensteer's own
+    // runs instead, the one the person's terminal runs.
+    const executable = registered.choice?.executable ?? installed.locate();
+    if (!executable) return undefined;
+    const resolved = await this.#installationResolver.resolve(
       executable,
       installed.update,
       installed.scope ?? "ambient",
     );
+    if (!notice) return resolved;
+    const detail = [notice, resolved.descriptor.detail].filter(Boolean).join(" ");
+    return { ...resolved, descriptor: { ...resolved.descriptor, detail } };
   }
 
   /** Retires every cached object that could still point at the replaced bytes. */
@@ -286,6 +377,7 @@ export class HarnessRegistry {
         delete entry.preparationKey;
       }
       registered.installedDrivers.clear();
+      delete registered.choice;
       this.#installationResolver.invalidate(registered.installed.locate());
       return affected;
     });
@@ -299,7 +391,6 @@ export class HarnessRegistry {
   async inspectDefinition(
     definition: HarnessInstanceDefinition,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     signal: AbortSignal,
@@ -326,6 +417,7 @@ export class HarnessRegistry {
         status: "unavailable",
       };
     }
+    await this.#chooseInstalled(registered);
     const driver = this.#runningDriver(registered, definition.stateKind);
     if ("unavailable" in driver) return { detail: driver.unavailable, status: "unavailable" };
     if (!driver.inspect) {
@@ -338,7 +430,6 @@ export class HarnessRegistry {
       definition,
       parsed.data,
       environment,
-      runtimeBoundary,
       providerState,
       workingDirectory,
       driver,
@@ -356,7 +447,6 @@ export class HarnessRegistry {
       config: parsed.data,
       environment,
       providerState,
-      runtimeBoundary,
       signal,
       sourceId: definition.sourceId,
       workingDirectory,
@@ -381,7 +471,6 @@ export class HarnessRegistry {
   async authenticateDefinition(
     definition: HarnessInstanceDefinition,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     signal: AbortSignal,
@@ -399,6 +488,7 @@ export class HarnessRegistry {
             : `Harness driver ${definition.driverKind} is not installed`,
       });
     }
+    await this.#chooseInstalled(registered);
     const driver = this.#runningDriver(registered, definition.stateKind);
     if ("unavailable" in driver) {
       throw new OpensteerError({ code: "not_found", message: driver.unavailable });
@@ -414,7 +504,6 @@ export class HarnessRegistry {
       definition,
       parsedConfig,
       environment,
-      runtimeBoundary,
       providerState,
       workingDirectory,
       driver,
@@ -435,7 +524,6 @@ export class HarnessRegistry {
         config: parsedConfig,
         environment,
         providerState,
-        runtimeBoundary,
         signal,
         sourceId: definition.sourceId,
         workingDirectory,
@@ -447,7 +535,6 @@ export class HarnessRegistry {
   async logoutDefinition(
     definition: HarnessInstanceDefinition,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     signal: AbortSignal,
@@ -465,6 +552,7 @@ export class HarnessRegistry {
             : `Harness driver ${definition.driverKind} is not installed`,
       });
     }
+    await this.#chooseInstalled(registered);
     const driver = this.#runningDriver(registered, definition.stateKind);
     if ("unavailable" in driver) {
       throw new OpensteerError({ code: "not_found", message: driver.unavailable });
@@ -480,7 +568,6 @@ export class HarnessRegistry {
         config: driver.configSchema.parse(definition.config),
         environment,
         providerState,
-        runtimeBoundary,
         signal,
         sourceId: definition.sourceId,
         workingDirectory,
@@ -498,7 +585,6 @@ export class HarnessRegistry {
   async removeDefinition(
     definition: HarnessInstanceDefinition,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     signal: AbortSignal,
@@ -506,6 +592,7 @@ export class HarnessRegistry {
     await this.closeInstance(definition.id);
     const registered = this.#drivers.get(definition.driverKind);
     if (!registered || this.#availability(registered).readiness.status === "unavailable") return;
+    await this.#chooseInstalled(registered);
     const driver = this.#runningDriver(registered, definition.stateKind);
     if ("unavailable" in driver) return;
     const removeProfile = driver.removeProfile;
@@ -516,7 +603,6 @@ export class HarnessRegistry {
       config: parsed.data,
       environment,
       providerState,
-      runtimeBoundary,
       signal,
       sourceId: definition.sourceId,
       workingDirectory,
@@ -712,8 +798,15 @@ export class HarnessRegistry {
       .catch(() => undefined);
   }
 
-  async #adapter(instanceId: HarnessInstanceId): Promise<HarnessAdapter> {
+  async #adapter(instanceId: HarnessInstanceId, chosen = false): Promise<HarnessAdapter> {
     const entry = this.#instances.get(instanceId);
+    // Which copy runs is read before anything else, so the checks below and
+    // the adapter they admit stay one synchronous step.
+    const owner = entry && this.#drivers.get(entry.definition.driverKind);
+    if (!chosen && owner && !entry.adapterPromise) {
+      await this.#chooseInstalled(owner);
+      return this.#adapter(instanceId, true);
+    }
     if (!entry) {
       throw new OpensteerError({
         code: "not_found",
@@ -785,7 +878,6 @@ export class HarnessRegistry {
     definition: HarnessInstanceDefinition,
     config: unknown,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     driver: HarnessDriver,
@@ -795,7 +887,6 @@ export class HarnessRegistry {
         definition,
         config,
         environment,
-        runtimeBoundary,
         providerState,
         workingDirectory,
         driver,
@@ -807,7 +898,6 @@ export class HarnessRegistry {
     definition: HarnessInstanceDefinition,
     config: unknown,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     driver: HarnessDriver,
@@ -820,7 +910,6 @@ export class HarnessRegistry {
       config,
       environment,
       providerState,
-      runtimeBoundary,
       signal: new AbortController().signal,
       sourceId: definition.sourceId,
       workingDirectory,
@@ -833,14 +922,7 @@ export class HarnessRegistry {
     }
     const key =
       sharedKey === undefined
-        ? preparationFingerprint(
-            definition,
-            config,
-            environment,
-            runtimeBoundary,
-            providerState,
-            workingDirectory,
-          )
+        ? preparationFingerprint(definition, config, environment, providerState, workingDirectory)
         : `${definition.driverKind}\0${sharedKey}`;
     const configured = this.#instances.get(definition.id);
     const existing = this.#preparations.get(key);
@@ -888,7 +970,6 @@ export class HarnessRegistry {
           config,
           environment,
           providerState,
-          runtimeBoundary,
           signal: controller.signal,
           sourceId: definition.sourceId,
           workingDirectory,
@@ -1016,7 +1097,6 @@ function preparationFingerprint(
   definition: HarnessInstanceDefinition,
   config: unknown,
   environment: Readonly<Record<string, string>>,
-  runtimeBoundary: HarnessRuntimeBoundary,
   providerState: HarnessProviderState,
   workingDirectory: string,
 ): string {
@@ -1025,7 +1105,6 @@ function preparationFingerprint(
     definition: { ...runtimeDefinition, config },
     environment,
     providerState,
-    runtimeBoundary,
     workingDirectory,
   });
 }

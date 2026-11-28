@@ -166,6 +166,13 @@ describe("Grok normalization", () => {
     });
   });
 
+  it("does not truncate provider errors mid-secret across character 2,000 before ACP redaction (Y2)", () => {
+    const marker = "synthetic-grok-secret-7W3Q";
+    const message = `${"x".repeat(1_990)}${marker} trailing detail`;
+    const classified = grokAcpError(new Error(message), { stderrTail: "" });
+    expect(classified.message).toContain(marker);
+  });
+
   it("sends a listed effort and leaves an unlisted one to Grok's default", () => {
     const catalog = new Map([
       ["grok-4.6", { defaultValue: "high", values: ["low", "high", "xhigh"] }],
@@ -200,5 +207,14 @@ describe("Grok tool identity", () => {
         title: "opensteer_task_read",
       }),
     ).toBeUndefined();
+    expect(
+      grokToolIdentity(
+        { id: "4", title: "opensteer_command" },
+        { agentTools: { tools: ["opensteer_command"] } as HarnessSessionContext["agentTools"] },
+      ),
+    ).toEqual({
+      name: "opensteer_command",
+      namespace: "opensteer",
+    });
   });
 });

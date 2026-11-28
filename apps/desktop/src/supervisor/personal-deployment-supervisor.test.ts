@@ -40,7 +40,10 @@ import {
   PersonalPrivatePortUnavailableError,
   type PersonalLoopbackPortPort,
 } from "./personal-deployment-supervisor.js";
-import type { PersonalHostControlPort } from "./personal-host-control.js";
+import {
+  PersonalHostBootstrapRefusedError,
+  type PersonalHostControlPort,
+} from "./personal-host-control.js";
 import type {
   PersonalLocalBrowserHandle,
   PersonalLocalRuntimePort,
@@ -518,6 +521,32 @@ describe("PersonalDeploymentSupervisor", () => {
     await existing.supervisor.stop();
   });
 
+  it("starts the Host, its Runner and messaging trusting this computer's certificates and none the app's environment names", async () => {
+    const fixture = supervisorFixture(null, {
+      resolve: async () => ({ HOME: "/Users/test", PATH: "/usr/bin", ...untrustedTrustInputs }),
+    });
+    await fixture.supervisor.start();
+
+    for (const component of ["host", "runner", "messaging"] as const) {
+      const spec = fixture.processes.specs.findLast(
+        (candidate) => candidate.component === component,
+      )!;
+      expect(spec.environment.NODE_USE_SYSTEM_CA, component).toBe("1");
+      for (const name of Object.keys(untrustedTrustInputs).filter(
+        (name) => name !== "NODE_USE_SYSTEM_CA",
+      )) {
+        expect(spec.environment, component).not.toHaveProperty(name);
+        expect(spec.secretEnvironment ?? {}, component).not.toHaveProperty(name);
+      }
+    }
+    // PostgreSQL is not Node; it is started as before.
+    for (const spec of fixture.processes.specs.filter(
+      ({ component }) => component === "postgresql",
+    ))
+      expect(spec.environment).not.toHaveProperty("NODE_USE_SYSTEM_CA");
+    await fixture.supervisor.stop();
+  });
+
   it("starts native dependencies in order, keeps one owner Environment, and selects only when ready", async () => {
     const fixture = supervisorFixture(null);
     await expect(fixture.supervisor.start()).resolves.toMatchObject({
@@ -540,7 +569,6 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(config.mode).toBe("production");
     expect(config.personal).toMatchObject({
       environmentId: runner.environment.OPENSTEER_ENVIRONMENT_ID,
-      nativeFsHelperPath: fixture.releaseValue.entrypoints.nativeFsHelper,
     });
     expect(host.environment).toMatchObject({
       OPENSTEER_DEPLOYMENT_NAME: "Studio Mac",
@@ -548,6 +576,8 @@ describe("PersonalDeploymentSupervisor", () => {
       OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
     });
     expect(host.environment).not.toHaveProperty("OPENSTEER_HOST_NATIVE_FS_HELPER");
+    expect(host.environment).not.toHaveProperty("OPENSTEER_NATIVE_FS_HELPER");
+    expect(host.environment).not.toHaveProperty("OPENSTEER_RUNNER_DATA_DIR");
     expect(host.environment).not.toHaveProperty("OPENSTEER_LOCAL_WORKSPACE_ROOT");
     expect(host.environment).not.toHaveProperty("OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH");
     expect(host.secretEnvironment?.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN).toMatch(
@@ -1039,6 +1069,30 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(fixture.supervisor.status.issue?.detail).not.toContain("private-value");
   });
 
+  it("scrubs a configured proxy password from deployment status details", async () => {
+    vi.stubEnv("HTTPS_PROXY", "http://alice:p@ss/word@proxy.invalid:8080");
+    try {
+      const fixture = supervisorFixture(null);
+      fixture.host.waitForHost.mockImplementationOnce(() => new Promise(() => undefined));
+      const starting = fixture.supervisor.start();
+      await vi.waitFor(() => {
+        expect(
+          fixture.processes.children.find(({ component }) => component === "host"),
+        ).toBeDefined();
+      });
+      const host = fixture.processes.children.find(({ component }) => component === "host");
+      if (!host) throw new Error("Host test process was not created");
+      host.stderr.write("network authentication failed for password p@ss/word\n");
+      host.stderr.end();
+      host.emit("exit", 1, null);
+
+      await expect(starting).rejects.toThrow(/network authentication failed/u);
+      expect(fixture.supervisor.status.issue?.detail).toContain("password [REDACTED]");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("keeps a pinned copy before converting, and refuses the update when it cannot", async () => {
     const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
     const nextRelease = verifiedRelease({ hostVersion: "1.2.4", runnerVersion: "2.3.5" });
@@ -1137,6 +1191,26 @@ describe("PersonalDeploymentSupervisor", () => {
     await expect(starting).rejects.toThrow(/runner could not enroll/u);
     expect(fixture.supervisor.status.issue?.detail).toContain("credential=[redacted]");
     expect(fixture.supervisor.status.issue?.detail).not.toContain("private-value");
+    await fixture.supervisor.stop();
+  });
+
+  it("ends the wait for a Runner that never reports Agent home, and names what is missing", async () => {
+    const fixture = supervisorFixture(null);
+    fixture.host.waitForRunner.mockImplementationOnce(
+      (_origin, _deploymentId, _environmentId, _runnerId, _signal, onPending) => {
+        onPending?.("agent-home");
+        return new Promise(() => undefined);
+      },
+    );
+
+    await expect(fixture.supervisor.start()).rejects.toThrow(
+      "Runner did not become ready. This computer did not finish preparing its Agent home folder.",
+    );
+    expect(fixture.supervisor.status).toMatchObject({
+      issue: { code: "runner-unavailable", component: "runner" },
+      state: "repair-required",
+    });
+    expect(fixture.host.ensureAgentHome).not.toHaveBeenCalled();
     await fixture.supervisor.stop();
   });
 
@@ -1283,24 +1357,31 @@ describe("PersonalDeploymentSupervisor", () => {
 
     const messagingChildren = () =>
       fixture.processes.children.filter(({ component }) => component === "messaging");
-    const waited: number[] = [];
-    for (const generation of [1, 2]) {
-      const messaging = messagingChildren().at(-1);
-      if (!messaging) throw new Error("Messaging test process was not created");
-      messaging.stderr.write("token=private-value messaging could not enroll\n");
-      messaging.stderr.end();
-      const crashedAt = Date.now();
-      messaging.emit("exit", 1, null);
-      await vi.waitFor(() => expect(messagingChildren()).toHaveLength(generation + 1), {
-        interval: 5,
-      });
-      waited.push(Date.now() - crashedAt);
+    const scheduledDelays: number[] = [];
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      for (const generation of [1, 2]) {
+        const messaging = messagingChildren().at(-1);
+        if (!messaging) throw new Error("Messaging test process was not created");
+        messaging.stderr.write("token=private-value messaging could not enroll\n");
+        messaging.stderr.end();
+        const beforeCalls = setTimeoutSpy.mock.calls.length;
+        messaging.emit("exit", 1, null);
+        await vi.waitFor(() => expect(messagingChildren()).toHaveLength(generation + 1), {
+          interval: 5,
+        });
+        const backoffCall = setTimeoutSpy.mock.calls
+          .slice(beforeCalls)
+          .find(([, delayMs]) => typeof delayMs === "number" && delayMs >= 25);
+        scheduledDelays.push(Number(backoffCall?.[1]));
+      }
+    } finally {
+      setTimeoutSpy.mockRestore();
     }
 
-    // Exponential, not immediate: 25ms then 50ms. setTimeout is never early, so
-    // the second restart cannot clear this bound without the backoff doubling.
-    expect(waited[0]).toBeGreaterThanOrEqual(25);
-    expect(waited[1]).toBeGreaterThanOrEqual(50);
+    // Exponential, not immediate: 25ms then 50ms. Checking the delay passed to
+    // setTimeout avoids 1ms wall-clock (`Date.now()`) vs monotonic-timer skew.
+    expect(scheduledDelays).toEqual([25, 50]);
     await vi.waitFor(() => {
       expect(fixture.supervisor.status).toMatchObject({
         components: { messaging: { state: "ready" } },
@@ -1399,6 +1480,20 @@ describe("PersonalDeploymentSupervisor", () => {
      * targeted restart could lose Runs, strand the Runner, or outlive the
      * crash-loop guard.
      */
+    it("spawns the hosting Runner in the saved mode and requires a shutdown receipt", async () => {
+      const stoppedSince = "2026-11-20T09:00:00.000Z";
+      const fixture = supervisorFixture(null, undefined, undefined, undefined, {
+        agentsStoppedSince: () => stoppedSince,
+      });
+      await fixture.supervisor.start();
+      expect(specsOf(fixture, "runner")[0]!.environment.OPENSTEER_RUNNER_AGENTS_STOPPED_SINCE).toBe(
+        stoppedSince,
+      );
+      await expect(fixture.supervisor.stop()).rejects.toThrow(
+        "Personal deployment did not stop cleanly",
+      );
+    });
+
     it("restarts only a crashed Host, on its pinned origin and credentials, while the Runner keeps running", async () => {
       const fixture = supervisorFixture(null);
       await fixture.supervisor.start();
@@ -1816,6 +1911,13 @@ function supervisorFixture(
     readonly passkeys?: boolean;
     readonly dataReset?: PersonalDataReset;
     readonly files?: PersonalDeploymentFilesystemPort;
+    readonly agentsStoppedSince?: () => string | null;
+    readonly onContainedBoot?: (mode: string) => void;
+    readonly onUncontainedBoot?: (mode: string) => void;
+    readonly stopProofPollMs?: number;
+    readonly checkPluginAgentWorkStopped?: NonNullable<
+      PersonalHostControlPort["checkPluginAgentWorkStopped"]
+    >;
   } = {},
 ) {
   const lifecycle: string[] = [];
@@ -1866,6 +1968,9 @@ function supervisorFixture(
     waitForRunner: vi.fn<PersonalHostControlPort["waitForRunner"]>(async () => {
       lifecycle.push("host.waitForRunner");
     }),
+    ...(restarts.checkPluginAgentWorkStopped
+      ? { checkPluginAgentWorkStopped: restarts.checkPluginAgentWorkStopped }
+      : {}),
   } satisfies PersonalHostControlPort;
   const browsers: TestLocalBrowserHandle[] = [];
   const localRuntimes = {
@@ -1900,6 +2005,12 @@ function supervisorFixture(
       ? { userDataDirectory: "/test", syncExtensionDirectory: restarts.syncExtensionDirectory }
       : {}),
     ...(restarts.dataReset ? { dataReset: restarts.dataReset } : {}),
+    ...(restarts.agentsStoppedSince ? { agentsStoppedSince: restarts.agentsStoppedSince } : {}),
+    ...(restarts.onContainedBoot ? { onContainedBoot: restarts.onContainedBoot } : {}),
+    ...(restarts.onUncontainedBoot ? { onUncontainedBoot: restarts.onUncontainedBoot } : {}),
+    ...(restarts.stopProofPollMs !== undefined
+      ? { stopProofPollMs: restarts.stopProofPollMs }
+      : {}),
     passkeys: restarts.passkeys === true,
     allocatePort: async () => nextPort++,
     log: (event, fields) => logs.push({ event, ...fields }),
@@ -1947,6 +2058,16 @@ type SupervisorFixture = ReturnType<typeof supervisorFixture>;
 function childrenOf(fixture: SupervisorFixture, component: PersonalProcessSpec["component"]) {
   return fixture.processes.children.filter((child) => child.component === component);
 }
+
+/** Every environment name that would change what a Home service trusts. */
+const untrustedTrustInputs = {
+  NODE_EXTRA_CA_CERTS: "/tmp/inspection-root.pem",
+  NODE_OPTIONS: "--use-openssl-ca",
+  NODE_USE_SYSTEM_CA: "0",
+  OPENSSL_CONF: "/tmp/openssl.cnf",
+  SSL_CERT_DIR: "/tmp/certs",
+  SSL_CERT_FILE: "/tmp/cert.pem",
+} as const;
 
 function specsOf(fixture: SupervisorFixture, component: "host" | "runner") {
   return fixture.processes.specs.filter((spec) => spec.component === component);
@@ -2365,3 +2486,248 @@ it.each([false, true])(
     }
   },
 );
+
+it("keeps looking for Home Stop proof across transient faults and Home restarts, ends when Home changes or is removed, and fails on permanent refusal", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  const seenOrigins: string[] = [];
+  let checks = 0;
+  let mode: "slow-then-restart" | "refuse" | "remove" | "replace" = "slow-then-restart";
+
+  let fixture!: ReturnType<typeof supervisorFixture>;
+  fixture = supervisorFixture(
+    null,
+    undefined,
+    verifiedRelease(),
+    { assertAvailable: async () => undefined },
+    {
+      restartBackoffMs: 5,
+      stopProofPollMs: 5,
+      checkPluginAgentWorkStopped: vi.fn(async (origin, _dep, _env, _runner, since) => {
+        expect(since).toBe(stoppedSince);
+        seenOrigins.push(origin);
+        checks += 1;
+        if (mode === "refuse") {
+          throw new PersonalHostBootstrapRefusedError("unauthorized", "Sign in required");
+        }
+        if (mode === "slow-then-restart") {
+          if (checks === 1) throw new Error("transient fault while Home restarts");
+          // Wait until the crashed Host has restarted and reported ready again.
+          return (
+            childrenOf(fixture, "host").length >= 2 && fixture.supervisor.status.state === "ready"
+          );
+        }
+        return false;
+      }),
+    },
+  );
+
+  try {
+    // 1. Before any hosted Home exists: resolves true (nothing more to prove).
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).resolves.toBe(true);
+
+    // 2. Start Home, begin looking for proof, restart Home mid-look, confirm once restarted.
+    await fixture.supervisor.start();
+    const looking = fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal);
+    await vi.waitFor(() => expect(checks).toBeGreaterThanOrEqual(2));
+    // Crash the Host process so the supervisor restarts it mid-look.
+    childrenOf(fixture, "host")[0]!.emit("exit", 1, null);
+    await expect(looking).resolves.toBe(true);
+    expect(childrenOf(fixture, "host").length).toBeGreaterThanOrEqual(2);
+    expect(seenOrigins.length).toBeGreaterThanOrEqual(3);
+
+    // 3. Permanent Home refusal rethrows PersonalHostBootstrapRefusedError.
+    mode = "refuse";
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).rejects.toBeInstanceOf(PersonalHostBootstrapRefusedError);
+
+    // 4. Replaced Home (manifest deploymentId changes mid-look): follows the new Home and asks it.
+    mode = "replace";
+    const originalLoad = fixture.files.load.bind(fixture.files);
+    const replacementDeploymentId = createId("deployment");
+    const askedDeployments: string[] = [];
+    let loadCount = 0;
+    const loadSpy = vi.spyOn(fixture.files, "load").mockImplementation(async () => {
+      const current = await originalLoad();
+      loadCount += 1;
+      if (!current) return null;
+      return loadCount >= 2 ? { ...current, deploymentId: replacementDeploymentId } : current;
+    });
+    vi.mocked(fixture.host.checkPluginAgentWorkStopped!).mockImplementation(
+      async (_origin, depId) => {
+        askedDeployments.push(depId);
+        return depId === replacementDeploymentId;
+      },
+    );
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).resolves.toBe(true);
+    expect(askedDeployments).toContain(replacementDeploymentId);
+    loadSpy.mockRestore();
+
+    // 5. Removed Home (manifest becomes null mid-look): nothing left to prove, resolves true.
+    mode = "remove";
+    let removeCount = 0;
+    const removeSpy = vi.spyOn(fixture.files, "load").mockImplementation(async () => {
+      removeCount += 1;
+      return removeCount >= 2 ? null : originalLoad();
+    });
+    vi.mocked(fixture.host.checkPluginAgentWorkStopped!).mockResolvedValue(false);
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).resolves.toBe(true);
+    removeSpy.mockRestore();
+  } finally {
+    await fixture.supervisor.stop();
+  }
+});
+
+it("paces waitForStopProof from 250 ms doubling up to a 5 s cap", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  let checks = 0;
+  const fixture = supervisorFixture(
+    null,
+    undefined,
+    verifiedRelease(),
+    { assertAvailable: async () => undefined },
+    {
+      checkPluginAgentWorkStopped: vi.fn(async () => {
+        checks += 1;
+        return checks >= 8;
+      }),
+    },
+  );
+
+  await fixture.supervisor.start();
+  try {
+    vi.useFakeTimers();
+    const pending = fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal);
+
+    // Poll 1 fires immediately.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(checks).toBe(1);
+
+    // Subsequent delays: 250, 500, 1000, 2000, 4000, 5000, 5000.
+    for (const [expectedStep, delayMs] of [
+      [2, 250],
+      [3, 500],
+      [4, 1_000],
+      [5, 2_000],
+      [6, 4_000],
+      [7, 5_000],
+      [8, 5_000],
+    ] as const) {
+      await vi.advanceTimersByTimeAsync(delayMs - 1);
+      expect(checks).toBe(expectedStep - 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(checks).toBe(expectedStep);
+    }
+
+    await expect(pending).resolves.toBe(true);
+  } finally {
+    vi.useRealTimers();
+    await fixture.supervisor.stop();
+  }
+});
+
+it("reports positive and negative boot containment outcomes under a saved Stop", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  for (const contained of [true, false]) {
+    const onContainedBoot = vi.fn();
+    const onUncontainedBoot = vi.fn();
+    const dir = await mkdtemp(path.join(tmpdir(), "opensteer-boot-contain-"));
+    const fixture = supervisorFixture(
+      null,
+      undefined,
+      verifiedRelease(),
+      { assertAvailable: async () => undefined },
+      {
+        agentsStoppedSince: () => stoppedSince,
+        onContainedBoot,
+        onUncontainedBoot,
+      },
+    );
+    Object.assign(fixture.files.paths, { runnerDataDirectory: dir });
+    const originalSpawn = fixture.processes.spawn.bind(fixture.processes);
+    vi.spyOn(fixture.processes, "spawn").mockImplementation((spec) => {
+      const receipt = spec.environment.OPENSTEER_RUNNER_SHUTDOWN_RECEIPT;
+      if (spec.component === "runner" && receipt) {
+        const readyPayload = JSON.stringify({
+          port: 43210,
+          token: crypto.randomUUID(),
+          earlierBootsContained: contained,
+        });
+        void mkdir(path.dirname(receipt), { recursive: true }).then(() =>
+          writeFile(receipt, readyPayload, "utf8"),
+        );
+      }
+      return originalSpawn(spec);
+    });
+    try {
+      await fixture.supervisor.start();
+      if (contained) {
+        await vi.waitFor(() =>
+          expect(onContainedBoot).toHaveBeenCalledExactlyOnceWith(stoppedSince),
+        );
+        expect(onUncontainedBoot).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(() =>
+          expect(onUncontainedBoot).toHaveBeenCalledExactlyOnceWith(stoppedSince),
+        );
+        expect(onContainedBoot).not.toHaveBeenCalled();
+      }
+    } finally {
+      await fixture.supervisor.stop().catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+it("returns false when shutting down while looking for Stop proof so DesktopLocalStop never logs confirmation without proof", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  const firstCheck = Promise.withResolvers<void>();
+  const releaseCheck = Promise.withResolvers<boolean>();
+  const fixture = supervisorFixture(
+    null,
+    undefined,
+    verifiedRelease(),
+    { assertAvailable: async () => undefined },
+    {
+      stopProofPollMs: 5,
+      checkPluginAgentWorkStopped: vi.fn(async () => {
+        firstCheck.resolve();
+        return releaseCheck.promise;
+      }),
+    },
+  );
+  const log = vi.fn();
+  const { DesktopLocalStop } = await import("../app/local-stop.js");
+  const localStop = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
+    restart: async () => {},
+    confirm: (since, signal) => fixture.supervisor.waitForStopProof(since, signal),
+    log,
+    now: () => new Date(stoppedSince),
+  });
+
+  await fixture.supervisor.start();
+  try {
+    await localStop.restore();
+    await localStop.stop();
+    await firstCheck.promise;
+    expect(localStop.confirming).toBe(true);
+
+    // Supervisor begins shutting down BEFORE localStop.dispose() aborts its controller.
+    fixture.supervisor.quiesce();
+    releaseCheck.resolve(false);
+
+    await vi.waitFor(() => expect(localStop.confirming).toBe(false));
+    expect(localStop.stoppedAt).toBeNull();
+    expect(log).not.toHaveBeenCalledWith("desktop.local-stop.home-confirmed", expect.anything());
+  } finally {
+    localStop.dispose();
+    await fixture.supervisor.stop();
+  }
+});

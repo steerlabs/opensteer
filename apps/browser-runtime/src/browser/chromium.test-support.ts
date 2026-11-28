@@ -167,11 +167,7 @@ async function startFollowSession(
   if (!root) throw new Error("Missing root page");
   const rootTargetId = await root.targetId();
   const files = new SessionFiles(join(tmpdir(), `opensteer-follow-files-${randomUUID()}`));
-  const cdpRouter = new SessionCdpRouter(
-    browser.cdp,
-    undefined,
-    browser.clipboard?.machineClipboardShared !== false,
-  );
+  const cdpRouter = new SessionCdpRouter(browser.cdp);
   cleanup.push(() => cdpRouter.close());
   const ledger = new SurfaceLedger(context, {
     claimTarget: (targetId) => cdpRouter.claimTarget(claims.sessionId, targetId),
@@ -246,7 +242,10 @@ async function startFollowSession(
         parameters,
         sessionId,
       ),
+    browser,
+    cdpRouter,
     claims,
+    files,
     closeBrowser: () => browser.close(),
     /** Every command the platform sent the page, in order. */
     commands: (surfaceId: BrowserSurfaceId) => {

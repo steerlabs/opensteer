@@ -140,7 +140,8 @@ export function CredentialForm({
                 onClick={() => onOidc(provider.id)}
                 type="button"
               >
-                Continue with {provider.label}
+                Continue with{" "}
+                {provider.id === "opensteer-account" ? "Opensteer account" : provider.label}
                 {primary ? <Icon name="arrow-right" /> : null}
               </button>
             );

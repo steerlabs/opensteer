@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import type { TabId } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -147,8 +147,13 @@ const outside = [
   "Inventory sync",
 ];
 
-async function mount(screen: "tabs" | "sheet" = "tabs") {
-  const host = new MockHostClient({ automations: "absent", latencyMs: 0 });
+async function mount(screen: "tabs" | "sheet" = "tabs", sharedChrome = false) {
+  const host = new MockHostClient({
+    automations: "absent",
+    latencyMs: 0,
+    ...(sharedChrome ? mockConnectedAgents("seeded") : {}),
+  });
+  if (sharedChrome) host.mockAgentWork();
   hosts.push(host);
   await host.load();
   // The world holds still: an agent acts in a tab only when this test says so.
@@ -236,6 +241,39 @@ async function barMenu(): Promise<HTMLElement> {
 }
 
 describe("one mixed list", () => {
+  it.each([390, 1440])(
+    "names a shared Chrome tab and its connected agent at %d px",
+    async (width) => {
+      const viewport = vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
+      try {
+        const { host, container } = await mount("tabs", true);
+        const tab = [...host.getSnapshot().tabs.rows.values()].find((tab) => tab.sharedByPerson)!;
+        const shown = row(container, `Chrome · ${tab.title}`);
+        expect(shown.textContent).toContain(`Shared from ${tab.computer.name}`);
+        expect(shown.textContent).toContain("Used by Grok");
+      } finally {
+        viewport.mockRestore();
+      }
+    },
+  );
+
+  // A list it had shown went under the connecting gate when the connection dropped: the Host's
+  // client keeps the rows and marks the inventory no longer known complete (`syncing`), and the
+  // screen took "syncing and not ready" for "never listed".
+  it("keeps the tabs it holds in view while the connection comes back", async () => {
+    const { container, host } = await mount();
+    expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);
+    await act(async () => {
+      host.goOffline();
+      // What the Host's client does when its tab reads fall behind: rows stay, not complete.
+      host.getSnapshot().tabs.markInventoryStale();
+    });
+    expect(host.getSnapshot().tabs.syncing).toBe(true);
+    expect(host.connection.getSnapshot().phase).not.toBe("ready");
+    expect(container.querySelector('[data-gate="connection"]')).toBeNull();
+    expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);
+  });
+
   it("keeps every kind in the Host's one order, inside its group, and says why a tab can't open", async () => {
     const { container } = await mount();
     expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);

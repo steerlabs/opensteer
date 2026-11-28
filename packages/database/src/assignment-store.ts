@@ -5,6 +5,8 @@ import { transcriptPreview } from "./transcript-store.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
+import { connectionRequests } from "./request-agent-response.js";
+import type { ThreadCallerAuthority } from "./thread-caller.js";
 
 import { revokeRunGrants, type RevokedRunGrant } from "./run-grants.js";
 import {
@@ -38,6 +40,12 @@ import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projecti
 import { runReply } from "./run-reply.js";
 const assignmentResultPreviewMaxBytes = 8 * 1_024;
 const truncatedReplyNote = "\n\n[Reply truncated. The full reply is in the task.]";
+interface AssignmentSummaryOptions {
+  readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+  readonly ownerVerified?: boolean;
+  readonly scope?: "everything" | "selected";
+}
+
 function buildAssignmentSummary(
   row: Selectable<DelegationTable>,
   worker: {
@@ -96,6 +104,7 @@ function buildAssignmentSummary(
 export async function assignmentSummariesInTransaction(
   transaction: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   rows: readonly Selectable<DelegationTable>[],
+  options?: AssignmentSummaryOptions,
 ): Promise<AssignmentSummary[]> {
   if (rows.length === 0) return [];
   const childThreadIds = [...new Set(rows.map((row) => row.childThreadId))];
@@ -103,10 +112,36 @@ export async function assignmentSummariesInTransaction(
   const parentRunIds = [
     ...new Set(rows.map((row) => row.parentRunId).filter((id): id is RunId => id !== null)),
   ];
+  const visibleRequests = options?.connectionAuthority
+    ? await connectionRequests(
+        transaction as Transaction<DatabaseSchema>,
+        options.connectionAuthority,
+        {
+          ownerVerified: options.ownerVerified ?? true,
+          ...(options.scope ? { scope: options.scope } : {}),
+        },
+      )
+    : undefined;
   const [workers, currentRuns, parentRuns] = await Promise.all([
     transaction
       .selectFrom("threads")
-      .select(["environmentId", "id", "title", "icon", "color", "status", "pendingRequestCount"])
+      .select([
+        "environmentId",
+        "id",
+        "title",
+        "icon",
+        "color",
+        "status",
+        ...(visibleRequests
+          ? [
+              sql<number>`(
+                select count(*)::int from (${visibleRequests}) as visible_requests
+                where visible_requests.originating_thread_id = threads.id
+                  and visible_requests.status = 'pending'
+              )`.as("pendingRequestCount"),
+            ]
+          : (["pendingRequestCount"] as const)),
+      ])
       .where("id", "in", childThreadIds)
       .execute(),
     transaction
@@ -150,8 +185,9 @@ export async function assignmentSummariesInTransaction(
 export async function assignmentSummaryInTransaction(
   transaction: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   row: Selectable<DelegationTable>,
+  options?: AssignmentSummaryOptions,
 ): Promise<AssignmentSummary> {
-  const [summary] = await assignmentSummariesInTransaction(transaction, [row]);
+  const [summary] = await assignmentSummariesInTransaction(transaction, [row], options);
   return summary!;
 }
 

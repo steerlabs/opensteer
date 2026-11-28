@@ -1,10 +1,15 @@
 import { deleteTerminalRunReceipts } from "./personal-runner-receipts.js";
 import { drainAssignmentCancellation } from "./assignment-store.js";
-import { drainRevokedChannelInputs } from "./channel-store.js";
-import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
+import {
+  commitPersonalMutation,
+  wakeExecutionCommands,
+  wakeTriggerSchedules,
+  wakeWatches,
+} from "./personal-mutation.js";
 import { executionDate } from "./personal-transaction.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
+
 import { recoverLostRunTransaction } from "./run-recovery.js";
 import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
 import "./connection.js";
@@ -19,6 +24,7 @@ import {
   type RunnerId,
   createId,
   OpensteerError,
+  runTerminationUnprovenCode,
 } from "@opensteer/core";
 import { type Kysely, type Transaction, sql } from "kysely";
 import {
@@ -38,7 +44,12 @@ import {
 import { endStoppedUnconfirmedRun, finalizeRunTransaction } from "./run-finalization.js";
 import { revokeRunGrants, runWasStopped, type RevokedRunGrant } from "./run-grants.js";
 import { cancelPending } from "./request-store.js";
-import { publishExecutionInput, updateExecutionThread } from "./execution-changes.js";
+import {
+  publishExecutionInput,
+  publishTranscriptRun,
+  updateExecutionThread,
+} from "./execution-changes.js";
+import { projectThreadState, publishRunQueue } from "./thread-status.js";
 import { ensureQueuedRun } from "./thread-inbox.js";
 export interface RecoveredRunTarget {
   readonly environmentId: EnvironmentId;
@@ -273,7 +284,6 @@ export async function failRunForRefusedRunnerEvent(
   });
 }
 export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>): Promise<void> {
-  await drainRevokedChannelInputs(database);
   const obsolete = await database
     .selectFrom("runs")
     .innerJoin("threadInputs", "threadInputs.messageId", "runs.seedInputId")
@@ -364,7 +374,7 @@ export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>):
         .selectAll()
         .where("id", "=", run.threadId)
         .executeTakeFirstOrThrow();
-      await ensureQueuedRun(transaction, thread);
+      await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });
       await updateExecutionThread(transaction, thread.id, now);
     });
   }
@@ -384,7 +394,7 @@ export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>):
         .selectAll()
         .where("id", "=", threadId)
         .executeTakeFirstOrThrow();
-      await ensureQueuedRun(transaction, thread);
+      await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });
     });
   }
 }
@@ -483,6 +493,18 @@ export async function recoverCommandsAfterHostRestart(
         .where("runs.id", "=", command.runId)
         .forNoKeyUpdate("runs")
         .executeTakeFirst();
+      // Claimed with a terminal failure the stopped Host never recorded (an ended connection, a
+      // sender no longer "me"): the claim left the Run queued, so nothing reached a Runner. It
+      // goes back to pending, and the next claim decides and records its end.
+      if (run?.status === "queued" && !run.finishIntent) {
+        await transaction
+          .updateTable("commands")
+          .set({ dispatcherId: null, status: "pending", updatedAt: new Date() })
+          .where("id", "=", id)
+          .where("status", "=", "dispatched")
+          .execute();
+        return null;
+      }
       if (run?.status !== "starting" || run.finishIntent) return null;
       await lockThreadRow(transaction, run.threadId);
       const session = await lockThreadProviderSession(
@@ -556,9 +578,12 @@ export async function attachRunnerExecutions(
     /** Runs this Host is dispatching now; their dispatch settles them. */
     readonly dispatchingRunIds: readonly RunId[];
     readonly executions: readonly AnnouncedExecution[];
+    readonly stoppedComputerName?: string;
     readonly leaseExpiresAt: Date;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
+    /** False when attach already confirmed this Runner has no unconfirmed stops or held Runs. */
+    readonly checkUnconfirmedStops?: boolean;
   },
   onRevoked: (grants: readonly RevokedRunGrant[]) => void,
   executionNow: () => number = Date.now,
@@ -717,13 +742,295 @@ export async function attachRunnerExecutions(
     [...held, ...input.dispatchingRunIds],
     onRevoked,
     executionNow,
+    input.stoppedComputerName,
   );
   revokedGrants.push(...lost.revokedGrants);
+  if (input.checkUnconfirmedStops !== false) {
+    await reconcileUnconfirmedStopsOnAttach(database, {
+      runnerBootId: input.runnerBootId,
+      runnerId: input.runnerId,
+      confirmedAt: now,
+    });
+  }
   return {
     resumed,
     results,
     revokedGrants,
   };
+}
+
+/**
+ * One rule for lifting a stop hold across Runner boots: an earlier boot's
+ * unproven attempt is proven gone ONLY when the same Runner's newer boot
+ * verified earlier-boot containment (`earlierBootsContained`), or when both
+ * sides report distinct OS machine boot IDs (nothing of the old OS boot can
+ * still be alive). Never lifts on an empty map or reconnect alone.
+ */
+export function earlierBootProvenContained(input: {
+  readonly attemptRunnerId: RunnerId | null;
+  readonly attemptRunnerBootId: string | null;
+  readonly attemptMachineBootId: string | null;
+  readonly currentRunnerId: RunnerId;
+  readonly currentRunnerBootId: string;
+  readonly currentMachineBootId: string | null;
+  readonly earlierBootsContained: boolean;
+}): boolean {
+  if (
+    !input.attemptRunnerId ||
+    input.attemptRunnerId !== input.currentRunnerId ||
+    !input.attemptRunnerBootId ||
+    input.attemptRunnerBootId === input.currentRunnerBootId
+  ) {
+    return false;
+  }
+  if (input.earlierBootsContained) return true;
+  return (
+    input.attemptMachineBootId !== null &&
+    input.currentMachineBootId !== null &&
+    input.attemptMachineBootId !== input.currentMachineBootId
+  );
+}
+
+export interface ThreadUnconfirmedStop {
+  readonly runId: RunId;
+  readonly runnerId: RunnerId | null;
+  readonly runnerBootId: string | null;
+  readonly machineBootId: string | null;
+}
+
+/** Reads the unresolved unproven-stop Run and its owning attempt's boot identity, if any. */
+export async function readThreadUnconfirmedStop(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+): Promise<ThreadUnconfirmedStop | null> {
+  const thread = await database
+    .selectFrom("threads")
+    .select("unconfirmedStopRunId")
+    .where("id", "=", threadId)
+    .executeTakeFirst();
+  if (!thread?.unconfirmedStopRunId) return null;
+  const attempt = await database
+    .selectFrom("runAttempts")
+    .select(["runnerId", "runnerBootId", "machineBootId"])
+    .where("runId", "=", thread.unconfirmedStopRunId)
+    .where("bindingGeneration", "is not", null)
+    .orderBy("ordinal", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  return {
+    runId: thread.unconfirmedStopRunId,
+    runnerId: attempt?.runnerId ?? null,
+    runnerBootId: attempt?.runnerBootId ?? null,
+    machineBootId: attempt?.machineBootId ?? null,
+  };
+}
+
+/**
+ * Promotes an unproven-stop Run to `interrupted` with `stopConfirmedAt`, clears
+ * the thread's `unconfirmedStopRunId`, lifts queued `previous-stop-unconfirmed`
+ * holds, and wakes dispatch. Obeys canonical lock order: `runs -> threads ->
+ * provider_sessions -> run_attempts`.
+ */
+export async function confirmThreadUnconfirmedStop(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+  runId: RunId,
+  confirmedAt = new Date(),
+): Promise<boolean> {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
+    const heldRows = await transaction
+      .selectFrom("runs")
+      .select("id")
+      .where("threadId", "=", threadId)
+      .where("status", "=", "queued")
+      .where("startHoldReason", "=", "previous-stop-unconfirmed")
+      .execute();
+    const lockRunIds = [...new Set<RunId>([runId, ...heldRows.map(({ id }) => id)])].sort();
+    const locked = await transaction
+      .selectFrom("runs")
+      .select(["id", "status", "failure", "providerSessionId", "startHoldReason"])
+      .where("id", "in", lockRunIds)
+      .orderBy("id", "asc")
+      .forNoKeyUpdate()
+      .execute();
+    const unproven = locked.find((row) => row.id === runId);
+    const heldIds = locked
+      .filter(
+        (row) => row.status === "queued" && row.startHoldReason === "previous-stop-unconfirmed",
+      )
+      .map((row) => row.id);
+    const shouldPromote =
+      unproven !== undefined &&
+      unproven.status === "failed" &&
+      unproven.failure?.code === runTerminationUnprovenCode;
+    if (shouldPromote) {
+      await transaction
+        .updateTable("runs")
+        .set({
+          status: "interrupted",
+          failure: null,
+          completedAt: confirmedAt,
+          stopConfirmedAt: confirmedAt,
+          runnerSafetyTerminal: true,
+          revision: mutation.sequence,
+        })
+        .where("id", "=", runId)
+        .executeTakeFirstOrThrow();
+    }
+    if (heldIds.length > 0) {
+      await transaction
+        .updateTable("runs")
+        .set({
+          startHoldReason: null,
+          revision: mutation.sequence,
+        })
+        .where("id", "in", heldIds)
+        .execute();
+    }
+    await lockThreadRow(transaction, threadId);
+    const clearedThread = await transaction
+      .updateTable("threads")
+      .set({ unconfirmedStopRunId: null })
+      .where("id", "=", threadId)
+      .where("unconfirmedStopRunId", "=", runId)
+      .returning("environmentId")
+      .executeTakeFirst();
+    if (shouldPromote && unproven.providerSessionId) {
+      await transaction
+        .updateTable("providerSessions")
+        .set({
+          status: "ready",
+          updatedAt: confirmedAt,
+        })
+        .where("id", "=", unproven.providerSessionId)
+        .where("status", "=", "broken")
+        .execute();
+    }
+    if (shouldPromote) {
+      await transaction
+        .updateTable("runAttempts")
+        .set({
+          outcome: "interrupted",
+          endedAt: confirmedAt,
+          terminalEvidenceAt: confirmedAt,
+          contactLostAt: null,
+        })
+        .where("runId", "=", runId)
+        .where("status", "=", "current")
+        .execute();
+    }
+    const changed = shouldPromote || heldIds.length > 0 || clearedThread !== undefined;
+    if (!changed) return false;
+    await projectThreadState(transaction, threadId, confirmedAt, true);
+    if (shouldPromote) await publishTranscriptRun(transaction, mutation, runId);
+    await publishRunQueue(transaction, threadId);
+    if (clearedThread) {
+      await wakeTriggerSchedules(transaction);
+      await wakeWatches(transaction, clearedThread.environmentId);
+    }
+    return true;
+  });
+}
+
+async function reconcileUnconfirmedStopsOnAttach(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly runnerBootId: string;
+    readonly runnerId: RunnerId;
+    readonly confirmedAt: Date;
+  },
+): Promise<void> {
+  const threads = await database
+    .selectFrom("threads")
+    .innerJoin("executionEnvironments", "executionEnvironments.id", "threads.environmentId")
+    .select(["threads.id", "threads.unconfirmedStopRunId", "threads.runStartHoldReason"])
+    .where("executionEnvironments.runnerId", "=", input.runnerId)
+    .where((eb) =>
+      eb.or([
+        eb("threads.unconfirmedStopRunId", "is not", null),
+        eb("threads.runStartHoldReason", "=", "previous-stop-unconfirmed"),
+      ]),
+    )
+    .execute();
+  if (threads.length === 0) return;
+  const runner = await database
+    .selectFrom("runners")
+    .select(["capabilities", "machineBootId"])
+    .where("id", "=", input.runnerId)
+    .executeTakeFirst();
+  if (!runner) return;
+  const earlierBootsContained = runner.capabilities.includes("earlier-boots-contained-v1");
+  const currentMachineBootId = runner.machineBootId;
+  for (const thread of threads) {
+    if (!thread.unconfirmedStopRunId) {
+      // No unresolved unproven-stop Run remains on the thread: lift any stale queued hold
+      // only if this Runner verified earlier-boot containment.
+      if (earlierBootsContained) await clearThreadStartHold(database, thread.id);
+      continue;
+    }
+    const attempt = await database
+      .selectFrom("runAttempts")
+      .select(["runnerId", "runnerBootId", "machineBootId"])
+      .where("runId", "=", thread.unconfirmedStopRunId)
+      .where("bindingGeneration", "is not", null)
+      .orderBy("ordinal", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (
+      earlierBootProvenContained({
+        attemptRunnerId: attempt?.runnerId ?? null,
+        attemptRunnerBootId: attempt?.runnerBootId ?? null,
+        attemptMachineBootId: attempt?.machineBootId ?? null,
+        currentRunnerId: input.runnerId,
+        currentRunnerBootId: input.runnerBootId,
+        currentMachineBootId,
+        earlierBootsContained,
+      })
+    ) {
+      await confirmThreadUnconfirmedStop(
+        database,
+        thread.id,
+        thread.unconfirmedStopRunId,
+        input.confirmedAt,
+      );
+    }
+  }
+}
+
+/** Lifts `previous-stop-unconfirmed` holds on queued Runs of a thread and wakes dispatch. */
+export async function clearThreadStartHold(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+): Promise<boolean> {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
+    // Lock held `runs` rows before `threads` (canonical lock order: runs -> threads).
+    const held = await transaction
+      .selectFrom("runs")
+      .select("id")
+      .where("threadId", "=", threadId)
+      .where("status", "=", "queued")
+      .where("startHoldReason", "=", "previous-stop-unconfirmed")
+      .orderBy("id", "asc")
+      .forNoKeyUpdate()
+      .execute();
+    if (held.length === 0) return false;
+    await transaction
+      .updateTable("runs")
+      .set({
+        startHoldReason: null,
+        revision: mutation.sequence,
+      })
+      .where(
+        "id",
+        "in",
+        held.map(({ id }) => id),
+      )
+      .execute();
+    await lockThreadRow(transaction, threadId);
+    await projectThreadState(transaction, threadId);
+    await publishRunQueue(transaction, threadId);
+    return true;
+  });
 }
 async function recoverLostExecutions(
   database: Kysely<DatabaseSchema>,
@@ -733,6 +1040,7 @@ async function recoverLostExecutions(
   excludedRunIds: readonly RunId[],
   onRevoked: (grants: readonly RevokedRunGrant[]) => void,
   executionNow: () => number = Date.now,
+  stoppedComputerName?: string,
 ): Promise<{
   readonly revokedGrants: readonly RevokedRunGrant[];
 }> {
@@ -792,6 +1100,23 @@ async function recoverLostExecutions(
         };
       }
       const now = new Date(executionNow());
+      if (stoppedComputerName && session.runnerBootId !== runnerBootId) {
+        await finalizeRunTransaction(transaction, {
+          completedAt: now,
+          failure: {
+            code: "computer_stopped",
+            message: `Stopped on ${stoppedComputerName}.`,
+            retryable: false,
+            status: "failed",
+          },
+          links,
+          queuedInputCancellation: "seed-input",
+          runId: run.id,
+          source: "host",
+          status: "failed",
+        });
+        return { revokedGrants: [] };
+      }
       const recovery = lostExecutionRecovery({
         expired: !session.leaseExpiresAt || session.leaseExpiresAt <= now,
         restarted: session.runnerBootId !== runnerBootId,

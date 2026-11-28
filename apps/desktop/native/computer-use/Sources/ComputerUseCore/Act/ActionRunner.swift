@@ -185,8 +185,8 @@ public enum ActionRunner {
     let overlay: OverlayController?
     let budget: WorkBudget
     var accessibility: AccessibilityCalls = .live
-    /// Where a write's ripple, nudge or pulse is shown: the overlay, or a
-    /// test's recorder.
+    /// Where a write's feedback is shown: the overlay (a ring where a click
+    /// lands), or a test's recorder.
     var feedback: (any ActionFeedback)? = nil
     var requireUnlocked: @Sendable () throws -> Void = { try HelperRuntime.requireUnlocked() }
     var savedCheck: @Sendable () throws -> Void = {}
@@ -281,7 +281,7 @@ public enum ActionRunner {
     /// Between the steps of one action: `Stop`, the clocks, and the process.
     ///
     /// Every route calls it immediately before the call that changes the
-    /// app — after any Accessibility read, pointer travel or other hop that
+    /// app — after any Accessibility read, overlay update or other hop that
     /// could have waited — so a `Stop` or a deadline that lands while the
     /// route was still looking is honoured before anything is changed.
     @WorkActor func checkStep(_ binding: Binding, restarted: String) throws {
@@ -306,10 +306,11 @@ public enum ActionRunner {
     }
 
     /// The step check, then what the person sees for the write about to
-    /// happen, so a step `Stop` ended shows no ripple for a click that never
+    /// happen, so a step `Stop` ended shows no ring for a click that never
     /// came. Showing it hops to the main actor, so the check runs again
-    /// after it, immediately before the write. A click or a scroll is drawn
-    /// only where the pointer is; a pulse goes wherever there is a pointer.
+    /// after it, immediately before the write. A click or a scroll is shown
+    /// only in a window on the Space being shown; a pulse is reported
+    /// wherever it happens (the overlay draws a ring for clicks alone).
     @WorkActor func checkStep(_ binding: Binding, restarted: String, showing shown: OverlayFeedback)
       async throws
     {
@@ -318,6 +319,14 @@ public enum ActionRunner {
       await feedback.show(shown, in: app)
       try checkStep(binding, restarted: restarted)
     }
+  }
+
+  /// The person's Stop goes on the very window an action was verified
+  /// against before anything reaches the app, and a Stop pressed there from
+  /// then on stops the action: the check comes after the chip is on it.
+  static func showStop(on binding: Binding, _ context: Context) async throws {
+    await context.overlay?.bind(app: context.app.key, window: binding.keyWindow.windowID)
+    try context.cancellation.check()
   }
 
   /// Returns what the action did, in the words `performed` carries.
@@ -337,13 +346,28 @@ public enum ActionRunner {
       check: {
         try context.cancellation.check(); try context.budget.check()
       }, isHidden: context.isHidden)
+    try await showStop(on: binding, context)
 
-    // The app is in the guard's care before anything reaches it, whatever the
-    // route: a menu that an AXPress opens takes the keyboard too.
-    guard context.app.focus.enforcer(for: processIdentifier) != nil else {
+    return try await inAct(context, processIdentifier: processIdentifier) {
+      try await perform(action, context, savedBatch: savedBatch, index: index, binding: binding)
+    }
+  }
+
+  /// Keep the person's front app across all guarded inputs of one action.
+  static func inAct<Result>(
+    _ context: Context, processIdentifier: pid_t, _ body: () async throws -> Result
+  ) async throws -> Result {
+    guard let enforcer = context.app.focus.enforcer(for: processIdentifier) else {
       throw FocusEnforcer.unguarded
     }
+    return try await enforcer.act(
+      cancellation: context.cancellation, deliveryProgress: context.deliveryProgress, body)
+  }
 
+  private static func perform(
+    _ action: ActionRequest, _ context: Context, savedBatch: PreparedLoginBatch?, index: Int,
+    binding: Binding
+  ) async throws -> String {
     switch action {
     case .click(let target, let button, let count):
       return try await click(
@@ -377,7 +401,7 @@ public enum ActionRunner {
     let keyWindow: ObservedWindow
     /// The app's windows the observation saw, front to back.
     var windows: [ObservedWindow] = []
-    /// On the Space being shown, so the drawn pointer can travel to it.
+    /// On the Space being shown, so a click there can show where it landed.
     var onScreen = true
     /// The person hid the app (Command-H). Accessibility still reads and
     /// presses its elements, but posted mouse and keyboard events are dropped
@@ -614,10 +638,10 @@ public enum ActionRunner {
     } else {
       destination = nil
     }
-    await travel(to: resolved.screenPoint, binding: binding, context)
+    await aim(at: resolved.screenPoint, binding: binding, context)
 
     if route == .press, let element = resolved.element {
-      // `Stop` may have come while the pointer was on its way.
+      // `Stop` may have come while the overlay was told.
       try await context.checkStep(binding, restarted: restarted, showing: .click)
       let press = { (proceed: @Sendable () throws -> Void) in
         try context.validateElement(element, binding, restarted: restarted)
@@ -661,29 +685,29 @@ public enum ActionRunner {
     return description
   }
 
-  /// The drawn pointer goes to where the input lands, inside the window it
-  /// lands in, and input waits for it to arrive. A window on another Space
-  /// gets no pointer: there it would point at nothing the person can see.
-  static func travel(to screenPoint: CGPoint, binding: Binding, _ context: Context) async {
+  /// Tells the overlay where input is about to land, inside the window it
+  /// lands in, so a click there can show its ring. Nothing moves and input
+  /// does not wait. A window on another Space shows nothing.
+  static func aim(at screenPoint: CGPoint, binding: Binding, _ context: Context) async {
     guard binding.onScreen, let overlay = context.overlay else { return }
     let window = AppWindows.window(
       at: screenPoint, among: binding.windows, keyWindow: binding.keyWindow)
-    await overlay.movePointer(
-      in: context.app, toScreenPoint: screenPoint, window: window.windowID,
+    await overlay.aim(
+      in: context.app, at: screenPoint, window: window.windowID,
       keyWindow: binding.keyWindow.windowID)
   }
 
   /// Move, then down and up for each click of the count. A mouse-up always
   /// goes to the process that received its mouse-down, even after Stop. The
   /// process stamp still prevents releasing into a reused pid.
-  static func postClick(
+  private static func postClick(
     _ destination: EventTarget,
     button: MouseButton,
     count: Int,
     binding: Binding,
     _ context: Context,
     restarted: String,
-    proceed: @escaping @Sendable () throws -> Void = {}
+    proceed: @escaping @Sendable () throws -> Void
   ) async throws {
     let gate = context.deliveryGate(binding, restarted: restarted, event: true)
     try context.checkStep(binding, restarted: restarted)
@@ -726,6 +750,7 @@ public enum ActionRunner {
   static func guarded<Result>(
     _ destination: EventTarget, prepare: Bool, keys: Bool = false,
     binding: Binding, _ context: Context, restarted: String,
+    afterInputWatch: TimeInterval = FocusEnforcer.afterInputWatch,
     precondition: @escaping @Sendable () throws -> Void = {},
     deliver: (EventTarget, _ proceed: @escaping @Sendable () throws -> Void) async throws -> Result
   ) async throws -> Result {
@@ -740,7 +765,7 @@ public enum ActionRunner {
     if let owner { context.monitor.notePrimedWindow(processIdentifier: pid, windowID: owner.id) }
     let finalGate = context.deliveryGate(binding, restarted: restarted, markDelivery: false)
     return try await enforcer.guarded(
-      window: owner?.element, prepare: prepare, keys: keys,
+      window: owner?.element, prepare: prepare, keys: keys, afterInputWatch: afterInputWatch,
       finalCheck: {
         try finalGate(); try precondition()
       },
@@ -754,6 +779,25 @@ public enum ActionRunner {
         if unseen { context.monitor.forgetActivation(processIdentifier: pid) }
       },
       deliver: { proceed in try await deliver(keyTarget, proceed) })
+  }
+
+  /// An Accessibility change to the app — a focus, typed text, a value — can bring it forward
+  /// as a press can, so it is made inside the act's guard: while the person has another app in
+  /// front, that app is put back after it (`FocusEnforcer.guarded`). Nothing is prepared and no
+  /// key goes out; the change itself is the input.
+  static func accessibilityChange<Result>(
+    binding: Binding, _ context: Context, restarted: String, _ change: () throws -> Result
+  ) async throws -> Result {
+    try await guarded(
+      EventTarget(processIdentifier: binding.processIdentifier, windowID: binding.keyWindow.windowID),
+      prepare: false, binding: binding, context, restarted: restarted,
+      // Safari can activate after the ordinary event watch has ended.
+      afterInputWatch: 0.35
+    ) { _, proceed in
+      try proceed()
+      try context.deliveryGate(binding, restarted: restarted)()
+      return try change()
+    }
   }
 
   /// Codex's rule for which background clicks need the app to believe it is
@@ -856,51 +900,49 @@ public enum ActionRunner {
       try await context.checkStep(binding, restarted: restarted, showing: .pulse)
       try requirePersonWindow(binding)
       try context.validateElement(element, binding, restarted: restarted)
-      try context.deliveryGate(binding, restarted: restarted)()
     }
-    if let screenPoint { await travel(to: screenPoint, binding: binding, context) }
-    await context.overlay?.typingStarted(in: app)
-    do {
+    if let screenPoint { await aim(at: screenPoint, binding: binding, context) }
+    try await gate()
+    context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
+    if focusFirst {
+      let focusing = try await accessibilityChange(binding: binding, context, restarted: restarted) {
+        calls.setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
+      }
+      if let error = axMutationOutcome(
+        focusing,
+        whatMayHaveHappened: "the element took the focus",
+        failure: "This element did not take the keyboard focus; click it first.")
+      {
+        throw error
+      }
       try await gate()
-      context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
-      if focusFirst {
-        if let error = axMutationOutcome(
-          calls.setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue),
-          whatMayHaveHappened: "the element took the focus",
-          failure: "This element did not take the keyboard focus; click it first.")
-        {
-          throw error
-        }
-        try await gate()
-      }
-      if let attribute {
-        if let error = axMutationOutcome(
-          calls.setAttribute(element, attribute, text as CFTypeRef),
-          whatMayHaveHappened: "the text was typed", failure: "This element did not accept the text.")
-        {
-          throw error
-        }
-      } else {
-        // Focusing a field in a background app can leave the app's focus on
-        // another field, which is where keys would go: that refuses here, and
-        // `typeByKeyboard` checks again before every key.
-        let applicationElement = AXUIElementCreateApplication(binding.processIdentifier)
-        guard let focused = calls.focusedElement(applicationElement), CFEqual(focused, element) else {
-          throw unreceived
-        }
-        try await typeByKeyboard(
-          text,
-          destination: EventTarget(
-            processIdentifier: binding.processIdentifier,
-            windowID: keyboardWindow(binding, focused: calls.window(element))),
-          binding: binding, context, restarted: restarted, saved: savedField != nil,
-          exact: element)
-      }
-    } catch {
-      await context.overlay?.typingEnded(in: app)
-      throw error
     }
-    await context.overlay?.typingEnded(in: app)
+    if let attribute {
+      let writing = try await accessibilityChange(binding: binding, context, restarted: restarted) {
+        calls.setAttribute(element, attribute, text as CFTypeRef)
+      }
+      if let error = axMutationOutcome(
+        writing,
+        whatMayHaveHappened: "the text was typed", failure: "This element did not accept the text.")
+      {
+        throw error
+      }
+    } else {
+      // Focusing a field in a background app can leave the app's focus on
+      // another field, which is where keys would go: that refuses here, and
+      // `typeByKeyboard` checks again before every key.
+      let applicationElement = AXUIElementCreateApplication(binding.processIdentifier)
+      guard let focused = calls.focusedElement(applicationElement), CFEqual(focused, element) else {
+        throw unreceived
+      }
+      try await typeByKeyboard(
+        text,
+        destination: EventTarget(
+          processIdentifier: binding.processIdentifier,
+          windowID: keyboardWindow(binding, focused: calls.window(element))),
+        binding: binding, context, restarted: restarted, saved: savedField != nil,
+        exact: element)
+    }
     if let savedField { return SavedLoginInput.receipt(savedField) }
     return ActionDescription.type(text: text, field: observed, focused: [live], redact: true)
   }
@@ -925,10 +967,7 @@ public enum ActionRunner {
     let applicationElement = AXUIElementCreateApplication(binding.processIdentifier)
     AXUIElementSetMessagingTimeout(applicationElement, axMessagingTimeout)
 
-    // Focus first, when the batch names where the text goes. An element is
-    // focused through Accessibility, which moves the app's keyboard focus
-    // without activating it. Observed controls at a point use the same AX
-    // route; a target that cannot take focus that way is clicked.
+    // Focus a named target through Accessibility where possible, with a guarded click otherwise.
     let restarted = "This app restarted while text was being typed."
     // A saved value, or text for a secure field, goes only into the element the
     // act names, by Accessibility, or nothing is typed. Focusing a secure field
@@ -968,13 +1007,14 @@ public enum ActionRunner {
     if let target, let resolved = named {
       if case .index = target { field = resolved.named }
       if let element = resolved.element, calls.isSettable(element, kAXFocusedAttribute) {
-        await travel(to: resolved.screenPoint, binding: binding, context)
+        await aim(at: resolved.screenPoint, binding: binding, context)
         try context.checkStep(binding, restarted: restarted)
         context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
         try requirePersonWindow(binding)
         try context.validateElement(element, binding, restarted: restarted)
-        try context.deliveryGate(binding, restarted: restarted)()
-        let status = calls.setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
+        let status = try await accessibilityChange(binding: binding, context, restarted: restarted) {
+          calls.setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
+        }
         if let error = axMutationOutcome(
           status, whatMayHaveHappened: "the element took the focus",
           failure: "This element did not take the keyboard focus; click it first.")
@@ -985,7 +1025,7 @@ public enum ActionRunner {
       } else {
         try requireEventDelivery(binding)
         let destination = try eventTarget(for: resolved.screenPoint, binding: binding)
-        await travel(to: resolved.screenPoint, binding: binding, context)
+        await aim(at: resolved.screenPoint, binding: binding, context)
         try await guarded(
           destination, prepare: needsAttention(resolved, app: app),
           binding: binding, context, restarted: restarted
@@ -1050,40 +1090,35 @@ public enum ActionRunner {
       keyboardWindow(binding, focused: focused.flatMap(calls.window) ?? clickedWindow)
     if route == .keyboard { try requireEventDelivery(binding) }
 
-    await context.overlay?.typingStarted(in: app)
-    do {
-      if route == .accessibility, let receiver {
-        try await context.checkStep(binding, restarted: restarted, showing: .pulse)
-        try requirePersonWindow(binding)
-        if let actual = receiptReceiver(
-          receiver, preparedWindow: calls.window(receiver) ?? 0, calls: calls)
-        {
-          focusedAttributes.append(actual)
-        } else {
-          unverifiedReceiver = true
-        }
-        try context.validateElement(receiver, binding, restarted: restarted)
-        try context.deliveryGate(binding, restarted: restarted)()
-        context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
-        if let error = axMutationOutcome(
-          calls.setAttribute(receiver, kAXSelectedTextAttribute, text as CFTypeRef),
-          whatMayHaveHappened: "the text was typed",
-          failure: "This element did not accept the text.")
-        {
-          throw error
-        }
+    if route == .accessibility, let receiver {
+      try await context.checkStep(binding, restarted: restarted, showing: .pulse)
+      try requirePersonWindow(binding)
+      if let actual = receiptReceiver(
+        receiver, preparedWindow: calls.window(receiver) ?? 0, calls: calls)
+      {
+        focusedAttributes.append(actual)
       } else {
-        try await typeByKeyboard(
-          text,
-          destination: EventTarget(
-            processIdentifier: binding.processIdentifier, windowID: keyboardWindow),
-          binding: binding, context, restarted: restarted, saved: savedField != nil)
+        unverifiedReceiver = true
       }
-    } catch {
-      await context.overlay?.typingEnded(in: app)
-      throw error
+      try context.validateElement(receiver, binding, restarted: restarted)
+      context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
+      let typed = try await accessibilityChange(binding: binding, context, restarted: restarted) {
+        calls.setAttribute(receiver, kAXSelectedTextAttribute, text as CFTypeRef)
+      }
+      if let error = axMutationOutcome(
+        typed,
+        whatMayHaveHappened: "the text was typed",
+        failure: "This element did not accept the text.")
+      {
+        throw error
+      }
+    } else {
+      try await typeByKeyboard(
+        text,
+        destination: EventTarget(
+          processIdentifier: binding.processIdentifier, windowID: keyboardWindow),
+        binding: binding, context, restarted: restarted, saved: savedField != nil)
     }
-    await context.overlay?.typingEnded(in: app)
     if let savedField { return SavedLoginInput.receipt(savedField) }
     if route == .keyboard {
       // AX focus samples cannot establish a stable receiver between posted
@@ -1235,7 +1270,7 @@ public enum ActionRunner {
       throw reservedShortcut
     case .item(let item):
       return .menuItem(item)
-    case .none:
+    case .disabled, .none:
       return .keystroke
     case .unverified:
       guard combo.modifiers.isDisjoint(with: [.cmd, .ctrl, .alt]) else {
@@ -1366,12 +1401,12 @@ public enum ActionRunner {
     guard context.accessibility.isSettable(node.element, kAXValueAttribute) else {
       throw HelperError(.unsupported, "This element's value cannot be set directly; type into it.")
     }
-    // The pointer goes to the element when it shows in the picture; a value
-    // is set wherever the element is.
+    // The element is aimed at when it shows in the picture; a value is set
+    // wherever the element is.
     let center = CGPoint(x: observed.frame.midX, y: observed.frame.midY)
     if latest.coordinates.contains(latest.coordinates.pixelPoint(from: center)) {
-      await travel(
-        to: screenPoint(for: center, in: binding.windowFrame), binding: binding, context)
+      await aim(
+        at: screenPoint(for: center, in: binding.windowFrame), binding: binding, context)
     }
     // Read before the step check, like every read a route makes.
     try await context.checkStep(
@@ -1379,12 +1414,13 @@ public enum ActionRunner {
     let current = context.accessibility.attributes(node.element)
     try context.validateElement(
       node.element, binding, restarted: "This app restarted while a value was being set.")
-    try context.deliveryGate(
-      binding, restarted: "This app restarted while a value was being set.")()
     context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
-    if let error = setValueOutcome(
-      context.accessibility.setAttribute(node.element, kAXValueAttribute, value as CFTypeRef)
+    let set = try await accessibilityChange(
+      binding: binding, context, restarted: "This app restarted while a value was being set."
     ) {
+      context.accessibility.setAttribute(node.element, kAXValueAttribute, value as CFTypeRef)
+    }
+    if let error = setValueOutcome(set) {
       throw error
     }
     return ActionDescription.setValue(
@@ -1404,17 +1440,24 @@ public enum ActionRunner {
     let resolved = try resolve(target: target, app: context.app, binding: binding)
     try requireEventDelivery(binding)
     let destination = try eventTarget(for: resolved.screenPoint, binding: binding)
-    await travel(to: resolved.screenPoint, binding: binding, context)
+    await aim(at: resolved.screenPoint, binding: binding, context)
     let restarted = "This app restarted while it was being scrolled."
-    for tick in 0..<amount {
-      try await context.checkStep(binding, restarted: restarted, showing: .scroll(direction))
-      try revalidate(destination, binding: binding, context: context)
-      context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
-      try await context.input.scroll(
-        direction, 1, destination,
-        context.deliveryGate(binding, restarted: restarted, event: true))
-      if tick + 1 < amount {
-        try? await Task.sleep(nanoseconds: betweenTicksDelay)
+    try await guarded(
+      destination, prepare: false, binding: binding, context, restarted: restarted
+    ) { _, proceed in
+      for tick in 0..<amount {
+        try await context.checkStep(binding, restarted: restarted, showing: .scroll(direction))
+        try revalidate(destination, binding: binding, context: context)
+        context.monitor.noteHelperInput(processIdentifier: binding.processIdentifier)
+        let gate = context.deliveryGate(binding, restarted: restarted, event: true)
+        try await context.input.scroll(
+          direction, 1, destination,
+          {
+            try proceed(); try gate()
+          })
+        if tick + 1 < amount {
+          try? await Task.sleep(nanoseconds: betweenTicksDelay)
+        }
       }
     }
     return ActionDescription.scroll(direction: direction, in: resolved.scrolled)

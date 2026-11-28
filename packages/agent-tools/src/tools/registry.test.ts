@@ -1,11 +1,8 @@
-import { TeamChannelSummarySchema, TeamKnowledgeWriteResultSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   agentTools,
-  AgentTeamChannelSummarySchema,
-  opensteer_knowledge_save,
   computer_use,
   opensteer_task_delegate,
   opensteer_request_answer,
@@ -52,7 +49,7 @@ describe("Opensteer tool registry", () => {
       .map((t) => t.name);
     expect(programs).toContain("opensteer_task_delegate");
     expect(programs).not.toContain("show_to_person");
-    expect(programs).not.toContain("computer_use");
+    expect(programs).toContain("computer_use");
   });
   it("exposes bounded waiting and connection work without human-only controls", () => {
     const connections = agentTools.filter((t) => t.callers.some((c) => c === "connection"));
@@ -128,7 +125,7 @@ describe("Opensteer tool registry", () => {
       }).success,
     ).toBe(false);
   });
-  it("retains safe Trigger details and cancellation receipts", () => {
+  it("retains safe Trigger details, cancellation receipts, and pending Request outcomes", () => {
     const detail = {
       activation: null,
       taskTitle: "Anchor",
@@ -140,6 +137,14 @@ describe("Opensteer tool registry", () => {
     expect(
       opensteer_automation_create.output.parse({ ...detail, unnamedSecret: "hidden" }),
     ).toEqual(detail);
+    const pending = {
+      status: "pending",
+      requestId: "req_11111111-1111-4111-8111-111111111111",
+      next: "Wait for the person to review this Request.",
+    };
+    expect(
+      opensteer_automation_create.output.parse({ ...pending, unnamedSecret: "hidden" }),
+    ).toEqual(pending);
   });
   it("preserves the image detail hint while stripping unnamed metadata", () => {
     const image = {
@@ -173,12 +178,18 @@ describe("Opensteer tool registry", () => {
     };
     expect(saved_login_request.output.parse({ ...ready, password: "hidden" })).toEqual(ready);
   });
-  it("returns webhook setup credentials on writes and excludes them from reads", () => {
-    const result = {
-      webhook: { secret: "oswh_private", url: "https://example.test/private" },
-    };
-    expect(opensteer_automation_create.output.parse(result)).toEqual(result);
-    expect(opensteer_automation_list.output.parse(result)).toEqual({});
+  it("returns webhook address without any legacy secret on writes and allows address state on reads", () => {
+    const address = { scope: "public" as const, url: "https://example.test/hooks/v1/whk_abc" };
+    expect(
+      opensteer_automation_create.output.parse({
+        webhook: { ...address, secret: "oswh_private" },
+      }),
+    ).toEqual({ webhook: address });
+    expect(
+      opensteer_automation_list.output.parse({
+        webhook: { scope: "public", url: null, secret: "oswh_private" },
+      }),
+    ).toEqual({ webhook: { scope: "public", url: null } });
   });
 });
 
@@ -208,7 +219,6 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
       parentTaskId: null,
       pendingRequests: 0,
       purpose: "task" as const,
-      teamOrigin: null,
       status: "idle" as const,
       title: "t".repeat(240),
       updatedAt: new Date().toISOString(),
@@ -380,38 +390,4 @@ it("fits a full Thread listing page and requires explicit agent message delivery
     limit: 25,
   });
   expect(opensteer_task_list.input.safeParse({ limit: 51 }).success).toBe(false);
-});
-
-it("retains links in strict agent projections without widening canonical team records", () => {
-  const link = "[channel](https://team.example/c/example)";
-  const channel = {
-    id: createId("teamChannel"),
-    kind: "public",
-    name: "general",
-    peopleOnly: false,
-    archivedAt: null,
-    changeSeq: "1",
-    latestMessageId: null,
-    can: { read: true, post: true, manage: true, join: false, leave: true, wakeOwnAgent: true },
-    link,
-  };
-  expect(AgentTeamChannelSummarySchema.parse(channel)).toEqual(channel);
-  expect(TeamChannelSummarySchema.safeParse(channel).success).toBe(false);
-  const conflict = {
-    written: false,
-    current: {
-      id: createId("knowledgeNote"),
-      topicId: createId("knowledgeTopic"),
-      version: 1,
-      title: "Note",
-      body: "Body",
-      deleted: false,
-      writtenAt: new Date(0).toISOString(),
-      writer: { kind: "human", userId: createId("user"), name: "Person" },
-      source: null,
-      link,
-    },
-  };
-  expect(opensteer_knowledge_save.output.parse(conflict)).toEqual(conflict);
-  expect(TeamKnowledgeWriteResultSchema.safeParse(conflict).success).toBe(false);
 });

@@ -102,14 +102,23 @@ export function computerMachineProblem(
     );
   return null;
 }
-export function pendingOnComputerNextAction(machine: string): string {
+export function pendingOnComputerNextAction(machine: string, connection = false): string {
+  // A connected agent never asks for access itself, so it is told only what the person decides.
+  if (connection)
+    return `The owner can answer the pending request for ${machine} from any Opensteer app. A pending request grants nothing yet.`;
   return `The owner can answer the pending request for ${machine} from any Opensteer app. A pending request grants nothing yet. Its outcome goes to the task that opened it; a running task can call app_access_request if it needs its own continuation. Automation occurrences receive no continuation.`;
 }
+
+/** What a connected agent is told when a target it holds needs the person's approval first. */
+const connectionAccessRequired =
+  "The person can approve it in Opensteer and share it with you under Connected agents. Continue with what is shared with you.";
 interface CommonFacts {
   readonly callable: boolean;
   readonly canAct?: boolean;
   readonly pendingPersonalGrant: boolean;
   readonly heldByAnotherRun: boolean;
+  /** A connected agent reads this, not one of the person's own agents. */
+  readonly connectedAgent?: boolean;
 }
 interface ComputerAppDiscoveryFacts extends CommonFacts {
   readonly app: string;
@@ -143,13 +152,15 @@ export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): Computer
     return blocked(
       "access_pending",
       `Access to ${name} is pending.`,
-      pendingOnComputerNextAction(name),
+      pendingOnComputerNextAction(name, facts.connectedAgent),
     );
   if (facts.heldByAnotherRun) return busy(name);
   return blocked(
     "access_required",
     `${name} needs access for this task.`,
-    `Request access with app_access_request {computerId:${JSON.stringify(facts.computerId)}, app:${JSON.stringify(facts.app)}, access:"read-write", reason:"<why you need it>"}; ${facts.machine.appApproval === "automatic" ? "access is approved automatically." : "the owner can approve from any Opensteer app."}`,
+    facts.connectedAgent
+      ? connectionAccessRequired
+      : `Request access with app_access_request {computerId:${JSON.stringify(facts.computerId)}, app:${JSON.stringify(facts.app)}, access:"read-write", reason:"<why you need it>"}; ${facts.machine.appApproval === "automatic" ? "access is approved automatically." : "the owner can approve from any Opensteer app."}`,
   );
 }
 export interface PhoneDiscoveryFacts extends CommonFacts {
@@ -192,7 +203,7 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
     !facts.heldByAnotherRun;
   const problem = refreshScreenState
     ? computerToolVersionProblem(facts.phone)
-    : phoneProblem(facts.phone);
+    : phoneProblem(facts.phone, facts.connectedAgent);
   if (problem) return problem;
   if (facts.callable && !facts.heldByAnotherRun)
     return { access: facts.canAct ? "read-write" : "read" };
@@ -200,29 +211,49 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
     return blocked(
       "access_pending",
       `Access to ${name} is pending.`,
-      pendingOnComputerNextAction(name),
+      pendingOnComputerNextAction(name, facts.connectedAgent),
     );
   if (facts.heldByAnotherRun) return busy(name);
   return blocked(
     "access_required",
     `${name} needs access for this task.`,
-    `Request access with app_access_request {computerId:${JSON.stringify(facts.phone.computerId)}, access:"read-write", reason:"<why you need it>"}; the owner can approve from any Opensteer app.`,
+    facts.connectedAgent
+      ? connectionAccessRequired
+      : `Request access with app_access_request {computerId:${JSON.stringify(facts.phone.computerId)}, access:"read-write", reason:"<why you need it>"}; the owner can approve from any Opensteer app.`,
   );
 }
 
-function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked } | null {
+function phoneProblem(
+  phone: PhoneDiscoveryFacts["phone"],
+  connection = false,
+): { blocked: Blocked } | null {
   const reason = phone.availability?.reason?.kind;
-  const location =
+  const mac =
     phone.setup?.location === "driver-mac"
-      ? ` in Opensteer on ${phone.setup.driverRunnerName}`
-      : " in Opensteer on its driving Mac";
+      ? phone.setup.driverRunnerName
+      : `the Mac connected to ${phone.name}`;
+  const location = ` in Opensteer on ${mac}`;
+  const subject = phone.definitionId === "iphone-screen" ? mac : phone.name;
+  const named = subject[0]!.toUpperCase() + subject.slice(1);
+  if (reason === "driver-stopped")
+    return blocked(
+      "computer_stopped",
+      `Agents are stopped on ${subject}.`,
+      "Wait until the person resumes them there, or continue other work.",
+    );
+  if (reason === "driver-asleep")
+    return blocked(
+      "computer_asleep",
+      `${named} is asleep.`,
+      "Resume when it wakes, or continue other work.",
+    );
   if (reason === "driver-offline" || (phone.state === "offline" && reason !== "not-connected"))
     return blocked(
       "computer_offline",
-      `${phone.name}'s screen driver is offline.`,
+      `${named} is offline.`,
       phone.definitionId === "iphone-screen"
-        ? `The person can wake its driving Mac and open Opensteer there${phone.setup?.location === "driver-mac" ? ` (${phone.setup.driverRunnerName})` : ""}; other work can continue.`
-        : "The person can bring the phone online; other work can continue.",
+        ? `The person can wake ${mac} and open Opensteer there, or you can continue other work.`
+        : "The person can bring the phone online, or you can continue other work.",
     );
   switch (reason) {
     case "approval-required":
@@ -237,12 +268,14 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
       return blocked(
         "permission_required",
         `Apps access is off on ${phone.name}.`,
-        `Ask with computer_access_request {computerId:${JSON.stringify(phone.computerId)}, access:"apps", reason:"<why you need it>"}.`,
+        connection
+          ? `Ask the person to turn on Apps access for ${phone.name} in Opensteer.`
+          : `Ask with computer_access_request {computerId:${JSON.stringify(phone.computerId)}, access:"apps", reason:"<why you need it>"}.`,
       );
     case "driver-update-required":
       return blocked(
         "update_required",
-        `${phone.name}'s screen driver needs an update.`,
+        `Screen control for ${phone.name} needs an update.`,
         `The person can update Opensteer${location}.`,
       );
     case "trust-required":
@@ -251,7 +284,7 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     case "permission-required":
       return blocked(
         "permission_required",
-        `${phone.name} needs ${reason === "trust-required" ? "the person to trust its driving Mac" : reason === "developer-mode-required" ? "Developer Mode" : reason === "setup-required" ? "screen setup" : "screen permissions"}.`,
+        `${phone.name} needs ${reason === "trust-required" ? "the person to trust its connected Mac" : reason === "developer-mode-required" ? "Developer Mode" : reason === "setup-required" ? "screen setup" : "screen permissions"}.`,
         phone.definitionId === "android-phone"
           ? "The person can enable Opensteer's accessibility service in the phone's settings."
           : `The person can finish or fix the iPhone's screen setup${location}.`,
@@ -271,7 +304,7 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     case "not-connected":
       return blocked(
         "unavailable",
-        `${phone.name} is not connected to its screen driver.`,
+        `${phone.name} is not connected to its Mac.`,
         `The person can connect the iPhone to its Mac with a cable or the same Wi-Fi, then finish or fix setup${location}.`,
       );
     case "helper-unavailable":
@@ -281,8 +314,8 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     case "unsupported":
       return blocked(
         "unavailable",
-        `${phone.name}'s screen is unavailable (${reason}).`,
-        `The person can check the screen driver and finish or fix setup${location}. Continue other work; do not poll or route through the Mac's apps.`,
+        `${phone.name}'s screen is unavailable.`,
+        `The person can check the connection and finish or fix setup${location}. Continue other work; do not poll or route through the Mac's apps.`,
       );
   }
   if (phone.state === "permission-required")
@@ -303,7 +336,7 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     return blocked(
       "unavailable",
       `${phone.name}'s screen is unavailable.`,
-      `The person can check its screen driver and fix setup${location}.`,
+      `The person can check its screen connection and fix setup${location}.`,
     );
   return computerMachineProblem(phone);
 }

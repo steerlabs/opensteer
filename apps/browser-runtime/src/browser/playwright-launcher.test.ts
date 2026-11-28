@@ -1,5 +1,6 @@
 import { browserPagePolicyScript } from "@opensteer/browser-runtime-core/page-policy";
 import { validClaims } from "@opensteer/browser-runtime-core/test-support";
+import type { BrowserPage } from "@opensteer/browser-runtime-core";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { ChildProcess } from "node:child_process";
@@ -18,6 +19,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { assertImportedCookies } from "./native-profile-storage.js";
 import { nativeProfileRequest } from "./native-profile.test-support.js";
+import { ChromiumTabLifecycleBridge, type ChromiumTabEntry } from "./tab-lifecycle-extension.js";
 import {
   chromiumLinkOpenDisposition,
   createChromiumChildEnvironment,
@@ -69,7 +71,7 @@ it.each(["ready", "acquiring"] as const)(
       vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
       f.context.newCDPSession.mockReturnValue(acquired.promise);
       if (state === "ready") acquired.resolve(session);
-      const handle = launched.context.pages()[0]!;
+      const handle = await ownPage(launched, f.context, page);
       attaching = handle.cdp();
       void attaching.catch(() => undefined);
       const channel = state === "ready" ? await attaching : undefined;
@@ -113,6 +115,179 @@ it.each(["ready", "acquiring"] as const)(
     }
   },
 );
+
+// Measured on Linux with pinned Chromium: Chromium answers Playwright's Target.closeTarget with
+// success, the tab's navigation then commits, and the tab never ends; the browser asked once
+// more ends it at once. Modelled here: Playwright's close waits for an end that only the
+// browser's second close brings.
+describe("a first close Chromium answers but never carries out", () => {
+  async function lostCloseFixture(endsOn: "browser close again" | "playwright close" | "never") {
+    const f = await nativeCloseFixture();
+    const events = new EventEmitter();
+    let physicallyClosed = false;
+    const ended = Promise.withResolvers<void>();
+    const end = () => {
+      if (physicallyClosed) return;
+      physicallyClosed = true;
+      events.emit("close");
+      ended.resolve();
+    };
+    const page = Object.assign(events, {
+      isClosed: () => physicallyClosed,
+      close: vi.fn(async () => {
+        if (endsOn === "playwright close") end();
+        await ended.promise;
+      }),
+    });
+    f.context.newCDPSession.mockResolvedValue(
+      Object.assign(new EventEmitter(), {
+        detach: vi.fn(async () => undefined),
+        send: vi.fn(async (method: string) =>
+          method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-7" } } : {},
+        ),
+      }),
+    );
+    f.cdp.send.mockImplementation(async (method: string) => {
+      if (method === "Target.closeTarget" && endsOn === "browser close again") end();
+      return method === "Target.closeTarget" ? { success: true } : {};
+    });
+    const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+    vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
+    const handle = await ownPage(launched, f.context, page);
+    await handle.targetId();
+    const closeTargets = () =>
+      f.cdp.send.mock.calls.filter(([method]) => method === "Target.closeTarget");
+    return {
+      handle,
+      page,
+      closeTargets,
+      end,
+      async dispose() {
+        end();
+        vi.useRealTimers();
+        f.exit();
+        await launched.close();
+        await rm(f.directory, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("asks the browser again for the page's own target and ends within a quarter second", async () => {
+    const t = await lostCloseFixture("browser close again");
+    try {
+      vi.useFakeTimers();
+      let closed = false;
+      const closing = t.handle.close().then(() => (closed = true));
+      await vi.advanceTimersByTimeAsync(249);
+      expect(t.closeTargets(), "Playwright's own close is given its chance first").toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(closed, "The page ends once the browser is asked again").toBe(true);
+      await closing;
+      expect(t.handle.isClosed()).toBe(true);
+      expect(t.page.close).toHaveBeenCalledExactlyOnceWith({ runBeforeUnload: false });
+      expect(t.closeTargets(), "Only this page's own target is closed").toEqual([
+        ["Target.closeTarget", { targetId: "target-7" }],
+      ]);
+    } finally {
+      await t.dispose();
+    }
+  });
+
+  it("asks nothing more of the browser when Playwright's close ends the page", async () => {
+    const t = await lostCloseFixture("playwright close");
+    try {
+      vi.useFakeTimers();
+      await t.handle.close();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(t.handle.isClosed()).toBe(true);
+      expect(t.closeTargets()).toEqual([]);
+    } finally {
+      await t.dispose();
+    }
+  });
+
+  it("asks five times, sooner first, then leaves the attempt to its owner", async () => {
+    const t = await lostCloseFixture("never");
+    try {
+      vi.useFakeTimers();
+      let closed = false;
+      const closing = t.handle.close().then(() => (closed = true));
+      const asked: number[] = [];
+      for (const at of [250, 750, 1_750, 3_750, 7_750, 20_000]) {
+        await vi.advanceTimersByTimeAsync(at - (asked.at(-1) ?? 0));
+        asked.push(at);
+        expect(t.closeTargets().length, `asked by ${at} ms`).toBe(Math.min(asked.length, 5));
+      }
+      expect(closed, "Only the page's end settles the attempt").toBe(false);
+      t.end();
+      await closing;
+    } finally {
+      await t.dispose();
+    }
+  });
+});
+
+describe("Chromium proxy launch", () => {
+  it("keeps implicit loopback bypass for a native profile", async () => {
+    const f = await nativeCloseFixture({
+      preserveLoopbackBypass: true,
+      proxyUrl: "http://127.0.0.1:4313",
+    });
+    const launch = vi.mocked(chromium.launchPersistentContext);
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const options = launch.mock.lastCall?.[1];
+      expect(options?.args?.slice(-3)).toEqual([
+        "--proxy-server=http://127.0.0.1:4313",
+        "--disable-quic",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+      ]);
+      expect(options?.args).not.toContain("--proxy-bypass-list=<-loopback>");
+      expect(options?.chromiumSandbox).toBe(true);
+    } finally {
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("handles guest loopback bypass (preserve=%s)", async (preserve) => {
+    const launch = vi
+      .spyOn(chromium, "launchServer")
+      .mockRejectedValue(new Error("launch fixture"));
+    try {
+      const launcher = new PlaywrightChromiumLauncher({
+        chromiumSandbox: true,
+        executablePath: process.execPath,
+        headless: true,
+        preserveLoopbackBypass: preserve,
+        proxyUrl: "http://127.0.0.1:4313",
+      });
+      await expect(
+        launcher.launch({
+          initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
+          partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000001",
+          sessionId: validClaims().sessionId,
+          storage: { kind: "guest" },
+        }),
+      ).rejects.toThrow("launch fixture");
+      expect(launch).toHaveBeenCalledOnce();
+      const options = launch.mock.calls[0]![0]!;
+      expect(options.chromiumSandbox).toBe(true);
+      expect(options.proxy).toEqual(preserve ? undefined : { server: "http://127.0.0.1:4313" });
+      expect(options.args?.slice(-4)).toEqual([
+        "--disable-background-networking",
+        ...(preserve ? ["--proxy-server=http://127.0.0.1:4313"] : []),
+        "--disable-quic",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        ...(preserve ? [] : ["--proxy-bypass-list=<-loopback>"]),
+      ]);
+    } finally {
+      launch.mockRestore();
+    }
+  });
+});
 
 describe("Chromium child environment", () => {
   it("keeps only required headless Linux variables", () => {
@@ -440,7 +615,7 @@ it.each(["page close", "page close after the browser died", "context end"] as co
     try {
       const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
       vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
-      const handle = launched.context.pages()[0]!;
+      const handle = await ownPage(launched, f.context, page);
       const gone = vi.fn();
       const crashed = vi.fn();
       handle.onClose(gone);
@@ -522,7 +697,9 @@ it("hands a popup off with its opener, and finds a target past a page asked to c
       ][])
         if (event === "page") listener(page);
     };
-    announce(opener);
+    // The opener is the runtime's own new page; its popup is published by its opener (K3).
+    await ownPage(launched, f.context, opener);
+    Object.assign(popup, { _opener: opener });
     announce(popup);
     opener.emit("popup", popup);
     await Promise.resolve();
@@ -534,6 +711,8 @@ it("hands a popup off with its opener, and finds a target past a page asked to c
       [handles.wrap(opener), null],
       [handles.wrap(popup), handles.wrap(opener)],
     ]);
+    await ownPage(launched, f.context, closing);
+    await ownPage(launched, f.context, sibling);
     vi.spyOn(f.context, "pages").mockReturnValue([closing, sibling] as unknown as Page[]);
     void (handles.wrap(closing) as { close(): Promise<void> }).close();
     await expect(handles.pageByTargetId("sibling")).resolves.toBe(handles.wrap(sibling));
@@ -563,7 +742,7 @@ it("makes every close a new attempt, and goes around a hung first close to the b
   try {
     const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
     vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
-    const handle = launched.context.pages()[0]!;
+    const handle = await ownPage(launched, f.context, page);
     await handle.targetId();
     void handle.close();
     await vi.waitFor(
@@ -609,7 +788,7 @@ it("reports a page it cannot name to close, instead of rejoining a hung close", 
   try {
     const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
     vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
-    const handle = launched.context.pages()[0]!;
+    const handle = await ownPage(launched, f.context, page);
     void handle.close();
     await expect(handle.close()).rejects.toMatchObject({ reason: "page-unnameable" });
     expect(page.close, "The hung close is never joined again").toHaveBeenCalledOnce();
@@ -672,7 +851,7 @@ describe("native Chromium profiles", () => {
       try {
         const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
         vi.spyOn(f.context, "pages").mockReturnValue([page]);
-        const handle = launched.context.pages()[0]!;
+        const handle = await ownPage(launched, f.context, page);
         expect(await handle.keepAwake?.()).toBe("media");
         playing = false;
         expect(await handle.keepAwake?.()).toBeNull();
@@ -706,8 +885,10 @@ describe("native Chromium profiles", () => {
     try {
       const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
       vi.spyOn(f.context, "pages").mockReturnValue([page]);
-      expect(await launched.context.pages()[0]!.keepAwake?.()).toBe("media");
-      expect(main.evaluate).toHaveBeenCalledTimes(2);
+      expect(await (await ownPage(launched, f.context, page)).keepAwake?.()).toBe("media");
+      // The protections' read (V1) meets the destroyed context and reads the new document again;
+      // then the media read.
+      expect(main.evaluate).toHaveBeenCalledTimes(3);
       expect(f.context.newCDPSession).not.toHaveBeenCalledWith(child);
       await launched.close();
     } finally {
@@ -910,6 +1091,7 @@ describe("native Chromium profiles", () => {
         "Ending the originating attachment must preserve the warm native host",
       ).not.toHaveBeenCalled();
       expect(launcher.localProfiles.engine).toBe("chromium");
+      // L1: Chromium's session records go before launch; nothing else in the profile is touched.
       expect(await readdir(sessions)).toEqual(["retained"]);
       expect(await readFile(join(directory, "Default", "Cookies"), "utf8")).toBe("untouched");
       expect(disposable).not.toHaveBeenCalled();
@@ -925,12 +1107,14 @@ describe("native Chromium profiles", () => {
         expect.arrayContaining([
           `--user-data-dir=${directory}`,
           "--remote-debugging-pipe",
-          "--disable-extensions",
+          "--disable-field-trial-config",
+          `--disable-extensions-except=${join(directory, ".opensteer-tab-lifecycle-extension")}`,
+          `--load-extension=${join(directory, ".opensteer-tab-lifecycle-extension")}`,
           "--disable-component-extensions-with-background-pages",
           "--disable-component-update",
           "--disable-background-networking",
-          "--restore-last-session",
           "--no-startup-window",
+          "--restore-last-session",
           "--headless=new",
           "--proxy-server=http://127.0.0.1:8123",
           "--proxy-bypass-list=<-loopback>",
@@ -1110,6 +1294,526 @@ describe("native Chromium profiles", () => {
     ).toThrow(/rejected/);
     expect(() => assertImportedCookies([{ ...cookie, expires: 1 }], [])).not.toThrow();
   });
+
+  it("exposes Linux rendererUsage tracked by owned native process lifetime and omits it on darwin", async () => {
+    const procFiles: Record<string, string> = {
+      "/proc/12345/stat": "12345 (chrome) S 1 12345 12345",
+      "/proc/12346/stat": "12346 (chrome) S 12345 12345 12345",
+      "/proc/12346/cmdline": "/opt/chrome\0--type=renderer\0",
+      "/proc/12346/smaps_rollup": "Rss: 64000 kB\nPss: 32000 kB\n",
+      "/proc/12346/status": "Name:\tchrome\nVmRSS:\t64000 kB\nRssAnon:\t40000 kB\n",
+    };
+    const f = await nativeCloseFixture({
+      platform: "linux",
+      linuxProcFs: {
+        listPids: () => [12345, 12346],
+        readText: (filePath) => procFiles[filePath] ?? null,
+      },
+    });
+    const darwinLauncher = new PlaywrightChromiumLauncher({
+      executablePath: process.execPath,
+      headless: true,
+      chromiumSandbox: true,
+      platform: "darwin",
+    });
+    expect(darwinLauncher.rendererUsage).toBeUndefined();
+    expect(f.launcher.rendererUsage).toBeTypeOf("function");
+    expect(await f.launcher.rendererUsage?.()).toEqual({ processes: 0, bytes: 0 });
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      expect(await f.launcher.rendererUsage?.()).toEqual({
+        processes: 1,
+        bytes: 32000 * 1024,
+      });
+      f.exit();
+      expect(await f.launcher.rendererUsage?.()).toEqual({ processes: 0, bytes: 0 });
+    } finally {
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("finds a sleeping tab again by its name whatever Chromium did to its id, retries a failed release in the background (R6), and removes a tab whose discard outcome is unknown (R7, L2)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const makeRawPage = (targetId: string) => {
+      let closed = false;
+      return {
+        markClosed: () => {
+          closed = true;
+        },
+        page: {
+          url: () => "https://sleeping.test/page",
+          isClosed: () => closed,
+          close: vi.fn(async () => {
+            closed = true;
+          }),
+          on: vi.fn(),
+          once: vi.fn(),
+          off: vi.fn(),
+          frames: () => [],
+          mainFrame: () => ({}),
+          _connection: { toImpl: () => ({ delegate: { _targetId: targetId } }) },
+        } as unknown as Page,
+      };
+    };
+    const raw1 = makeRawPage("target-sleep-1");
+    const raw2 = makeRawPage("target-sleep-2");
+    const helperPage = {
+      url: () => "about:blank",
+      isClosed: () => false,
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      _connection: { toImpl: () => ({ delegate: { _targetId: "target-helper" } }) },
+    } as unknown as Page;
+    let newPageCalls = 0;
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+      newPage: vi.fn(async () =>
+        ++newPageCalls === 1 ? helperPage : [raw1, raw2][newPageCalls - 2]!.page,
+      ),
+      newCDPSession: vi.fn(async (page: Page) => ({
+        send: vi.fn(async (method: string) =>
+          method === "Target.getTargetInfo"
+            ? { targetInfo: { targetId: page === raw1.page ? "target-sleep-1" : "target-sleep-2" } }
+            : {},
+        ),
+        on: vi.fn(),
+        off: vi.fn(),
+        detach: vi.fn().mockResolvedValue(undefined),
+      })),
+    });
+    const row = (tabId: number, targetId: string): ChromiumTabEntry => ({
+      tabId,
+      windowId: 1,
+      index: 0,
+      url: "https://sleeping.test/page",
+      title: "Sleep",
+      active: false,
+      discarded: false,
+      status: "complete",
+      targetId,
+    });
+    let tabs: ChromiumTabEntry[] = [];
+    let failInventory = 0;
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => {
+        if (failInventory > 0) {
+          failInventory--;
+          throw new Error("Helper worker temporarily dead");
+        }
+        return [...tabs];
+      });
+    const nameSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "nameTab")
+      .mockImplementation(async (tabId, name) => {
+        tabs = tabs.map((t) => (t.tabId === tabId ? { ...t, identity: name } : t));
+        return true;
+      });
+    // A replacing discard: the page closes and the tab comes back under a new id with the same
+    // target, as on real Chromium; the helper names it afterwards (L2).
+    const replace = (from: number, to: number, page: { markClosed(): void }) => {
+      page.markClosed();
+      tabs = tabs.map((t) =>
+        t.tabId === from ? { ...t, tabId: to, discarded: true, status: "unloaded" } : t,
+      );
+    };
+    const discSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
+      .mockImplementationOnce(async () => {
+        replace(101, 202, raw1);
+        return 202;
+      });
+    let removeAttempts = 0;
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async (tabId) => {
+        removeAttempts++;
+        // The first release's attempts fail; the background retry succeeds.
+        if (tabId === 202 && removeAttempts >= 4) {
+          tabs = tabs.filter((t) => t.tabId !== tabId);
+          return true;
+        }
+        return false;
+      });
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      // Scenario A (R6): the discard succeeds and the first release cannot remove the tab.
+      tabs = [row(101, "target-sleep-1")];
+      const page = await launched.context.createPage();
+      const token = await page.captureRestore!();
+      await page.close({ reason: "slept" });
+      expect(tabs).toMatchObject([{ tabId: 202, discarded: true }]);
+      expect(tabs[0]!.identity).toMatch(/^opensteer-sleep:/);
+      expect(await launched.context.releaseRestore!(token)).toBe(false);
+      expect(tabs).toHaveLength(1);
+      await vi.waitFor(() => expect(tabs).toHaveLength(0), { timeout: 3_000, interval: 25 });
+
+      // Scenario B (R7): the discard commits (replacing 303 with 404) and then the helper throws,
+      // and the inventory right after cannot be read. The tab is not asleep under its name, so it
+      // is removed with evidence and wakes by address (L2); its release then has nothing to do.
+      tabs = [row(303, "target-sleep-2")];
+      discSpy.mockImplementationOnce(async () => {
+        replace(303, 404, raw2);
+        failInventory = 1;
+        throw new Error("Helper call timed out");
+      });
+      remSpy.mockImplementation(async (tabId) => {
+        const before = tabs.length;
+        tabs = tabs.filter((t) => t.tabId !== tabId);
+        return tabs.length < before;
+      });
+      const page2 = await launched.context.createPage();
+      const token2 = await page2.captureRestore!();
+      await page2.close({ reason: "slept" });
+      tabs = tabs.map((t) => (t.tabId === 404 ? { ...t, tabId: 505 } : t));
+      expect(await launched.context.releaseRestore!(token2)).toBe(true);
+      expect(tabs).toHaveLength(0);
+    } finally {
+      invSpy.mockRestore();
+      nameSpy.mockRestore();
+      discSpy.mockRestore();
+      remSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("finds an unknown-outcome sleeping tab by its own name only and never removes another owner's same-address discarded tab (F2)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const sharedUrl = "https://shared-f2.test/page";
+    let closed1 = false;
+    const helperPage = {
+      url: () => "about:blank",
+      isClosed: () => false,
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      _connection: { toImpl: () => ({ delegate: { _targetId: "target-f2-helper" } }) },
+    } as unknown as Page;
+    const rawPage1 = {
+      url: () => sharedUrl,
+      isClosed: () => closed1,
+      close: vi.fn(async () => {
+        closed1 = true;
+      }),
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      frames: () => [],
+      mainFrame: () => ({}),
+      _connection: { toImpl: () => ({ delegate: { _targetId: "target-f2-s1" } }) },
+    } as unknown as Page;
+    let newPageCalls = 0;
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+      newPage: vi.fn(async () => (++newPageCalls === 1 ? helperPage : rawPage1)),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async (method: string) =>
+          method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-f2-s1" } } : {},
+        ),
+        on: vi.fn(),
+        off: vi.fn(),
+        detach: vi.fn(async () => undefined),
+      })),
+    });
+
+    // Tab 501 belongs to session S1; tab 999 belongs to another owner (e.g. a parked tab or S2)
+    // that gets discarded at the same URL while S1's discard throws and S1's tab 501 vanishes.
+    let tabs: ChromiumTabEntry[] = [];
+    const nameSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "nameTab")
+      .mockImplementation(async (tabId, name) => {
+        tabs = tabs.map((t) => (t.tabId === tabId ? { ...t, identity: name } : t));
+        return true;
+      });
+    let invCalls = 0;
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => {
+        invCalls++;
+        // Call 1: launch inventory (empty); Call 2: pre-discard inventory (tab 501 live);
+        // Call 3: post-throw inventory fails so token enters "unknown" state;
+        // Call 4+: inventory shows ONLY other owner's newly discarded tab 999 at sharedUrl!
+        if (invCalls === 3) throw new Error("transient helper outage");
+        return [...tabs];
+      });
+    const discSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
+      .mockImplementationOnce(async () => {
+        closed1 = true;
+        tabs = [
+          {
+            tabId: 999,
+            windowId: 1,
+            index: 0,
+            url: sharedUrl,
+            title: "Other Owner",
+            active: false,
+            discarded: true,
+            status: "unloaded",
+            targetId: "target-f2-other",
+            identity: "srf_00000000-0000-4000-8000-00000000f299",
+          },
+        ];
+        throw new Error("discard failed");
+      });
+    const removedIds: number[] = [];
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async (tabId) => {
+        removedIds.push(tabId);
+        tabs = tabs.filter((t) => t.tabId !== tabId);
+        return true;
+      });
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      tabs = [
+        {
+          tabId: 501,
+          windowId: 1,
+          index: 0,
+          url: sharedUrl,
+          title: "S1",
+          active: false,
+          discarded: false,
+          status: "complete",
+          targetId: "target-f2-s1",
+        },
+      ];
+      const page1 = await launched.context.createPage();
+      const token1 = await page1.captureRestore!();
+      await page1.close({ reason: "slept" });
+
+      // Release token1 -> MUST NOT match or remove tab 999 (other owner's tab at same URL)!
+      await launched.context.releaseRestore!(token1);
+      expect(removedIds).not.toContain(999);
+      expect(tabs.some((t) => t.tabId === 999)).toBe(true);
+    } finally {
+      invSpy.mockRestore();
+      nameSpy.mockRestore();
+      discSpy.mockRestore();
+      remSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds background removal retries of a sleeping tab, reports it as not removed, and keeps its page from ever being handed off (H)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const pageHandlers: Array<(page: Page) => void> = [];
+    const fake = (targetId: string, url: string) => {
+      let closed = false;
+      return {
+        url: () => url,
+        isClosed: () => closed,
+        close: vi.fn(async () => {
+          closed = true;
+        }),
+        markClosed: () => {
+          closed = true;
+        },
+        on: vi.fn(),
+        once: vi.fn(),
+        off: vi.fn(),
+        frames: () => [],
+        mainFrame: () => ({}),
+        _opener: null,
+        _connection: { toImpl: () => ({ delegate: { _targetId: targetId } }) },
+      };
+    };
+    const helper = fake("target-h-helper", "about:blank");
+    const sleeper = fake("target-h", "https://stuck.test/");
+    const late = fake("target-h", "https://stuck.test/");
+    let newPages = 0;
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+      newPage: vi.fn(async () => (++newPages === 1 ? helper : sleeper)),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async (method: string) =>
+          method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-h" } } : {},
+        ),
+        on: vi.fn(),
+        off: vi.fn(),
+        detach: vi.fn(async () => undefined),
+      })),
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+    let tabs: ChromiumTabEntry[] = [
+      {
+        tabId: 801,
+        windowId: 1,
+        index: 0,
+        url: "https://stuck.test/",
+        title: "Stuck",
+        active: false,
+        discarded: false,
+        status: "complete",
+        targetId: "target-h",
+      },
+    ];
+    const spies = [
+      vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+        .mockImplementation(async () => [...tabs]),
+      // Chromium discards the tab (a new id, the same target), then the helper names it.
+      vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
+        .mockImplementation(async () => {
+          sleeper.markClosed();
+          tabs = tabs.map((t) => ({ ...t, tabId: 802, discarded: true, status: "unloaded" }));
+          return 802;
+        }),
+      vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "nameTab")
+        .mockImplementation(async (tabId, name) => {
+          tabs = tabs.map((t) => (t.tabId === tabId ? { ...t, identity: name } : t));
+          return true;
+        }),
+    ];
+    // Removal never takes: the tab stays listed whatever is asked.
+    let removeCalls = 0;
+    spies.push(
+      vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+        .mockImplementation(async () => {
+          removeCalls++;
+          return false;
+        }),
+    );
+    f.cdp.send.mockImplementation(async (method: string) => {
+      if (method === "Target.closeTarget") throw new Error("close refused");
+      return {};
+    });
+    const diagnostic = vi.spyOn(process.stderr, "write");
+    const unconfirmed = () =>
+      diagnostic.mock.calls.filter(([line]) =>
+        String(line).includes('"event":"browser-runtime.tab-removal-unconfirmed"'),
+      );
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const handedOff: string[] = [];
+      launched.context.handOff((p) => handedOff.push(p.url()));
+      const page = await launched.context.createPage();
+      const token = await page.captureRestore!();
+      await page.close({ reason: "slept" });
+      expect(tabs).toMatchObject([{ tabId: 802, discarded: true }]);
+      expect(tabs[0]!.identity).toMatch(/^opensteer-sleep:/);
+      handedOff.length = 0;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const releasing = launched.context.releaseRestore!(token);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await releasing).toBe(false);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(unconfirmed()).toHaveLength(1);
+      const callsAtBound = removeCalls;
+      await vi.advanceTimersByTimeAsync(60_000);
+      vi.useRealTimers();
+      // Not retried silently forever.
+      expect(removeCalls).toBe(callsAtBound);
+      // Still guarded: a page the tab loads later is closed and never handed off.
+      tabs = tabs.map((t) => ({ ...t, discarded: false, status: "complete" }));
+      for (const handler of pageHandlers) handler(late as unknown as Page);
+      await vi.waitFor(() => expect(late.close).toHaveBeenCalled(), { timeout: 3_000 });
+      expect(handedOff).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      for (const spy of spies) spy.mockRestore();
+      diagnostic.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("hands off a popup whose opener is gone as the base does, bounds closeTarget and bringToFront, and takes no closeTarget answer of success: false as a close (F4, M1)", async () => {
+    const f = await nativeCloseFixture();
+    const pageHandlers: Array<(page: Page) => void> = [];
+    Object.assign(f.context, {
+      newPage: vi.fn(async () => ({
+        on: vi.fn(),
+        isClosed: () => false,
+        bringToFront: () => new Promise(() => {}),
+      })),
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+    f.cdp.send.mockImplementation(async (method: string) => {
+      if (method === "Target.closeTarget") return await new Promise(() => {});
+      return {};
+    });
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const handedOff: string[] = [];
+      launched.context.handOff((p) => handedOff.push(p.url()));
+      const hiddenOpener = Object.assign(new EventEmitter(), {
+        url: () => "https://gone-opener.test/",
+        isClosed: () => true,
+      }) as unknown as Page;
+      const popup = {
+        url: () => "https://popup-f4.test/",
+        isClosed: () => false,
+        close: vi.fn(async () => undefined),
+        on: vi.fn(),
+        once: vi.fn(),
+        _opener: hiddenOpener,
+        _connection: { toImpl: () => ({ delegate: { _targetId: "target-f4-popup" } }) },
+      } as unknown as Page;
+      for (const handler of pageHandlers) handler(popup);
+      await vi.waitFor(() => expect(handedOff).toEqual(["https://popup-f4.test/"]), {
+        timeout: 2_000,
+      });
+      expect(popup.close).not.toHaveBeenCalled();
+      const handle = (
+        launched as unknown as {
+          contextHandle: {
+            closeTarget?: (id: string) => Promise<void>;
+            activatePrivateAnchor(): Promise<void>;
+          };
+        }
+      ).contextHandle;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const closeRejected = expect(handle.closeTarget!("target-hung")).rejects.toThrow(
+        /timed out/i,
+      );
+      const anchorDone = handle.activatePrivateAnchor();
+      await vi.advanceTimersByTimeAsync(2_100);
+      vi.useRealTimers();
+      await closeRejected;
+      await anchorDone;
+      // A resolved answer that says it did not close is no evidence of a close.
+      f.cdp.send.mockImplementation(async (method: string) =>
+        method === "Target.closeTarget" ? { success: false } : {},
+      );
+      await expect(handle.closeTarget!("target-refused")).rejects.toThrow(/did not close/);
+    } finally {
+      vi.useRealTimers();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
   it("classifies Chromium OpenURLFromTab link-open gestures across platforms", () => {
     // Bitmask: alt=1, control=2, meta=4, shift=8
     expect(
@@ -1421,6 +2125,9 @@ describe("native Chromium profiles", () => {
         });
         holdExplicit = true;
         const explicitPromise = singleLaunched.context.createPage();
+        // An open is admitted first (TS13), so Playwright is asked a few turns later: the child
+        // arrives while the runtime's own open is in flight.
+        await vi.waitFor(() => expect(resolveExplicit).toBeTypeOf("function"));
         const blankChild = createMockPage("about:blank");
         singlePages.push(blankChild as unknown as Page);
         singleEvents.emit("page", blankChild);
@@ -1461,7 +2168,164 @@ describe("native Chromium profiles", () => {
   });
 });
 
-async function nativeCloseFixture() {
+/*
+ * Z3: a page the runtime asked for is the runtime's from the ask until it is handed out or closed.
+ * An open it gave up on (timed out, or abandoned when its session ended) whose page Chromium still
+ * makes is closed when it arrives, with evidence: never handed out as the page a person's link
+ * opened, and never left open with no owner. The old open kept no hold on Playwright's answer.
+ */
+describe("a page whose open was given up (Z3)", () => {
+  async function fixture() {
+    const { PageOwnership } = await import("@opensteer/browser-runtime-core");
+    const f = await nativeCloseFixture();
+    const events = new EventEmitter();
+    const pages: Page[] = [];
+    const mockPage = (url: string) =>
+      Object.assign(new EventEmitter(), {
+        url: () => url,
+        opener: async () => null,
+        isClosed: () => false,
+        close: vi.fn(async () => undefined),
+      });
+    f.context.on.mockImplementation((event: string, listener: (...args: unknown[]) => void) => {
+      events.on(event, listener);
+    });
+    f.context.pages = () => pages;
+    f.context.newCDPSession.mockResolvedValue(
+      Object.assign(new EventEmitter(), {
+        send: vi.fn(async (method: string) =>
+          method === "Target.getTargetInfo" ? { targetInfo: { canAccessOpener: false } } : {},
+        ),
+        detach: vi.fn().mockResolvedValue(undefined),
+      }),
+    );
+    let late: PromiseWithResolvers<Page> | null = null;
+    f.context.newPage.mockImplementation(async () => {
+      if (late) return await late.promise;
+      const created = mockPage("about:blank") as unknown as Page;
+      pages.push(created);
+      events.emit("page", created);
+      return created;
+    });
+    const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+    const ownership = new PageOwnership();
+    ownership.adopt(launched.context);
+    const opener = await launched.context.createPage();
+    ownership.claim(opener, "only-session");
+    await Promise.resolve();
+    // The next open hangs in Chromium; the runtime gives it up (its session ended).
+    late = Promise.withResolvers<Page>();
+    const giveUp = new AbortController();
+    const asked = launched.context.createPage({ signal: giveUp.signal });
+    await vi.waitFor(() => expect(f.context.newPage).toHaveBeenCalledTimes(2));
+    giveUp.abort();
+    await expect(asked).rejects.toThrow();
+    // Chromium makes the page after all: Playwright announces it, then answers the open.
+    const arrive = (url: string) => {
+      const page = mockPage(url);
+      pages.push(page as unknown as Page);
+      events.emit("page", page);
+      return page;
+    };
+    const pendingLate = late;
+    const handleOf = (page: unknown) =>
+      launched.context
+        .pages()
+        .find((handle) => (handle as unknown as { rawPage?: unknown }).rawPage === page);
+    return { f, launched, ownership, opener, arrive, late: () => pendingLate, handleOf };
+  }
+
+  const primaryBit = process.platform === "darwin" ? 4 : 2;
+  const click = async (opener: BrowserPage) =>
+    (await opener.cdp()).send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      button: "left",
+      modifiers: primaryBit,
+    });
+  const turns = async (count = 4) => {
+    for (let turn = 0; turn < count; turn++) await Promise.resolve();
+  };
+
+  it("shows a link's page at once while the given-up open is still pending, and closes only that open's page when it comes (Z5)", async () => {
+    const { f, launched, ownership, opener, arrive, late, handleOf } = await fixture();
+    try {
+      await click(opener);
+      // The given-up open never answers while the link's page arrives at its address.
+      const linked = arrive("https://link.test/");
+      await turns();
+      const handle = handleOf(linked);
+      expect(handle).toBeDefined();
+      expect(await handle!.opener()).toBe(opener);
+      expect(ownership.sessionOf(handle!)).toBe("only-session");
+      // Then the given-up open answers: its page, and only it, is closed.
+      const stray = arrive("about:blank");
+      late().resolve(stray as unknown as Page);
+      await vi.waitFor(() => expect(stray.close).toHaveBeenCalled());
+      expect(handleOf(stray)).toBeUndefined();
+      expect(linked.close).not.toHaveBeenCalled();
+      expect(handleOf(linked)).toBe(handle);
+    } finally {
+      f.exit();
+      await launched.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("shows a link's blank page within a moment while the given-up open is pending, still its link's (Z5)", async () => {
+    const { f, launched, ownership, opener, arrive, handleOf } = await fixture();
+    try {
+      await click(opener);
+      const blank = arrive("about:blank");
+      const asked = performance.now();
+      await vi.waitFor(() => expect(handleOf(blank)).toBeDefined(), {
+        timeout: 1_000,
+        interval: 10,
+      });
+      expect(performance.now() - asked).toBeLessThan(800);
+      const handle = handleOf(blank)!;
+      expect(await handle.opener()).toBe(opener);
+      expect(ownership.sessionOf(handle)).toBe("only-session");
+    } finally {
+      f.exit();
+      await launched.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("closes the late page of an open abandoned when its session ended, and hands it to no one", async () => {
+    const { f, launched, arrive, late, handleOf } = await fixture();
+    try {
+      const stray = arrive("about:blank");
+      late().resolve(stray as unknown as Page);
+      await vi.waitFor(() => expect(stray.close).toHaveBeenCalled());
+      await turns();
+      expect(handleOf(stray)).toBeUndefined();
+    } finally {
+      f.exit();
+      await launched.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+});
+
+/** A page published as the runtime's own new page (K3 (a)), as every open of a native page is. */
+async function ownPage(
+  launched: { context: { createPage(): Promise<BrowserPage> } },
+  context: { newPage: { mockResolvedValueOnce(value: unknown): unknown } },
+  page: unknown,
+): Promise<BrowserPage> {
+  const raw = page as { isClosed?: () => boolean };
+  raw.isClosed ??= () => false;
+  context.newPage.mockResolvedValueOnce(page);
+  return launched.context.createPage();
+}
+
+async function nativeCloseFixture(
+  options: Pick<
+    ConstructorParameters<typeof PlaywrightChromiumLauncher>[0],
+    "linuxProcFs" | "platform" | "preserveLoopbackBypass" | "proxyUrl"
+  > = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "native-close-"));
   const child = new ChildProcess();
   Object.defineProperty(child, "pid", { value: 12345 });
@@ -1491,6 +2355,14 @@ async function nativeCloseFixture() {
     on: vi.fn(),
     close: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   };
+  // The helper's one sleep call, made of the two it is built from (mocked separately here):
+  // named first, discarded second (Q2).
+  vi.spyOn(ChromiumTabLifecycleBridge.prototype, "nameAndDiscard").mockImplementation(
+    async function (this: ChromiumTabLifecycleBridge, tabId: number, title: string) {
+      if (!(await this.nameTab(tabId, title))) return null;
+      return this.discardByTabId(tabId);
+    },
+  );
   vi.spyOn(chromium, "launchPersistentContext").mockResolvedValue(
     context as unknown as BrowserContext,
   );
@@ -1498,6 +2370,7 @@ async function nativeCloseFixture() {
     executablePath: process.execPath,
     headless: true,
     chromiumSandbox: true,
+    ...options,
   });
   return { directory, launcher, context, browser, cdp, exit };
 }

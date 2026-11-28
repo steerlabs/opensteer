@@ -1,5 +1,6 @@
+import { endAgentSessions, refuseUnsentAgentOperation } from "./agent-session-store.js";
+import { closeLostConnectionProposals } from "./command-proposal-reach.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { recoverRemovedAskTasks } from "./task-admission-store.js";
 import { recordThreadVisit } from "./thread-visits.js";
 import { installAssignmentReturnWake } from "./assignment-store.js";
 import { removeDevice } from "./device-removal-store.js";
@@ -7,18 +8,44 @@ import * as deviceInventoryStore from "./device-inventory-store.js";
 import * as deviceDriverStore from "./device-driver-store.js";
 import * as waitingInputs from "./waiting-inputs.js";
 import { setExecutionClock } from "./personal-transaction.js";
+import { pauseLineageTrigger, TriggerStore } from "./trigger-store.js";
+import {
+  claimConnectionCleanup,
+  completeCleanupIfSettled,
+  connectionAttempts,
+  connectionStopId,
+  recordConnectionStop,
+  connectionCdpAttempts,
+  recoverConnectionCdpAttempts,
+  markConnectionAttemptsContactLost,
+  outstandingAttempts,
+  recordConnectionRunHandoff,
+  recordRunNotAdmitted,
+  type ConnectionAttemptStopper,
+  type ConnectionCleanup,
+  openCleanups,
+  requestExpiredCleanups,
+  stopChatAttempt,
+  releaseConnectionCleanupClaim,
+  renewConnectionCleanupClaim,
+  settleLineageRequests,
+} from "./connection-disconnect.js";
 import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
 import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import { readAgentHomeSettings } from "./agent-home-settings-store.js";
 import * as voiceStore from "./voice-store.js";
-import { messageTeamSources } from "./message-team-sources.js";
 
 import {
   replayAdministrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
-import { resolveResourceAccess, type ResourceAccessInput } from "./resource-access.js";
+import {
+  admitExecution,
+  bindingAgentConnectionId,
+  resolveResourceAccess,
+  type ResourceAccessInput,
+} from "./resource-access.js";
 import { type ChannelTransportKind, type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
   createId,
@@ -52,6 +79,7 @@ import {
   type ThreadAccessMode,
   type ThreadExecutionBinding,
   type ThreadId,
+  type TriggerId,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -93,7 +121,11 @@ import {
   type BrowserSessionWithAttachmentCountRecord,
 } from "./browser-session-store.js";
 import * as commandStore from "./command-store.js";
-import { type ClaimedCommand, type RunnerControlInput } from "./command-store.js";
+import {
+  type BlockedCommandClaim,
+  type ClaimedCommand,
+  type RunnerControlInput,
+} from "./command-store.js";
 import * as computerUseStore from "./computer-use-store.js";
 import * as credentialStore from "./credential-store.js";
 import { type CredentialRecord } from "./credential-store.js";
@@ -130,9 +162,11 @@ import { OwnerProfileStore } from "./owner-profile-store.js";
 import {
   installPersonMessageWake,
   publishPersonMessage,
+  publishProgramPersonMessage,
   type PersonMessageReady,
   type PersonMessageInput,
   type PersonMessageResult,
+  type ProgramPersonMessageInput,
 } from "./person-message-store.js";
 import { RequestStore } from "./request-store.js";
 import { IntegrationRequestStore } from "./integration-request-store.js";
@@ -150,13 +184,14 @@ import {
 import { type CommandRow, type DatabaseSchema, type PendingCommandRow } from "./schema.js";
 import { readPersonalTaskPage } from "./personal-task-store.js";
 import { drainRunFinish } from "./run-finalization.js";
-import { threadPathLinks, type ChannelLinks } from "./store-primitives.js";
+import { lockCommandIdempotency, threadPathLinks, type ChannelLinks } from "./store-primitives.js";
 import * as taskDone from "./task-done.js";
 import * as quietTasks from "./quiet-tasks.js";
 import { readThreadHistory, type ThreadHistoryQuery } from "./thread-history.js";
 import { latestRunStoppedByPerson, type AssignmentReturnDrain } from "./thread-inbox.js";
 import { executionNodeFromRow, runAttemptFromRow } from "./thread-row-mappers.js";
 import * as threadStore from "./thread-store.js";
+import type { TaskReader } from "./task-reader.js";
 import {
   type AdmittedThreadDelegationRequest,
   type AdmittedThreadInputRequest,
@@ -489,38 +524,20 @@ export class OpensteerStore {
   ): Promise<readonly ReachableMachineRecord[]> {
     return machineStore.listReachableMachines(this.#database, userId, callerRunnerId);
   }
-  async reserveShellSession(input: {
-    readonly callerMachineName: string;
-    readonly callerRunnerId: RunnerId;
-    readonly policyRevision: number;
-    readonly requestedBy: UserId;
-    readonly runId: RunId;
-    readonly runnerId: RunnerId;
-    readonly sessionId: ShellSessionId;
-    readonly startedAt: Date;
-    readonly threadId: ThreadId;
-    readonly threadTitle: string;
-  }): Promise<void> {
+  async reserveShellSession(input: Parameters<typeof machineStore.reserveShellSession>[1]) {
     return machineStore.reserveShellSession(this.#database, input);
   }
   async activateShellSession(sessionId: ShellSessionId): Promise<boolean> {
     return machineStore.activateShellSession(this.#database, sessionId);
   }
-  async endShellSession(input: {
-    readonly bytesIn?: number;
-    readonly bytesOut?: number;
-    readonly endedAt?: Date;
-    /** A Stop the person may click twice; the second click reports the first. */
-    readonly idempotency?: {
-      readonly key: string;
-      readonly requestedBy: UserId;
-    };
-    readonly reason: ShellCloseReason;
-    readonly sessionId: ShellSessionId;
-  }): Promise<{
-    readonly ended: boolean;
-  }> {
+  async endShellSession(input: Parameters<typeof machineStore.endShellSession>[1]) {
     return machineStore.endShellSession(this.#database, input);
+  }
+  /** A connection's shell attempt ends on its target's receipt or on losing its stream (A4). */
+  async recordShellTargetEvidence(
+    input: Parameters<typeof machineStore.recordShellTargetEvidence>[1],
+  ): Promise<number> {
+    return machineStore.recordShellTargetEvidence(this.#database, input);
   }
   async endAllOpenShellSessions(reason: ShellCloseReason): Promise<number> {
     return machineStore.endAllOpenShellSessions(this.#database, reason);
@@ -582,6 +599,7 @@ export class OpensteerStore {
     readonly id: string;
     readonly idempotencyKey: string;
     readonly mainEnrollmentPurpose?: "initial" | "replacement";
+    readonly configuredInitial?: true;
     readonly name: string;
     /**
      * The person whose work runs on a managed Runner. Administration stays
@@ -630,11 +648,19 @@ export class OpensteerStore {
   }): Promise<boolean> {
     return runnerStore.touchRunnerConnection(this.#database, input);
   }
+  async touchRunnerConnectionForAttach(input: {
+    readonly connectionGeneration: number;
+    readonly runnerId: RunnerId;
+  }): Promise<{ readonly current: boolean; readonly hasUnconfirmedStop: boolean }> {
+    return runnerStore.touchRunnerConnectionForAttach(this.#database, input);
+  }
   async createBrowserProfile(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly homeRunnerId?: RunnerId | null;
     readonly idempotencyKey: string;
     readonly name: string;
     readonly ownerId: UserId;
+    readonly purpose?: "person" | "engine-sign-in";
   }): Promise<BrowserProfileRecord> {
     return browserSessionStore.createBrowserProfile(this.#database, input);
   }
@@ -709,6 +735,9 @@ export class OpensteerStore {
     readonly origin: "agent" | "trigger";
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
+    readonly pooled?: true;
+    readonly onPooledComputer?: true;
+    readonly pooledRunner?: RunnerId;
   }): Promise<BrowserSessionRecord> {
     return browserSessionStore.createBrowserSession(this.#database, input);
   }
@@ -799,6 +828,9 @@ export class OpensteerStore {
       agentBindingId,
     );
   }
+  listBrowserSessionAttachmentBindings(sessionId: BrowserSessionId): Promise<readonly string[]> {
+    return browserSessionStore.listBrowserSessionAttachmentBindings(this.#database, sessionId);
+  }
   async listAttachedRunIdsForBrowserSessions(
     sessionIds: readonly BrowserSessionId[],
   ): Promise<ReadonlyMap<BrowserSessionId, readonly RunId[]>> {
@@ -808,6 +840,7 @@ export class OpensteerStore {
     readonly agentBindingId: string;
     readonly ownerId: UserId;
     readonly sessionId: BrowserSessionId;
+    readonly pool?: import("./browser-pool-store.js").BrowserPoolTargetIdentity;
   }): Promise<boolean> {
     return browserSessionStore.attachBrowserSession(this.#database, input);
   }
@@ -828,8 +861,11 @@ export class OpensteerStore {
   ): Promise<BrowserSessionRecord | null> {
     return browserSessionStore.getBrowserSessionForOwner(this.#database, sessionId, ownerId);
   }
-  async listBrowserSessions(ownerId: UserId): Promise<readonly BrowserSessionRecord[]> {
-    return browserSessionStore.listBrowserSessions(this.#database, ownerId);
+  async listBrowserSessions(
+    ownerId: UserId,
+    options?: { readonly pooled?: boolean },
+  ): Promise<readonly BrowserSessionRecord[]> {
+    return browserSessionStore.listBrowserSessions(this.#database, ownerId, options);
   }
   async listBrowserSessionThreads(input: {
     readonly ownerId: UserId;
@@ -842,15 +878,26 @@ export class OpensteerStore {
   }): Promise<readonly BrowserSessionWithAttachmentCountRecord[]> {
     return browserSessionStore.listActiveBrowserSessionsForAgent(this.#database, input);
   }
-  async failActiveBrowserSessions(placementKey?: string) {
-    return browserSessionStore.failActiveBrowserSessions(this.#database, placementKey);
+  async failActiveBrowserSessions(placementKey?: string, pooledRunner?: RunnerId) {
+    return browserSessionStore.failActiveBrowserSessions(
+      this.#database,
+      placementKey,
+      pooledRunner,
+    );
   }
   async transitionBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
-    readonly state: HostedBrowserSessionState;
+    readonly state: Exclude<HostedBrowserSessionState, "closed">;
   }) {
     return browserSessionStore.transitionBrowserSession(this.#database, input);
+  }
+  /** Closes a session that is not pooled; a pooled one is refused in the statement itself. */
+  async closeUnpooledBrowserSession(input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+  }) {
+    return browserSessionStore.closeUnpooledBrowserSession(this.#database, input);
   }
   async renewActiveExecutionBindings(input: {
     readonly activeRunIds: readonly RunId[];
@@ -903,6 +950,270 @@ export class OpensteerStore {
 
   resolveResourceAccess(input: ResourceAccessInput) {
     return resolveResourceAccess(this.#database, input);
+  }
+
+  /** A binding's immutable connection; null for the person's own work. */
+  bindingAgentConnectionId(bindingId: string) {
+    return bindingAgentConnectionId(this.#database, bindingId);
+  }
+
+  /** Is this execution still allowed at all? See `admitExecution`. */
+  admitExecution(input: Parameters<typeof admitExecution>[1]) {
+    return admitExecution(this.#database, input);
+  }
+
+  connectionCdpAttempts() {
+    return connectionCdpAttempts(this.#database);
+  }
+
+  recoverConnectionCdpAttempts() {
+    return recoverConnectionCdpAttempts(this.#database);
+  }
+
+  recordConnectionRunHandoff(input: Parameters<typeof recordConnectionRunHandoff>[1]) {
+    return recordConnectionRunHandoff(this.#database, input);
+  }
+
+  recordRunNotAdmitted(runId: RunId, bindingGeneration: number) {
+    return recordRunNotAdmitted(this.#database, runId, bindingGeneration);
+  }
+
+  markConnectionAttemptsContactLost(
+    input: Parameters<typeof markConnectionAttemptsContactLost>[1],
+  ) {
+    return markConnectionAttemptsContactLost(this.#database, input);
+  }
+
+  connectionStopId = connectionStopId;
+
+  async driveConnectionCleanups(
+    options: {
+      readonly stopper?: ConnectionAttemptStopper;
+      readonly onCleanup?: (cleanup: ConnectionCleanup) => Promise<void>;
+    } = {},
+  ): Promise<{
+    readonly failures: readonly unknown[];
+    readonly settled: readonly string[];
+  }> {
+    await requestExpiredCleanups(this.#database);
+    const failures: unknown[] = [];
+    const settled: string[] = [];
+    const step = async (work: () => Promise<unknown>) => {
+      try {
+        await work();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    for (const connectionId of await openCleanups(this.#database)) {
+      const cleanup = await claimConnectionCleanup(this.#database, connectionId);
+      if (!cleanup) continue;
+      const { userId, token, reason } = cleanup;
+      const sessionStops: Promise<void>[] = [];
+      try {
+        const attempts = outstandingAttempts(
+          await connectionAttempts(this.#database, connectionId),
+        );
+        for (const attempt of attempts) {
+          if (attempt.kind !== "session") continue;
+          const end = () =>
+            commitPersonalMutation(this.#database, async (tx) => {
+              if (await renewConnectionCleanupClaim(tx, cleanup))
+                await endAgentSessions(tx, { userId, sessionIds: [attempt.id], reason });
+            });
+          const stopSession = options.stopper?.stopAgentSession;
+          if (attempt.handedOff && stopSession) {
+            // Close the device without holding database locks or making the rest of the
+            // connection wait for its receipt. The session stays in the set until it answers.
+            sessionStops.push(
+              step(async () => {
+                if (!(await renewConnectionCleanupClaim(this.#database, cleanup))) return;
+                await stopSession(attempt, cleanup, end);
+              }),
+            );
+          } else {
+            await step(end);
+          }
+        }
+        // A narrowing closes a command ask its lineage made only where its standing no longer
+        // reaches it, by the same function the grant edit uses; nothing is said to the lineage.
+        // (A gone connection's asks are in its set, closed with the rest, saying nothing too.)
+        if (reason === "narrowed")
+          await step(() =>
+            commitPersonalMutation(this.#database, async (tx) => {
+              if (await renewConnectionCleanupClaim(tx, cleanup))
+                await closeLostConnectionProposals(tx, {
+                  ownerUserId: userId,
+                  connectionId,
+                  all: false,
+                });
+            }),
+          );
+        if ((attempts.length || cleanup.pending) && options.onCleanup)
+          await step(() => options.onCleanup!(cleanup));
+        for (const attempt of attempts) {
+          if (attempt.kind === "session") continue;
+          if (!(await renewConnectionCleanupClaim(this.#database, cleanup))) break;
+          const key = `connection-stop:${connectionId}:${attempt.kind}:${attempt.id}:${attempt.generation ?? "local"}`;
+          const mutate = (
+            work: (tx: import("kysely").Transaction<DatabaseSchema>) => Promise<unknown>,
+            idempotent = false,
+          ) =>
+            step(() =>
+              commitPersonalMutation(this.#database, async (tx) => {
+                if (idempotent) await lockCommandIdempotency(tx, userId, key);
+                if (await renewConnectionCleanupClaim(tx, cleanup)) await work(tx);
+              }),
+            );
+          const stop = () =>
+            step(async () => {
+              const result = await options.stopper?.stop(attempt, cleanup);
+              if (result) await recordConnectionStop(this.#database, cleanup, attempt, result);
+            });
+          switch (attempt.kind) {
+            case "request":
+              await step(() => settleLineageRequests(this.#database, [attempt.id], cleanup));
+              break;
+            case "input": {
+              let cancelled: Awaited<
+                ReturnType<typeof threadStore.cancelDisconnectedThreadInput>
+              > | null = null;
+              await mutate(async (tx) => {
+                cancelled = await threadStore.cancelDisconnectedThreadInput(tx, {
+                  threadId: attempt.threadId!,
+                  messageId: attempt.id,
+                });
+              });
+              if (cancelled) this.#announceRevokedGrants(cancelled);
+              break;
+            }
+            case "trigger":
+              await mutate((tx) => pauseLineageTrigger(tx, attempt.id));
+              break;
+            case "steer":
+              if (!attempt.handedOff)
+                await mutate((tx) =>
+                  commandStore.refuseSteer(
+                    tx,
+                    attempt.id,
+                    "The connected agent's access ended before this message could be delivered.",
+                    undefined,
+                    true,
+                  ),
+                );
+              break;
+            case "run":
+            case "run-attempt": {
+              const runId = attempt.kind === "run" ? attempt.id : attempt.runId;
+              const row = await this.#database
+                .selectFrom("runs")
+                .innerJoin("threads", "threads.id", "runs.threadId")
+                .select(["runs.bindingGeneration", "runs.status", "threads.originConnectionId"])
+                .where("runs.id", "=", runId)
+                .executeTakeFirst();
+              const canEnqueue =
+                row &&
+                row.bindingGeneration === attempt.generation &&
+                ["queued", "starting", "running", "waiting"].includes(row.status);
+              if (canEnqueue)
+                await mutate(
+                  (tx) =>
+                    commandStore.enqueueRunnerControlInTransaction(tx, this.#links, {
+                      type: "run.interrupt",
+                      idempotencyKey: key,
+                      requestedBy: userId,
+                      runId,
+                      threadId: attempt.threadId!,
+                      expectedBindingGeneration: attempt.generation,
+                      ...(attempt.runnerBootId
+                        ? {
+                            stop: { id: connectionStopId(attempt), bootId: attempt.runnerBootId },
+                          }
+                        : {}),
+                      ...(reason === "narrowed" || row.originConnectionId !== connectionId
+                        ? { keepQueueRunning: true }
+                        : {}),
+                    }),
+                  true,
+                );
+              if (attempt.kind === "run-attempt") await stop();
+              break;
+            }
+            case "occurrence":
+              if (attempt.handedOff) {
+                await stop();
+              } else {
+                const row = await this.#database
+                  .selectFrom("triggerOccurrences")
+                  .select("triggerId")
+                  .where("id", "=", attempt.id)
+                  .executeTakeFirst();
+                if (row)
+                  await mutate((tx) =>
+                    new TriggerStore(tx).cancelPendingOccurrences(userId, {
+                      actorThreadId: null,
+                      triggerId: row.triggerId,
+                      occurrenceId: attempt.id,
+                    }),
+                  );
+              }
+              break;
+            case "watch":
+              await mutate((tx) =>
+                new TriggerStore(tx).stopConnectionWatch(attempt.id, attempt.generation!),
+              );
+              if (attempt.handedOff) await stop();
+              break;
+            case "chat":
+              await mutate((tx) => stopChatAttempt(tx, attempt.id));
+              break;
+            case "operation":
+              if (!attempt.handedOff)
+                await mutate((tx) =>
+                  refuseUnsentAgentOperation(tx, attempt.id, attempt.generation!),
+                );
+              else if (options.stopper?.stopDirectOperation)
+                await step(() => options.stopper!.stopDirectOperation!(attempt, cleanup));
+              break;
+            default:
+              await stop();
+              break;
+          }
+        }
+        await Promise.all(sessionStops);
+        if (await completeCleanupIfSettled(this.#database, cleanup)) settled.push(connectionId);
+      } finally {
+        await Promise.all(sessionStops);
+        await releaseConnectionCleanupClaim(this.#database, connectionId, token);
+      }
+    }
+    return { failures, settled };
+  }
+
+  /** Each automation's origin connection, for lineage visibility. */
+  async triggerOrigins(
+    ownerId: UserId,
+    ids: readonly TriggerId[],
+  ): Promise<ReadonlyMap<TriggerId, string | null>> {
+    if (!ids.length) return new Map();
+    const rows = await this.#database
+      .selectFrom("triggers")
+      .select(["id", "originConnectionId"])
+      .where("createdBy", "=", ownerId)
+      .where("id", "in", [...ids])
+      .execute();
+    return new Map(rows.map((row) => [row.id, row.originConnectionId]));
+  }
+
+  /** Each task's origin connection, for lineage visibility. */
+  async threadOrigins(ids: readonly ThreadId[]): Promise<ReadonlyMap<ThreadId, string | null>> {
+    if (!ids.length) return new Map();
+    const rows = await this.#database
+      .selectFrom("threads")
+      .select(["id", "originConnectionId"])
+      .where("id", "in", [...ids])
+      .execute();
+    return new Map(rows.map((row) => [row.id, row.originConnectionId]));
   }
 
   async recordChannelCredentialAccess(input: {
@@ -1048,7 +1359,7 @@ export class OpensteerStore {
     return environmentStore.assignEnvironmentRunner(this.#database, environmentId, runnerId);
   }
 
-  /** The name of the computer a personal Deployment runs on; null on a team server. */
+  /** The name of the computer a personal Deployment runs on; null before it has one. */
   async homeComputerName(): Promise<string | null> {
     const row = await this.#database
       .selectFrom("runners")
@@ -1104,7 +1415,12 @@ export class OpensteerStore {
   async getAssignmentForOwner(input: {
     readonly assignmentId: AssignmentId;
     readonly ownerId: UserId;
-  }): Promise<AssignmentView | null> {
+    readonly reader: TaskReader;
+    readonly connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >;
+  }): Promise<(AssignmentView & { readonly pendingRequests?: number }) | null> {
     return threadStore.getAssignmentForOwner(this.#database, input);
   }
   async listThreadAssignmentsForOwner(input: {
@@ -1130,13 +1446,46 @@ export class OpensteerStore {
     readonly scopeId: string;
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
+    readonly nativeOnly?: boolean;
+    readonly reader: TaskReader;
     readonly done?: boolean;
     readonly hasPendingRequests?: boolean;
+    readonly omitPendingRequests?: boolean;
+    readonly connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >;
   }): Promise<AgentThreadListPage> {
     return threadStore.agentThreadPageForOwner(this.#database, input);
   }
-  async getThreadForOwner(threadId: ThreadId, ownerId: UserId): Promise<Thread | null> {
-    return threadStore.getThreadForOwner(this.#database, threadId, ownerId);
+  /** A task as the person reads it; work reading a task reads it through `readTask`. */
+  async getThreadForOwner(
+    threadId: ThreadId,
+    ownerId: UserId,
+    lineageConnectionId?: string,
+    nativeOnly?: boolean,
+    connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >,
+  ): Promise<Thread | null> {
+    return threadStore.getThreadForOwner(
+      this.#database,
+      threadId,
+      ownerId,
+      lineageConnectionId,
+      nativeOnly,
+      connectionAuthority,
+    );
+  }
+  /** A task as its reader may see it; one it may not read is null, as a missing one. */
+  async readTask(
+    reader: TaskReader,
+    threadId: ThreadId,
+    ownerId: UserId,
+    options?: Parameters<typeof threadStore.readTask>[4],
+  ): Promise<Thread | null> {
+    return threadStore.readTask(this.#database, reader, threadId, ownerId, options);
   }
 
   /** A Run's attempts and subagents, for a person who can read its Thread; null otherwise. */
@@ -1230,6 +1579,27 @@ export class OpensteerStore {
   }> {
     return threadStore.updateThreadExecutionSelection(this.#database, input);
   }
+  async clearThreadStartHold(threadId: ThreadId): Promise<boolean> {
+    return executionRecovery.clearThreadStartHold(this.#database, threadId);
+  }
+  async readThreadUnconfirmedStop(
+    threadId: ThreadId,
+  ): Promise<executionRecovery.ThreadUnconfirmedStop | null> {
+    return executionRecovery.readThreadUnconfirmedStop(this.#database, threadId);
+  }
+  async confirmThreadUnconfirmedStop(
+    threadId: ThreadId,
+    runId: RunId,
+    confirmedAt?: Date,
+  ): Promise<boolean> {
+    return executionRecovery.confirmThreadUnconfirmedStop(
+      this.#database,
+      threadId,
+      runId,
+      confirmedAt,
+    );
+  }
+
   async resumeThreadInputQueue(input: {
     readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly idempotencyKey: string;
@@ -1387,21 +1757,23 @@ export class OpensteerStore {
       await commandStore.dispatchRequestResponse(this.#database, commandId, send),
     );
   }
-  async dispatchChannelCommand(
-    commandId: CommandRow["id"],
-    send: (beforeAck: () => Promise<void>) => Promise<void>,
-  ): Promise<void> {
-    this.#announceRevokedGrants(
-      await commandStore.dispatchChannelCommand(this.#database, commandId, send),
-    );
-  }
   async listPendingCommands(limit = 500): Promise<readonly PendingCommandRow[]> {
     return commandStore.listPendingCommands(this.#database, limit);
   }
+  claimCommand(commandId: CommandRow["id"], dispatcherId: string): Promise<ClaimedCommand | null>;
+  claimCommand(
+    commandId: CommandRow["id"],
+    dispatcherId: string,
+    options?: { readonly includeBlocked?: boolean },
+  ): Promise<ClaimedCommand | BlockedCommandClaim | null>;
   async claimCommand(
     commandId: CommandRow["id"],
     dispatcherId: string,
-  ): Promise<ClaimedCommand | null> {
+    options?: { readonly includeBlocked?: boolean },
+  ): Promise<ClaimedCommand | BlockedCommandClaim | null> {
+    if (options) {
+      return commandStore.claimCommand(this.#database, commandId, dispatcherId, options);
+    }
     return commandStore.claimCommand(this.#database, commandId, dispatcherId);
   }
   async finalizeRunInitialContext(input: {
@@ -1428,13 +1800,25 @@ export class OpensteerStore {
     readonly message: Message;
     readonly origin: import("@opensteer/core").MessageOrigin | undefined;
     readonly run: Run;
+    readonly reauthorize?: () => Promise<void>;
     readonly runId: RunId;
     readonly threadId: ThreadId;
   }> {
     return commandStore.loadSteerDispatchInput(this.#database, commandId);
   }
-  async retryCommand(commandId: CommandRow["id"], error: unknown): Promise<void> {
-    return commandStore.retryCommand(this.#database, this.#links, commandId, error);
+  async markCommandFrameSent(commandId: CommandRow["id"]): Promise<void> {
+    return commandStore.markCommandFrameSent(this.#database, commandId);
+  }
+  /** Holds a queued Run as waiting for another Run on its computer; false when it has a hold. */
+  async holdRunForAnotherRun(runId: RunId): Promise<boolean> {
+    return commandStore.holdQueuedRunForAnotherRun(this.#database, runId);
+  }
+  async retryCommand(
+    commandId: CommandRow["id"],
+    error: unknown,
+    options?: { readonly provenNotStarted?: boolean | undefined },
+  ): Promise<void> {
+    return commandStore.retryCommand(this.#database, this.#links, commandId, error, options);
   }
   async failCommand(
     commandId: CommandRow["id"],
@@ -1442,6 +1826,7 @@ export class OpensteerStore {
     queuedInputCancellation:
       "activation-input" | "authority-cohort" | "seed-input" = "activation-input",
     failureCode: "dispatch_failed" | "runner_restarted" = "dispatch_failed",
+    options?: { readonly provenNotStarted?: boolean | undefined },
   ): Promise<void> {
     return commandStore.failCommand(
       this.#database,
@@ -1450,6 +1835,7 @@ export class OpensteerStore {
       publicMessage,
       queuedInputCancellation,
       failureCode,
+      options,
     );
   }
   async refuseSteer(
@@ -1467,10 +1853,12 @@ export class OpensteerStore {
   }
   async acquireExecutionBinding(input: {
     readonly personalContext?: boolean;
+    readonly personLineage?: boolean;
     readonly bindingLeaseExpiresAt: Date;
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly leaseTokenHash: string;
+    readonly machineBootId?: string | null;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly runId: RunId;
@@ -1534,7 +1922,7 @@ export class OpensteerStore {
     input: Parameters<OpensteerStore["assertActiveExecutionBinding"]>[0] & {
       readonly grantId?: GrantId | undefined;
     },
-  ): Promise<void> {
+  ): Promise<import("./execution-authority.js").RunLineage> {
     return executionStore.assertActiveGrant(this.#database, input, this.#executionNow);
   }
   async failActiveRunsForRunnerDisconnect(input: {
@@ -1552,9 +1940,6 @@ export class OpensteerStore {
     readonly runnerId: RunnerId;
   }): Promise<void> {
     return executionRecovery.failRunForRefusedRunnerEvent(this.#database, this.#links, input);
-  }
-  recoverRemovedAskTasks(): Promise<void> {
-    return recoverRemovedAskTasks(this.#database);
   }
   recordThreadVisit(input: Parameters<typeof recordThreadVisit>[1]) {
     return recordThreadVisit(this.#database, input);
@@ -1586,9 +1971,11 @@ export class OpensteerStore {
     /** Runs this Host is dispatching now; their dispatch settles them. */
     readonly dispatchingRunIds: readonly RunId[];
     readonly executions: readonly AnnouncedExecution[];
+    readonly stoppedComputerName?: string;
     readonly leaseExpiresAt: Date;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
+    readonly checkUnconfirmedStops?: boolean;
   }): Promise<{
     readonly resumed: readonly ResumedExecution[];
     readonly results: readonly ExecutionAttachment[];
@@ -1671,6 +2058,9 @@ export class OpensteerStore {
   publishPersonMessage(input: PersonMessageInput): Promise<PersonMessageResult> {
     return publishPersonMessage(this.#database, input);
   }
+  publishProgramPersonMessage(input: ProgramPersonMessageInput): Promise<PersonMessageResult> {
+    return publishProgramPersonMessage(this.#database, input);
+  }
   async personalMessageSendKeys(
     ownerId: UserId,
     sessionId: string,
@@ -1690,7 +2080,6 @@ export class OpensteerStore {
       .where("threadInputs.messageId", "in", [...messageIds])
       .where("threadInputs.requestedBy", "=", ownerId)
       .where("threads.createdBy", "=", ownerId)
-      .where("threads.teamId", "is", null)
       .execute();
     return new Map(
       rows
@@ -1709,9 +2098,6 @@ export class OpensteerStore {
   async threadMessagePageForOwner(input: ThreadHistoryQuery): Promise<ThreadMessagePage | null> {
     return readThreadHistory(this.#database, input);
   }
-  messageTeamSources(threadId: ThreadId, messageIds: readonly MessageId[]) {
-    return messageTeamSources(this.#database, threadId, messageIds);
-  }
 }
 export { machineIsManagedBy, type MachineOwnershipRecord } from "./machine-ownership.js";
 export { enqueueThreadInputInTransaction } from "./thread-inbox.js";
@@ -1723,7 +2109,7 @@ export type { RevokedRunGrant } from "./run-grants.js";
 
 export type { CreateThreadInput } from "./thread-store.js";
 export type { ThreadCreationResult } from "./thread-store.js";
-export type { ThreadInputSource } from "./thread-store.js";
+export type { BridgeChatSource, ThreadInputSource } from "./thread-store.js";
 export type { EnqueueThreadInputRequest } from "./thread-store.js";
 export type { EnqueuedThreadInput } from "./thread-store.js";
 export type { SteerThreadInputRequest } from "./thread-store.js";
@@ -1737,7 +2123,7 @@ export type { ThreadMutationAdmission } from "./thread-store.js";
 export type { AdmittedThreadInputRequest } from "./thread-store.js";
 export type { AdmittedThreadDelegationRequest } from "./thread-store.js";
 export type { RunnerControlInput } from "./command-store.js";
-export type { ClaimedCommand } from "./command-store.js";
+export type { BlockedCommandClaim, ClaimedCommand } from "./command-store.js";
 export type { RecoveredRunTarget } from "./execution-recovery.js";
 export type { BackgroundDeadlineStop } from "./execution-recovery.js";
 export type { AnnouncedExecution } from "./execution-recovery.js";

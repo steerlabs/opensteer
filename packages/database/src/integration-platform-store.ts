@@ -37,6 +37,7 @@ export class IntegrationPlatformStore {
   readonly requireSelfDeviceId: IntegrationConnectionAuthStore["requireSelfDeviceId"];
   readonly requireDeviceSelfRunnerId: IntegrationConnectionAuthStore["requireDeviceSelfRunnerId"];
   readonly getDeviceComputerUsePolicy: ComputerConnectionStore["getDeviceComputerUsePolicy"];
+  readonly deviceComputerUseFacts: ComputerConnectionStore["deviceComputerUseFacts"];
   readonly setDeviceComputerUsePolicy: ComputerConnectionStore["setDeviceComputerUsePolicy"];
   readonly listDeviceComputerAppSetupRequests: ComputerConnectionStore["listDeviceComputerAppSetupRequests"];
   readonly getDeviceComputerAppSetupRequest: ComputerConnectionStore["getDeviceComputerAppSetupRequest"];
@@ -91,6 +92,9 @@ export class IntegrationPlatformStore {
   readonly revokeGrant: IntegrationGrantStore["revokeGrant"];
   readonly getToolSchemas: IntegrationGrantStore["getToolSchemas"];
   readonly listCallableTools: IntegrationGrantStore["listCallableTools"];
+  readonly requesterGrant: IntegrationGrantStore["requesterGrant"];
+  readonly requesterShown: IntegrationGrantStore["requesterShown"];
+  readonly grantedDeviceApprovals: IntegrationGrantStore["grantedDeviceApprovals"];
   readonly settings: PluginSettingsStore;
   readonly plugins: PluginStore;
 
@@ -142,6 +146,9 @@ export class IntegrationPlatformStore {
       this.connections,
     );
     this.getDeviceComputerUsePolicy = this.computerConnections.getDeviceComputerUsePolicy.bind(
+      this.computerConnections,
+    );
+    this.deviceComputerUseFacts = this.computerConnections.deviceComputerUseFacts.bind(
       this.computerConnections,
     );
     this.setDeviceComputerUsePolicy = this.computerConnections.setDeviceComputerUsePolicy.bind(
@@ -239,5 +246,8 @@ export class IntegrationPlatformStore {
     this.revokeGrant = this.grants.revokeGrant.bind(this.grants);
     this.getToolSchemas = this.grants.getToolSchemas.bind(this.grants);
     this.listCallableTools = this.grants.listCallableTools.bind(this.grants);
+    this.requesterGrant = this.grants.requesterGrant.bind(this.grants);
+    this.requesterShown = this.grants.requesterShown.bind(this.grants);
+    this.grantedDeviceApprovals = this.grants.grantedDeviceApprovals.bind(this.grants);
   }
 }

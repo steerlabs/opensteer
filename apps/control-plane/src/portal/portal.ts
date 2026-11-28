@@ -1,10 +1,6 @@
-import { registerTeamSetupPortal } from "../adoption/team-setup.js";
-import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
-import {
-  hostedTeamRows,
-  portalCreateHostedTeamPath,
-  registerHostedTeamPortal,
-} from "../hosted-teams/portal-routes.js";
+import { registerCloudComputerPortal } from "../cloud-computers/portal-routes.js";
+import { cloudComputerPortalPath } from "../cloud-computers/portal-pages.js";
+import type { CloudComputerStore } from "../cloud-computers/store.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
@@ -12,13 +8,15 @@ import {
   AccountDeploymentSchema,
   ControlPlaneAccountIdSchema,
   IssueAccountHostSessionGrantResponseSchema,
+  homeKindWords,
+  homesListTitle,
+  isCanonicalPersonalHome,
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { DeploymentIdSchema, opensteerMobileClient } from "@opensteer/core";
 import { sessionExchangePath } from "@opensteer/protocol";
 import {
-  deploymentKindLabel,
   deploymentStatusFromAccountDirectory,
   deploymentStatusFromPersonalConnect,
   deploymentStatusLabel,
@@ -48,7 +46,6 @@ import {
   accountDeletedBody,
   browserPagePolicyWithScript,
   deleteAccountBody,
-  hostedTeamAnchor,
   differentAccountBody,
   openPhoneBody,
   personalHandoffBody,
@@ -113,14 +110,14 @@ type PortalFlow = z.infer<typeof FlowSchema>;
 interface PortalDependencies {
   readonly accountDeletion: AccountDeletionService;
   readonly auth: ControlPlaneAuth;
+  /** Present when this Account offers Cloud Computers. */
+  readonly cloudComputers?: CloudComputerStore;
   /** Where "Get the desktop app" points; without it the row is absent. */
   readonly desktopDownloadUrl?: string;
   readonly iosAppUrl?: string;
   readonly androidAppUrl?: string;
   /** The app's typefaces, when this process serves them. */
   readonly fonts?: BrowserPageFonts;
-  /** Present when this Account offers teams Opensteer hosts. */
-  readonly hostedTeams?: HostedTeamStore;
   readonly portalOrigin: URL;
   readonly portalSessions: PortalSessionStore;
   readonly personalRemoteAccount?: PersonalRemoteAccountService;
@@ -190,10 +187,17 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     session: PortalSession,
   ): Promise<string | FastifyReply> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
-    const [deployments, hostedTeams] = await Promise.all([
+    const [deployments, computers] = await Promise.all([
       store.listDeployments(accountId),
-      dependencies.hostedTeams?.listCreatedBy(accountId),
+      // Only to name each Home's kind: the list still draws when this read fails, and then
+      // names no kind it cannot know. A service with no Cloud Computers has none to list.
+      dependencies.cloudComputers?.listForAccount(accountId).catch(() => null) ?? [],
     ]);
+    const cloud = new Set(
+      (computers ?? []).flatMap((computer) =>
+        computer.deploymentId ? [computer.deploymentId] : [],
+      ),
+    );
     const presence = await Promise.all(
       deployments.map((deployment) =>
         store.isDeploymentPresentForAccount(accountId, deployment.id),
@@ -204,17 +208,20 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         account: { displayName: session.displayName || null, email: session.email },
         deleteAccountHref: portalDeleteAccountPath,
         desktopDownloadUrl: dependencies.desktopDownloadUrl ?? null,
-        hostedTeams: hostedTeams
-          ? { createHref: portalCreateHostedTeamPath, rows: hostedTeamRows(hostedTeams) }
-          : null,
         rows: deployments.map((deployment, index) =>
-          deploymentCard(deployment, presence[index] === true),
+          deploymentCard(
+            deployment,
+            presence[index] === true,
+            cloud.has(deployment.id) ? "cloud" : computers === null ? "unknown" : "not-cloud",
+          ),
         ),
         signOutAction: portalSignOutPath,
+        cloudComputerHref: dependencies.cloudComputers ? cloudComputerPortalPath : null,
+        cloudOffer: dependencies.cloudComputers?.offer ?? null,
       }),
       fonts,
       layout: "app",
-      title: "Your Opensteers",
+      title: homesListTitle,
     });
   }
 
@@ -249,11 +256,12 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     failed: boolean,
   ): Promise<string> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
-    const [owned, held, created] = await Promise.all([
+    const [owned, computers] = await Promise.all([
       dependencies.store.ownedDeployments(accountId),
-      dependencies.store.heldHostedTeams(accountId),
-      dependencies.hostedTeams?.listCreatedBy(accountId) ?? [],
+      dependencies.cloudComputers?.listForAccount(accountId) ?? [],
     ]);
+    const live = computers.filter((computer) => computer.status !== "deleted");
+    const cloudDeployments = new Set(computers.flatMap(({ deploymentId }) => deploymentId ?? []));
     return sendBrowserPage(reply, {
       body: deleteAccountBody({
         action: portalDeleteAccountPath,
@@ -262,13 +270,12 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           .map((deployment) => deployment.name),
         email: session.email,
         failed,
-        heldTeams: held.map((team) => ({ ...team, href: `/#${hostedTeamAnchor(team.id)}` })),
-        settingUp: created
-          .filter(
-            (team) => team.stage !== "deleting" && !held.some((holding) => holding.id === team.id),
-          )
-          .map((team) => new URL(team.origin).host),
-        servers: owned.filter((deployment) => deployment.reachability !== "routed"),
+        // A Cloud Computer is said for itself, never as a server that stops signing people in.
+        servers: owned.filter(
+          (deployment) =>
+            deployment.reachability !== "routed" && !cloudDeployments.has(deployment.id),
+        ),
+        cloudComputer: live.length > 0,
       }),
       fonts,
       layout: "card",
@@ -365,19 +372,16 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         }
       };
 
-      registerTeamSetupPortal(app, {
-        store,
-        publicOrigin,
-        portalOrigin: origin,
+      registerCloudComputerPortal(app, {
+        cloudComputers: dependencies.cloudComputers,
+        openHome: async (accountId, deploymentId) => {
+          const home = await store.deploymentForAccount(accountId, deploymentId);
+          return home?.lifecycle === "active" && home.reachability === "canonical"
+            ? deploymentOrigin(home.canonicalOrigin)
+            : null;
+        },
         fonts,
         guard,
-        readSession,
-      });
-
-      registerHostedTeamPortal(app, {
-        fonts,
-        guard,
-        hostedTeams: dependencies.hostedTeams,
         portalOrigin: origin,
         readSession,
         signInPath: portalSignInPath,
@@ -439,7 +443,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         requireExactOrigin(request, origin.origin);
         const session = await readSession(request, reply);
         if (!session || !dependencies.personalRemoteAccount)
-          throw new ControlPlaneError("unauthorized", "Sign in to your Account first");
+          throw new ControlPlaneError("unauthorized", "Sign in to your Opensteer account first.");
         const result = await dependencies.personalRemoteAccount.issueLinkChallenge(
           ControlPlaneAccountIdSchema.parse(session.accountId),
           IssuePersonalHostAccountLinkChallengeRequestSchema.parse(request.body),
@@ -451,7 +455,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         requireExactOrigin(request, origin.origin);
         const session = await readSession(request, reply);
         if (!session || !dependencies.personalRemoteAccount)
-          throw new ControlPlaneError("unauthorized", "Sign in to your Account first");
+          throw new ControlPlaneError("unauthorized", "Sign in to your Opensteer account first.");
         const result = await dependencies.personalRemoteAccount.completeLink(
           ControlPlaneAccountIdSchema.parse(session.accountId),
           CompletePersonalHostAccountLinkRequestSchema.parse(request.body),
@@ -570,24 +574,22 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         requireExactOrigin(request, origin.origin);
         const session = await provenSessionOrRedirect(request, reply);
         if (!session) return reply;
+        const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
+        // Said on the page that follows: its cancellation and removal finish after the Account.
+        const cloudComputer = (
+          (await dependencies.cloudComputers?.listForAccount(accountId)) ?? []
+        ).some((computer) => computer.status !== "deleted");
         try {
-          await dependencies.accountDeletion.delete(
-            ControlPlaneAccountIdSchema.parse(session.accountId),
-          );
+          await dependencies.accountDeletion.delete(accountId);
         } catch (error) {
           if (!(error instanceof ControlPlaneError)) throw error;
-          return renderDeleteAccount(
-            reply.code(error.status),
-            session,
-            // Refused before anything was undone, the page lists the teams to settle instead.
-            error.reason !== "hosted-teams-remain",
-          );
+          return renderDeleteAccount(reply.code(error.status), session, true);
         }
         // Reading the session refreshed its cookie; only the expiry may reach the browser.
         void reply.removeHeader("set-cookie");
         appendSetCookie(reply, clearSessionCookie());
         return sendBrowserPage(reply, {
-          body: accountDeletedBody(),
+          body: accountDeletedBody({ cloudComputer }),
           fonts,
           layout: "plain",
           title: "Account deleted · Opensteer",
@@ -602,7 +604,10 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         if (!session) return reply.redirect(portalSignInPath, 303);
         const service = dependencies.personalRemoteAccount;
         if (!service) {
-          throw new ControlPlaneError("unavailable", "Personal Host handoff is unavailable");
+          throw new ControlPlaneError(
+            "unavailable",
+            "Opening your Mac Home from the website isn’t available right now.",
+          );
         }
         const { deploymentId } = PersonalConnectParamsSchema.parse(request.params);
         const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
@@ -706,6 +711,12 @@ function normalizedApexDomain(value: string): string {
 export function deploymentCard(
   deployment: AccountDeploymentDirectoryEntry,
   present: boolean,
+  /**
+   * What the Account's own read of Cloud Computers says of this Home: one of them, none of them,
+   * or nothing known because the read failed.
+   * How a Home is reached never says what it is.
+   */
+  cloud: "cloud" | "not-cloud" | "unknown" = "not-cloud",
 ): string {
   const current = currentAccountDeployment(deployment);
   const statusInfo = accountDeploymentStatus(deployment, present, current !== null);
@@ -723,8 +734,7 @@ export function deploymentCard(
           : { kind: "none" }
         : { href: deploymentOrigin(deployment.authority.canonicalOrigin), kind: "link" },
     id: deployment.id,
-    kind: personal ? "personal" : "team",
-    kindLabel: deploymentKindLabel(personal ? "personal" : "team"),
+    ...placeKind(deployment, cloud),
     name: deployment.name,
     remove:
       deployment.access === "member" ? { action: portalRemoveDeploymentPath(deployment.id) } : null,
@@ -736,6 +746,28 @@ export function deploymentCard(
         }
       : null,
   });
+}
+
+/**
+ * A Home's kind on its row. A Home reached through its Mac is the person's Mac; one at its own
+ * address that its signed record calls personal is a Cloud Computer when the Account lists it
+ * as one, and a server of theirs otherwise. Anything else at its own address (a retired team
+ * server's row the person has not removed yet), and any Home when the Account's read of its
+ * Cloud Computers failed, shows no kind rather than a wrong one.
+ */
+function placeKind(
+  deployment: AccountDeploymentDirectoryEntry,
+  cloud: "cloud" | "not-cloud" | "unknown",
+): {
+  readonly kind: "personal" | "cloud" | "server" | "unknown";
+  readonly kindLabel: string;
+} {
+  if (cloud === "cloud") return { kind: "cloud", kindLabel: homeKindWords("cloud").label };
+  if (deployment.reachability === "routed")
+    return { kind: "personal", kindLabel: homeKindWords("mac").label };
+  return cloud === "unknown" || !isCanonicalPersonalHome(deployment)
+    ? { kind: "unknown", kindLabel: homeKindWords("unknown").label }
+    : { kind: "server", kindLabel: homeKindWords("server").label };
 }
 
 function currentAccountDeployment(deployment: AccountDeploymentDirectoryEntry) {

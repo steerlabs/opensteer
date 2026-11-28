@@ -1,4 +1,11 @@
-import type { HarnessSetupMethod, HostApiClient, HostApiCommandInput } from "@opensteer/protocol";
+import { homeFailureText } from "./failure-text.js";
+import {
+  harnessChallengeReturnsToLoopback,
+  type HarnessSetupMethod,
+  type HostApiClient,
+  type HostApiCommandInput,
+} from "@opensteer/protocol";
+import type { TabId } from "@opensteer/core";
 import { observedAccountConnection } from "./connection-usage.js";
 import type { HarnessAuthenticationEnvelope, HostClient } from "./client.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
@@ -17,6 +24,11 @@ export type HarnessAuthenticationView =
       readonly codeReplaced: boolean;
       readonly inputKind?: "code" | "secret";
       readonly inputPrompt?: string;
+      /**
+       * The page returns to the computer the engine runs on, so it finishes
+       * only in a browser there.
+       */
+      readonly returnsToComputer?: true;
       readonly userCode: string;
       readonly verificationUrl?: string;
     }
@@ -80,6 +92,9 @@ function resolveView(
         inputKind: "code",
         inputPrompt: authentication.challenge.inputPrompt,
         kind: "pending",
+        ...(harnessChallengeReturnsToLoopback(authentication.challenge)
+          ? { returnsToComputer: true as const }
+          : {}),
         userCode: "",
         verificationUrl: authentication.challenge.authorizationUrl,
       };
@@ -223,10 +238,7 @@ export function startHarnessAuthentication({
         }
       }
     } catch (cause) {
-      if (!stopped)
-        onError(
-          cause instanceof Error ? cause.message : "Opensteer couldn’t complete that action.",
-        );
+      if (!stopped) onError(homeFailureText(cause, "Opensteer couldn’t complete that action."));
     } finally {
       if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer);
     }
@@ -312,6 +324,20 @@ export type AccountSignInTarget =
       readonly harnessInstanceId: string;
     };
 
+/**
+ * A browser sign-in that must finish on the engine's computer, read from a
+ * device that is not that computer: its page opens as a tab in that
+ * computer's browser, where the person finishes it.
+ */
+export interface HomeBrowserSignIn {
+  readonly error: string | null;
+  readonly opening: boolean;
+  /** The tab the page opened as, once it has. */
+  readonly tabId: TabId | null;
+  /** The page this tab is for; a new challenge needs a new tab. */
+  readonly url: string;
+}
+
 export type AccountSignInState =
   | { readonly kind: "preparing" }
   | {
@@ -321,6 +347,8 @@ export type AccountSignInState =
       readonly methodId: string;
       readonly session: HarnessAuthenticationSession | null;
       readonly error: string | null;
+      /** Null while the page, if any, opens on this device. */
+      readonly homeBrowser: HomeBrowserSignIn | null;
     }
   | { readonly kind: "finishing"; readonly harnessInstanceId: string }
   | {
@@ -340,6 +368,8 @@ export interface AccountSignInFlow {
   getState(): AccountSignInState;
   subscribe(listener: () => void): () => void;
   chooseMethod(methodId: string): void;
+  /** Opens the pending page in the engine computer's browser; answers its tab, or null. */
+  openHomeBrowser(): Promise<TabId | null>;
   submit(value: string): Promise<void>;
   retry(): void;
   keepDuplicate(): void;
@@ -352,6 +382,7 @@ export function startAccountSignIn({
   target,
   errorMessage,
   selectMethod,
+  localRunnerId = null,
   now = Date.now,
   sleep,
 }: {
@@ -362,6 +393,12 @@ export function startAccountSignIn({
   readonly errorMessage: (cause: unknown) => string;
   /** The way in to start with. Answering nothing means this account offers none the caller can use. */
   readonly selectMethod?: (methods: readonly HarnessSetupMethod[]) => string | undefined;
+  /**
+   * The Runner on the computer in front of the reader, when this client can
+   * prove one. A page that returns to any other computer opens in that
+   * computer's browser.
+   */
+  readonly localRunnerId?: string | null;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
 }): AccountSignInFlow {
@@ -403,6 +440,22 @@ export function startAccountSignIn({
       .getSnapshot()
       .environments.find((item) => item.id === environmentId)
       ?.harnessCatalogs.find((item) => item.harnessInstanceId === harnessInstanceId);
+  /** Where a pending page has to open, carried across polls of the same page. */
+  const homeBrowserFor = (
+    session: HarnessAuthenticationSession,
+    previous: HomeBrowserSignIn | null,
+  ): HomeBrowserSignIn | null => {
+    const view = session.view;
+    if (view.kind !== "pending" || !view.returnsToComputer || view.verificationUrl === undefined)
+      return null;
+    const runnerId = client
+      .getSnapshot()
+      .environments.find((item) => item.id === environmentId)?.runnerId;
+    if (runnerId !== undefined && runnerId !== null && runnerId === localRunnerId) return null;
+    return previous?.url === view.verificationUrl
+      ? previous
+      : { error: null, opening: false, tabId: null, url: view.verificationUrl };
+  };
   const complete = (accountLabel: string | null) => {
     if (cancelling || state.kind !== "finishing" || harnessInstanceId === null) return;
     const snapshot = client.getSnapshot();
@@ -492,6 +545,7 @@ export function startAccountSignIn({
       methodId,
       session: null,
       error: null,
+      homeBrowser: null,
     });
     if (cancelling || token !== generation) return;
     run = startHarnessAuthentication({
@@ -515,6 +569,7 @@ export function startAccountSignIn({
           ...state,
           session,
           error: session.view.kind === "failed" ? session.view.detail : null,
+          homeBrowser: homeBrowserFor(session, state.homeBrowser),
         });
         if (session.view.kind === "ready") finish();
       },
@@ -667,6 +722,52 @@ export function startAccountSignIn({
       };
     },
     chooseMethod,
+    openHomeBrowser: async () => {
+      if (
+        cancelling ||
+        state.kind !== "signing-in" ||
+        state.homeBrowser === null ||
+        state.homeBrowser.opening ||
+        harnessInstanceId === null
+      )
+        return null;
+      const token = generation;
+      const url = state.homeBrowser.url;
+      const current = () =>
+        !cancelling &&
+        token === generation &&
+        state.kind === "signing-in" &&
+        state.homeBrowser?.url === url
+          ? state
+          : null;
+      publish({ ...state, homeBrowser: { ...state.homeBrowser, error: null, opening: true } });
+      try {
+        const result = await client.dispatch({
+          environmentId,
+          harnessInstanceId,
+          idempotencyKey: mutationIdempotencyKey(`harness-browse:${harnessInstanceId}`),
+          type: "harness.authentication.browse",
+        });
+        if (result.type !== "harness.authentication.browse") {
+          throw new Error("Harness authentication command mismatch.");
+        }
+        const live = current();
+        if (live === null) return null;
+        publish({
+          ...live,
+          homeBrowser: { error: null, opening: false, tabId: result.tabId, url },
+        });
+        return result.tabId;
+      } catch (cause) {
+        const live = current();
+        if (live !== null)
+          publish({
+            ...live,
+            homeBrowser: { error: errorMessage(cause), opening: false, tabId: null, url },
+          });
+        return null;
+      }
+    },
     submit: async (value) => {
       if (cancelling || state.kind !== "signing-in") return;
       const token = generation;

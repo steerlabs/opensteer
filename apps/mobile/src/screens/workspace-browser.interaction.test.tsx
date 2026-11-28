@@ -1,4 +1,5 @@
 import { scopedTranscriptFixture } from "@opensteer/client/test-support";
+import { mockBrowserPoolReport } from "@opensteer/client/mock";
 import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
@@ -38,6 +39,7 @@ import {
 } from "../client/thread-drafts.js";
 import { homeDraftId } from "../home/home-draft.js";
 import { WorkspaceBrowserScreen } from "./workspace-browser.js";
+import { addressWords } from "../ui/address-words.js";
 
 /*
  * One tab, app or phone, by route. What can go wrong: a link's tab is swapped
@@ -103,7 +105,8 @@ const state = vi.hoisted(() => ({
   /** The Host has sent its whole tab list. */
   tabsComplete: true,
   /** What the Host's activation answers for a tab, when a test decides it. */
-  activate: null as null | ((tabId: string) => Promise<TabViewer>),
+  activate: null as
+    null | ((tabId: string, options?: { answered?: (tab: Tab) => void }) => Promise<TabViewer>),
   /** Told on every render, as the native stack tells a screen its focus changed. */
   focusListeners: new Set<() => void>(),
   focusEpoch: 0,
@@ -155,6 +158,7 @@ vi.mock("@react-navigation/native", async () => {
   };
 });
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 88 }));
+vi.mock("./external-agent-mark.js", () => ({ ExternalAgentMark: () => null }));
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Heavy: "heavy" },
   impactAsync: vi.fn(async () => undefined),
@@ -485,10 +489,7 @@ vi.mock("./deployment-gate.js", () => ({
   DeploymentGate: () => <p data-gate="deployment">Deployment gate</p>,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../team/team-marks.js", async (load) => ({
-  ...(await load<typeof import("../team/team-marks.js")>()),
-  AgentOrb: () => null,
-}));
+vi.mock("../ui/agent-orb.js", () => ({ AgentOrb: () => null }));
 vi.mock("../ui/task-mark.js", () => ({ TaskMark: () => null }));
 interface MenuOption {
   readonly disabled?: boolean;
@@ -818,7 +819,8 @@ function pageTab(page: Page): Tab {
   const usedBy = [...new Set(occupants.map(({ threadId }) => threadId))]
     .sort()
     .map((taskId) => ({ taskId }));
-  return { ...tab, usedBy } as unknown as Tab;
+  const listedState = (page as { tabState?: "asleep" }).tabState;
+  return { ...tab, usedBy, ...(listedState ? { state: listedState } : {}) } as unknown as Tab;
 }
 /** A Mac window or a phone the person opened as a tab. */
 function nativeTab(phone: boolean, extra: Partial<Tab> = {}): Tab {
@@ -895,6 +897,9 @@ function viewerSurface(sessionId: string, tabId: string): BrowserViewerSurface |
     loading: false,
     navigationFailed: false,
     sizedByAgent: page.sizedByAgent ?? false,
+    ...((page as { reopenedAt?: number }).reopenedAt
+      ? { reopenedAt: (page as { reopenedAt?: number }).reopenedAt }
+      : {}),
     favicon: null,
   } as unknown as BrowserViewerSurface;
   surfaces.set(page, surface);
@@ -904,14 +909,19 @@ function viewerSurface(sessionId: string, tabId: string): BrowserViewerSurface |
 const liveFeed = { status: "live", error: null, frame: null } as const;
 
 /** Test route params: a tab's route, plus the browser a page test seeds it in. */
-type TestRoute = Omit<Partial<TabRoute>, "tabId"> & {
+type TestRoute = Omit<Partial<TabRoute>, "tabId" | "threadId"> & {
   readonly sessionId?: string;
   readonly tabId?: string;
+  /** Undefined says Tabs opened it: no conversation, not the default one. */
+  readonly threadId?: string | undefined;
 };
 
 /** The Host's activation: a page in the browser listing it, an app as itself. */
-async function activate(tabId: string): Promise<TabViewer> {
-  if (state.activate) return state.activate(tabId);
+async function activate(
+  tabId: string,
+  options?: { answered?: (tab: Tab) => void },
+): Promise<TabViewer> {
+  if (state.activate) return state.activate(tabId, options);
   const tab = tabs.get(tabId);
   if (tab?.kind === "app") return { appId: tab.appId!, kind: "app" };
   const held = pagesOf(state.snapshot).find(({ page }) => page.id === tabId);
@@ -1312,9 +1322,12 @@ describe("mobile pages", () => {
     type("x");
     const surfaceId = chosen.pages[0]!.id;
     expect(sendBrowserCommand.mock.calls).toEqual([
-      [chosen.id, { type: "clipboard.paste", surfaceId, text: "saved" }],
-      [chosen.id, { type: "clipboard.paste", surfaceId, text: "!" }],
-      [chosen.id, { type: "clipboard.paste", surfaceId, text: "x" }],
+      [
+        chosen.id,
+        { type: "clipboard.paste", surfaceId, text: "saved", contextId: expect.any(String) },
+      ],
+      [chosen.id, { type: "clipboard.paste", surfaceId, text: "!", contextId: expect.any(String) }],
+      [chosen.id, { type: "clipboard.paste", surfaceId, text: "x", contextId: expect.any(String) }],
     ]);
   });
 
@@ -1373,6 +1386,86 @@ describe("mobile pages", () => {
     await render();
     expect(state.goBack).toHaveBeenCalledOnce();
     expect(state.setParams).not.toHaveBeenCalled();
+  });
+
+  it("asks again when the tab it shows is not open, so a sleep under the Home's answer never leaves it on Opening… (TS10)", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" });
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    expect(state.hostClient.activateTab).toHaveBeenCalledOnce();
+    const shown = container.textContent;
+    expect(shown).not.toContain("Opening…");
+    // The Home answered with the page; the runtime had just put the tab to sleep.
+    const asleep = { ...firstPage, tabState: "asleep" } as PageInput;
+    state.snapshot = snapshot([session("chosen", "ready", [asleep])]);
+    await render();
+    expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+    // Asking again spends no Open: it wakes the tab, not a phone.
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", asked(false));
+    // The wake lands: the page shows, and nothing is asked a third time.
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    expect(container.textContent).toBe(shown);
+    expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+  });
+
+  /*
+   * V8: an ask has an identity, and its answer and the tab's row decide what follows, never
+   * timing. The old rule asked again whenever the row said asleep under a shown page: an answer
+   * that beat the row's own news asked twice, and a tab that slept again under the answer was
+   * left on a dead page.
+   */
+  it.each(["open", "asleep"] as const)(
+    "decides what follows an answer that found the tab %s from that answer and the row (V8)",
+    async (found) => {
+      const asleep = { ...firstPage, tabState: "asleep" } as PageInput;
+      state.activate = async (tabId, options) => {
+        options?.answered?.({ ...tabs.get(tabId as TabId)!, state: found });
+        return { kind: "page", sessionId: "chosen" as never, surfaceId: tabId as TabId };
+      };
+      // The row this phone holds says asleep when the answer lands.
+      const { container, render } = await setup(
+        { sessionId: "chosen" },
+        { snapshot: snapshot([session("chosen", "ready", [asleep])]) },
+      );
+      await settle();
+      expect(state.hostClient.activateTab).toHaveBeenCalledOnce();
+      if (found === "open") {
+        // The answer is the newer word: nothing is asked again, and the page is shown.
+        expect(container.textContent).not.toContain("went back to sleep");
+        state.snapshot = snapshot([session("chosen")]);
+        await render();
+        expect(state.hostClient.activateTab).toHaveBeenCalledOnce();
+        expect(container.textContent).toContain("Viewing chosen");
+        return;
+      }
+      // Slept again under the answer: its status with Try again, and nothing asked by itself.
+      expect(container.textContent).toContain("This tab went back to sleep before it opened.");
+      await render();
+      await settle();
+      expect(state.hostClient.activateTab).toHaveBeenCalledOnce();
+      state.activate = null;
+      await pressAsync(container, "Try again");
+      expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", asked(true));
+      state.snapshot = snapshot([session("chosen")]);
+      await render();
+      expect(container.textContent).toContain("Viewing chosen");
+      expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("says a sleeping tab is waking, with its address, while its wake has not answered (V10)", async () => {
+    const asleep = { ...firstPage, tabState: "asleep" } as PageInput;
+    state.activate = () => new Promise(() => {});
+    const { container } = await setup(
+      { sessionId: "chosen" },
+      { snapshot: snapshot([session("chosen", "ready", [asleep])]) },
+    );
+    await settle();
+    expect(container.textContent).toContain("Waking this tab…");
+    expect(container.textContent?.replace(/[\u2060\u200B]/gu, "")).toContain(firstPage.url);
+    expect(container.textContent).not.toContain("Opening…");
   });
 
   it("keeps its selection by tabId through a catalog replacement, and asks the Host only once", async () => {
@@ -1500,7 +1593,9 @@ describe("mobile pages", () => {
       type: "navigation.reload",
       surfaceId: "srf_00000000-0000-4000-8000-000000000001",
     });
-    expect(container.textContent).toContain("Signed in to example.com with Chrome on Mac.");
+    expect(container.textContent).toContain(
+      `Signed in to ${addressWords("example.com")} with Chrome on Mac.`,
+    );
   });
 
   it("asks which Chrome when several are signed in, and says how to fix an offline one", async () => {
@@ -1551,10 +1646,14 @@ describe("mobile pages", () => {
 
     press(menu(), "Sign in with Chrome");
     // The site is remembered for the Workspace, which the action says before any tap.
-    expect(container.textContent).toContain("Your agent will be able to use example.com as you.");
+    expect(container.textContent).toContain(
+      `Your agent will be able to use ${addressWords("example.com")} as you.`,
+    );
     await pressAsync(container, "Sign in with Chrome");
     expect(inspect).toHaveBeenCalledWith({ url: "https://mail.example.com/inbox" });
-    expect(container.textContent).toContain("Choose the Chrome to use for example.com");
+    expect(container.textContent).toContain(
+      `Choose the Chrome to use for ${addressWords("example.com")}`,
+    );
 
     await pressAsync(container, "Work Chrome");
     expect(dispatch).toHaveBeenLastCalledWith(
@@ -1577,7 +1676,7 @@ describe("mobile pages", () => {
     await pressAsync(container, "Open again");
     // Open again is the person's own Open.
     expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
-    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", { wake: true });
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", asked(true));
     expect(container.textContent).not.toContain("Viewing other");
     expect(state.dispatch).not.toHaveBeenCalled();
   });
@@ -1995,17 +2094,16 @@ describe("any kind of tab, by its tabId", () => {
         `${phone ? "Phone" : "Mac app com.apple.notes"} view owner-view:7`,
       );
       // Only the person's Open may wake a phone: asking again on return to the foreground may not.
-      expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
-        wake: true,
-      });
+      expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith(
+        "tab_native",
+        asked(true),
+      );
       state.foreground = false;
       await render();
       state.foreground = true;
       await render();
       expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
-      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", {
-        wake: false,
-      });
+      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", asked(false));
       expect(container.textContent).toContain("view owner-view:7");
     },
   );
@@ -2046,9 +2144,10 @@ describe("any kind of tab, by its tabId", () => {
         { snapshot: withAgents([]) },
       );
       if (openFirst) {
-        expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
-          wake: true,
-        });
+        expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith(
+          "tab_native",
+          asked(true),
+        );
         // Its computer drops off and the viewer goes with it.
         state.extraTabs = [offline];
         await render();
@@ -2059,9 +2158,7 @@ describe("any kind of tab, by its tabId", () => {
       await render();
       expect(container.textContent).toContain("Phone view owner-view:7");
       expect(state.hostClient.activateTab).toHaveBeenCalledTimes(openFirst ? 2 : 1);
-      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", {
-        wake: false,
-      });
+      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", asked(false));
     },
   );
 
@@ -2085,12 +2182,13 @@ describe("any kind of tab, by its tabId", () => {
     expect(container.textContent).toContain("Close tab");
     expect(state.hostClient.activateTab).not.toHaveBeenCalled();
     await pressAsync(container, "Try again");
+    // The unavailable tab's own Try again asks the Home itself.
     expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
       wake: true,
     });
     await render();
     expect(container.textContent).toContain("Phone view owner-view:2");
-    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", { wake: false });
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", asked(false));
   });
 
   it("says why an unavailable tab cannot open, and asks the Host nothing", async () => {
@@ -2505,8 +2603,9 @@ describe("a page beside its agent's thread", () => {
 /*
  * The status row under a page opened from a conversation. What can go wrong:
  * it speaks for whichever agent ranks first in the tab rather than the
- * conversation the page was opened from; its Stop reaches another Run; it
- * shows on a page opened from Tabs, or with nothing to say; it repeats a
+ * conversation the page was opened from; its Stop reaches another Run; opened
+ * from Tabs, it offers no Stop for the agent at work there; it shows with
+ * nothing to say; it repeats a
  * conversation already on screen beside the page; Answer answers anything
  * itself rather than returning to the conversation.
  */
@@ -2561,10 +2660,23 @@ describe("the status row", () => {
     expect(state.hostClient.stopRun).toHaveBeenCalledExactlyOnceWith("thread-agent");
   });
 
-  it("says nothing on a page opened from Tabs, or while its conversation has nothing to say", async () => {
-    const fromTabs = await openWatched(["thread-agent"], {});
-    expect(row(fromTabs.container)).toBeNull();
+  it("speaks on a page opened from Tabs for the agent at work in it, with that task's own Stop", async () => {
+    // Tabs names no conversation.
+    const fromTabs = await openWatched(["thread-agent"], { threadId: undefined });
+    // Tokyo trip ranks first but is idle; Compare hotels is the one at work here.
+    expect(row(fromTabs.container)).not.toBeNull();
+    expect(
+      row(fromTabs.container)!.querySelector('[aria-label="Compare hotels: Working"]'),
+    ).not.toBeNull();
+    press(row(fromTabs.container)!, "Stop this run");
+    expect(state.hostClient.stopRun).toHaveBeenCalledExactlyOnceWith("thread-agent");
     for (const root of roots.splice(0)) act(() => root.unmount());
+    // Nobody at work and nothing waiting: nothing to say.
+    const quiet = await openWatched([], { threadId: undefined });
+    expect(row(quiet.container)).toBeNull();
+  });
+
+  it("says nothing while the conversation it was opened from has nothing to say", async () => {
     // Another agent at work in the tab is not this conversation at work.
     const idle = await openWatched(["thread-trip"]);
     expect(row(idle.container)).toBeNull();
@@ -2582,6 +2694,16 @@ describe("the status row", () => {
     press(row(container)!, "Answer");
     expect(state.goBack).toHaveBeenCalledOnce();
     expect(state.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps Stop beside Answer while the conversation's Run waits on the person", async () => {
+    const { container } = await openWatched(["thread-agent"], { threadId: "thread-agent" }, [
+      "thread-agent",
+    ]);
+    expect(row(container)?.textContent).toContain("Needs you");
+    expect(element(row(container)!, "Answer")).not.toBeNull();
+    press(row(container)!, "Stop this run");
+    expect(state.hostClient.stopRun).toHaveBeenCalledExactlyOnceWith("thread-agent");
   });
 
   it("leaves the row out while its conversation is beside the page, and only then", async () => {
@@ -2988,6 +3110,81 @@ describe("native page layout and controls", () => {
     expect(container.querySelector('[data-testid="page-typing"]')).not.toBeNull();
     expect(element(container, "Keyboard")).toBeNull();
   });
+
+  it("keeps the keyboard up when tapping from one field to another across a transient blur", async () => {
+    const editing = new BrowserEditingStore(vi.fn());
+    editing.negotiate("chosen", 1);
+    state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
+    const chosen = mailSession("chosen");
+    const surfaceId = chosen.pages[0]!.id;
+    const { container, render } = await setup({
+      sessionId: chosen.id,
+      tabId: surfaceId,
+    });
+    state.snapshot = snapshot([chosen]);
+    await render();
+    const input = () => container.querySelector<HTMLElement>("[data-page-input]");
+    press(container, "Tap the page");
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.editing",
+        surfaceId,
+        context: {
+          contextId: "00000000-0000-4000-8000-000000000001",
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        },
+      }),
+    );
+    expect(input()?.dataset.focused).toBe("true");
+    expect(input()?.dataset.softKeyboard).toBe("true");
+    expect(container.querySelector('[data-testid="page-typing"]')).not.toBeNull();
+
+    // Tap a second field: even if a transient focusout (field: null) arrives before the second
+    // field's focusin, the keyboard must come back up for the second field without a second tap.
+    press(container, "Tap the page");
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.editing",
+        surfaceId,
+        context: {
+          contextId: "00000000-0000-4000-8000-000000000002",
+          field: null,
+          caret: null,
+        },
+      }),
+    );
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.editing",
+        surfaceId,
+        context: {
+          contextId: "00000000-0000-4000-8000-000000000003",
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        },
+      }),
+    );
+    expect(input()?.dataset.focused).toBe("true");
+    expect(input()?.dataset.softKeyboard).toBe("true");
+    expect(container.querySelector('[data-testid="page-typing"]')).not.toBeNull();
+
+    // Tapping outside any field still puts the keyboard away.
+    press(container, "Tap the page");
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.editing",
+        surfaceId,
+        context: {
+          contextId: "00000000-0000-4000-8000-000000000004",
+          field: null,
+          caret: null,
+        },
+      }),
+    );
+    expect(input()?.dataset.softKeyboard).toBe("false");
+    expect(container.querySelector('[data-testid="page-typing"]')).toBeNull();
+  });
 });
 
 it("opens controller page actions only from matching streamed facts and offers one-shot Drag/select", async () => {
@@ -3008,6 +3205,15 @@ it("opens controller page actions only from matching streamed facts and offers o
   expect(container.querySelector('[data-drag-select="true"]')).not.toBeNull();
   press(container, "Finish selection");
   expect(container.querySelector('[data-drag-select="true"]')).toBeNull();
+  // The page's context, with no field focused: a page publishes one from the start.
+  const contextId = "00000000-0000-4000-8000-000000000002";
+  act(() =>
+    editing.receive(chosen.id, {
+      type: "browser.editing",
+      surfaceId,
+      context: { contextId, field: null, caret: null },
+    }),
+  );
   const menu = {
     type: "browser.contextmenu" as const,
     surfaceId,
@@ -3025,6 +3231,7 @@ it("opens controller page actions only from matching streamed facts and offers o
     type: "input.command",
     surfaceId,
     command: "selectAll",
+    contextId,
   });
   expect(container.querySelector('section[aria-label="Page actions"]')).toBeNull();
   act(() => editing.receive(chosen.id, { ...menu, geometryRevision: 7 }));
@@ -3042,6 +3249,18 @@ it("fences a menu clipboard read when another page contact changes its destinati
   const { container, render } = await setup({ sessionId: chosen.id, tabId: surfaceId });
   state.snapshot = snapshot([chosen]);
   await render();
+  // The page's own context, as a page publishes one from the start: what its paste is made for.
+  act(() =>
+    editing.receive(chosen.id, {
+      type: "browser.editing",
+      surfaceId,
+      context: {
+        contextId: "00000000-0000-4000-8000-000000000003",
+        field: { kind: "text", multiline: false, sensitive: false },
+        caret: null,
+      },
+    }),
+  );
   const menu = () =>
     act(() =>
       editing.receive(chosen.id, {
@@ -3070,7 +3289,143 @@ it("fences a menu clipboard read when another page contact changes its destinati
     type: "clipboard.paste",
     surfaceId,
     text: "clipboard",
+    contextId: "00000000-0000-4000-8000-000000000003",
   });
 });
 
 vi.mock("../report-mail.js", () => ({ contactSupport: vi.fn() }));
+
+describe("a Cloud Computer's browser", () => {
+  /** What the Home reports about the browser holding the first page. */
+  function pooled(scene: Parameters<typeof mockBrowserPoolReport>[0]): HostSnapshot {
+    const raw = snapshot([session("chosen")]);
+    const tab = tabs.get(TabIdSchema.parse(firstPage.id));
+    if (tab?.kind !== "page") throw new Error("The first page is not listed");
+    return {
+      ...raw,
+      browserPools: [mockBrowserPoolReport(scene, tab.computer.computerId, firstPage.id)],
+    } as HostSnapshot;
+  }
+  const lastAlert = () => vi.mocked(Alert.alert).mock.calls.at(-1);
+
+  it("stands in for its page when it could not start", async () => {
+    vi.mocked(Alert.alert).mockClear();
+    const { container, render } = await setup({ sessionId: "chosen" });
+    // The page is listed first, as a Home lists it before reporting its browser.
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    state.snapshot = pooled("failed");
+    await render();
+    expect(container.textContent).toContain("Your browser couldn’t start");
+    expect(container.textContent).toContain("Try again in a moment.");
+    expect(container.textContent).not.toContain("Your tabs and sign-ins are kept.");
+    expect(container.textContent).not.toContain("Contact support");
+    await pressAsync(container, "Try again");
+    expect(lastAlert()?.slice(0, 2)).toEqual([
+      "Your browser couldn’t start",
+      "Your Cloud Computer can’t restart its browser yet. Nothing was changed.",
+    ]);
+    state.snapshot = pooled("failed-again");
+    await render();
+    expect(container.textContent).toContain("If this keeps happening, contact support.");
+    expect(container.textContent).not.toContain("Your tabs and sign-ins are kept.");
+    expect(container.textContent).toContain("Contact support");
+  });
+
+  it("offers Restart browser in More, asks once with exactly what it does, and is refused plainly", async () => {
+    vi.mocked(Alert.alert).mockClear();
+    const { container, render } = await setup({ sessionId: "chosen" });
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    expect(menu().textContent).not.toContain("Restart browser");
+    state.snapshot = pooled("awake");
+    await render();
+    await pressAsync(menu(), "Restart browser");
+    const [title, body, buttons] = lastAlert() ?? [];
+    expect([title, body]).toEqual([
+      "Restart browser?",
+      "Every page in your Cloud Computer’s browser closes and opens again from its address. Your tabs and sign-ins stay. Anything typed and not sent may be lost.",
+    ]);
+    expect(buttons?.map(({ text, style }) => [text, style])).toEqual([
+      ["Cancel", "cancel"],
+      ["Restart browser", "destructive"],
+    ]);
+    await act(async () => buttons?.[1]?.onPress?.());
+    expect(lastAlert()?.slice(0, 2)).toEqual([
+      "Couldn’t restart your browser",
+      "Your Cloud Computer can’t restart its browser yet. Nothing was changed.",
+    ]);
+    expect(container.textContent).not.toContain("Restarting");
+  });
+
+  it("says once that a page reloaded, and the note leaves when dismissed", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" });
+    // The page is listed first, as a Home lists it before reporting its browser.
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    state.snapshot = pooled("reloaded-typed");
+    await render();
+    expect(container.textContent).toContain("This page reloaded");
+    expect(container.textContent).toContain(
+      "Your browser restarted, so text you hadn’t sent may be gone.",
+    );
+    await pressAsync(container, "Dismiss");
+    expect(container.textContent).not.toContain("This page reloaded");
+  });
+
+  it("says once that a tab put to sleep by closing reloaded, on a Home with no pooled browser (TS7)", async () => {
+    const reopened = { ...firstPage, reopenedAt: Date.parse("2026-11-22T10:00:00Z") };
+    const { container, render } = await setup({ sessionId: "chosen" });
+    state.snapshot = snapshot([session("chosen", "ready", [reopened as PageInput])]);
+    await render();
+    expect(container.textContent).toContain("This page reloaded");
+    expect(container.textContent).toContain(
+      "It was closed to free memory and opened again from its address.",
+    );
+    await pressAsync(container, "Dismiss");
+    expect(container.textContent).not.toContain("This page reloaded");
+  });
+
+  it("tells a page that could not be restored apart from one that reloaded", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" });
+    // The page is listed first, as a Home lists it before reporting its browser.
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    state.snapshot = pooled("lost");
+    await render();
+    expect(container.textContent).toContain("This page couldn’t be restored");
+    expect(container.textContent).toContain(
+      "It didn’t come back as you left it. Reload to open it again.",
+    );
+  });
+
+  it("shows an unconfirmed-closing replaced-browser session and lets the person remove it from the list (X2)", async () => {
+    const dismissBrowserSession = vi.fn(async () => {});
+    const { container, render } = await setup({ sessionId: "chosen" });
+    state.hostClient.dismissBrowserSession = dismissBrowserSession;
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    const raw = snapshot([session("chosen")]);
+    const tab = tabs.get(TabIdSchema.parse(firstPage.id));
+    if (tab?.kind !== "page") throw new Error("The first page is not listed");
+    state.snapshot = {
+      ...raw,
+      browserPools: [
+        {
+          ...mockBrowserPoolReport("awake", tab.computer.computerId, firstPage.id),
+          unconfirmedClosings: [{ sessionId: "chosen", surfaceIds: [firstPage.id] }],
+        },
+      ],
+    } as HostSnapshot;
+    await render();
+    expect(container.textContent).toContain("This page didn't confirm it closed");
+    expect(container.textContent).toContain(
+      "Its browser was replaced before it answered, and Opensteer can no longer ask it. Nothing more is sent to this page.",
+    );
+    await pressAsync(container, "Remove from list");
+    expect(dismissBrowserSession).toHaveBeenCalledWith("chosen");
+  });
+});
+
+/** An ask as the viewer sends it: the person's Open or not, and its answer's reader (V8). */
+const asked = (wake: boolean) => ({ wake, answered: expect.any(Function) });

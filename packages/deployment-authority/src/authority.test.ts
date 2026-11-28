@@ -4,7 +4,9 @@ import {
   HostDiscoveryDocumentSchema,
   HostDiscoveryEnvelopeSchema,
   PersonalHostAccessAuthoritySchema,
+  PersonalHostAccountAuthoritySchema,
   PersonalHostAccessRouteDocumentSchema,
+  isNetworkedPersonalAuthority,
   PersonalHostAccessRouteEnvelopeSchema,
   HostDescriptorSchema,
   apiVersionHeaders,
@@ -167,6 +169,25 @@ describe("Personal Host access authority", () => {
     ).toBe(false);
   });
 
+  it("links a Mac Home at loopback and a Home on its own server at its HTTPS origin", () => {
+    const networked = { ...fixedAuthority, canonicalOrigin: "https://home.example.test" };
+    expect(PersonalHostAccountAuthoritySchema.safeParse(fixedAuthority).success).toBe(true);
+    expect(PersonalHostAccountAuthoritySchema.safeParse(networked).success).toBe(true);
+    expect(isNetworkedPersonalAuthority(networked)).toBe(true);
+    expect(isNetworkedPersonalAuthority(fixedAuthority)).toBe(false);
+    // Routes stay a Mac Home's alone.
+    expect(PersonalHostAccessAuthoritySchema.safeParse(networked).success).toBe(false);
+    for (const override of [
+      { canonicalOrigin: "http://home.example.test" },
+      { canonicalOrigin: "https://127.0.0.1:4310" },
+      { canonicalOrigin: "http://127.0.0.1" },
+      { canonicalOrigin: "https://team.example.test", deploymentShape: { kind: "team" as const } },
+    ])
+      expect(
+        PersonalHostAccountAuthoritySchema.safeParse({ ...fixedAuthority, ...override }).success,
+      ).toBe(false);
+  });
+
   it("rejects a non-HTTPS or canonical-equivalent access route", () => {
     expect(
       PersonalHostAccessRouteDocumentSchema.safeParse({
@@ -324,7 +345,7 @@ describe("Host descriptor", () => {
   });
 
   it("serves a personal caller the lower current version while the windows overlap", () => {
-    const own = apiVersionHeaders("personal");
+    const own = apiVersionHeaders();
     expect(own).toEqual({
       [hostApiVersionHeader]: String(minimumHostApiVersion),
       [hostApiCurrentHeader]: String(hostApiVersion),
@@ -358,8 +379,8 @@ describe("Host descriptor", () => {
       { [hostApiVersionHeader]: ["58", "58"] },
     ])
       expect(negotiatedHostApiVersion(refused), JSON.stringify(refused)).toBeNull();
-    expect(statesApiVersion(own, "personal")).toBe(true);
-    expect(statesApiVersion({}, "personal")).toBe(false);
+    expect(statesApiVersion(own)).toBe(true);
+    expect(statesApiVersion({})).toBe(false);
   });
 
   it("keeps the capability names it knows and drops the ones it does not", () => {

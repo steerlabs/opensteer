@@ -728,6 +728,7 @@ integration("notification decision boundary", () => {
             userId: decision.userId,
             eventId: createId("event"),
             sequence: decision.sequence,
+            connectionId: decision.connectionId,
             occurredAt: new Date(decision.view.occurredAt),
             expiresAt: new Date(
               Date.parse(decision.view.occurredAt) + notificationPushWindowMilliseconds,
@@ -1067,10 +1068,10 @@ integration("notification decision boundary", () => {
           createdBy: fixture.ownerId,
           idempotencyKey: randomUUID(),
           name: "Automatic work",
-          program: {
-            toolContractVersion: 5,
-            language: "javascript",
-            source: "export default async () => null",
+          script: {
+            interpreter: null,
+
+            text: "console.log('ok')",
           },
           source: {
             kind: "schedule",

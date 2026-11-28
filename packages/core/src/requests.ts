@@ -4,9 +4,12 @@ import {
   PhoneDisplayDefinitionIdSchema,
 } from "./devices.js";
 import { z } from "zod";
+import { AgentOperationTargetViewSchema } from "./agent-sessions.js";
 import { BrowserSiteSchema } from "./browser-sources.js";
 import { ComputerAppIdentitySchema } from "./computer-app.js";
 import {
+  AgentOperationIdSchema,
+  AgentSessionIdSchema,
   AssignmentIdSchema,
   BrowserProfileIdSchema,
   BrowserSurfaceIdSchema,
@@ -96,6 +99,22 @@ export const RequestOptionHintSchema = z.enum([
 export const requestTitleMaxLength = 240;
 /** The longest a Request's detail or a form field's prompt may be, in UTF-16 units. */
 export const requestTextMaxLength = 20_000;
+export const requestOperationContextMaxLength = 1_024;
+export const requestOperationCallsHeading = "\n\nWhat it will run:\n";
+export const requestOperationCallsMaxLength =
+  requestTextMaxLength - requestOperationContextMaxLength - requestOperationCallsHeading.length;
+
+export function formatRequestOperationDetail(input: {
+  readonly summary: string;
+  readonly titleLine: string;
+  readonly calls: string;
+  readonly reason: string;
+}): string {
+  const summary = input.summary.slice(0, requestOperationContextMaxLength - input.titleLine.length);
+  const detail = `${summary}${input.titleLine}${requestOperationCallsHeading}${input.calls}`;
+  return detail + input.reason.slice(0, Math.max(0, requestTextMaxLength - detail.length));
+}
+
 /** The longest an option's or a form field's label may be, in UTF-16 units. */
 export const requestLabelMaxLength = 160;
 /** The longest an option's description, or a form choice's text, may be, in UTF-16 units. */
@@ -259,6 +278,7 @@ const requestPresentationVariants = [
     agentProposed: RequestAgentProposedSchema,
     plugin: pluginContext.optional(),
     detail: z.string().max(requestTextMaxLength).optional(),
+    detailFormat: z.enum(["plain"]).optional(),
     fields: z.array(RequestFormFieldSchema).min(1).max(16),
     kind: z.literal("form"),
     title: z.string().trim().min(1).max(requestTitleMaxLength),
@@ -578,6 +598,174 @@ export const RequestAnswererViewSchema = z.union([
   z.object(RequestAgentAnswererSchema.shape),
 ]);
 
+/**
+ * A Home command an agent proposed, in its parts: what changes in the Home's own words, what it
+ * gives to whom when it widens something, the command as proposed (never a value only the person
+ * types), who proposed it, and the agent's own reason, kept apart. A client that knows it shows
+ * the change and the screen that performs it; one that does not shows the Request's form.
+ */
+/**
+ * The person's answers to a command Request on its form field (`decision`), besides Approve:
+ * a no, or, for a command only the person can do (one that carries a value only they type),
+ * that they did it themselves on its own screen. Either settles the Request as declined: the
+ * proposal itself never runs.
+ */
+export const commandRequestAnswers = {
+  field: "decision",
+  decline: "decline",
+  /** The person's statement that they did it: nothing claims it happened. */
+  doneMyself: "done-myself",
+  /** Written by the Home alone, when the person's own command did what was asked. */
+  doneByPerson: "done-by-person",
+} as const;
+
+export const commandRequestOutcomeSchema = z.discriminatedUnion("status", [
+  /** The person approved it and it is running. */
+  z.object({ status: z.literal("running") }),
+  z.object({ status: z.literal("done"), result: z.json().optional() }),
+  /** The Home has evidence the requested change did not happen. */
+  z.object({
+    status: z.literal("failed"),
+    code: z.string().max(100),
+    message: z.string().max(2_000),
+    result: z.json().optional(),
+  }),
+  /** It may have happened; the Home does not know and never runs it again. */
+  z.object({
+    status: z.literal("unknown"),
+    /** Evidence of incomplete work. The outer status keeps older clients from treating it as done. */
+    progress: z
+      .object({
+        kind: z.enum(["partial", "pending", "unconfirmed"]),
+        message: z.string().max(2_000),
+      })
+      .optional(),
+  }),
+]);
+export const CommandRequestPartSchema = z.object({
+  type: z.string().min(1).max(100),
+  family: z.string().min(1).max(40),
+  /** The class of the face the person is asked about (`widen-other`, `approve`, …). */
+  face: z.string().min(1).max(40),
+  /** The card's title: the Home's sentence first, whole; then who asked, cut to fit. */
+  summary: z.string().min(1).max(requestTitleMaxLength),
+  /** The change in the Home's own words alone, as every rewrite of the card begins. */
+  sentence: z.string().min(1).max(requestTitleMaxLength).optional(),
+  /** What it gives to whom, when it widens something; null when it does not. */
+  gives: z.string().max(1_000).nullable(),
+  /** The command as proposed, without its key and without anything only the person types. */
+  command: RequestJsonObjectSchema,
+  /**
+   * Arguments the Home added to `command` so the card shows, and the approval acts on, exactly
+   * what it will (a tab group's members): never read back to the agent as what it sent.
+   */
+  homeAdded: z.array(z.string().min(1).max(64)).max(8).optional(),
+  /** Input paths the person types on the card before approving. */
+  secretPaths: z.array(z.string().min(1).max(200)).max(8),
+  governs: z.object({
+    kind: z.string().min(1).max(40),
+    id: z.string().max(512).nullable(),
+    ids: z.array(z.string().max(512)).max(100).optional(),
+    task: z.string().max(512).optional(),
+    mode: z.string().max(40).optional(),
+  }),
+  /** One open ask per proposer and thing: the proposer and what is governed, as a digest. */
+  askKey: z.string().regex(/^[0-9a-f]{64}$/u),
+  /** The arguments as proposed, as a digest: the same ask with other arguments is a conflict. */
+  argumentsDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+  proposer: z.object({
+    kind: z.enum(["run", "program", "connection"]),
+    /** The agent as the person knows it: an engine, an automation, a connected agent's label. */
+    name: z.string().min(1).max(200),
+    taskTitle: z.string().max(240).nullable(),
+    /** The root of its lineage: the top task of a task tree, an automation, a connection. */
+    key: z.string().min(1).max(300),
+    /** The connection whose lineage it works in, re-admitted when the person approves. */
+    connectionId: z.string().min(1).max(300).optional(),
+    /** That connection as the person named it, for a Run or automation working under it. */
+    connectionName: z.string().min(1).max(200).optional(),
+    /** That connection's grant revision when it asked: a narrowing below it closes the ask. */
+    grantRevision: z.number().int().nonnegative().optional(),
+  }),
+  /** The agent's own words, not checked. */
+  agentReason: z.string().max(500).nullable(),
+  /**
+   * What the Home knows beside a proposed value (`command-review` in the protocol), by the value's
+   * path: what an id names and what the value is now. Never a value itself: every value the
+   * person approves is read from `command`, whole.
+   */
+  notes: z
+    .array(
+      z.object({
+        path: z.string().min(1).max(400),
+        name: z.string().min(1).max(240).optional(),
+        current: z.string().min(1).max(16_000).optional(),
+      }),
+    )
+    .max(200)
+    .optional(),
+  /** The screen that performs it, filled in; null where only this card can. */
+  editor: z.object({ screen: z.string().min(1).max(60) }).nullable(),
+  outcome: commandRequestOutcomeSchema.optional(),
+  /** What the Home ran when the person approved: the stored proposal, exactly. */
+  approved: z.object({ command: RequestJsonObjectSchema }).optional(),
+  /** The approving call's own key: the same approval again answers with its outcome. */
+  approvalKey: z.string().min(1).max(200).optional(),
+});
+export type CommandRequestPart = z.infer<typeof CommandRequestPartSchema>;
+
+/**
+ * What became of a command Request, as an agent may read it: a status and nothing the Home
+ * looked up. `person-says-done` is the person's statement; `done-by-person` is the Home's own
+ * record that the person's command did what was asked.
+ */
+/** Where a command Request stands, value-free: the one status every agent surface reads. */
+export const CommandAgentStatusSchema = z.enum([
+  "pending",
+  "approved-running",
+  "approved-done",
+  "approved-failed",
+  "approved-unknown",
+  "declined",
+  "person-says-done",
+  "done-by-person",
+  "closed",
+]);
+export type CommandAgentStatus = z.infer<typeof CommandAgentStatusSchema>;
+
+export function commandAgentStatus(request: {
+  readonly status: string;
+  readonly response?: RequestResponse | null | undefined;
+  readonly command?: { readonly outcome?: CommandRequestOutcome | undefined } | null | undefined;
+}): CommandAgentStatus {
+  const answers =
+    request.response?.kind === "form" ? Object.values(request.response.answers).flat() : [];
+  if (request.status === "pending") return "pending";
+  if (answers.includes(commandRequestAnswers.doneByPerson)) return "done-by-person";
+  if (request.status === "declined")
+    return answers.includes(commandRequestAnswers.doneMyself) ? "person-says-done" : "declined";
+  if (request.status !== "fulfilled") return "closed";
+  switch (request.command?.outcome?.status) {
+    case "done":
+      return "approved-done";
+    case "failed":
+      return "approved-failed";
+    case "unknown":
+      return "approved-unknown";
+    default:
+      return "approved-running";
+  }
+}
+export type CommandRequestOutcome = z.infer<typeof commandRequestOutcomeSchema>;
+
+/** The words for a failure the command itself confirmed, as shown on the approved Request. */
+export function commandRequestReportedFailure(
+  outcome: CommandRequestOutcome | undefined,
+): string | undefined {
+  if (outcome?.status !== "failed" || outcome.result === undefined) return undefined;
+  return `You approved this, but ${outcome.message[0]?.toLowerCase() ?? ""}${outcome.message.slice(1)}`;
+}
+
 const requestBaseShape = {
   settlementProvenance: z
     .union([
@@ -600,6 +788,28 @@ const requestBaseShape = {
    */
   originatingOccurrenceId: TriggerOccurrenceIdSchema.nullable(),
   originatingWatchActivationId: TriggerWatchActivationIdSchema.nullable().optional(),
+  /** An external agent's session, for a Request about its direct work. */
+  originatingAgentSessionId: AgentSessionIdSchema.nullable().optional(),
+  /**
+   * A connected agent's direct operation this Request decides, in its parts: the Home's
+   * summary, the exact calls and the agent's own reason, kept apart.
+   */
+  agentOperation: z
+    .object({
+      operationId: AgentOperationIdSchema,
+      connectionId: z.string().min(1).max(255),
+      summary: z.string().max(requestTextMaxLength),
+      calls: z.string().max(requestTextMaxLength),
+      agentReason: z.string().max(2_000).nullable(),
+      target: AgentOperationTargetViewSchema,
+      /** The form field the person answers it on: `allow` or `deny`. */
+      decisionFieldId: RequestIdentifierSchema,
+      /** It reached the end of its lifetime unanswered, rather than being no longer needed. */
+      expired: z.boolean().optional(),
+    })
+    .optional(),
+  /** A Home command an agent proposed, which the person approves on its screen or declines. */
+  command: CommandRequestPartSchema.optional(),
   /** The subagent of the originating Run that asked; absent for the Run's own agent. */
   originatingNodeId: ExecutionNodeIdSchema.optional(),
   originatingRunId: RunIdSchema.nullable(),
@@ -622,6 +832,7 @@ function validateRequestInvariants(
     readonly mode: RequestMode;
     readonly originatingOccurrenceId: string | null;
     readonly originatingWatchActivationId?: string | null | undefined;
+    readonly originatingAgentSessionId?: string | null | undefined;
     readonly originatingRunId: string | null;
     readonly payload: RequestPayload;
     readonly resolvedBy?: UserId | null;
@@ -651,12 +862,13 @@ function validateRequestInvariants(
       request.originatingRunId,
       request.originatingOccurrenceId,
       request.originatingWatchActivationId,
+      request.originatingAgentSessionId,
     ].filter((id) => id != null).length !== 1
   ) {
     context.addIssue({
       code: "custom",
       message:
-        "A Request originates from exactly one of a Run, a Trigger Occurrence or a Watch activation",
+        "A Request originates from exactly one of a Run, a Trigger Occurrence, a Watch activation or an agent session",
       path: ["originatingRunId"],
     });
   }
@@ -962,6 +1174,25 @@ export function requestOutcomeText(request: Request): string {
     return `Cancelled · ${request.cancellationReason}`;
   }
   if (request.status === "withdrawn") return "Withdrawn";
+  if (request.command) {
+    switch (commandAgentStatus(request)) {
+      case "declined":
+        return "You declined this. Opensteer did not run it.";
+      case "approved-running":
+        return "You approved this. Opensteer is still running it.";
+      case "approved-failed":
+        return (
+          commandRequestReportedFailure(request.command.outcome) ??
+          "You approved this, but the change did not happen."
+        );
+      case "approved-unknown": {
+        const outcome = request.command.outcome;
+        return outcome?.status === "unknown" && outcome.progress
+          ? outcome.progress.message
+          : "You approved this. Opensteer could not confirm what happened.";
+      }
+    }
+  }
   const settlement = requestSettlementLabel(request);
   if (settlement) return settlement;
   const prefix = request.status === "declined" ? "Declined" : "Fulfilled";

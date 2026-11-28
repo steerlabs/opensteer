@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { DeploymentIdSchema } from "@opensteer/core";
+import { homesListTitle } from "@opensteer/client/computers";
 import { type DesktopPlaces } from "../../desktop/places-context.js";
 import { useComputerFacts } from "../../desktop/use-computer-facts.js";
 import { placeRows, thisComputerLabel } from "../../desktop/places.js";
@@ -8,20 +9,42 @@ import { Icon } from "../icon.js";
 import { ErrorNotice } from "../onboarding-card.js";
 import { PlaceList } from "./place-list.js";
 import { PlaceSignInCard } from "./place-account.js";
+import { usePlaceCloudComputers } from "../settings/sections/cloud-computer.js";
 
-/** Places in the switch dialog, checked while open. Choosing or adding one closes it. */
+/**
+ * Places in the switch dialog, checked while open. Choosing or adding one closes it. With
+ * `severalOnly` (the sidebar's menu) it is a switcher, shown only when there is more than one
+ * Opensteer to switch between; Settings shows it always.
+ */
 export function PlaceMenuPlaces({
   onClose,
   places,
+  severalOnly = false,
 }: {
+  readonly onClose: () => void;
+  readonly places: DesktopPlaces;
+  readonly severalOnly?: boolean;
+}) {
+  const computers = places.snapshot.deployments.filter((row) => row.kind === "personal");
+  // Nothing to switch between: nothing is mounted, read or listened for.
+  if (severalOnly && computers.length <= 1) return null;
+  return <PlaceMenuBody computers={computers} onClose={onClose} places={places} />;
+}
+
+function PlaceMenuBody({
+  computers,
+  onClose,
+  places,
+}: {
+  readonly computers: DesktopPlaces["snapshot"]["deployments"];
   readonly onClose: () => void;
   readonly places: DesktopPlaces;
 }) {
   const { bridge, facts: factsStore, onAddPlace, snapshot } = places;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const computers = snapshot.deployments.filter((row) => row.kind === "personal");
   const facts = useComputerFacts(factsStore, computers);
+  const cloud = usePlaceCloudComputers(bridge);
   useEffect(() => {
     const check = () => void bridge.checkDeployments().catch(() => undefined);
     check();
@@ -29,9 +52,11 @@ export function PlaceMenuPlaces({
     return () => window.removeEventListener("focus", check);
   }, [bridge]);
   const personalIds = new Set<string>(computers.map((row) => row.id));
-  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts }).filter((row) =>
-    personalIds.has(row.id),
-  );
+  const rows = placeRows(snapshot, {
+    thisComputer: thisComputerLabel(),
+    facts,
+    cloud,
+  }).filter((row) => personalIds.has(row.id));
   const run = (operation: () => Promise<void>, then?: () => void) => {
     setPending(true);
     setError(null);
@@ -49,7 +74,7 @@ export function PlaceMenuPlaces({
     <div className="picker__section place-menu__places">
       {/* A failed refresh says so on this line, so it never moves the menu open above it. */}
       <div className="picker__heading place-menu__heading">
-        <span aria-hidden>Your computers</span>
+        <span aria-hidden>{homesListTitle}</span>
         {signedIn && snapshot.directoryFailure ? (
           <span
             className="place-menu__note"
@@ -70,7 +95,7 @@ export function PlaceMenuPlaces({
       <PlaceList
         busy={pending}
         explainCurrent
-        label="Your computers"
+        label={homesListTitle}
         onCheck={() => void bridge.checkDeployments().catch(() => undefined)}
         onOpen={(row) => {
           if (row.current) {

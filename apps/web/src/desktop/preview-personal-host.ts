@@ -32,7 +32,6 @@ export function previewPersonalHost(
     harnessAuthenticationAllowed: true,
     harnessCatalogs: [],
     harnessDrivers: [],
-    providerStateModes: ["ambient", "isolated"],
     id: ids.environmentId,
     kind: "main",
     name: "This Computer",
@@ -89,7 +88,6 @@ export function previewPersonalHost(
     "plugin-webhook-sources": {},
     "plugin-schedules": {},
     "plugin-engine": { engine: { status: "idle" } },
-    "team-replies": {},
   } satisfies Record<PersonalResourceKind, object>;
   const shell = PersonalNetworkShellSnapshotSchema.parse({
     deploymentId: selected.id,

@@ -291,6 +291,16 @@ describe("desktop bridge", () => {
     await handlers.get(desktopBridgeChannels.createPersonalDeployment)?.(event, envelope);
     expect(accessOperations.signIn).toHaveBeenCalledOnce();
     expect(accessOperations.createPersonalDeployment).toHaveBeenCalledOnce();
+    // What the "Add a Home by address" form sends is what the bridge accepts.
+    for (const origin of ["https://home.example.com", "https://team.example.com"])
+      await handlers.get(desktopBridgeChannels.connectPrivate)?.(event, {
+        ...envelope,
+        input: { kind: "address", origin },
+      });
+    expect(accessOperations.connectPrivate.mock.calls).toEqual([
+      [{ kind: "address", origin: "https://home.example.com" }],
+      [{ kind: "address", origin: "https://team.example.com" }],
+    ]);
 
     const deploymentId = createId("deployment");
     await handlers.get(desktopBridgeChannels.getLocalExecutionStatus)?.(event, {
@@ -328,7 +338,6 @@ describe("desktop bridge", () => {
     const notificationChannels = new Set<string>([
       desktopBridgeChannels.integrationAuthorizationReturn,
       desktopBridgeChannels.mcpAuthorization,
-      desktopBridgeChannels.teamLink,
       desktopBridgeChannels.dictationEvent,
       desktopBridgeChannels.downloadsChanged,
       desktopBridgeChannels.updateChanged,

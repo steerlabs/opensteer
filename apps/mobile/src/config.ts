@@ -1,6 +1,10 @@
 import {
+  mockCloudComputerScenes,
+  mockConnectedAgentScenes,
   mockPluginScenarios,
   mockSubagentScenes,
+  type MockCloudComputerScene,
+  type MockConnectedAgentScene,
   type MockPluginScenario,
   type MockSubagentScene,
 } from "@opensteer/client/mock";
@@ -27,12 +31,11 @@ const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN: z.string().min(1).max(2_048).optional(),
   EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: z.enum(["development", "preview", "production"]).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK: z.enum(["0", "1"]).optional(),
-  EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: z
-    .enum(["admin", "admin-stale", "member", "guest", "suspended", "removed"])
-    .optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: z.enum(mockPhoneScenes).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: z.enum(mockSubagentScenes).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS: z.enum(mockPluginScenarios).optional(),
+  EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS: z.enum(mockConnectedAgentScenes).optional(),
+  EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD: z.enum(mockCloudComputerScenes).optional(),
 });
 
 export interface MobileConfiguration {
@@ -46,16 +49,16 @@ export interface MobileConfiguration {
   readonly accountOrigin: string | null;
   /** The development entry that replaces the Host with an in-memory one. */
   readonly mock: boolean;
-  /** The team the in-memory Host plays; null is today's Hosts, with no team. */
-  readonly mockTeam: NonNullable<
-    z.infer<typeof MobileEnvironmentSchema>["EXPO_PUBLIC_OPENSTEER_MOCK_TEAM"]
-  > | null;
   /** What becomes of this phone in mock mode once it is added; null for the ordinary phone. */
   readonly mockPhone: (typeof mockPhoneScenes)[number] | null;
   /** One subagent scene of the design, as the web's `?mock-subagents=` seeds it; null for none. */
   readonly mockSubagents: MockSubagentScene | null;
   /** The plugin side's state, as the web's `?mock-plugins=` picks it; null for the ordinary one. */
   readonly mockPlugins: MockPluginScenario | null;
+  /** Connected agents in each state and a waiting consent, as the web's `?mock-agents`. */
+  readonly mockAgents: MockConnectedAgentScene | null;
+  /** The mock Account's Cloud Computer, as the web's `?mock-cloud=`; none by default. */
+  readonly mockCloud: MockCloudComputerScene | null;
   /**
    * Why this build must not start, or null. It is a state rather than a throw
    * because the answer belongs on screen in a sentence: a build that was asked
@@ -115,10 +118,11 @@ export function readMobileConfiguration(
         ? null
         : bareServiceOrigin(accountOrigin, "Opensteer Account origin"),
     mock: mockEnabled,
-    mockTeam: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_TEAM ?? null) : null,
     mockPhone: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE ?? null) : null,
     mockSubagents: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS ?? null) : null,
     mockPlugins: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS ?? null) : null,
+    mockAgents: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS ?? null) : null,
+    mockCloud: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD ?? null) : null,
     refusal:
       mockRequested && !mockAllowed
         ? "This build was made with Opensteer's mock mode turned on, which only development and preview builds may run. Install a build made without it."

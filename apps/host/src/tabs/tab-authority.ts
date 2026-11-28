@@ -1,17 +1,29 @@
 import {
   OpensteerError,
+  agentGrantAllows,
+  isAllowedConnectionPageUrl,
   isPhoneDisplayDefinitionId,
   type ResourceAccessLevel,
   type DeviceId,
   DeviceTabTargetSchema,
+  ThreadIdSchema,
+  type ThreadId,
   type TabTarget,
   type UserId,
 } from "@opensteer/core";
 import {
   OpensteerStore,
+  integrationConnectionGrantTarget,
   resolveResourceAccess,
+  admitExecution,
+  authoritySubject,
+  bindingAgentConnectionId,
+  standingGrant,
+  executionAccess,
+  authorizePageAddress,
+  type AgentConnectionAuthority,
   requirePersonalOwner,
-  runAllowsPersonalContext,
+  lineageAllowsPersonalContext,
   type TabDatabase,
   type TabRecord,
   type TabWrite,
@@ -21,6 +33,7 @@ import { requireDeviceAccess } from "../administration/device-access.js";
 import type { TabActor } from "./ports.js";
 
 export function tabOwner(actor: TabActor): UserId {
+  if (actor.kind === "browser-binding") return actor.authority.ownerId;
   return actor.kind === "person"
     ? actor.ownerId
     : actor.kind === "run"
@@ -62,11 +75,12 @@ export async function tabComputer(ownerId: UserId, computerId: DeviceId, databas
   return (await tabComputers(ownerId, [computerId], database)).get(computerId)!;
 }
 function scope(actor: TabActor) {
+  if (actor.kind === "browser-binding") return { agentBindingId: actor.authority.agentBindingId };
   return actor.kind === "run"
     ? { agentBindingId: `run:${actor.claims.runId}` }
     : actor.kind === "connection"
-      ? { connectionId: actor.caller.connectionId }
-      : {};
+      ? { agentConnectionId: actor.caller.connectionId }
+      : { kind: "person" as const };
 }
 function deny(): never {
   throw new OpensteerError({ code: "not_found", message: "Tab not found." });
@@ -84,25 +98,61 @@ export async function authorizeTabActor(
   database: TabDatabase,
   required: ResourceAccessLevel = "read-write",
 ): Promise<void> {
+  await admitTabActor(actor, database, required);
+}
+/** The actor's live authority, and the connection it works for, if any. */
+async function admitTabActor(
+  actor: TabActor,
+  database: TabDatabase,
+  required: ResourceAccessLevel,
+): Promise<AgentConnectionAuthority | null> {
   if (actor.kind === "person") {
     await requirePersonalOwner(database, actor.ownerId);
-    return;
+    return null;
   }
   if (actor.kind === "run") {
     await new OpensteerStore(database).assertActiveGrant(actor.claims);
-    if (!(await runAllowsPersonalContext(database, actor.claims.runId))) deny();
   }
-  const access = await resolveResourceAccess(database, {
+  const execution = await admitExecution(database, {
     ownerUserId: tabOwner(actor),
-    explicitAccess: "read-write",
-    ...scope(actor),
+    subject: authoritySubject(scope(actor)),
+    ...(actor.kind === "browser-binding" ? { threadId: actor.threadId } : {}),
   });
-  requireAccess(access.access, required);
+  // Work from a bridge anyone may speak to never sees the person's tabs; it is read from the
+  // connection row this admission already read, and the person's own Run reads nothing more.
+  if (actor.kind === "run" && !lineageAllowsPersonalContext(execution.agentConnection)) deny();
+  requireAccess(executionAccess(execution), required);
+  return execution.agentConnection;
 }
 
 /** One authority view for a projection; mutations build it again under the personal commit fence. */
 export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
-  await authorizeTabActor(actor, database, "read");
+  const lineage = await admitTabActor(actor, database, "read");
+  return tabTargetAuthority(actor, database, lineage);
+}
+
+function tabTargetAuthority(
+  actor: TabActor,
+  database: TabDatabase,
+  lineage: AgentConnectionAuthority | null,
+) {
+  const selected = lineage?.grant.scope === "selected" ? lineage : null;
+  const lineageTasks = new Map<string, Promise<boolean>>();
+  // A task of this same connection (its lineage): what a selected grant sees, and what a
+  // connection's browser script may reach across its own direct-work tasks.
+  const inLineage = (taskId: string) => {
+    let held = lineageTasks.get(taskId);
+    if (!held) {
+      held = database
+        .selectFrom("threads")
+        .select("originConnectionId")
+        .where("id", "=", ThreadIdSchema.parse(taskId))
+        .executeTakeFirst()
+        .then((row) => Boolean(lineage && row?.originConnectionId === lineage.agentConnectionId));
+      lineageTasks.set(taskId, held);
+    }
+    return held;
+  };
   const ownerId = tabOwner(actor);
   const computers = new Map<DeviceId, Promise<boolean>>();
   const resources = new Map<string, Promise<boolean>>();
@@ -118,7 +168,8 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
   const profileRows = database
     .selectFrom("browserProfiles")
     .select(["id", "homeRunnerId"])
-    .where("ownerId", "=", ownerId);
+    .where("ownerId", "=", ownerId)
+    .where("archivedAt", "is", null);
   let profiles: ReturnType<typeof profileRows.execute> | undefined;
   const appRows = database
     .selectFrom("apps")
@@ -132,9 +183,22 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
     const target =
       "ownerId" in targetInput ? targetInput : DeviceTabTargetSchema.parse(targetInput);
     if ("ownerId" in target && target.ownerId !== ownerId) return false;
+    const profileId = target.kind === "page" && "profileId" in target ? target.profileId : null;
+    if (
+      selected &&
+      profileId &&
+      !agentGrantAllows(selected.grant, { kind: "browser-profile", profileId }, required)
+    )
+      return false;
+    // Rule 1's page rule: to a connection's work a page on an extension's address does not exist.
+    if (
+      target.kind === "page" &&
+      "url" in target &&
+      !authorizePageAddress({ agentConnection: lineage }, target.url)
+    )
+      return false;
     if (actor.kind === "person" && "id" in target && required === "read") return true;
     let computerId = "computerId" in target ? target.computerId : undefined;
-    const profileId = target.kind === "page" && "profileId" in target ? target.profileId : null;
     if (target.kind === "app") {
       const app = (await (apps ??= appRows.execute())).find((app) => app.id === target.appId);
       if (!app || app.deleting) return false;
@@ -164,6 +228,22 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
       if (!(await allowed)) return false;
     }
     if (actor.kind === "person") return true;
+    // A browser script reaches the tabs its own task opened, and a connection's, the tabs any of
+    // its own tasks opened: its agent session ends idle and the next call runs in a new task,
+    // and the tabs it left are still its own.
+    if (
+      actor.kind === "browser-binding" &&
+      "id" in target &&
+      target.openedBy !== "person" &&
+      target.openedBy?.taskId !== actor.threadId &&
+      !(lineage && target.openedBy && (await inLineage(target.openedBy.taskId)))
+    )
+      return false;
+    if (selected) {
+      if (!("openedBy" in target) || target.openedBy === "person") {
+        if ("id" in target) return false;
+      } else if (target.openedBy && !(await inLineage(target.openedBy.taskId))) return false;
+    }
     if (!computerId && !(target.kind === "page" && "guest" in target)) return false;
     if (computerId) {
       const capability = target.kind === "page" ? "browser" : "apps";
@@ -196,6 +276,7 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
           ...scope(actor),
           explicitAccess: "read-write",
           connectionCeiling: connection.computerAccess,
+          grantTarget: integrationConnectionGrantTarget(connection),
         });
         if (access.access && (required === "read" || access.access === "read-write")) return true;
       }
@@ -208,6 +289,8 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
         ownerUserId: ownerId,
         ...scope(actor),
         explicitAccess: "read-write",
+        // Mini-apps and guest pages have no selected resource kind.
+        grantTarget: profileId ? { kind: "browser-profile", profileId } : { kind: "device" },
       }).then(({ access }) => Boolean(access && (required === "read" || access === "read-write")));
       resources.set(key, allowed);
     }
@@ -231,8 +314,24 @@ export async function authorizeTabTarget(
   target: TabTarget | TabWrite,
   database: TabDatabase,
 ): Promise<void> {
-  await authorizeTabActor(actor, database, "read-write");
-  if (!(await (await tabReadAuthority(actor, database))(target, "read-write"))) deny();
+  if (actor.kind === "person") {
+    await authorizeTabActor(actor, database, "read-write");
+    if (!(await (await tabReadAuthority(actor, database))(target, "read-write"))) deny();
+    return;
+  }
+  const lineage = await admitTabActor(actor, database, "read-write");
+  if (
+    lineage !== null &&
+    "kind" in target &&
+    target.kind === "page" &&
+    "url" in target &&
+    !isAllowedConnectionPageUrl(target.url)
+  )
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Use about:blank or an HTTP(S) URL without credentials.",
+    });
+  if (!(await tabTargetAuthority(actor, database, lineage)(target, "read-write"))) deny();
 }
 export async function canReadTab(
   actor: TabActor,
@@ -251,4 +350,62 @@ export async function canReadTab(
       return false;
     throw error;
   }
+}
+
+/**
+ * The tabs an edit affects that work for a selected connection may not change. The person's own
+ * work keeps membership authority over the whole strip and pays one indexed read for it.
+ */
+export async function deniedTabRows(
+  actor: TabActor,
+  rows: readonly TabRecord[],
+  database: TabDatabase,
+): Promise<ReadonlySet<TabRecord["id"]>> {
+  if (actor.kind === "person" || !rows.length) return new Set();
+  const agentConnectionId =
+    actor.kind === "connection"
+      ? actor.caller.connectionId
+      : await bindingAgentConnectionId(database, scope(actor).agentBindingId!);
+  if (!agentConnectionId) return new Set();
+  const connection = await admitTabActor(actor, database, "read-write");
+  if (connection?.grant.scope !== "selected") return new Set();
+  const check = tabTargetAuthority(actor, database, connection);
+  const denied = new Set<TabRecord["id"]>();
+  for (const row of rows) if (!(await check(row, "read-write"))) denied.add(row.id);
+  return denied;
+}
+
+/**
+ * The tasks an actor may see as a tab's opener or user: the person's own, and for work in a
+ * selected connection's lineage only that lineage's.
+ */
+export async function readableTabTasks(
+  actor: TabActor,
+  ids: readonly ThreadId[],
+  database: TabDatabase,
+): Promise<Set<ThreadId>> {
+  if (!ids.length) return new Set();
+  const agentConnectionId =
+    actor.kind === "person"
+      ? null
+      : actor.kind === "connection"
+        ? actor.caller.connectionId
+        : await bindingAgentConnectionId(database, scope(actor).agentBindingId!);
+  const rows = await database
+    .selectFrom("threads")
+    .select(["id", "originConnectionId"])
+    .where("id", "in", [...ids])
+    .where("createdBy", "=", tabOwner(actor))
+    .execute();
+  if (!agentConnectionId) return new Set(rows.map((row) => row.id));
+  // What it may see is authority: read through the one standing statement, as the last read
+  // before it is used. A connection with no standing sees no task at all; a selected grant sees
+  // its own lineage's.
+  const grant = await standingGrant(database, tabOwner(actor), agentConnectionId);
+  if (grant === null) return new Set();
+  return new Set(
+    rows
+      .filter((row) => grant.scope !== "selected" || row.originConnectionId === agentConnectionId)
+      .map((row) => row.id),
+  );
 }

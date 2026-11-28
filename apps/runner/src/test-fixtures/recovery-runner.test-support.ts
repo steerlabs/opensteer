@@ -1,6 +1,6 @@
 import { createPrivateKey } from "node:crypto";
 import { join } from "node:path";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import {
   FileRunnerIdentityStore,
@@ -9,6 +9,8 @@ import {
 import { AttachmentCache } from "../attachments/attachment-cache.js";
 import { ReconnectingHostConnection } from "../host/host-connection.js";
 import { RunnerRuntime } from "../runtime/runtime.js";
+import { prepareIntegrationsModule } from "../computer-apps/prepare.js";
+import { prepareShellModule } from "../shell/shell-host-key.js";
 import { RunnerBootIdSchema } from "@opensteer/protocol";
 import type { RunnerConfig } from "@opensteer/config";
 import type { AgentSkillBundle } from "../skills/agent-skills.js";
@@ -17,8 +19,13 @@ import { ExecutionContainment, executionScopeVariable } from "../runtime/executi
 interface Boot {
   readonly nativeFsHelperBinary: string;
   readonly bootId: string;
+  readonly agentsStoppedSince?: string | null;
   readonly config: Omit<RunnerConfig, "hostUrl"> & { readonly hostUrl: string };
   readonly engine: { readonly fixture: string; readonly arguments: readonly string[] };
+  readonly browser?: Omit<NonNullable<RunnerConfig["browserBridge"]>, "url"> & {
+    readonly url: string;
+  };
+  readonly computerUseBridge?: { readonly token: string; readonly url: string };
   readonly agentSkills: AgentSkillBundle;
   readonly mountedWorkspacePath: string;
   readonly attachmentRoot: string;
@@ -47,8 +54,8 @@ async function boot(input: Boot) {
       message.bootId === input.bootId
     ) {
       committed.resolve();
-    } else if (message === "close") {
-      stop.abort();
+    } else if (message === "close" || message === "restart") {
+      stop.abort(new Error(message === "restart" ? "device-restarting" : "Runner stopping"));
       void close?.().catch((error: unknown) => {
         console.error(error);
         process.exit(1);
@@ -81,9 +88,15 @@ async function boot(input: Boot) {
     value: [...driver.environmentVariables, executionScopeVariable],
   });
   registry.registerDriver(driver);
-  const logger = { error: () => undefined, info: () => undefined };
+  const logger = {
+    error: (message: string) => {
+      if (input.computerUseBridge) console.error(message);
+    },
+    info: () => undefined,
+  };
   const runtime = new RunnerRuntime({
     bootId: input.bootId,
+    containment,
     dataDirectory: config.dataDirectory,
     environmentId: config.environmentId!,
     agentSkills: input.agentSkills,
@@ -94,11 +107,6 @@ async function boot(input: Boot) {
     browserHarnessExecutable: "/opt/opensteer/browser-harness",
     deploymentShape: config.deploymentShape,
     harnesses: registry,
-    harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    harnessSandbox: {
-      plan: async () => (launch) => launch,
-      planProgram: async () => (launch) => launch,
-    },
     plugins: async () => ({
       cleanup: async () => undefined,
       digest: "none",
@@ -128,8 +136,32 @@ async function boot(input: Boot) {
     runnerId: config.runnerId!,
   });
   const identity = await identityStore.loadOrCreate();
+  const shellModule = config.modules.includes("shell")
+    ? await prepareShellModule({
+        dataDirectory: config.dataDirectory,
+        helperBinary: input.nativeFsHelperBinary,
+      })
+    : undefined;
+  const integrationsModule = input.computerUseBridge
+    ? await prepareIntegrationsModule({
+        dataDirectory: config.dataDirectory,
+        platform: "darwin",
+        computerUseBridge: {
+          ...input.computerUseBridge,
+          url: new URL(input.computerUseBridge.url),
+        },
+      })
+    : undefined;
   const connection = new ReconnectingHostConnection({
+    ...(integrationsModule ? { integrationsModule } : {}),
+    ...(shellModule ? { shellModule, containment } : {}),
+    ...(input.browser
+      ? { browserBridge: { ...input.browser, url: new URL(input.browser.url) } }
+      : {}),
     onConnected: () => authenticated.resolve(),
+    ...(input.agentsStoppedSince === undefined
+      ? {}
+      : { agentsStoppedSince: input.agentsStoppedSince }),
     bootId: RunnerBootIdSchema.parse(input.bootId),
     config,
     identity,
@@ -146,7 +178,12 @@ async function boot(input: Boot) {
     stop.abort();
     connection.close();
     await task;
-    await runtime.close();
+    await integrationsModule?.close?.();
+    const shutdownProof = await runtime.close(input.agentsStoppedSince !== undefined);
+    if (shutdownProof)
+      await new Promise<void>((resolve, reject) => {
+        process.send?.({ shutdownProof }, (error) => (error ? reject(error) : resolve()));
+      });
     process.disconnect?.();
   };
   if (stop.signal.aborted) {

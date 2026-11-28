@@ -1,3 +1,4 @@
+import { openInChrome } from "./app/open-in-chrome.js";
 import { IphoneService } from "./iphone/iphone-service.js";
 import { IphoneStore } from "./iphone/iphone-store.js";
 import { IphoneSetup } from "./iphone/iphone-setup.js";
@@ -10,14 +11,6 @@ import {
 } from "./iphone/bridge-paths.js";
 import { forwardMedia } from "./app/media-protocol.js";
 import { forwardHostRoute } from "./app/host-route.js";
-import { deploymentPolicy } from "@opensteer/core";
-import { DesktopTeamLinks } from "./app/team-links.js";
-import {
-  HttpAccountTeamsClient,
-  NativeTeamEntry,
-  verifyTeamEndpoint,
-} from "@opensteer/client/team";
-import { DesktopTeamSessions } from "./app/team-sessions.js";
 import { PersonalDataReset } from "./supervisor/personal-data-reset.js";
 import { desktopPersonalDataReset } from "./app/personal-data-reset.js";
 import { resetFileWrites } from "./secrets/reset-file-writes.js";
@@ -48,7 +41,6 @@ import { NativeDictationHelperClient } from "./dictation/helper-client.js";
 import { bundledDictationBrokerPath } from "./dictation/paths.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createDesktopHostApi } from "./connections/desktop-host-api.js";
 import {
   app,
   BaseWindow,
@@ -56,7 +48,9 @@ import {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   net,
+  Notification,
   powerMonitor,
   protocol,
   safeStorage,
@@ -65,6 +59,7 @@ import {
   shell,
   utilityProcess,
   systemPreferences,
+  Tray,
 } from "electron";
 import {
   acquireDesktopApplicationLock,
@@ -81,6 +76,7 @@ import { installPublishedAppProtocol } from "./app/published-app-protocol.js";
 import { installDesktopAppProtocol, registerDesktopAppScheme } from "./app/app-protocol.js";
 import {
   desktopApplicationName,
+  desktopNativeHelperPlatform,
   readDesktopConfiguration,
   readEmbeddedDesktopRelease,
   type DesktopMode,
@@ -97,7 +93,10 @@ import { DesktopAccessProjection } from "./connections/access-projection.js";
 import { DesktopDeploymentProbe } from "./connections/deployment-probe.js";
 import { DeploymentCatalogStore, DesktopUpdatesService } from "@opensteer/client/connections";
 import type { DeploymentId } from "@opensteer/core";
-import { resolveDesktopAppBranding } from "@opensteer/protocol/desktop";
+import {
+  desktopComputerUseOffInTrial,
+  resolveDesktopAppBranding,
+} from "@opensteer/protocol/desktop";
 import { desktopLocalHostRuntime } from "./connections/access-projection.js";
 import { ElectronHostNetwork } from "./app/electron-host-network.js";
 import { ElectronServiceNetwork } from "./app/electron-service-network.js";
@@ -121,7 +120,12 @@ import {
   LocalRunnerService,
 } from "./supervisor/local-runner-service.js";
 import { DesktopLocalRunnerTargetResolver } from "./supervisor/local-runner-authority.js";
-import { OpenAtLoginService, shouldOpenDesktopWindowAtLaunch } from "./supervisor/open-at-login.js";
+import {
+  openAtLoginChoiceFileStore,
+  OpenAtLoginPolicy,
+  OpenAtLoginService,
+  shouldOpenDesktopWindowAtLaunch,
+} from "./supervisor/open-at-login.js";
 import { attachedHostOrigin, DesktopAppOriginPolicy } from "./app/navigation-policy.js";
 import { DesktopHostTransport } from "./connections/host-transport.js";
 import { HostSessionExchange } from "@opensteer/client/auth";
@@ -131,6 +135,7 @@ import { NativeOAuthManager } from "@opensteer/client/auth";
 import { OAuthDeepLinkBroker } from "@opensteer/client/auth";
 import { registerDesktopOAuthProtocolClient } from "./account/oauth-protocol-client.js";
 import { DesktopProtectedAuthStore } from "./secrets/protected-auth-store.js";
+import { openDesktopLog } from "./app/desktop-log.js";
 import { assertDesktopLaunch } from "./app/launch-policy.js";
 import { NativePersonalDeploymentCredentials } from "./secrets/personal-deployment-credentials.js";
 import {
@@ -165,7 +170,7 @@ import { DesktopPersonalRemoteAccessService } from "./connections/personal-remot
 import { TailscaleShare, tailscaleCommand } from "./connections/tailscale.js";
 import { DesktopConnectCredentialStore } from "./secrets/connect-credential-store.js";
 import { VerifiedDesktopSecretCryptography } from "./secrets/verified-secret-cryptography.js";
-import { AccountConnectClient } from "@opensteer/client/connections";
+import { AccountCloudComputerClient, AccountConnectClient } from "@opensteer/client/connections";
 import { CloudflaredConnectorSupervisor } from "./supervisor/cloudflared-connector-supervisor.js";
 import {
   PersonalHostConnectOrchestrator,
@@ -179,7 +184,10 @@ import type { DesktopPrivateFilesystem } from "./secrets/desktop-private-files.j
 import type { PersonalLocalRuntimePort } from "./supervisor/personal-local-runtime.js";
 import { probeFullDiskAccess } from "./full-disk-access/full-disk-access-probe.js";
 import { FullDiskAccessPanel } from "./full-disk-access/full-disk-access-panel.js";
-import { ComputerUseService } from "./computer-use/computer-use-service.js";
+import {
+  ComputerUseService,
+  computerUseShutdownStep,
+} from "./computer-use/computer-use-service.js";
 import { ComputerUsePermissionsPanel } from "./computer-use/computer-use-permissions-panel.js";
 import { ComputerAppSetupPanel } from "./computer-use/computer-app-setup-panel.js";
 import {
@@ -192,6 +200,27 @@ import { bundledPasswordsBrokerPath } from "./passwords/paths.js";
 import { PasswordsService } from "./passwords/passwords-service.js";
 import { OpensteerOwnOrigins } from "./passwords/own-origins.js";
 import { PasswordsLoginAuthority } from "./passwords/login-authority.js";
+import { AgentBrowserGate } from "./browser/agent-browser-gate.js";
+import { DesktopLocalStop, localStopFileStore } from "./app/local-stop.js";
+import { parentedQuitQuestion, quitQuestionParentOptions } from "./app/quit-question.js";
+import { activityIdle, DesktopActivity } from "./app/desktop-activity.js";
+import { DesktopQuitRouting } from "./app/quit-routing.js";
+import { appRoutes, appRouteScript, taskPath } from "./app/app-route.js";
+import {
+  backgroundNoticeBody,
+  backgroundNoticeFileStore,
+  backgroundNoticeTitle,
+  DesktopBackgroundMode,
+} from "./app/background-mode.js";
+import {
+  DesktopBackgroundUpdate,
+  forgetHiddenRelaunch,
+  rememberHiddenRelaunch,
+  takeHiddenRelaunch,
+} from "./app/background-update.js";
+import { DesktopMenuBarService } from "./app/menu-bar-service.js";
+import { DesktopMenuBar } from "./app/menu-bar.js";
+import { homeHostApi } from "./connections/desktop-host-api.js";
 
 registerDesktopAppScheme(protocol);
 keepDesktopAliveWithoutWindows(app);
@@ -217,7 +246,6 @@ const desktopOAuthLinks = {
 const mcpAuthorizationLinks = new McpAuthorizationLinks(
   new URL(embeddedRelease.oauth.hostCallback).protocol.slice(0, -1),
 );
-const teamLinks = new DesktopTeamLinks();
 const webLinks = new DesktopWebLinks((message) => {
   void app
     .whenReady()
@@ -237,6 +265,22 @@ const shutdown = new DesktopShutdown({
   log: reportEvent,
   hideWindow: () => activeMainProcess?.hideWindow(),
 });
+const confirmQuit = parentedQuitQuestion({
+  focus: () => app.focus({ steal: true }),
+  createParent: () => new BrowserWindow(quitQuestionParentOptions(app.getName())),
+  showMessageBox: (parent, options) => dialog.showMessageBox(parent as BrowserWindow, options),
+});
+const quitRouting = new DesktopQuitRouting({
+  shutdown,
+  confirm: confirmQuit,
+  hideWindows: () => {
+    for (const window of BaseWindow.getAllWindows()) window.hide();
+  },
+  log: reportEvent,
+});
+quitRouting.installAtReady(app, (quit) =>
+  Menu.setApplicationMenu(createDesktopApplicationMenu({ quit, workspaceContents: () => null })),
+);
 app.on("open-url", (event, url) => {
   if (mcpAuthorizationLinks.accept(url)) {
     event.preventDefault();
@@ -247,14 +291,13 @@ app.on("open-url", (event, url) => {
     event.preventDefault();
     return;
   }
-  if (!teamLinks.accept(url) && !webLinks.accept(url)) return;
+  if (!webLinks.accept(url)) return;
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
   event.preventDefault();
 });
 app.on("second-instance", (_event, argv) => {
   for (const url of argv)
-    if (!mcpAuthorizationLinks.accept(url))
-      routeDesktopUrl(url, desktopOAuthLinks, webLinks, teamLinks);
+    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, desktopOAuthLinks, webLinks);
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
 });
 
@@ -264,6 +307,7 @@ if (acceptLaunch()) {
       app.isPackaged,
       embeddedRelease.application.name,
       process.env.OPENSTEER_DESKTOP_MODE?.trim() === "test" ? "test" : defaultMode(),
+      Boolean(process.env.OPENSTEER_DESKTOP_TRIAL_ROOT?.trim()),
     ),
   );
   app.setAboutPanelOptions({
@@ -295,9 +339,8 @@ async function startDesktop(): Promise<void> {
     app.quit();
     return;
   }
-  desktopLog = new RotatingPersonalLog(
-    path.join(loaded.config.dataDirectory, "logs", "desktop.log"),
-  );
+  // What the app ignored from its environment is the log's first word (`desktop-log.ts`).
+  desktopLog = openDesktopLog(loaded.config.dataDirectory, loaded.ignored);
   app.once("will-quit", () => desktopLog?.close());
   await app.whenReady();
   await privateFiles
@@ -308,8 +351,7 @@ async function startDesktop(): Promise<void> {
   if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
   shutdown.signal.throwIfAborted();
   for (const url of process.argv)
-    if (!mcpAuthorizationLinks.accept(url))
-      routeDesktopUrl(url, desktopOAuthLinks, webLinks, teamLinks);
+    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, desktopOAuthLinks, webLinks);
   await runDesktop(loaded, privateFiles);
 }
 
@@ -330,6 +372,7 @@ async function runDesktop(
     entryArgument: process.argv[1],
     executablePath: process.execPath,
     scheme: new URL(loaded.config.release.oauth.accountCallback).protocol.slice(0, -1),
+    trial: loaded.config.trial !== null,
   });
   const uninstallAppProtocol = installDesktopAppProtocol(
     protocol,
@@ -346,7 +389,7 @@ async function runDesktop(
     preference: await loadDesktopUpdatePreference(loaded.config.dataDirectory, reportEvent),
   });
   const downloads = new DesktopDownloads({
-    directory: () => app.getPath("downloads"),
+    directory: () => loaded.config.trial?.downloads ?? app.getPath("downloads"),
     staging: path.join(loaded.config.dataDirectory, "partial-downloads"),
   });
   shutdown.add({
@@ -367,6 +410,14 @@ async function runDesktop(
 
   let fatal = false;
   let mainProcess: DesktopMainProcess;
+  let background: DesktopBackgroundMode | null = null;
+  let backgroundUpdate: DesktopBackgroundUpdate | null = null;
+  let appWindow: import("./app/electron-window.js").ElectronAppWindow | null = null;
+  const windowVisible = () =>
+    appWindow !== null &&
+    !appWindow.isDestroyed() &&
+    appWindow.isVisible() &&
+    !appWindow.isMinimized();
   const browserPagePolicyPreloadPath = path.join(import.meta.dirname, "browser-page-preload.cjs");
   const resetWrites = resetFileWrites(privateFiles, [
     desktopDeploymentCatalogPath(loaded.config.dataDirectory),
@@ -383,7 +434,15 @@ async function runDesktop(
     privateFiles: resetWrites.files,
   });
   const hostNetwork = new ElectronHostNetwork();
-  const serviceNetwork = new ElectronServiceNetwork();
+  // A development launch's stand-in account service, pinned on its own session; never a released app.
+  const serviceNetwork = new ElectronServiceNetwork({
+    accountCertificate:
+      !app.isPackaged &&
+      loaded.config.accountCertificateKey !== null &&
+      loaded.config.accountUrl !== null
+        ? { key: loaded.config.accountCertificateKey, origin: loaded.config.accountUrl.origin }
+        : null,
+  });
   const protectedStorage = new VerifiedDesktopSecretCryptography(safeStorage, {
     onVerificationFailure: ({ error, phase }) =>
       reportNonFatal(
@@ -493,19 +552,15 @@ async function runDesktop(
         resourcesPath: process.resourcesPath,
       }),
     log: (event, fields) => reportEvent(event, fields),
+    platform: desktopNativeHelperPlatform(loaded.config),
     teamId: desktopComputerUseTeamId(app.isPackaged),
+    ...(loaded.config.trial ? { unsupported: desktopComputerUseOffInTrial } : {}),
   });
-  shutdown.add({
-    component: "computer-use",
-    step: "stop",
-    order: 50,
-    timeoutMs: 2_000,
-    stop: () => computerUse.stop(),
-  });
+  shutdown.add(computerUseShutdownStep(computerUse));
   // One Opensteer Passwords connection for this desktop. A development build
   // talks only to the development broker, whose vault holds test data.
   const dictation = new DictationService({
-    platform: process.platform,
+    platform: desktopNativeHelperPlatform(loaded.config),
     arch: process.arch,
     osMajor: Number(release().split(".")[0]),
     translated: app.runningUnderARM64Translation,
@@ -539,6 +594,7 @@ async function runDesktop(
         resourcesPath: process.resourcesPath,
       }),
     development: !app.isPackaged,
+    platform: desktopNativeHelperPlatform(loaded.config),
     protocolVersion: passwordsBrokerProtocolVersion,
     log: (event, fields) => reportEvent(event, fields),
   });
@@ -547,7 +603,7 @@ async function runDesktop(
     catalog: deploymentCatalog,
   });
   const passwordsLoginAuthority =
-    process.platform === "darwin"
+    desktopNativeHelperPlatform(loaded.config) === "darwin"
       ? new PasswordsLoginAuthority({
           broker: passwords.broker(),
           ownOrigins: ownOrigins.current,
@@ -573,6 +629,7 @@ async function runDesktop(
   const bridgeToken = randomBytes(32).toString("base64url");
   const preloadPath = path.join(import.meta.dirname, "preload.cjs");
   const panelWebPreferences = desktopWebPreferences(loaded.config, bridgeToken, preloadPath);
+  const agentBrowserGate = new AgentBrowserGate();
   const personalLocalRuntimes: PersonalLocalRuntimePort = {
     startBrowser: (input) =>
       startLocalBrowserRuntime({
@@ -582,6 +639,7 @@ async function runDesktop(
         registerPresentationSource: (source) => browserPresentation.registerSource(source),
         profileRoot: input.paths.browserProfileRoot,
         runtimeId: input.runtimeId,
+        agentGate: agentBrowserGate,
         ...(passwordsLoginAuthority ? { loginAuthority: passwordsLoginAuthority } : {}),
       }),
   };
@@ -591,6 +649,7 @@ async function runDesktop(
       id: string,
       owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
     ) => computerUse.startForSlot(id, passwordsLoginAuthority, iphone.forSlot(owner)),
+    workerDisconnected: (id: string) => computerUse.workerDisconnected(id),
     stopForSlot: async (id: string) => {
       try {
         await iphoneSetup.stopForSlot(id);
@@ -603,9 +662,15 @@ async function runDesktop(
       }
     },
   };
+  const localStopPath = path.join(loaded.config.dataDirectory, "local-stop.json");
   const personal = new PersonalDeploymentSupervisor({
+    agentsStoppedSince: () => localStop.agentsStoppedSince,
+    onContainedBoot: (mode: string) => localStop.noteContainedBoot(mode),
+    onUncontainedBoot: (mode: string) => localStop.noteUncontainedBoot(mode),
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
+    extraCertificateAuthorities: loaded.config.extraCertificateAuthorities,
+    agentHome: loaded.config.trial?.agentHome ?? null,
     catalog: deploymentCatalog,
     computerUse: computerUseForSlots,
     credentials: new NativePersonalDeploymentCredentials(protectedStorage, { privateFiles }),
@@ -711,19 +776,11 @@ async function runDesktop(
       await deviceLifecycle.assertSessionAllowed(deploymentId);
     },
     onSessionEnded: async (attachment: import("@opensteer/client/auth").SelectedAttachment) => {
-      if (
-        deploymentPolicy(attachment.connection.authority.document.deploymentShape).services
-          .personal &&
-        attachment.resolved.access !== "owner"
-      )
+      if (attachment.resolved.access !== "owner")
         await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);
     },
     onUnauthorized: async (attachment: import("@opensteer/client/auth").SelectedAttachment) => {
-      if (
-        deploymentPolicy(attachment.connection.authority.document.deploymentShape).services
-          .personal &&
-        attachment.resolved.access !== "owner"
-      )
+      if (attachment.resolved.access !== "owner")
         await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);
     },
   };
@@ -809,7 +866,7 @@ async function runDesktop(
     autofillPreload: path.join(import.meta.dirname, "autofill-preload.cjs"),
     glassPreload: path.join(import.meta.dirname, "glass-preload.cjs"),
     onError: (error) => reportNonFatal("desktop.browser.presentation-failed", error),
-    quit: () => app.quit(),
+    quit: () => quitRouting.actions.hide(),
   });
   const passkeys = new DesktopPasskeyRequests({
     presentations: browserPresentation,
@@ -823,7 +880,12 @@ async function runDesktop(
     for (const deploymentId of deploymentIds)
       hostTransport.closeDeploymentConnections(DeploymentIdSchema.parse(deploymentId));
   });
+  // Main reads and writes each Home under that Home's own sign-in, selected or not.
+  const homeApi = homeHostApi(hostTransport);
+  const ownerHost = (deploymentId: string) => homeApi(DeploymentIdSchema.parse(deploymentId));
   const localRunner = new LocalRunnerService(loaded.config, {
+    agentsStoppedSince: () => localStop.agentsStoppedSince,
+    onUncontainedBoot: (mode: string) => localStop.noteUncontainedBoot(mode),
     assertAccountSource: (source) => nativeAuth.assertAccountSource(source),
     fenceDeployment: (deploymentId) => {
       for (const sessions of sessionOwners) sessions.blockDeployment(deploymentId);
@@ -836,11 +898,8 @@ async function runDesktop(
     },
     clearDeploymentSession: (deploymentId) => hostNetwork.clearDeploymentSession(deploymentId),
     leaveFetch: serviceNetwork.fetch.bind(serviceNetwork),
-    hostApi: (deploymentId, origin) =>
-      createDesktopHostApi({
-        origin,
-        fetch: (input, init) => hostNetwork.partitionFetch(deploymentId, input, init),
-      }),
+    // Bind, retire and leave reach a Home the way the window does, with its own sign-in.
+    hostApi: (deploymentId) => ownerHost(deploymentId),
     profileErasure,
     log: reportEvent,
     browser: (input) =>
@@ -851,6 +910,7 @@ async function runDesktop(
         registerPresentationSource: (source) => browserPresentation.registerSource(source),
         profileRoot: input.profileRoot,
         runtimeId: input.runtimeId,
+        agentGate: agentBrowserGate,
       }),
     computerUse: computerUseForSlots,
     fork: (module, args, options) =>
@@ -864,6 +924,7 @@ async function runDesktop(
     }),
     userEnvironment: personalUserEnvironment,
   });
+  shutdown.signal.addEventListener("abort", () => localRunner.quiesce(), { once: true });
   deviceLifecycle = localRunner;
   shutdown.add({
     component: "local-runners",
@@ -872,26 +933,79 @@ async function runDesktop(
     timeoutMs: 8_000,
     stop: (signal) => localRunner.shutdown(signal),
   });
-  const openAtLogin = new OpenAtLoginService({
-    applicationName: app.getName(),
-    environment: process.env,
-    executablePath: process.execPath,
-    homeDirectory: homedir(),
-    packaged: app.isPackaged,
-    platform: process.platform,
-    setLoginItemSettings: (settings) => app.setLoginItemSettings(settings),
+  const localStop = new DesktopLocalStop({
+    restart: async () => {
+      const results = await Promise.allSettled([
+        personal.restartForAgentMode(),
+        localRunner.restartForAgentMode(),
+      ]);
+      const errors = results.flatMap((result) =>
+        result.status === "rejected"
+          ? [
+              result.reason instanceof Error
+                ? result.reason.message
+                : "Couldn't confirm that everything stopped.",
+            ]
+          : [],
+      );
+      if (errors.length) throw new Error(errors.join(" "));
+    },
+    confirm: (stoppedSince, signal) => personal.waitForStopProof(stoppedSince, signal),
+    store: localStopFileStore(localStopPath),
+    log: reportEvent,
+  });
+  shutdown.signal.addEventListener("abort", () => localStop.dispose(), { once: true });
+  // Before any Runner starts: a Stop the person left in place still holds.
+  await localStop.restore();
+  shutdown.signal.throwIfAborted();
+  const openAtLogin = new OpenAtLoginPolicy({
+    service: new OpenAtLoginService({
+      applicationName: app.getName(),
+      environment: process.env,
+      executablePath: process.execPath,
+      homeDirectory: homedir(),
+      packaged: app.isPackaged,
+      platform: process.platform,
+      setLoginItemSettings: (settings) => app.setLoginItemSettings(settings),
+    }),
+    choices: openAtLoginChoiceFileStore(
+      path.join(loaded.config.dataDirectory, "open-at-login.json"),
+    ),
+    systemEnabled: () =>
+      app.isPackaged && process.platform === "darwin"
+        ? app.getLoginItemSettings().openAtLogin
+        : null,
+  });
+  const openAtLoginEligibility = async () => ({
+    hostsHome: (await personalFiles.load()) !== null,
+    enrolledRunners: await localRunner.hasEnrolledRunners(),
   });
   let openAtLoginTail = Promise.resolve();
   const syncOpenAtLogin = () => {
     if (shutdown.requested) return;
     openAtLoginTail = openAtLoginTail
       .then(async () => {
-        const enrolled = await localRunner.hasEnrolledRunners();
-        if (!shutdown.requested) await openAtLogin.sync(enrolled);
+        const eligibility = await openAtLoginEligibility();
+        if (!shutdown.requested) await openAtLogin.sync(eligibility);
       })
       .catch((error: unknown) => reportNonFatal("desktop.open-at-login.failed", error));
   };
+  const chooseOpenAtLogin = (on: boolean): Promise<void> => {
+    const choosing = openAtLoginTail.then(async () => {
+      await openAtLogin.choose(on, await openAtLoginEligibility());
+    });
+    openAtLoginTail = choosing.catch((error: unknown) =>
+      reportNonFatal("desktop.open-at-login.failed", error),
+    );
+    return choosing;
+  };
   const detachOpenAtLogin = localRunner.subscribe(syncOpenAtLogin);
+  let openAtLoginHome = personal.status.deploymentId;
+  const detachOpenAtLoginHome = personal.subscribe((status) => {
+    if (status.deploymentId === openAtLoginHome) return;
+    openAtLoginHome = status.deploymentId;
+    syncOpenAtLogin();
+  });
   syncOpenAtLogin();
   // Deployments are created away from this device, so the catalog is kept as a
   // projection of the Account directory: the app syncs when it becomes active
@@ -1064,9 +1178,16 @@ async function runDesktop(
     },
   });
   let personalAccountLinkResumeAttempted = false;
+  // Remote access is brought up once each time this Mac's Home becomes ready, not again on
+  // every later status change: a helper that can't start says so where the person turns
+  // Remote access on, instead of failing over and over in the log.
+  let personalWasReady = false;
   const detachPersonalRemoteInitialization = personal.subscribe((status) => {
+    const becameReady = status.state === "ready" && !personalWasReady;
+    personalWasReady = status.state === "ready";
     if (shutdown.requested || status.state !== "ready") return;
     if (desktopSupervisorReady) void desktopSupervisor.connect();
+    if (!becameReady) return;
     void personalRemote
       .initialize()
       .catch((error: unknown) =>
@@ -1123,6 +1244,7 @@ async function runDesktop(
   const access = new DeploymentAccessService({
     account: {
       available: loaded.config.accountUrl !== null,
+      portalOrigin: loaded.config.portalUrl?.origin ?? null,
       beginReauthorization: () => nativeAuth.beginAccountReauthorization(),
       beginSignIn: () => nativeAuth.beginAccountSignIn(),
       currentState: () => nativeAuth.state(),
@@ -1245,6 +1367,7 @@ async function runDesktop(
   const loginSession = new DesktopLoginSession(powerMonitor, process.platform);
   const detachLoginSession = integrationAuthorizations.useLoginSession(loginSession);
   let workspaceContents: Electron.WebContents | null = null;
+  let noteBadgeCount: (count: number, deploymentId?: string) => void = () => undefined;
   const unregisterBridge = registerDesktopBridge({
     updates: {
       state: () => updater.state(),
@@ -1254,27 +1377,9 @@ async function runDesktop(
       restart: () => restartToUpdate(),
     },
     webLinks,
-    teamLinks,
-    accountTeams: loaded.config.accountUrl
-      ? new HttpAccountTeamsClient({
-          accountOrigin: loaded.config.accountUrl,
-          authorization: nativeAuth,
-          fetch: serviceNetwork.fetch.bind(serviceNetwork),
-        })
-      : null,
-    teamSessions: loaded.config.accountUrl
-      ? new DesktopTeamSessions({
-          entry: new NativeTeamEntry({
-            oauth: nativeAuth,
-            verify: (origin) =>
-              verifyTeamEndpoint(origin, { fetch: serviceNetwork.fetch.bind(serviceNetwork) }),
-            catalog: deploymentCatalog,
-            bootstrap: (connection) =>
-              hostTransport.bootstrapTeam(connection.authority.document.deploymentId),
-          }),
-          fetch: serviceNetwork.fetch.bind(serviceNetwork),
-        })
-      : null,
+    cloudComputers: new AccountCloudComputerClient({
+      transport: loaded.config.accountUrl ? accountDirectory : null,
+    }),
     personalDataReset: desktopPersonalDataReset({
       personal,
       quiesce: async () => {
@@ -1294,7 +1399,7 @@ async function runDesktop(
       },
       restart: () => {
         app.relaunch();
-        shutdown.request("start-fresh", () => app.exit(0));
+        shutdown.request("start-fresh");
       },
     }),
     integrationAuthorizations,
@@ -1373,6 +1478,7 @@ async function runDesktop(
           { activate: true },
         );
       },
+      badgeCount: (count, deploymentId) => noteBadgeCount(count, deploymentId),
     },
     tailscale: {
       share: () => personalRemote.shareOverTailscale(),
@@ -1382,6 +1488,7 @@ async function runDesktop(
       openExternal: async (url) => {
         await shell.openExternal(url, { activate: true });
       },
+      openInChrome: (url) => openInChrome(url),
       pickFolder: async () => {
         const chosen = await dialog.showOpenDialog({
           properties: ["openDirectory", "createDirectory"],
@@ -1399,6 +1506,12 @@ async function runDesktop(
     policy: appOriginPolicy,
     onCreated: (window) => {
       workspaceContents = window.webContents;
+      appWindow = window;
+      for (const event of ["show", "hide", "minimize", "restore"] as const)
+        window.on(event as "show", () => {
+          background?.windowVisibility(windowVisible());
+          if (!windowVisible()) backgroundUpdate?.evaluate();
+        });
       let detachMcpAuthorization = () => {};
       window.webContents.on("did-finish-load", () => {
         detachMcpAuthorization();
@@ -1425,7 +1538,7 @@ async function runDesktop(
     },
     bridgeToken,
     preloadPath,
-    quit: () => app.quit(),
+    quit: () => quitRouting.actions.hide(),
   });
   let updateReady = false;
   const installUpdate = () => {
@@ -1437,12 +1550,30 @@ async function runDesktop(
     autoUpdater.autoInstallOnAppQuit = false;
     app.relaunch();
   });
+  const hiddenRelaunchPath = path.join(loaded.config.dataDirectory, "relaunch-hidden.json");
+  // The new version comes back the way this one was left: in the menu bar, or showing.
+  // `stillDue` is the background install's last look, right before the handoff.
+  const requestInstall = async (
+    stillDue?: () => Promise<boolean>,
+    holdsCurrent?: () => boolean,
+  ) => {
+    const hidden = !windowVisible();
+    if (hidden)
+      await rememberHiddenRelaunch(hiddenRelaunchPath).catch((error: unknown) =>
+        reportNonFatal("desktop.update.hidden-relaunch-failed", error),
+      );
+    if (stillDue && (!(await stillDue()) || !holdsCurrent?.())) {
+      if (hidden) await forgetHiddenRelaunch(hiddenRelaunchPath).catch(() => undefined);
+      throw new Error("Agent work started before the update could install.");
+    }
+    await shutdown.requestUpdate(installUpdate);
+  };
   desktopUpdateExecutor = new DesktopUpdateExecutor({
     supervisor: desktopSupervisor,
     updater,
-    install: () => shutdown.requestUpdate(installUpdate),
+    install: () => requestInstall(),
   });
-  const restartToUpdate = () => updater.restart(() => shutdown.requestUpdate(installUpdate));
+  const restartToUpdate = () => updater.restart(() => requestInstall());
   const restartFromMenu = () => {
     void restartToUpdate().catch(() => reportEvent("desktop.update.restart-refused", {}));
   };
@@ -1480,8 +1611,120 @@ async function runDesktop(
         ...result,
       });
   };
+  const hostedHome = async () => {
+    const manifest = await personalFiles.load();
+    return manifest
+      ? {
+          deploymentId: manifest.deploymentId,
+          name: personal.status.name ?? (await computerName()),
+          state: personal.status.state,
+          runnerId: manifest.runnerId,
+        }
+      : null;
+  };
+  const deviceHomes = async () => {
+    const snapshot = access.snapshot();
+    return await Promise.all(
+      [...(await localRunner.joinedDeploymentIds())].map(async (deploymentId) => {
+        const status = await localRunner.status(deploymentId);
+        return {
+          deploymentId,
+          name:
+            snapshot.deployments.find((deployment) => deployment.id === deploymentId)?.name ??
+            "your Home",
+          runner: status.runner.state,
+          signedOut: status.membership?.sessionState === "sign-in-again",
+          runnerId: status.runner.runnerId,
+        };
+      }),
+    );
+  };
+  const selectedHome = () => {
+    const snapshot = access.snapshot();
+    return (
+      snapshot.deployments.find((deployment) => deployment.id === snapshot.selectedDeploymentId) ??
+      null
+    );
+  };
+  const localActivity = () => ({
+    appSessions: computerUse.agentSessions,
+    browserTabs: agentBrowserGate.agentTabs,
+    runs: localRunner.localActivity().length,
+  });
+  const menuBarService = new DesktopMenuBarService({
+    hostedHome,
+    deviceHomes,
+    selected: () => {
+      const selected = selectedHome();
+      return selected
+        ? {
+            deploymentId: selected.id,
+            devicesAvailable: selected.capabilities?.includes("devices-v1") === true,
+          }
+        : null;
+    },
+    host: ownerHost,
+    local: () => ({
+      apps: computerUse.agentSessionDetails(),
+      tabs: agentBrowserGate.agentTabDetails(),
+      runs: localRunner.localActivity().map((run) => ({ ...run, threadId: run.threadId ?? null })),
+    }),
+    stop: () => ({
+      phase: localStop.phase,
+      stoppedAt: localStop.stoppedAt,
+      problem: localStop.problem,
+      confirming: localStop.confirming,
+      confirmOverdue: localStop.confirmOverdue,
+    }),
+    openAtLogin: async () => openAtLogin.effective(await openAtLoginEligibility()),
+    log: reportEvent,
+  });
+  // A count is the Home's that sent it, never whichever Home is selected when it lands.
+  noteBadgeCount = (count, deploymentId) => {
+    if (deploymentId) menuBarService.noteNeedsYou(deploymentId, count);
+  };
+  // Quitting and updating read what is using this Mac fresh, from one place.
+  const activity = new DesktopActivity({
+    hostedHome,
+    deviceHomes,
+    host: ownerHost,
+    local: localActivity,
+  });
+  const backgroundNotice = backgroundNoticeFileStore(
+    path.join(loaded.config.dataDirectory, "menu-bar-notice.json"),
+  );
+  const dock = process.platform === "darwin" ? app.dock : undefined;
+  background = new DesktopBackgroundMode({
+    shutdown,
+    window: { hide: () => appWindow?.hide() },
+    ...(dock
+      ? {
+          dock: {
+            hide: () => dock.hide(),
+            show: () => dock.show(),
+            isVisible: () => dock.isVisible(),
+          },
+        }
+      : {}),
+    notice: {
+      ...backgroundNotice,
+      show: () => {
+        if (Notification.isSupported())
+          new Notification({
+            title: backgroundNoticeTitle,
+            body: backgroundNoticeBody,
+            silent: true,
+          }).show();
+      },
+    },
+    work: () => activity.snapshot(),
+    confirm: confirmQuit,
+    log: reportEvent,
+  });
+  quitRouting.attach(background);
   Menu.setApplicationMenu(
     createDesktopApplicationMenu({
+      quit: quitRouting.actions,
       displayName: resolveDesktopAppBranding(app.getVersion()).displayName,
       workspaceContents: (window) => (mainWindows.owns(window) ? window.webContents : null),
       browserKey: (key) => browserPresentation.menuKey(key),
@@ -1538,12 +1781,98 @@ async function runDesktop(
 
   updater.subscribe((state) => {
     showDesktopUpdateMenuItem(Menu.getApplicationMenu(), state);
-    const ready = state.status === "downloaded";
-    shutdown.setUpdateInstaller(ready && state.reservedBy !== "remote" ? installUpdate : undefined);
-    updateReady = ready;
+    updateReady = state.status === "downloaded";
   });
   updater.start(shutdown.signal);
   shutdown.signal.throwIfAborted();
+  backgroundUpdate = new DesktopBackgroundUpdate({
+    updater,
+    install: (stillDue) =>
+      localStop.whileModeStable(async () => {
+        const held: { current(): boolean; release(): Promise<void> }[] = [];
+        try {
+          await requestInstall(
+            async () => {
+              const results = await Promise.allSettled([
+                personal.holdIdleForUpdate(),
+                localRunner.holdIdleForUpdate(),
+              ]);
+              for (const result of results)
+                if (result.status === "fulfilled" && result.value) held.push(result.value);
+              return held.length === results.length && (await stillDue());
+            },
+            () => held.every((hold) => hold.current()),
+          );
+        } catch (error) {
+          await Promise.allSettled(held.map((hold) => hold.release()));
+          throw error;
+        }
+      }),
+    windowVisible,
+    idle: async () => activityIdle(await activity.snapshot()),
+    stopping: () => shutdown.requested,
+    log: reportEvent,
+  });
+  backgroundUpdate.start(shutdown.signal);
+  const openAppAt = async (route: Parameters<typeof appRouteScript>[0], deploymentId?: string) => {
+    if (deploymentId && access.snapshot().selectedDeploymentId !== deploymentId)
+      await access.select(deploymentId);
+    app.focus({ steal: true });
+    await mainProcess.activate();
+    const contents = workspaceContents;
+    if (contents && !contents.isDestroyed())
+      await contents.executeJavaScript(appRouteScript(route)).catch(() => undefined);
+  };
+  const menuBarChanged = () => menuBarService.changed();
+  const detachMenuBarSources = [
+    agentBrowserGate.subscribe(() => {
+      menuBarChanged();
+      backgroundUpdate?.evaluate();
+    }),
+    localStop.subscribe(menuBarChanged),
+    computerUse.onAgentSessionsChanged(menuBarChanged),
+    localRunner.subscribe(menuBarChanged),
+    personal.subscribe(menuBarChanged),
+    access.subscribe(menuBarChanged),
+  ];
+  const menuBar = new DesktopMenuBar({
+    service: menuBarService,
+    actions: {
+      stop: () => localStop.stop(),
+      resume: () => localStop.resume(),
+      setOpenAtLogin: chooseOpenAtLogin,
+      openApp: async () => {
+        app.focus({ steal: true });
+        await mainProcess.activate();
+      },
+      openRow: ({ deploymentId, threadId }) => openAppAt(taskPath(threadId), deploymentId),
+      openNeedsYou: (deploymentId) => openAppAt(appRoutes.needsYou, deploymentId),
+      openSettings: () => openAppAt(appRoutes.settings),
+      quitCompletely: async () => {
+        await background?.quitCompletely();
+      },
+    },
+    ipcMain,
+    screen,
+    createTray: (image) => new Tray(image),
+    createImage: (bitmap, scaleFactor) =>
+      nativeImage.createFromBitmap(bitmap, {
+        width: 32,
+        height: 32,
+        scaleFactor,
+      }),
+    createWindow: (options) => new BrowserWindow(options),
+    webPreferences: {
+      ...desktopWebPreferences(
+        loaded.config,
+        bridgeToken,
+        path.join(import.meta.dirname, "menu-bar-preload.cjs"),
+      ),
+      additionalArguments: [],
+    },
+    log: reportEvent,
+  });
+  menuBar.start();
   const detachOAuthDeepLinks = oauthDeepLinks.attach(async (url) => {
     const handled = await nativeAuth.handleCallback(url);
     if (handled && !shutdown.requested) {
@@ -1557,6 +1886,7 @@ async function runDesktop(
   // Returning is also when a grant switched on in System Settings should show.
   const refreshOnSystemResume = () => {
     if (shutdown.requested) return;
+    localRunner.notifyAwake();
     access.wake();
     const iphoneResumeRevision = ++iphonePowerRevision;
     void iphoneSuspension
@@ -1569,6 +1899,11 @@ async function runDesktop(
       .reconcile()
       .catch((error: unknown) => reportNonFatal("desktop.local-runner.resume-failed", error));
   };
+  const notifyRunnersSleeping = () => {
+    if (shutdown.requested) return;
+    localRunner.notifySleeping();
+  };
+  powerMonitor.on("suspend", notifyRunnersSleeping);
   powerMonitor.on("resume", refreshOnSystemResume);
 
   app.on("activate", () => {
@@ -1605,6 +1940,7 @@ async function runDesktop(
     timeoutMs: 1_000,
     stop: () => {
       browserPresentation.endAll();
+      powerMonitor.off("suspend", notifyRunnersSleeping);
       powerMonitor.off("resume", refreshOnSystemResume);
       detachPersonalRemoteInitialization();
       detachAccountDirectoryRefresh();
@@ -1627,6 +1963,9 @@ async function runDesktop(
       detachPhoneAdb();
       detachUsbDevices();
       if (activeMainProcess === mainProcess) activeMainProcess = null;
+      for (const detach of detachMenuBarSources) detach();
+      detachOpenAtLoginHome();
+      menuBar.dispose();
       detachOAuthDeepLinks();
       nativeAuth.dispose();
       uninstallPublishedAppProtocol();
@@ -1637,13 +1976,18 @@ async function runDesktop(
 
   desktopSupervisorReady = true;
   if (!shutdown.requested) void desktopSupervisor.connect();
-  const starting = mainProcess.start({
-    openWindow: shouldOpenDesktopWindowAtLaunch({
+  const relaunchedHidden = await takeHiddenRelaunch(hiddenRelaunchPath);
+  const openWindow =
+    !relaunchedHidden &&
+    !quitRouting.quitBeforeStart &&
+    shouldOpenDesktopWindowAtLaunch({
       arguments: process.argv,
       wasOpenedAtLogin:
         process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin,
-    }),
-  });
+    });
+  // Opened at login or back from a background update: straight to the menu bar.
+  if (!openWindow) background.windowVisibility(false);
+  const starting = mainProcess.start({ openWindow });
   if (webLinks.pending || mcpAuthorizationLinks.pending) mainProcess.focus();
   await starting;
 
@@ -1651,7 +1995,7 @@ async function runDesktop(
     if (shutdown.requested || fatal) return;
     fatal = true;
     reportFatal(error);
-    app.quit();
+    shutdown.request("fatal");
   }
 }
 

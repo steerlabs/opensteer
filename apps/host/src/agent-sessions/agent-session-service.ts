@@ -1,0 +1,1694 @@
+import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
+import {
+  AgentOperationEndingSchema,
+  OpensteerError,
+  ToolBlockedError,
+  agentOperationEndingOf,
+  agentOperationEndingSentence,
+  agentOperationEndingWords,
+  agentOperationHoldMs,
+  refused,
+  requestOperationCallsMaxLength,
+  threadAccessModeAtMost,
+  type AgentGrantTarget,
+  type AgentOperationDecision,
+  type AgentOperationEnding,
+  type AgentOperationId,
+  type AgentOperationTarget,
+  type AgentSessionEndReason,
+  type AgentSessionId,
+  type AgentWorkingIn,
+  type RequestId,
+  type RequestResponse,
+  type RequestPresentation,
+  type TabId,
+  type ThreadAccessMode,
+  type ThreadId,
+  type ToolFailureReceipt,
+  type UserId,
+} from "@opensteer/core";
+import {
+  admitAgentOperation,
+  admitExecution,
+  askForAgentOperation,
+  beginAgentSession,
+  connectionEndReason,
+  decideAgentOperation,
+  type AgentOperationWrittenDecision,
+  endAgentSessions,
+  expireAgentOperationRequests,
+  findAgentOperation,
+  handOffAgentOperation,
+  idleAgentSessions,
+  reachesTarget,
+  readAgentOperation,
+  refuseUnsentAgentOperation,
+  refuseUnsentHandedOffAgentOperation,
+  BrowserPoolAdmissionClosed,
+  reopenAgentOperation,
+  respondToAgentOperation,
+  settleAgentOperation,
+  settleOrphanedAgentOperations,
+  type AgentOperationRow,
+  type BrowserPoolTargetIdentity,
+  type ExecutionAuthority,
+  type OpensteerStore,
+} from "@opensteer/database";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { DeadlineDrain } from "../runtime/deadline-drain.js";
+import { AgentWorkingInRegistry } from "./agent-working-in.js";
+import { isSettledScriptDeadline } from "../computer-use/computer-repl/computer-repl-service.js";
+import { ReplFailureSchema, type ReplFailure } from "../computer-use/computer-repl/messages.js";
+import type { BrowserPoolReservation } from "../browser/browser-pool-gate.js";
+import type { TabActor } from "../tabs/ports.js";
+
+/** How long one executor call may take before its signal aborts. */
+const defaultExecutionMs = 120_000;
+
+type PruneBindingTabs = (
+  connectionId: string,
+  actor: Extract<TabActor, { kind: "browser-binding" }>,
+  watchedTab: TabId | null,
+  canRelease: (grantRevision: number | undefined) => boolean,
+) => Promise<boolean | null>;
+
+function directOperationAction(tool: string, target: string): string {
+  switch (tool) {
+    case "tab_open":
+      return `open a tab in ${target}`;
+    case "tab_close":
+      return `close a tab in ${target}`;
+    case "tab_list":
+      return `list tabs in ${target}`;
+    case "browser_use":
+      return `run a script in ${target}`;
+    case "browser_connect":
+      return `take direct control of ${target}`;
+    case "computer_use":
+      return `use ${target}`;
+    case "plugin_call":
+      return `change ${target}`;
+    case "plugin_execute":
+      return `run a script using ${target}`;
+    case "plugin_resume":
+      return `continue work using ${target}`;
+    case "ask_person":
+      return "ask you a question";
+    case "saved_login_request":
+      return `use a saved login in ${target}`;
+    case "card_request":
+      return `use a saved card in ${target}`;
+    default:
+      return `act on ${target}`;
+  }
+}
+
+function quoteIsolatedOutsideName(value: string): string {
+  const safe = value
+    .replace(/[\u201C\u201F\u301D\u301E]/gu, "\u2018")
+    .replace(/[\u201D\u201E\u301F]/gu, "\u2019")
+    .replace(/[\u0022\uFF02]/gu, "\u0027");
+  return `“\u2068${safe}\u2069”`;
+}
+
+export function directOperationCopy(tool: string, target: AgentOperationTarget, agent: string) {
+  const phone = target.grant.kind === "computer-app" && target.grant.app.kind === "phone-screen";
+  const device = target.device?.name;
+  const action =
+    directOperationAction(tool, target.name) +
+    (tool === "computer_use" && device && !phone ? ` on ${device}` : "");
+  const quotedAgent = quoteIsolatedOutsideName(agent);
+  const title =
+    tool === "browser_connect" || tool === "computer_use" || tool === "plugin_call"
+      ? `Let ${quotedAgent} ${action}?`
+      : `${action[0]!.toUpperCase()}${action.slice(1)}?`;
+  const context = device ? (phone ? device : `${target.name} · ${device}`) : null;
+  const scope =
+    tool === "browser_connect" && target.grant.kind === "browser-profile"
+      ? " It can control its own pages and access every cookie and signed-in site in this profile."
+      : "";
+  const sentence = `${quotedAgent} wants to ${action}.${scope}`;
+  return { title, summary: context ? `${context}\n${sentence}` : sentence };
+}
+
+/** What an executor gets: a signal tied to Stop, Disconnect, narrowing and its deadline. */
+export interface DirectOperationContext {
+  readonly sessionId: AgentSessionId;
+  readonly taskId: ThreadId;
+  readonly operationId: AgentOperationId;
+  readonly requestId: RequestId | null;
+  readonly grantRevision: number;
+  readonly mode: ThreadAccessMode;
+  /** The binding every downstream check resolves (`session:<id>`). */
+  readonly bindingId: `session:${string}`;
+  readonly ownerUserId: UserId;
+  readonly signal: AbortSignal;
+  readonly deadline: number;
+  /**
+   * Re-admits the session and the exact target under the authority this operation was handed
+   * off with. Call it before every command, including on a cached binding; it throws a refusal
+   * once the session ended, the grant changed or the target is no longer reached.
+   */
+  recheck(): Promise<void>;
+  /** The pooled command queue calls this at the wire boundary. */
+  readonly browserSend?: PooledBrowserSend;
+  readonly computerSubmitted?: () => void;
+  readonly computerStopped?: () => never;
+}
+
+export interface PooledBrowserSend {
+  readonly target: BrowserPoolTargetIdentity;
+  recheck(): Promise<void>;
+  submitted(): void;
+  acknowledged(): void;
+  /** True once at least one command in this operation crossed to the browser. */
+  hasSubmitted?(): boolean;
+}
+
+export interface PooledDirectBrowser {
+  reserve(signal: AbortSignal): Promise<BrowserPoolReservation>;
+  identity(): BrowserPoolTargetIdentity;
+  recheckTarget(afterSubmit?: boolean): Promise<void>;
+}
+
+type PooledBrowserUseMarks = {
+  reservingMs?: number;
+  reservedMs?: number;
+  handedOffMs?: number;
+  firstFrameMs?: number;
+  firstReplyMs?: number;
+  lastReplyMs?: number;
+  scriptFinishedMs?: number;
+};
+
+export type PooledBrowserUseTrace = Readonly<PooledBrowserUseMarks> & {
+  readonly operationId: AgentOperationId;
+  readonly operationCreatedAt: string;
+  readonly target?: BrowserPoolTargetIdentity;
+  readonly waited?: boolean;
+  readonly totalMs: number;
+};
+
+const elapsedMs = (started: number) => Math.round((performance.now() - started) * 10) / 10;
+
+/** An executor's way to say it cannot tell whether its effect happened. */
+export class OperationOutcomeUnknown extends Error {
+  /** Why, where the Home knows it (the standing a recheck read); else its words may name it. */
+  readonly ending: AgentOperationEnding | null;
+  constructor(message?: string, ending: AgentOperationEnding | null = null) {
+    super(message);
+    this.ending = ending;
+  }
+}
+
+export class AgentOperationFailure extends Error {
+  readonly receipt: ToolFailureReceipt;
+  override readonly cause: unknown;
+
+  constructor(cause: unknown, receipt: ToolFailureReceipt) {
+    super(cause instanceof Error ? cause.message : "The operation failed.");
+    this.cause = cause;
+    this.receipt = receipt;
+  }
+}
+
+export interface DirectOperation<Result> {
+  readonly ownerUserId: UserId;
+  readonly agentConnectionId: string;
+  /** Omitted: continue the connection's session or start one. */
+  readonly taskId?: ThreadId | undefined;
+  /** A short purpose for a new session's task title. */
+  readonly purpose?: string | undefined;
+  readonly operationKey: string;
+  readonly tool: string;
+  /** The call's canonical arguments; their digest makes a repeat idempotent. */
+  readonly input: unknown;
+  /** The concrete target, or null for a read the tool itself filters by the grant. */
+  readonly target: AgentOperationTarget | null;
+  /** Shown for a null target, such as "Your tabs". */
+  readonly targetName?: string;
+  readonly targetGeneration?: string | null;
+  readonly pooledBrowser?: PooledDirectBrowser;
+  readonly effect: "read" | "write";
+  /** The exact script or calls, shown in full to the person who reviews it. */
+  readonly calls: string;
+  /** The agent's own reason, kept apart and marked as its words. */
+  readonly reason?: string | undefined;
+  readonly timeoutMs?: number;
+  readonly question?: (taskId: ThreadId) => Promise<Extract<RequestPresentation, { kind: "form" }>>;
+  /** Passwords owns the sole approval Request and never fills during this operation. */
+  readonly passwordsApproval?: true;
+  readonly reportReplay?: true;
+  readonly replay?: (
+    row: AgentOperationRow,
+    execution: ExecutionAuthority,
+  ) => Promise<Result | undefined>;
+  readonly execute: (context: DirectOperationContext) => Promise<Result>;
+  /** A bounded, redacted record of the result, for the activity list. */
+  readonly summarize?: (result: Result) => Readonly<Record<string, unknown>> | null;
+  readonly scriptFailure?: (result: Result) => ReplFailure | undefined;
+}
+
+export type DirectOperationResult<Result> = { readonly replayed?: true } & (
+  | {
+      readonly status: "completed";
+      readonly taskId: ThreadId;
+      readonly operationId: AgentOperationId;
+      /** Absent on a repeat of a finished call: the summary is all the Home keeps. */
+      readonly result?: Result;
+      readonly summary?: Readonly<Record<string, unknown>> | null;
+    }
+  | {
+      readonly status: "pending";
+      readonly taskId: ThreadId;
+      readonly operationId: AgentOperationId;
+      readonly requestId: RequestId | null;
+      readonly next: string;
+    }
+  | {
+      readonly status: "failed";
+      readonly taskId: ThreadId;
+      readonly operationId: AgentOperationId;
+      readonly next: string;
+      readonly scriptError?: ReplFailure;
+      readonly result?: Result;
+    }
+  | {
+      readonly status: "unknown";
+      readonly taskId: ThreadId;
+      readonly operationId: AgentOperationId;
+      readonly next: string;
+      readonly result?: Result;
+      readonly scriptError?: ReplFailure;
+    }
+);
+
+export const pendingNext = `Call the same tool again with the same arguments and this operationId to wait up to ${agentOperationHoldMs / 1_000} seconds for the person. If it is still pending, call again, but not in a tight loop.`;
+export const unknownNext = agentOperationEndingSentence("contact-lost");
+export const scriptFailedNext =
+  "Earlier steps may have taken effect. Check the current state before trying again.";
+
+export function failedScriptNext(
+  summary: Readonly<Record<string, unknown>> | null,
+  error: ReplFailure,
+): string {
+  return (summary?.settledScriptDeadline === true && error.next) || scriptFailedNext;
+}
+
+function keepsScriptDiagnostics(ending: AgentOperationEnding | null): boolean {
+  return ending === null || ending === "contact-lost";
+}
+
+export function storedScriptError(row: Pick<AgentOperationRow, "ending" | "resultSummary">) {
+  return keepsScriptDiagnostics(row.ending)
+    ? ReplFailureSchema.safeParse(row.resultSummary?.scriptError).data
+    : undefined;
+}
+const interruptedNext =
+  "Part of it may have happened. Check the current state before doing anything else.";
+
+/** The cause of a connection's cleanup, as an operation it cut reads it. */
+export function connectionCleanupEnding(
+  reason: "revoked" | "expired" | "narrowed",
+): AgentOperationEnding {
+  return reason === "revoked" ? "disconnected" : reason;
+}
+
+/**
+ * The abort a cause sends to work in flight. The agent reads its message; the operation's record
+ * keeps the cause (`details.ending`). Without a known cause, the access ended.
+ */
+function endedBy(ending: AgentOperationEnding | null): OpensteerError {
+  return new OpensteerError({
+    code: "forbidden",
+    ...(ending === "task-done"
+      ? { next: doneBeforeSendNext }
+      : { reason: ending === "stopped" ? "agent-session-stopped" : "authority-changed" }),
+    message: ending
+      ? agentOperationEndingWords[ending].message
+      : "The connected agent's access to this work ended.",
+    ...(ending ? { details: { ending } } : {}),
+  });
+}
+
+/** The cause an abort carries, if any. */
+function endingOfAbort(error: OpensteerError): AgentOperationEnding | null {
+  return AgentOperationEndingSchema.safeParse(error.details?.ending).data ?? null;
+}
+
+/**
+ * What the agent reads for an operation whose outcome is unknown, by its recorded cause: the live
+ * answer and every replay of it.
+ */
+export function unknownOperationNext(ending: AgentOperationEnding | null | undefined): string {
+  return agentOperationEndingSentence(ending ?? "contact-lost");
+}
+
+const sessionEnding: Readonly<Record<AgentSessionEndReason, AgentOperationEnding | null>> = {
+  done: "task-done",
+  stopped: "stopped",
+  revoked: "disconnected",
+  expired: "expired",
+  narrowed: "narrowed",
+  idle: null,
+};
+
+export function operationArgumentDigest(tool: string, input: unknown): string {
+  const args =
+    input !== null && typeof input === "object" && !Array.isArray(input)
+      ? Object.fromEntries(
+          Object.entries(input).filter(
+            ([key]) => !["taskId", "operationId", "operationKey"].includes(key),
+          ),
+        )
+      : input;
+  return createHash("sha256")
+    .update(canonicalJson({ tool, input: args }))
+    .digest("hex");
+}
+
+export class AgentSessionService {
+  readonly #store: OpensteerStore;
+  readonly #closeBinding: (bindingId: string, reason: string) => void | Promise<void>;
+  readonly #onError: (error: unknown) => void;
+  /** One controller per session with work in this process; aborted when the session ends. */
+  readonly #sessions = new Map<
+    AgentSessionId,
+    { readonly controller: AbortController; readonly connectionId: string; work: number }
+  >();
+  readonly #closingSessions = new Map<AgentSessionId, AbortSignal>();
+  /**
+   * Each session this process ran work for, with its connection, until its end is handled: what
+   * it left open elsewhere (a tab it holds, a script context, a raw CDP client) outlives its
+   * calls, so a connection's change closes it even when no call is running.
+   */
+  readonly #worked = new Map<
+    AgentSessionId,
+    { readonly connectionId: string; readonly grantRevision: number }
+  >();
+  /** Operations executing or waiting on pooled admission, joined by concurrent resumes. */
+  readonly #running = new Map<
+    AgentOperationId,
+    {
+      readonly controller: AbortController;
+      readonly result: Promise<DirectOperationResult<unknown>>;
+      readonly taskId: ThreadId;
+      readonly sessionId: AgentSessionId;
+      readonly connectionId: string;
+      readonly profileId?: string;
+      /** The grant revision it was admitted under: a narrowing stops it only when it is older. */
+      readonly grantRevision: number;
+      readonly mode: ThreadAccessMode;
+      readonly pooled?: true;
+    }
+  >();
+  readonly #decisions = new EventEmitter();
+  /** Where each session is working now, for its owner's Watch; in memory only. */
+  readonly workingIn: AgentWorkingInRegistry;
+  readonly #resetBinding: (
+    bindingId: string,
+    minimumGrantRevision?: number,
+  ) => void | Promise<void>;
+  readonly #releaseBindingPlaces: (bindingId: string) => void;
+  readonly #pruneBindingTabs: PruneBindingTabs;
+  readonly #onPooledBrowserUseTiming: ((trace: PooledBrowserUseTrace) => void) | undefined;
+  readonly #resetRevision = new Map<AgentSessionId, number>();
+  readonly #holdMs: number;
+  readonly #executionMs: number;
+  readonly #sweeper: DeadlineDrain;
+  #sweeping = false;
+
+  constructor(options: {
+    readonly store: OpensteerStore;
+    /** Closes what holds a binding open elsewhere, such as a standard CDP attachment. */
+    readonly closeBinding?: (bindingId: string, reason: string) => void | Promise<void>;
+    readonly onError?: (error: unknown) => void;
+    /** How long a call waits for the person's decision before it returns pending. */
+    readonly holdMs?: number;
+    /** An operation's own bound when it names none (two minutes; tests shorten it). */
+    readonly executionMs?: number;
+    /** Tells the person who owns the Home where a session is working now, when that changes. */
+    readonly onWorkingIn?: (ownerUserId: UserId, notice: AgentWorkingIn) => void;
+    /**
+     * After older work settles on a narrowing: dispose the old script contexts and attachments.
+     */
+    readonly resetBinding?: (
+      bindingId: string,
+      minimumGrantRevision?: number,
+    ) => void | Promise<void>;
+    /** Let go of all the tabs a binding holds. */
+    readonly releaseBindingPlaces?: (bindingId: string) => void;
+    /** Release unreachable tabs; returns whether Watch lost its tab, or null if deferred. */
+    readonly pruneBindingTabs?: PruneBindingTabs;
+    readonly onPooledBrowserUseTiming?: (trace: PooledBrowserUseTrace) => void;
+  }) {
+    this.#store = options.store;
+    this.workingIn = new AgentWorkingInRegistry(options.onWorkingIn ?? (() => {}));
+    this.#resetBinding = options.resetBinding ?? (() => {});
+    this.#releaseBindingPlaces = options.releaseBindingPlaces ?? (() => {});
+    this.#pruneBindingTabs = options.pruneBindingTabs ?? (async () => false);
+    this.#onPooledBrowserUseTiming = options.onPooledBrowserUseTiming;
+    this.#holdMs = options.holdMs ?? agentOperationHoldMs;
+    this.#executionMs = options.executionMs ?? defaultExecutionMs;
+    this.#closeBinding = options.closeBinding ?? (() => {});
+    this.#onError = options.onError ?? (() => {});
+    this.#decisions.setMaxListeners(0);
+    this.#sweeper = new DeadlineDrain({
+      onError: this.#onError,
+      drain: async () => {
+        await this.endIdle();
+        const active = await this.#store.database
+          .selectFrom("agentSessions")
+          .select("id")
+          .where("status", "=", "active")
+          .limit(1)
+          .executeTakeFirst();
+        return active ? new Date(Date.now() + 60_000) : null;
+      },
+    });
+  }
+
+  /**
+   * At Host startup: nothing handed off before this process can still report, so those
+   * operations are `unknown`. Then sessions that went quiet are ended on a timer.
+   */
+  async start(): Promise<void> {
+    await settleOrphanedAgentOperations(this.#store.database, new Set(this.#running.keys()));
+    this.#sweeping = true;
+    this.#sweeper.start();
+  }
+  /** Settles once every operation handed off in this process has recorded its outcome. */
+  async drain(): Promise<void> {
+    await Promise.allSettled([...this.#running.values()].map(({ result }) => result));
+    await this.#sweeper.settled();
+  }
+  stop(): void {
+    void this.#sweeper.close();
+    for (const attempt of this.#running.values())
+      if (attempt.pooled)
+        attempt.controller.abort(
+          new OpensteerError({ code: "conflict", message: "The Home stopped." }),
+        );
+    for (const [id, entry] of this.#sessions) {
+      entry.controller.abort(
+        new OpensteerError({ code: "conflict", message: "The Home stopped." }),
+      );
+      this.#sessions.delete(id);
+    }
+    this.#worked.clear();
+    this.#resetRevision.clear();
+    this.workingIn.clear();
+  }
+
+  /** The one entry point every direct tool calls. */
+  async run<Result>(operation: DirectOperation<Result>): Promise<DirectOperationResult<Result>> {
+    if (!operation.question && operation.calls.length > requestOperationCallsMaxLength)
+      throw refused(
+        "bad_request",
+        `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected operation.`,
+      );
+    if (!operation.target && operation.effect !== "read")
+      throw new Error("An effect needs a concrete target");
+    const argumentDigest = operationArgumentDigest(operation.tool, operation.input);
+    const existing = await findAgentOperation(this.#store.database, {
+      userId: operation.ownerUserId,
+      agentConnectionId: operation.agentConnectionId,
+      identity: { key: operation.operationKey },
+    });
+    if (existing) {
+      // Authorize the stored operation's target before comparing arguments or returning any
+      // receipt (completed, failed, unknown, or refused); an unreachable stored target reads
+      // exactly as an unknown operation and never reuses the key to run a new effect.
+      const storedTarget = existing.target.grant;
+      const execution = await this.#admitStoredTarget(operation, storedTarget);
+      assertOperationArguments(existing, argumentDigest, operation.taskId);
+      if (
+        existing.state === "completed" &&
+        (!operation.replay || existing.sessionStatus === "ended")
+      ) {
+        return {
+          status: "completed",
+          taskId: existing.taskId,
+          operationId: existing.id,
+          summary: existing.resultSummary,
+          ...(operation.reportReplay ? { replayed: true } : {}),
+        };
+      }
+      return withAgentOperationReceipt(
+        this.#store.database,
+        existing,
+        existing.taskId,
+        async () => {
+          const replayExecution =
+            existing.state === "failed" ||
+            existing.state === "unknown" ||
+            existing.state === "refused"
+              ? execution
+              : await this.#admit(
+                  {
+                    ...operation,
+                    ...(storedTarget.kind === "device" ? {} : { target: existing.target }),
+                  },
+                  `session:${existing.sessionId}`,
+                );
+          const result = await this.#advance(operation, existing, existing.taskId, replayExecution);
+          return operation.reportReplay ? { ...result, replayed: true as const } : result;
+        },
+      );
+    }
+    const { session, created } = await beginAgentSession(this.#store.database, {
+      userId: operation.ownerUserId,
+      agentConnectionId: operation.agentConnectionId,
+      taskId: operation.taskId,
+      purpose: operation.purpose,
+      grantTarget: operation.target?.grant,
+    });
+    if (created && this.#sweeping) this.#sweeper.wake();
+    const bindingId = `session:${session.id}` as const;
+    const execution = await this.#admit(operation, bindingId);
+    const target: AgentOperationTarget = operation.target ?? {
+      grant: { kind: "device" },
+      name: operation.targetName ?? "this resource",
+      device: null,
+    };
+    const { operation: row, replay } = await admitAgentOperation(this.#store.database, {
+      userId: operation.ownerUserId,
+      agentConnectionId: operation.agentConnectionId,
+      sessionId: session.id,
+      operationKey: operation.operationKey,
+      tool: operation.tool,
+      argumentDigest,
+      target,
+      grantTarget: operation.target?.grant,
+      targetGeneration: operation.targetGeneration ?? null,
+      grantRevision: execution.agentConnection!.grantRevision,
+      mode: execution.mode,
+      effect: operation.effect,
+      calls: operation.calls,
+      agentReason: operation.reason?.slice(0, 2_000) ?? null,
+    });
+    // Another call can admit the same read between the first lookup and the insert.
+    if (operation.reportReplay && replay) return this.run(operation);
+    return withAgentOperationReceipt(this.#store.database, row, session.threadId, () =>
+      this.#advance(operation, row, session.threadId, execution),
+    );
+  }
+
+  requestClosed(requestId: RequestId): void {
+    this.#decisions.emit(requestId);
+  }
+
+  /** The person answered an operation's Request; waiters wake after the commit. */
+  async respond(input: {
+    readonly requestId: RequestId;
+    readonly expectedRevision: string;
+    readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
+    readonly response: RequestResponse;
+  }): Promise<void> {
+    const { operation, expired } = await respondToAgentOperation(this.#store.database, input);
+    this.#decisions.emit(operation.id);
+    if (expired) throw agentOperationRefusal(operation.decision);
+  }
+
+  /** The person's Stop on a session's task, bound to the session they saw. */
+  async stopSession(input: {
+    readonly ownerUserId: UserId;
+    readonly threadId: ThreadId;
+    readonly sessionId: AgentSessionId;
+  }): Promise<{ readonly ended: boolean }> {
+    const ended = await endAgentSessions(this.#store.database, {
+      userId: input.ownerUserId,
+      threadId: input.threadId,
+      sessionIds: [input.sessionId],
+      reason: "stopped",
+    });
+    this.#ended(ended, "stopped");
+    return { ended: ended.length > 0 };
+  }
+
+  /**
+   * The Disconnect worker's stop for one handed-off operation: abort the signal its executor
+   * holds. Its row settles, with terminal evidence, when the executor returns.
+   */
+  async stopDirectOperation(
+    operationId: AgentOperationId,
+    /** Why it stops: the cleanup's cause, which the agent reads and the record keeps. */
+    ending: AgentOperationEnding | null = null,
+  ): Promise<void> {
+    this.#running.get(operationId)?.controller.abort(endedBy(ending));
+  }
+
+  async lowerTaskMode(taskId: ThreadId, mode: ThreadAccessMode): Promise<void> {
+    for (const [id, attempt] of this.#running)
+      if (attempt.taskId === taskId && !threadAccessModeAtMost(attempt.mode, mode))
+        await this.stopDirectOperation(id, "narrowed");
+  }
+
+  /** A person's profile delete committed. Give that cause to work before closing its browser. */
+  profileDeleted(profileId: string): void {
+    for (const attempt of this.#running.values())
+      if (attempt.profileId === profileId) attempt.controller.abort(endedBy("profile-deleted"));
+  }
+
+  /** The Disconnect set includes idle device holds, even without a live executor. */
+  async stopAgentSession(
+    sessionId: AgentSessionId,
+    ending: AgentOperationEnding,
+    settle: () => Promise<void>,
+  ): Promise<void> {
+    // The row remains active until the device answers. Cut new execution on this binding
+    // during that wait, including a new call using a different target in a narrowed grant.
+    const stopped = AbortSignal.abort(endedBy(ending));
+    this.#closingSessions.set(sessionId, stopped);
+    try {
+      await this.#abort(sessionId, ending);
+      await settle();
+    } finally {
+      if (this.#closingSessions.get(sessionId) === stopped) this.#closingSessions.delete(sessionId);
+    }
+  }
+
+  /** After a connection change committed: abort work of sessions that ended, or all of them. */
+  async closeConnection(
+    connectionId: string,
+    all: boolean,
+    /** The change's cause: a Disconnect, an expiry or a narrowed grant. */
+    ending: AgentOperationEnding = all ? "disconnected" : "narrowed",
+  ): Promise<void> {
+    const current =
+      ending === "narrowed"
+        ? await this.#store.database
+            .selectFrom("agentConnections")
+            .select("grantRevision")
+            .where("id", "=", connectionId as never)
+            .executeTakeFirst()
+        : undefined;
+    const revision = current?.grantRevision;
+    const older = [...this.#running].filter(
+      ([, attempt]) =>
+        attempt.connectionId === connectionId &&
+        (revision === undefined || attempt.grantRevision < revision),
+    );
+    // A narrowing aborts every older executor before its places can be reset. For an ending
+    // connection, keep aborting queued pooled attempts here and end the sessions below.
+    await Promise.all(
+      older
+        .filter(([, attempt]) => ending === "narrowed" || attempt.pooled)
+        .map(([id]) => this.stopDirectOperation(id, ending)),
+    );
+    const live = [...this.#worked].filter(([, work]) => work.connectionId === connectionId);
+    if (!live.length) return;
+    const sessions = all
+      ? []
+      : await this.#store.database
+          .selectFrom("agentSessions")
+          .select(["id", "status", "userId", "threadId"])
+          .where(
+            "id",
+            "in",
+            live.map(([id]) => id),
+          )
+          .execute();
+    const ended = all
+      ? live.map(([id]) => id)
+      : sessions.filter(({ status }) => status === "ended").map(({ id }) => id);
+    await Promise.all(ended.map((id) => this.#abort(id, ending)));
+    if (all) return;
+    // The receipt waits for the older executor. A newer call may start before this callback
+    // runs, so it must keep the places it has taken up under its own grant.
+    await Promise.all(
+      sessions
+        .filter(({ status }) => status === "active")
+        .map(async ({ id, userId, threadId }) => {
+          const running = older.filter(([, attempt]) => attempt.sessionId === id);
+          const binding = `session:${id}`;
+          const releasePlaces = () => {
+            this.workingIn.clearSession(id);
+            this.#releaseBindingPlaces(binding);
+          };
+          if (ending !== "narrowed") releasePlaces();
+          const reset = async (): Promise<void> => {
+            if (revision !== undefined) {
+              const work = this.#worked.get(id);
+              if (!work || (this.#resetRevision.get(id) ?? -1) >= revision) return;
+              const watchedTab = this.workingIn.tabOf(id);
+              const lostWatch = await this.#pruneBindingTabs(
+                connectionId,
+                {
+                  kind: "browser-binding",
+                  authority: { agentBindingId: binding, ownerId: userId },
+                  threadId,
+                },
+                watchedTab,
+                (grantRevision) => {
+                  // A later narrowing may already have committed. Keep the places of work
+                  // admitted before the latest grant this prune could have read.
+                  const unsettled = [...this.#running.values()].filter(
+                    (attempt) =>
+                      attempt.sessionId === id &&
+                      (grantRevision === undefined || attempt.grantRevision < grantRevision),
+                  );
+                  if (!unsettled.length) return true;
+                  resetAfter(unsettled.map(({ result }) => result));
+                  return false;
+                },
+              );
+              if (lostWatch === null) return;
+              if (lostWatch && watchedTab) this.workingIn.forgetTab(userId, watchedTab, id);
+              if (
+                (this.#worked.get(id)?.grantRevision ?? revision) < revision &&
+                !this.workingIn.tabOf(id)
+              )
+                this.workingIn.clearSession(id);
+            } else if (ending === "narrowed" && this.#worked.has(id)) {
+              releasePlaces();
+            }
+            await this.#resetBinding(binding, revision);
+            if (
+              revision !== undefined &&
+              this.#worked.has(id) &&
+              (this.#resetRevision.get(id) ?? -1) < revision
+            )
+              this.#resetRevision.set(id, revision);
+          };
+          const resetAfter = (work: readonly Promise<unknown>[]) => {
+            void Promise.allSettled(work).then(reset).catch(this.#onError);
+          };
+          if (!running.length) await reset();
+          else resetAfter(running.map(([, attempt]) => attempt.result));
+        }),
+    );
+  }
+
+  async endIdle(now = Date.now()): Promise<void> {
+    const idleAt = new Date(now);
+    for (const operation of await expireAgentOperationRequests(this.#store.database, idleAt))
+      this.#decisions.emit(operation.id);
+    for (const session of await idleAgentSessions(this.#store.database, idleAt)) {
+      const ended = await endAgentSessions(this.#store.database, {
+        userId: session.userId,
+        sessionIds: [session.id],
+        reason: "idle",
+        idleAt,
+      });
+      this.#ended(ended, "idle");
+    }
+  }
+
+  /** Done committed with these sessions ended. Release their places before the Done publish. */
+  taskDone(sessionIds: readonly AgentSessionId[]): void {
+    this.#ended(
+      sessionIds.map((id) => ({ id })),
+      "done",
+    );
+  }
+
+  #ended(sessions: readonly { readonly id: AgentSessionId }[], reason: AgentSessionEndReason) {
+    for (const session of sessions)
+      void this.#abort(session.id, sessionEnding[reason]).catch(this.#onError);
+  }
+  async #abort(sessionId: AgentSessionId, ending: AgentOperationEnding | null): Promise<void> {
+    const error = endedBy(ending);
+    for (const attempt of this.#running.values())
+      if (attempt.pooled && attempt.sessionId === sessionId) attempt.controller.abort(error);
+    const entry = this.#sessions.get(sessionId);
+    entry?.controller.abort(error);
+    this.#worked.delete(sessionId);
+    this.#resetRevision.delete(sessionId);
+    this.workingIn.close(sessionId);
+    if (ending === "task-done") this.#releaseBindingPlaces(`session:${sessionId}`);
+    await this.#closeBinding(`session:${sessionId}`, error.message);
+    if (this.#sessions.get(sessionId) === entry) this.#sessions.delete(sessionId);
+  }
+
+  /** Why a recheck was refused, from what it read: the session's end, else the connection's. */
+  async #refusedBy(row: AgentOperationRow): Promise<AgentOperationEnding | null> {
+    const session = await this.#store.database
+      .selectFrom("agentSessions")
+      .select(["status", "endReason"])
+      .where("id", "=", row.sessionId)
+      .executeTakeFirst();
+    if (session?.status === "ended" && session.endReason) return sessionEnding[session.endReason];
+    const reason = await connectionEndReason(this.#store.database, row.userId, row.connectionId);
+    return reason ? connectionCleanupEnding(reason) : null;
+  }
+
+  async #admitStoredTarget(
+    operation: Pick<DirectOperation<unknown>, "ownerUserId" | "agentConnectionId">,
+    storedTarget: AgentGrantTarget,
+  ): Promise<ExecutionAuthority> {
+    let execution: ExecutionAuthority;
+    try {
+      execution = await admitExecution(this.#store.database, {
+        ownerUserId: operation.ownerUserId,
+        subject: { kind: "connection", agentConnectionId: operation.agentConnectionId },
+        ...(storedTarget.kind === "browser-profile" ? { grantTarget: storedTarget } : {}),
+      });
+    } catch (error) {
+      if (error instanceof OpensteerError && error.code === "not_found")
+        throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
+      throw error;
+    }
+    if (storedTarget.kind !== "device" && storedTarget.kind !== "browser-profile") {
+      if (!(await reachesTarget(this.#store.database, execution, storedTarget)))
+        throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
+    }
+    return execution;
+  }
+
+  async #admit(
+    operation: Pick<DirectOperation<unknown>, "ownerUserId" | "target" | "effect">,
+    bindingId: string,
+  ): Promise<ExecutionAuthority> {
+    return admitExecution(this.#store.database, {
+      ownerUserId: operation.ownerUserId,
+      subject: { kind: "binding", bindingId },
+      grantTarget: operation.target?.grant,
+      writeTargetName: operation.effect === "write" ? operation.target?.name : undefined,
+    });
+  }
+
+  async #advance<Result>(
+    operation: DirectOperation<Result>,
+    initial: AgentOperationRow,
+    taskId: ThreadId,
+    execution: ExecutionAuthority,
+  ): Promise<DirectOperationResult<Result>> {
+    let row = initial;
+    const base = { taskId, operationId: row.id };
+    for (;;) {
+      switch (row.state) {
+        case "completed": {
+          const result = await operation.replay?.(row, execution);
+          return {
+            status: "completed",
+            ...base,
+            summary: row.resultSummary,
+            ...(result === undefined ? {} : { result }),
+          };
+        }
+        case "failed": {
+          const scriptError = storedScriptError(row);
+          return scriptError
+            ? {
+                status: "failed",
+                ...base,
+                scriptError,
+                next: failedScriptNext(row.resultSummary, scriptError),
+              }
+            : { status: "failed", ...base, next: "It failed. Check the current state." };
+        }
+        case "unknown": {
+          const scriptError = storedScriptError(row);
+          return {
+            status: "unknown",
+            ...base,
+            next: unknownOperationNext(row.ending),
+            ...(scriptError ? { scriptError } : {}),
+          };
+        }
+        case "refused":
+          throw new AgentOperationFailure(agentOperationRefusal(row.decision, row.ending), {
+            ...base,
+            status: "refused",
+            ...(row.ending ? { ending: row.ending } : {}),
+          });
+        case "handed-off": {
+          const running = this.#running.get(row.id);
+          if (running)
+            return this.#awaitExecution(
+              operation,
+              row,
+              taskId,
+              running.result as Promise<DirectOperationResult<Result>>,
+            );
+          // The row was read while its executor ran, and that executor has since let go: it
+          // settled the row before letting go, so the row now says how it ended (rule 4: a
+          // completed operation is never answered unknown). Still handed off, no executor here
+          // holds it: its outcome cannot be known.
+          const current = await readAgentOperation(this.#store.database, row.id);
+          if (current.state !== "handed-off") {
+            row = current;
+            break;
+          }
+          return { status: "unknown", ...base, next: unknownNext };
+        }
+        case "admitted":
+          row = await this.#decide(operation, row, taskId);
+          break;
+        case "pending": {
+          const decided = await this.#wait(row);
+          if (decided.state === "pending")
+            return { status: "pending", ...base, requestId: decided.requestId, next: pendingNext };
+          row = decided;
+          break;
+        }
+        case "approved":
+          return this.#handOff(operation, row, taskId);
+      }
+    }
+  }
+
+  async #decide<Result>(
+    operation: DirectOperation<Result>,
+    row: AgentOperationRow,
+    taskId: ThreadId,
+  ): Promise<AgentOperationRow> {
+    const decide = (decision: AgentOperationWrittenDecision) =>
+      decideAgentOperation(this.#store.database, row, decision);
+    // Every other mode, Auto included, asks the person before an effect.
+    if (!operation.question) {
+      if (row.effect === "read") return decide({ by: "structural-read" });
+      if (row.mode === "full-access") return decide({ by: "full-access" });
+    }
+    return askForAgentOperation(this.#store.database, this.#store.requests, {
+      operation: row,
+      threadId: taskId,
+      grantTarget: operation.target?.grant,
+      ...(operation.question ? { presentation: await operation.question(taskId) } : {}),
+      copy: (agent) => directOperationCopy(row.tool, row.target, agent),
+    });
+  }
+
+  /** Waits up to the hold for the person's decision, woken by `respond` after its commit. */
+  async #wait({ id, requestId }: AgentOperationRow): Promise<AgentOperationRow> {
+    let done!: () => void;
+    const decided = new Promise<void>((resolve) => {
+      done = () => {
+        clearTimeout(timer);
+        this.#decisions.removeListener(id, done);
+        if (requestId) this.#decisions.removeListener(requestId, done);
+        resolve();
+      };
+      const timer = setTimeout(done, this.#holdMs);
+      timer.unref?.();
+      // Listening before the read below, so an answer that commits in between still wakes it.
+      this.#decisions.once(id, done);
+      if (requestId) this.#decisions.once(requestId, done);
+    });
+    const current = await readAgentOperation(this.#store.database, id);
+    if (
+      current.state !== "pending" ||
+      (requestId && (await this.#store.requests.get(requestId))?.status !== "pending")
+    )
+      done();
+    await decided;
+    const latest = await readAgentOperation(this.#store.database, id);
+    if (
+      latest.state === "pending" &&
+      requestId &&
+      (await this.#store.requests.get(requestId))?.status !== "pending"
+    )
+      throw refused("forbidden", "The Request is no longer pending.");
+    return latest;
+  }
+
+  async #handOff<Result>(
+    operation: DirectOperation<Result>,
+    row: AgentOperationRow,
+    taskId: ThreadId,
+  ): Promise<DirectOperationResult<Result>> {
+    const bindingId = `session:${row.sessionId}` as const;
+    // A changed revision, mode or target is new authority: it needs a fresh decision.
+    const execution = await this.#admit(operation, bindingId);
+    const target = operation.target ?? row.target;
+    const targetGeneration = operation.targetGeneration ?? null;
+    if (
+      execution.agentConnection!.grantRevision !== row.grantRevision ||
+      execution.mode !== row.mode ||
+      targetGeneration !== row.targetGeneration ||
+      canonicalJson(target.grant) !== canonicalJson(row.target.grant)
+    ) {
+      const reopened = await reopenAgentOperation(this.#store.database, row, {
+        grantRevision: execution.agentConnection!.grantRevision,
+        mode: execution.mode,
+        target,
+        targetGeneration,
+      });
+      return this.#advance(
+        operation,
+        reopened ?? (await readAgentOperation(this.#store.database, row.id)),
+        taskId,
+        execution,
+      );
+    }
+    if (operation.pooledBrowser) {
+      const pending = this.#running.get(row.id);
+      if (pending) return pending.result as Promise<DirectOperationResult<Result>>;
+      const controller = new AbortController();
+      const result = withAgentOperationReceipt(this.#store.database, row, taskId, () =>
+        this.#handOffPooled(operation, operation.pooledBrowser!, row, taskId, controller.signal),
+      );
+      this.#running.set(row.id, {
+        controller,
+        result,
+        taskId,
+        sessionId: row.sessionId,
+        connectionId: row.connectionId,
+        ...(row.target.grant.kind === "browser-profile"
+          ? { profileId: row.target.grant.profileId }
+          : {}),
+        grantRevision: row.grantRevision,
+        mode: row.mode,
+        pooled: true,
+      });
+      const forget = () => this.#running.delete(row.id);
+      void result.then(forget, forget);
+      return result;
+    }
+    const handed = await handOffAgentOperation(this.#store.database, {
+      userId: operation.ownerUserId,
+      agentConnectionId: operation.agentConnectionId,
+      reviewed: row,
+      grantTarget: operation.target?.grant,
+    });
+    if (!handed)
+      return this.#advance(
+        operation,
+        await readAgentOperation(this.#store.database, row.id),
+        taskId,
+        execution,
+      );
+    const controller = new AbortController();
+    const running = withAgentOperationReceipt(this.#store.database, handed, taskId, () =>
+      this.#execute(operation, handed, taskId, bindingId, controller.signal),
+    );
+    this.#running.set(handed.id, {
+      controller,
+      result: running,
+      taskId,
+      sessionId: handed.sessionId,
+      connectionId: handed.connectionId,
+      ...(handed.target.grant.kind === "browser-profile"
+        ? { profileId: handed.target.grant.profileId }
+        : {}),
+      grantRevision: handed.grantRevision,
+      mode: handed.mode,
+    });
+    const forget = () => this.#running.delete(handed.id);
+    void running.then(forget, forget);
+    return this.#awaitExecution(operation, handed, taskId, running);
+  }
+
+  async #handOffPooled<Result>(
+    operation: DirectOperation<Result>,
+    pool: PooledDirectBrowser,
+    row: AgentOperationRow,
+    taskId: ThreadId,
+    stop: AbortSignal,
+  ): Promise<DirectOperationResult<Result>> {
+    const bindingId = `session:${row.sessionId}` as const;
+    const timing =
+      operation.tool === "browser_use" && this.#onPooledBrowserUseTiming
+        ? { started: performance.now(), marks: {} as PooledBrowserUseMarks }
+        : undefined;
+    const deadline = Date.now() + (operation.timeoutMs ?? this.#executionMs);
+    const signal = AbortSignal.any([stop, AbortSignal.timeout(Math.max(0, deadline - Date.now()))]);
+    let reservation: BrowserPoolReservation | undefined;
+    let identity: BrowserPoolTargetIdentity | undefined;
+    let handed: AgentOperationRow | null = null;
+    try {
+      // A caller the target check would refuse never wakes a parked browser: the same check runs
+      // first, before the reserve, and again after it, where it stays the authority.
+      await pool.recheckTarget();
+      signal.throwIfAborted();
+      if (timing) timing.marks.reservingMs = elapsedMs(timing.started);
+      reservation = await pool.reserve(signal);
+      if (timing) timing.marks.reservedMs = elapsedMs(timing.started);
+      // Between here and the execution's own settler (registered once its send counters exist),
+      // a restart that can wait no longer records this holder too: refused while nothing is
+      // handed off, and refused as unsent once it is, since no command can have left before the
+      // execution began. Both writes apply only to the row in the state they name.
+      // The hand-off may commit while this runs (its write waits on the row, then lands before
+      // the refusal's): the row is read again after each write until it has an outcome.
+      // Each write is the one the row's current state and revision name (the operation may have
+      // been reviewed again meanwhile); after the third, the row is read once more.
+      reservation.onForcedEnd?.(async () => {
+        const unsettled = (state: string | undefined) =>
+          state === "handed-off" ||
+          state === "admitted" ||
+          state === "pending" ||
+          state === "approved";
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const current = await readAgentOperation(this.#store.database, row.id);
+          if (!current || !unsettled(current.state)) return;
+          if (current.state === "handed-off") {
+            // Written: the row has its outcome, with nothing more to read.
+            if (
+              await refuseUnsentHandedOffAgentOperation(
+                this.#store.database,
+                row.id,
+                "This browser restarted before anything was sent.",
+                "changed",
+              )
+            )
+              return;
+          } else
+            // Nothing handed off yet: the same cause as the branch above, never an access change.
+            await refuseUnsentAgentOperation(this.#store.database, row.id, current.grantRevision, {
+              message: "This browser restarted before anything was sent.",
+              reason: "changed",
+            });
+        }
+        const last = await readAgentOperation(this.#store.database, row.id);
+        if (!last || !unsettled(last.state)) return;
+        // Still without an outcome: the restart does not go on to Stop. Its hold ends when the
+        // holder's own work ends (its operation's deadline), when a later turn's settlement
+        // writes, or at a removal.
+        throw new Error("The pooled operation's outcome could not be recorded.");
+      });
+      // A restart or a removal asks every holder to stop: the work ends and records its outcome.
+      const held = reservation.ended
+        ? AbortSignal.any([
+            signal,
+            abortedWith(
+              reservation.ended,
+              () => new BrowserPoolAdmissionClosed("This browser is restarting or was removed."),
+            ),
+          ])
+        : signal;
+      identity = pool.identity();
+      await pool.recheckTarget();
+      held.throwIfAborted();
+      handed = await handOffAgentOperation(this.#store.database, {
+        userId: operation.ownerUserId,
+        agentConnectionId: operation.agentConnectionId,
+        reviewed: row,
+        grantTarget: operation.target?.grant,
+        pool: { target: identity, signal: held },
+      });
+      if (!handed) throw refused("forbidden", "The connected agent's access changed or ended.");
+      if (timing) timing.marks.handedOffMs = elapsedMs(timing.started);
+      return await this.#execute(operation, handed, taskId, bindingId, held, {
+        deadline,
+        identity,
+        pool,
+        reservation,
+        ...(timing ? { timing } : {}),
+      });
+    } catch (error) {
+      // Nothing was handed off, so nothing reached the browser: a definite refusal, under the
+      // revision the row holds now (it may have been reviewed again while this waited).
+      if (!handed) {
+        const current = await readAgentOperation(this.#store.database, row.id).catch(
+          () => undefined,
+        );
+        // Recorded with the cause the agent is told (a browser that was not ready is not an
+        // access change), or as an access change when it names none.
+        const ended =
+          signal.aborted && signal.reason instanceof OpensteerError ? signal.reason : null;
+        const refusal = unsentRefusal(error, ended);
+        await refuseUnsentAgentOperation(
+          this.#store.database,
+          row.id,
+          current?.grantRevision ?? row.grantRevision,
+          ...(refusal
+            ? [
+                {
+                  message: refusal.message,
+                  reason: refusal.reason,
+                  ending: ended && endingOfAbort(ended),
+                },
+              ]
+            : []),
+        );
+      }
+      throw error;
+    } finally {
+      reservation?.release();
+      if (timing) {
+        try {
+          this.#onPooledBrowserUseTiming?.({
+            operationId: row.id,
+            operationCreatedAt: row.createdAt.toISOString(),
+            ...(identity ? { target: identity } : {}),
+            ...(reservation ? { waited: reservation.waited === true } : {}),
+            ...timing.marks,
+            totalMs: elapsedMs(timing.started),
+          });
+        } catch {
+          // Diagnostics must never change an operation's result.
+        }
+      }
+    }
+  }
+
+  async #awaitExecution<Result>(
+    operation: DirectOperation<Result>,
+    row: AgentOperationRow,
+    taskId: ThreadId,
+    running: Promise<DirectOperationResult<Result>>,
+  ): Promise<DirectOperationResult<Result>> {
+    if (!operation.passwordsApproval) return running;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        running,
+        new Promise<DirectOperationResult<Result>>((resolve, reject) => {
+          timer = setTimeout(() => {
+            void readAgentOperation(this.#store.database, row.id).then(
+              (current) =>
+                resolve({
+                  status: "pending",
+                  taskId,
+                  operationId: row.id,
+                  requestId: current.requestId,
+                  next: pendingNext,
+                }),
+              reject,
+            );
+          }, this.#holdMs);
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #execute<Result>(
+    operation: DirectOperation<Result>,
+    row: AgentOperationRow,
+    taskId: ThreadId,
+    bindingId: `session:${string}`,
+    stop: AbortSignal,
+    pooled?: {
+      deadline: number;
+      identity: BrowserPoolTargetIdentity;
+      pool: PooledDirectBrowser;
+      reservation?: BrowserPoolReservation;
+      timing?: { readonly started: number; readonly marks: PooledBrowserUseMarks };
+    },
+  ): Promise<DirectOperationResult<Result>> {
+    const entry = this.#sessions.get(row.sessionId) ?? {
+      controller: new AbortController(),
+      connectionId: row.connectionId,
+      work: 0,
+    };
+    this.#sessions.set(row.sessionId, entry);
+    const previousWork = this.#worked.get(row.sessionId);
+    if (!previousWork || previousWork.grantRevision < row.grantRevision)
+      this.#worked.set(row.sessionId, {
+        connectionId: row.connectionId,
+        grantRevision: row.grantRevision,
+      });
+    entry.work++;
+    const deadline = pooled?.deadline ?? Date.now() + (operation.timeoutMs ?? this.#executionMs);
+    const closing = this.#closingSessions.get(row.sessionId);
+    const signal = AbortSignal.any([
+      entry.controller.signal,
+      stop,
+      ...(closing ? [closing] : []),
+      ...(!pooled ? [AbortSignal.timeout(deadline - Date.now())] : []),
+    ]);
+    const base = { taskId, operationId: row.id };
+    let outstanding = 0;
+    let submitted = 0;
+    const tracksSends = pooled !== undefined || operation.tool === "computer_use";
+    const recorded = async (): Promise<DirectOperationResult<Result>> => {
+      const current = await readAgentOperation(this.#store.database, row.id);
+      if (current.state === "refused")
+        throw new AgentOperationFailure(agentOperationRefusal(current.decision, current.ending), {
+          ...base,
+          status: "refused",
+          ...(current.ending ? { ending: current.ending } : {}),
+        });
+      if (current.state === "completed")
+        return { ...base, status: "completed", summary: current.resultSummary };
+      const scriptError = storedScriptError(current);
+      return {
+        ...base,
+        ...(current.state === "failed"
+          ? {
+              status: "failed" as const,
+              next: scriptError
+                ? failedScriptNext(current.resultSummary, scriptError)
+                : "It failed. Check the current state.",
+            }
+          : { status: "unknown" as const, next: unknownOperationNext(current.ending) }),
+        ...(scriptError ? { scriptError } : {}),
+      };
+    };
+    // A restart that can wait no longer records this operation's outcome itself, as a lost
+    // channel does: unknown when a command left, refused when none did. Both writes apply only
+    // to a row still handed off, so the work's own later outcome cannot overwrite it.
+    pooled?.reservation?.onForcedEnd?.(async () => {
+      if (submitted === 0)
+        await refuseUnsentHandedOffAgentOperation(
+          this.#store.database,
+          row.id,
+          "This browser restarted before anything was sent.",
+          "changed",
+        );
+      else await settleAgentOperation(this.#store.database, row.id, "unknown", null);
+    });
+    let authorityEnded: OpensteerError | undefined;
+    const endAuthority = (message: string, ending: AgentOperationEnding | null): never => {
+      if (!operation.scriptFailure) throw new OperationOutcomeUnknown(message, ending);
+      authorityEnded ??= endedBy(ending);
+      throw authorityEnded;
+    };
+    const recheck = async () => {
+      signal.throwIfAborted();
+      if (authorityEnded) throw authorityEnded;
+      const live = await this.#admit(operation, bindingId).catch(async (error: unknown) => {
+        if (error instanceof OpensteerError)
+          endAuthority(error.message, await this.#refusedBy(row));
+        throw error;
+      });
+      if (live.agentConnection!.grantRevision !== row.grantRevision || live.mode !== row.mode)
+        endAuthority("The connected agent's access changed during this work.", "narrowed");
+      signal.throwIfAborted();
+    };
+    try {
+      let result: Result;
+      let scriptError: ReplFailure | undefined;
+      try {
+        if (pooled || closing) signal.throwIfAborted();
+        this.workingIn.begin(row.sessionId, taskId, operation.ownerUserId);
+        result = await operation.execute({
+          sessionId: row.sessionId,
+          taskId,
+          operationId: row.id,
+          requestId: row.requestId,
+          grantRevision: row.grantRevision,
+          mode: row.mode,
+          bindingId,
+          ownerUserId: operation.ownerUserId,
+          signal,
+          deadline,
+          recheck,
+          ...(operation.tool === "computer_use"
+            ? {
+                computerSubmitted: () => {
+                  submitted++;
+                  if (!signal.aborted && operation.target?.device)
+                    this.workingIn.noteComputer(
+                      row.sessionId,
+                      operation.target.device.id,
+                      operation.target,
+                    );
+                },
+                computerStopped: () =>
+                  endAuthority(agentOperationEndingWords.stopped.message, "stopped"),
+              }
+            : {}),
+          ...(pooled
+            ? {
+                browserSend: {
+                  target: pooled.identity,
+                  recheck: async () => {
+                    await recheck();
+                    await pooled.pool.recheckTarget(submitted > 0);
+                    // Replaced before anything was sent, the runtime is a closed admission.
+                    if (canonicalJson(pooled.pool.identity()) !== canonicalJson(pooled.identity))
+                      throw submitted === 0
+                        ? new BrowserPoolAdmissionClosed(
+                            "The browser runtime changed before anything was sent.",
+                          )
+                        : new OperationOutcomeUnknown(
+                            "The browser runtime changed during this work.",
+                          );
+                    signal.throwIfAborted();
+                  },
+                  submitted: () => {
+                    if (pooled.timing && submitted === 0)
+                      pooled.timing.marks.firstFrameMs = elapsedMs(pooled.timing.started);
+                    outstanding++;
+                    submitted++;
+                  },
+                  acknowledged: () => {
+                    if (pooled.timing) {
+                      const reply = elapsedMs(pooled.timing.started);
+                      pooled.timing.marks.firstReplyMs ??= reply;
+                      pooled.timing.marks.lastReplyMs = reply;
+                    }
+                    outstanding--;
+                  },
+                  hasSubmitted: () => submitted > 0,
+                },
+              }
+            : {}),
+        });
+        if (pooled?.timing) pooled.timing.marks.scriptFinishedMs = elapsedMs(pooled.timing.started);
+        // The REPL can return normally even when a script caught a failed authority check.
+        // A cut never releases buffered output, and an unsent refusal never becomes unknown.
+        if (authorityEnded) throw authorityEnded;
+        if (operation.scriptFailure && signal.reason instanceof OpensteerError)
+          signal.throwIfAborted();
+        scriptError = operation.scriptFailure?.(result);
+        if (tracksSends && submitted === 0) {
+          signal.throwIfAborted();
+          if (scriptError?.code === "outcome-unknown")
+            throw new BrowserPoolAdmissionClosed("The script ended before sending a command.");
+        }
+      } catch (error) {
+        const ended =
+          signal.aborted && signal.reason instanceof OpensteerError
+            ? signal.reason
+            : (authorityEnded ?? null);
+        const ending =
+          (ended && endingOfAbort(ended)) ??
+          (error instanceof OperationOutcomeUnknown
+            ? (error.ending ?? agentOperationEndingOf(error.message))
+            : null);
+        // A tracked send that admission or authority refused before any command reached the
+        // wire (a cut, a recheck, a closed gate, a page or a runtime that changed): nothing left
+        // the Home, so it is refused with its own reason. Any other error is the work's own.
+        const refusal =
+          tracksSends && submitted === 0
+            ? (unsentRefusal(error, ended) ??
+              (signal.aborted
+                ? {
+                    code: "timeout",
+                    reason: "changed" as const,
+                    message: "The script ended before sending a command.",
+                  }
+                : undefined))
+            : undefined;
+        if (
+          refusal &&
+          (await refuseUnsentHandedOffAgentOperation(
+            this.#store.database,
+            row.id,
+            refusal.message,
+            refusal.reason,
+            ending,
+          ))
+        )
+          throw new ToolBlockedError(
+            {
+              code: refusal.code,
+              message: refusal.message,
+              next:
+                ending === "task-done"
+                  ? doneBeforeSendNext
+                  : refusal.code === "stopped_by_person"
+                    ? stoppedBeforeSendNext
+                    : refusedBeforeSendNext,
+            },
+            { ...base, status: "refused", ...(ending ? { ending } : {}) },
+          );
+        const outcome =
+          ended || error instanceof OperationOutcomeUnknown || signal.aborted || outstanding > 0
+            ? "unknown"
+            : "failed";
+        const settled = await settleAgentOperation(
+          this.#store.database,
+          row.id,
+          outcome,
+          null,
+          ending,
+        );
+        if (!settled) return recorded();
+        // Work that the person, a Disconnect or a narrowed grant ended: the agent hears why. What
+        // it had already done is uncertain; the record says so and the next step repeats it.
+        if (ended)
+          throw new ToolBlockedError(
+            {
+              code: unsentRefusal(null, ended)?.code ?? "access_denied",
+              message: ended.message,
+              next: ending ? agentOperationEndingWords[ending].next : interruptedNext,
+            },
+            { ...base, status: "unknown", ...(ending ? { ending } : {}) },
+          );
+        if (outcome === "unknown")
+          return { status: "unknown", ...base, next: unknownOperationNext(ending) };
+        throw new AgentOperationFailure(error, { ...base, status: "failed" });
+      }
+      let summary: Readonly<Record<string, unknown>> | null = null;
+      try {
+        summary = operation.summarize?.(result) ?? null;
+      } catch (error) {
+        this.#onError(error);
+      }
+      if (
+        (outstanding > 0 && (!scriptError || !isSettledScriptDeadline(scriptError))) ||
+        scriptError?.code === "outcome-unknown" ||
+        (operation.scriptFailure && signal.aborted)
+      ) {
+        // A command was submitted and never answered: its effect is unknown.
+        const uncertainty = scriptError?.code === "outcome-unknown" ? scriptError : undefined;
+        const ending =
+          agentOperationEndingOf(uncertainty?.message) ??
+          agentOperationEndingOf(uncertainty?.next ?? undefined) ??
+          "contact-lost";
+        // A script error can quote its target just like a print. An authority ending only
+        // releases the Home's own receipt, including when the REPL learns of it first.
+        const keepOutput = keepsScriptDiagnostics(ending);
+        const settled = await settleAgentOperation(
+          this.#store.database,
+          row.id,
+          "unknown",
+          keepOutput ? (scriptError ? { ...summary, scriptError } : summary) : null,
+          ending,
+        );
+        if (!settled) return recorded();
+        return {
+          status: "unknown",
+          ...base,
+          next: unknownOperationNext(ending),
+          ...(keepOutput ? { result, ...(scriptError ? { scriptError } : {}) } : {}),
+        };
+      }
+      const settled = await settleAgentOperation(
+        this.#store.database,
+        row.id,
+        scriptError ? "failed" : "completed",
+        scriptError
+          ? {
+              ...summary,
+              scriptError,
+              ...(isSettledScriptDeadline(scriptError) ? { settledScriptDeadline: true } : {}),
+            }
+          : summary,
+      );
+      if (!settled) return recorded();
+      if (scriptError)
+        return {
+          status: "failed",
+          ...base,
+          result,
+          scriptError,
+          next: (isSettledScriptDeadline(scriptError) && scriptError.next) || scriptFailedNext,
+        };
+      return { status: "completed", ...base, result, summary };
+    } finally {
+      if (--entry.work === 0 && this.#sessions.get(row.sessionId) === entry)
+        this.#sessions.delete(row.sessionId);
+    }
+  }
+}
+
+export async function withAgentOperationReceipt<Result>(
+  database: OpensteerStore["database"],
+  row: Pick<AgentOperationRow, "id">,
+  taskId: ThreadId,
+  perform: () => Promise<Result>,
+): Promise<Result> {
+  try {
+    return await perform();
+  } catch (error) {
+    if (
+      error instanceof AgentOperationFailure ||
+      (error instanceof ToolBlockedError && error.receipt)
+    )
+      throw error;
+    const current = await readAgentOperation(database, row.id).catch(() => null);
+    const state = current?.state;
+    const done = current?.state === "refused" && current.ending === "task-done";
+    throw new AgentOperationFailure(done ? endedBy("task-done") : error, {
+      taskId,
+      operationId: row.id,
+      ...(state === "refused" || state === "failed" || state === "unknown"
+        ? { status: state }
+        : {}),
+      ...(done ? { ending: "task-done" as const } : {}),
+    });
+  }
+}
+
+const doneBeforeSendNext = "Nothing was sent. It is safe to try again on a new task.";
+const stoppedBeforeSendNext =
+  "Nothing was sent. Stop this task and ask the person before starting again.";
+const refusedBeforeSendNext = "Nothing was sent. Check the current state before trying again.";
+
+export function agentOperationRefusal(
+  decision: AgentOperationDecision | null,
+  ending?: AgentOperationEnding | null,
+): OpensteerError {
+  if (ending === "task-done") return endedBy(ending);
+  if (decision?.by === "refused")
+    return new OpensteerError({
+      code: "forbidden",
+      reason:
+        decision.reason === "person"
+          ? "person-declined"
+          : decision.reason === "stopped"
+            ? "agent-session-stopped"
+            : "authority-changed",
+      message: decision.message,
+      ...(decision.reason === "stopped"
+        ? { next: stoppedBeforeSendNext }
+        : decision.reason === "changed" || ending
+          ? { next: refusedBeforeSendNext }
+          : {}),
+    });
+  return new OpensteerError({ code: "forbidden", message: "This operation was refused." });
+}
+
+export function assertOperationArguments(
+  row: Pick<AgentOperationRow, "argumentDigest"> & { readonly taskId: ThreadId },
+  digest: string,
+  taskId?: ThreadId,
+) {
+  if (row.argumentDigest !== digest || (taskId && taskId !== row.taskId))
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "operation-key-reused",
+      message: "This operationKey already names a different call.",
+    });
+}
+
+/**
+ * An admission or authority refusal before a tracked send, with the code a connected agent acts on
+ * (`docs/architecture.md`) and the decision's reason. Anything else is not a refusal.
+ */
+function unsentRefusal(
+  error: unknown,
+  ended: OpensteerError | null,
+):
+  | { readonly code: string; readonly reason: "authority" | "changed" | "stopped"; message: string }
+  | undefined {
+  // The authority recheck before a send: the grant, the mode or the connection changed.
+  if (!ended && error instanceof OperationOutcomeUnknown)
+    return {
+      code: "access_changed",
+      reason: "authority",
+      message: error.message || "The connected agent's access changed during this work.",
+    };
+  const refusal = ended ?? (error instanceof OpensteerError ? error : null);
+  if (!refusal) return undefined;
+  const { message } = refusal;
+  if (endingOfAbort(refusal) === "task-done")
+    return { code: "access_denied", reason: "changed", message };
+  if (refusal.reason === "agent-session-stopped")
+    return { code: "stopped_by_person", reason: "stopped", message };
+  if (refusal.reason === "authority-changed")
+    return { code: "access_changed", reason: "authority", message };
+  if (refusal instanceof BrowserPoolAdmissionClosed)
+    return { code: "computer_offline", reason: "changed", message };
+  if (refusal.code === "not_found") return { code: "not_found", reason: "changed", message };
+  if (refusal.code === "forbidden") return { code: "access_denied", reason: "authority", message };
+  return undefined;
+}
+
+/** A signal that aborts with `reason()` when `source` does, for a refusal of our own words. */
+function abortedWith(source: AbortSignal, reason: () => unknown): AbortSignal {
+  const controller = new AbortController();
+  if (source.aborted) controller.abort(reason());
+  else source.addEventListener("abort", () => controller.abort(reason()), { once: true });
+  return controller.signal;
+}

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { brokerProviderFixture } from "./auth/hosted-oauth-broker.test-support.js";
 import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { opensteerAccountNativeOAuthClients } from "@opensteer/core";
@@ -25,6 +28,154 @@ const validEnvironment = {
   OPENSTEER_CONNECT_CLOUDFLARE_WORKERS_ROUTE_BYPASS: "on",
   OPENSTEER_CONNECT_CREDENTIAL_DERIVATION_SECRET: "d".repeat(32),
 } satisfies NodeJS.ProcessEnv;
+
+it("loads optional managed Home settings from the Account runtime directory", () => {
+  const directory = mkdtempSync(join(tmpdir(), "managed-home-config-"));
+  const environment = { ...validEnvironment, OPENSTEER_MANAGED_HOME_CONFIG_DIRECTORY: directory };
+  try {
+    expect(loadControlPlaneConfig(environment).cloudComputers).toBeUndefined();
+    const files = {
+      OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL: "home@example.iam.gserviceaccount.com",
+      OPENSTEER_CLOUD_COMPUTER_DOMAIN: "homes.example.com",
+      OPENSTEER_CLOUD_COMPUTER_REGION: "us-central1-a",
+      OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE: "e2-standard-4",
+      OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON: JSON.stringify({
+        version: "1.0.0",
+        installerUrl: "https://releases.example.com/install",
+        installerSha256: "a".repeat(64),
+        images: Object.fromEntries(
+          ["host", "runner", "browser-runtime", "browser-egress", "channel-runtime", "gateway"].map(
+            (name) => [name, `registry.example.com/${name}@sha256:${"b".repeat(64)}`],
+          ),
+        ),
+      }),
+      OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL: "https://releases.example.com/managed.json",
+      OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY: "sk_test_123456789",
+      OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET: "whsec_123456789",
+      OPENSTEER_CLOUD_COMPUTER_STRIPE_PORTAL_CONFIGURATION_ID: "bpc_personal",
+      OPENSTEER_CLOUD_COMPUTER_STRIPE_PRICE_ID: "price_personal",
+      OPENSTEER_CLOUD_COMPUTER_PLAN_NAME: "Personal",
+      OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
+      OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
+    };
+    const poolFiles = {
+      OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST: "10",
+      OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON: JSON.stringify({
+        version: "1.0.0",
+        installerUrl: "https://releases.example.com/pool-host.sh",
+        installerSha256: "a".repeat(64),
+        artifacts: Object.fromEntries(
+          ["agent", "relay", "rootfs", "kernel", "egress"].flatMap((name) => [
+            [`${name}Url`, `https://releases.example.com/${name}`],
+            [`${name}Sha256`, "c".repeat(64)],
+          ]),
+        ),
+      }),
+    };
+    for (const [name, value] of Object.entries(files)) {
+      writeFileSync(join(directory, name), value + "\n", { mode: 0o600 });
+    }
+    // A Cloud Computer's browser runs in the browser pool, always: without the pool settings
+    // the Account service refuses to start rather than sell a Cloud Computer it cannot serve.
+    expect(() => loadControlPlaneConfig(environment)).toThrow(
+      "Cloud Computers need the browser pool: set OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST and OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON",
+    );
+    for (const [name, value] of Object.entries(poolFiles)) {
+      writeFileSync(join(directory, name), value + "\n", { mode: 0o600 });
+    }
+    // A Cloud Computer updates only from the feed its boot answer gave it: none is born without one.
+    rmSync(join(directory, "OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL"));
+    expect(() => loadControlPlaneConfig(environment)).toThrow(
+      "Cloud Computers need a release feed to update from: set OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL",
+    );
+    writeFileSync(
+      join(directory, "OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL"),
+      files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL + "\n",
+      { mode: 0o600 },
+    );
+    const config = loadControlPlaneConfig({
+      ...environment,
+      OPENSTEER_CLOUD_COMPUTER_REGION: "europe-west3-a",
+    });
+    expect(config.cloudComputers).toMatchObject({
+      stripeKey: files.OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY,
+      stripeWebhookSecret: files.OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET,
+      releaseManifestUrl: files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL,
+      region: "europe-west3-a",
+      browserPool: { slotsPerHost: 10 },
+      notReadyAfterMinutes: 30,
+    });
+    // Review S4: pool ports the Home's firewall would refuse (equal, or the mail ports it rejects
+    // first) would leave every Home without a path to its browser: refused at start.
+    for (const ports of [
+      { OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT: "7312" },
+      { OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT: "25" },
+      { OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT: "587" },
+      // The provisioner's admin port on every pool host (review A3), unless it says otherwise.
+      { OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT: "7311" },
+    ])
+      expect(() => loadControlPlaneConfig({ ...environment, ...ports })).toThrow(
+        "The browser pool's agent and relay ports must differ and must not be 25, 465, 587 or the pool's admin port",
+      );
+    expect(config.cloudComputers?.heartbeatUrl).toBeUndefined();
+    const watched = loadControlPlaneConfig({
+      ...environment,
+      OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES: "45",
+      OPENSTEER_CLOUD_COMPUTER_HEARTBEAT_URL: "https://hc.example.com/ping/billing",
+    }).cloudComputers;
+    expect(watched?.notReadyAfterMinutes).toBe(45);
+    expect(watched?.heartbeatUrl?.href).toBe("https://hc.example.com/ping/billing");
+    for (const [name, value] of [
+      ["OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES", "2"],
+      // Below the provisioner's own readiness deadline and a normal first set-up's margin.
+      ["OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES", "14"],
+      ["OPENSTEER_CLOUD_COMPUTER_HEARTBEAT_URL", "http://hc.example.com/ping/billing"],
+    ] as const)
+      expect(() => loadControlPlaneConfig({ ...environment, [name]: value })).toThrow(
+        `Missing or invalid ${name}`,
+      );
+    expect(() =>
+      loadControlPlaneConfig({
+        ...environment,
+        OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL:
+          "https://user:password@releases.example.com/feed",
+      }),
+    ).toThrow("Missing or invalid OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL");
+    // The synthetic purchase's sign-in opens only beside a test-mode Stripe secret key (U6, S4).
+    const synthetic = {
+      OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "Synthetic@Example.com",
+      OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: "s".repeat(24),
+    };
+    expect(loadControlPlaneConfig({ ...environment, ...synthetic }).syntheticSignIn).toEqual({
+      email: "synthetic@example.com",
+      password: "s".repeat(24),
+    });
+    for (const key of ["sk_live_123456789", "rk_live_123456789", "rk_test_123456789"])
+      expect(() =>
+        loadControlPlaneConfig({
+          ...environment,
+          ...synthetic,
+          OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY: key,
+        }),
+      ).toThrow("needs a test-mode Stripe secret key");
+    expect(() =>
+      loadControlPlaneConfig({
+        ...environment,
+        OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "synthetic@example.com",
+      }),
+    ).toThrow("email and password together");
+    expect(() =>
+      loadControlPlaneConfig({
+        ...environment,
+        ...synthetic,
+        OPENSTEER_APP_REVIEW_EMAIL: "synthetic@example.com",
+        OPENSTEER_APP_REVIEW_PASSWORD: "r".repeat(24),
+      }),
+    ).toThrow("must not be the App Review account");
+  } finally {
+    rmSync(directory, { recursive: true });
+  }
+});
 
 let apnsPrivateKey: string;
 let fcmPrivateKey: string;
@@ -58,6 +209,18 @@ describe("control-plane configuration", () => {
         OPENSTEER_CONTROL_PLANE_DATABASE_URL: "https://db.example/opensteer",
       }),
     ).toThrow(/PostgreSQL/u);
+  });
+
+  it("opens the synthetic purchase's sign-in on no stack that does not say it is a test stack (S4)", () => {
+    expect(loadControlPlaneConfig(validEnvironment).syntheticSignIn).toBeUndefined();
+    // No Cloud Computer setting at all, so no test-mode key: refused.
+    expect(() =>
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "synthetic@example.com",
+        OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: "s".repeat(24),
+      }),
+    ).toThrow("needs a test-mode Stripe secret key");
   });
 
   it("enables App Review sign-in only with a valid email and a long password together", () => {

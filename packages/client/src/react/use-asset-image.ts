@@ -70,10 +70,16 @@ export function useAssetImage(
     [kind, identity],
   );
   const stateKey = JSON.stringify([owner, threadId, kind, identity, variant, enabled]);
-  const [state, setState] = useState<{ key: string; image: AssetImage | null; failed: boolean }>({
+  const [state, setState] = useState<{
+    key: string;
+    image: AssetImage | null;
+    failed: boolean;
+    updateRequired: boolean;
+  }>({
     key: stateKey,
     image: null,
     failed: false,
+    updateRequired: false,
   });
   const controller = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -84,25 +90,29 @@ export function useAssetImage(
       const version = ++generation;
       if (enabled && store && deploymentId)
         void store
-          .image(deploymentId, threadId, fileSource, variant, { signal: current.signal })
+          .imageResult(deploymentId, threadId, fileSource, variant, { signal: current.signal })
           .then(
-            (image) => {
+            (result) => {
+              const image = result.status === "ok" ? result : null;
+              const updateRequired =
+                result.status === "unavailable" && result.updateRequired === true;
               if (!current.signal.aborted && version === generation)
                 setState((previous) =>
                   previous.key === stateKey &&
                   previous.image?.source === image?.source &&
-                  previous.failed === (image === null)
+                  previous.failed === (image === null) &&
+                  previous.updateRequired === updateRequired
                     ? previous
-                    : { key: stateKey, image, failed: image === null },
+                    : { key: stateKey, image, failed: image === null, updateRequired },
                 );
             },
             () => {
               if (!current.signal.aborted && version === generation)
-                setState({ key: stateKey, image: null, failed: true });
+                setState({ key: stateKey, image: null, failed: true, updateRequired: false });
             },
           );
     };
-    setState({ key: stateKey, image: null, failed: false });
+    setState({ key: stateKey, image: null, failed: false, updateRequired: false });
     const release =
       enabled && store && deploymentId
         ? store.subscribeImage(deploymentId, threadId, fileSource, variant, load)
@@ -120,6 +130,7 @@ export function useAssetImage(
     retry,
     image: state.key === stateKey ? state.image : null,
     failed: state.key === stateKey && state.failed,
+    updateRequired: state.key === stateKey && state.updateRequired,
     available: !!(deploymentId && store),
     deploymentId,
     onError: () => {
@@ -129,7 +140,8 @@ export function useAssetImage(
           .loadFailed(deploymentId, threadId, fileSource, variant, { signal: current.signal })
           .then((retried) => {
             if (current.signal.aborted) return;
-            if (!retried) setState({ key: stateKey, image: null, failed: true });
+            if (!retried)
+              setState({ key: stateKey, image: null, failed: true, updateRequired: false });
             else setRetry((value) => value + 1);
           });
     },

@@ -2,7 +2,7 @@ import { deleteTerminalRunReceipts } from "./personal-runner-receipts.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { ChannelConversationIdSchema } from "@opensteer/channel-core";
-import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeWatches, type PersonalMutation } from "./personal-mutation.js";
 import {
   advancePersonalRunFinish,
   beginPersonalRunFinish,
@@ -21,15 +21,19 @@ import { sql } from "kysely";
 import { recordPersonWaited } from "./run-visibility.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
+import { refreshInputQueue } from "./waiting-inputs.js";
+import { senderUnlinkedFailure } from "./bridge-admission.js";
 import {
   OpensteerError,
   MessageContentSchema,
   createId,
   harnessSessionBrokenFailureCode,
   harnessUsageLimitFailureCode,
+  runTerminationUnprovenCode,
   ReplyTargetSchema,
   type RequestCancellationReason,
   type RunId,
+  type RunInterruptedCause,
   type RunAttemptId,
   type RunFailure,
 } from "@opensteer/core";
@@ -51,6 +55,7 @@ interface FinalizeRunRequest {
   readonly completedAt: Date;
   readonly expectedCommandId?: CommandRow["id"];
   readonly failure?: RunFailure;
+  readonly interruptedCause?: RunInterruptedCause;
   /** How a channel status message names the Thread it points at. */
   readonly links: ChannelLinks;
   /** The proof source determines both event authorship and execute receipt. */
@@ -119,7 +124,11 @@ export async function finalizeRunTransaction(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  const children = offline ? undefined : await readFinishChildren(transaction, run.id);
+  const children = offline
+    ? undefined
+    : await readFinishChildren(transaction, run.id, undefined, {
+        runnerProvenExecute: input.source === "runner",
+      });
   if (children && !children.hasMore)
     await lockRunProjectionRows(transaction, {
       threadIds: [run.threadId],
@@ -168,6 +177,7 @@ export async function finalizeRunTransaction(
         completedAt: input.completedAt.toISOString(),
         replyMessageId: reply?.id ?? null,
         ...(input.failure ? { failure: input.failure } : {}),
+        ...(input.interruptedCause ? { interruptedCause: input.interruptedCause } : {}),
         ...(input.statement ? { statement: input.statement } : {}),
         ...(input.requestCancellationReason
           ? { requestCancellationReason: input.requestCancellationReason }
@@ -209,7 +219,7 @@ export async function settleFinishChildren(
     "completedAt" | "source" | "requestCancellationReason" | "failure"
   >,
   children: Awaited<ReturnType<typeof readFinishChildren>>,
-  recovering = false,
+  _recovering = false,
 ) {
   if (children.steers.length) {
     const run = await tx
@@ -298,13 +308,10 @@ export async function settleFinishChildren(
       current.type === "run.restart"
         ? replacement?.dispatchedAt == null
         : current.status === "pending" || current.status === "failed";
-    const unknown = current.state === "unknown" || (recovering && !unclaimed);
+    const unknown = current.state === "unknown" || (!delivered && !unclaimed);
     const requeue = current.policy === "queue" && unclaimed && !delivered && !unknown;
     const stopped =
-      requeue &&
-      stoppedConversation &&
-      (current.authoritySource.kind === "user-session" ||
-        current.authoritySource.kind === "channel-ingress");
+      requeue && stoppedConversation && current.authoritySource.kind === "user-session";
     if (requeue && !stopped)
       await tx.updateTable("messages").set({ runId: null }).where("id", "=", id).execute();
     const row = await tx
@@ -316,11 +323,11 @@ export async function settleFinishChildren(
             ? { state: "cancelled", cancelReason: "stopped" }
             : requeue
               ? { state: "pending", runId: null, steerCommandId: null }
-              : current.policy === "queue" || unknown
-                ? { state: "unknown" }
+              : unknown
+                ? { state: "unknown", cancelReason: null }
                 : {
                     state: "cancelled",
-                    cancelReason: unclaimed ? "steer-not-delivered" : "run-ended-delivery-unknown",
+                    cancelReason: "steer-not-delivered",
                   }),
         updatedAt: input.completedAt,
       })
@@ -339,9 +346,16 @@ export async function settleFinishChildren(
                 .case()
                 .when("type", "=", "run.execute")
                 .then("succeeded" as const)
+                .when(sql<boolean>`type = 'run.steer' and status = 'dispatched'`)
+                .then("unknown" as const)
                 .else("failed" as const)
                 .end()
-            : "failed",
+            : eb
+                .case()
+                .when(sql<boolean>`type = 'run.steer' and status = 'dispatched'`)
+                .then("unknown" as const)
+                .else("failed" as const)
+                .end(),
         lastError:
           input.failure && input.source === "host"
             ? jsonValue(input.failure)
@@ -350,6 +364,10 @@ export async function settleFinishChildren(
         updatedAt: input.completedAt,
       }))
       .where("id", "in", children.commands)
+      // Unknown stays unknown unless the Runner itself proved `run.execute` ran.
+      .where(
+        sql<boolean>`not (status = 'unknown' and not (type = 'run.execute' and ${input.source} = 'runner'))`,
+      )
       .execute();
   }
   await endLiveExecutionNodes(tx, { runId, endedAt: input.completedAt, ids: children.nodes });
@@ -397,12 +415,20 @@ async function stoppedConversationReply(tx: Transaction<DatabaseSchema>, runId: 
     .executeTakeFirstOrThrow();
   if (run.purpose === "voice") return true;
   if (run.replyTarget?.kind !== "channel") return false;
+  // The person's own direct messages to a bridge only they may speak to.
   const conversation = await tx
-    .selectFrom("channelConversations")
-    .select("personalContext")
-    .where("id", "=", ChannelConversationIdSchema.parse(run.replyTarget.conversationId))
+    .selectFrom("bridgeConversations")
+    .innerJoin("agentConnections", "agentConnections.id", "bridgeConversations.bridgeId")
+    .select("bridgeConversations.id")
+    .where(
+      "bridgeConversations.id",
+      "=",
+      ChannelConversationIdSchema.parse(run.replyTarget.conversationId),
+    )
+    .where("bridgeConversations.conversationType", "=", "dm")
+    .where("agentConnections.bridgeSenders", "=", "owner")
     .executeTakeFirst();
-  return conversation?.personalContext === true;
+  return conversation !== undefined;
 }
 
 export function createRunFinishDrain(
@@ -479,6 +505,7 @@ export async function drainRunFinish(
         source:
           (intent.mode ?? (intent.statement ? "runner" : "host")) === "runner" ? "runner" : "host",
         ...(intent.failure ? { failure: intent.failure } : {}),
+        ...(intent.interruptedCause ? { interruptedCause: intent.interruptedCause } : {}),
         ...(intent.requestCancellationReason
           ? { requestCancellationReason: intent.requestCancellationReason }
           : {}),
@@ -570,6 +597,8 @@ async function finalizeRunOutcome(
     }
   } else if (
     replyTarget?.kind === "channel" &&
+    // A message whose sender stopped being "me" ends without a word to the chat.
+    input.failure?.message !== senderUnlinkedFailure &&
     (input.status !== "interrupted" ||
       !(await transaction
         .selectFrom("commands")
@@ -584,8 +613,12 @@ async function finalizeRunOutcome(
       conversationId: replyTarget.conversationId,
       text:
         input.status === "failed"
-          ? `Something went wrong and the agent could not finish. ${failureSummary(input.failure)} Open the Thread in Opensteer: ${threadUrl}`
-          : `The agent was stopped. Open the Thread in Opensteer: ${threadUrl}`,
+          ? input.failure?.code === runTerminationUnprovenCode
+            ? `Opensteer could not confirm this Run stopped. Something from this Run may still be running on that device. Open the task in Opensteer: ${threadUrl}`
+            : `Something went wrong and the agent could not finish. ${failureSummary(input.failure)} Open the task in Opensteer: ${threadUrl}`
+          : input.interruptedCause === "engine-retired"
+            ? `This Run was cut short: Opensteer had to end its shared engine to make sure another task had stopped; it will start again when work next needs it. What it was doing at that moment may not have finished; send a message to continue. Open the task in Opensteer: ${threadUrl}`
+            : `The agent was stopped. Open the task in Opensteer: ${threadUrl}`,
     });
   }
   await recordPersonWaited(transaction, run.id);
@@ -611,7 +644,12 @@ async function finalizeRunOutcome(
         .set({ ...sessionUpdate, active: false })
         .where("id", "=", run.providerSessionId)
         .where("active", "=", true)
-        .returning(["continuationIdentity", "harnessInstanceId", "personalContext"])
+        .returning([
+          "continuationIdentity",
+          "harnessInstanceId",
+          "personLineage",
+          "personalContext",
+        ])
         .executeTakeFirst();
       if (retired) {
         await transaction
@@ -628,6 +666,7 @@ async function finalizeRunOutcome(
             id: createId("providerSession"),
             leaseExpiresAt: null,
             leaseTokenHash: null,
+            personLineage: retired.personLineage,
             personalContext: retired.personalContext,
             providerSessionReference: null,
             runnerBootId: null,
@@ -764,11 +803,21 @@ async function finalizeRunOutcome(
       runnerSafetyTerminal: input.source === "runner" && input.status !== "completed",
       ...(mutation ? { revision: mutation.sequence } : {}),
       failure: input.status === "failed" ? jsonValue(input.failure!) : null,
+      interruptedCause: input.status === "interrupted" ? (input.interruptedCause ?? null) : null,
+      startHoldReason: null,
       providerRetry: null,
       status: input.status,
     })
     .where("id", "=", run.id)
     .executeTakeFirstOrThrow();
+  if (input.status === "failed" && input.failure?.code === runTerminationUnprovenCode) {
+    await transaction
+      .updateTable("threads")
+      .set({ unconfirmedStopRunId: run.id })
+      .where("id", "=", run.threadId)
+      .execute();
+    if (!offline) await wakeWatches(transaction, thread.environmentId);
+  }
   if (mutation) deleteTerminalRunReceipts(transaction, mutation, run.id);
   if (run.assignmentId) {
     await settleAssignmentAfterRun(transaction, {
@@ -802,7 +851,12 @@ async function finalizeRunOutcome(
         .where("anchorThreadId", "=", run.threadId)
         .where("status", "=", "active")
         .execute();
-      for (const trigger of triggers) await pauseTriggerInTransaction(transaction, trigger);
+      for (const trigger of triggers) {
+        await pauseTriggerInTransaction(transaction, trigger, {
+          pauseReason: "Paused because its task was marked done.",
+          pausedBy: "system",
+        });
+      }
       const doneAt = input.completedAt;
       const updated = await transaction
         .updateTable("threads")
@@ -829,6 +883,28 @@ async function finalizeRunOutcome(
   // A corrupt selection must not roll back an already accepted terminal event.
   // Pending work remains queued until an explicit engine selection repairs it.
   if (!offline) {
+    // When a shared engine had to retire under an innocent neighbour, pause
+    // queued follow-ups rather than silently continuing over work whose state
+    // may be partial.
+    if (
+      input.status === "interrupted" &&
+      input.interruptedCause === "engine-retired" &&
+      thread.purpose !== "voice" &&
+      !thread.doneAt &&
+      !thread.inputQueuePaused
+    ) {
+      await transaction
+        .updateTable("threads")
+        .set({
+          inputQueuePaused: true,
+          inputQueuePausedBy: null,
+          updatedAt: input.completedAt,
+        })
+        .where("id", "=", run.threadId)
+        .execute();
+      thread.inputQueuePaused = true;
+      await refreshInputQueue(transaction, run.threadId);
+    }
     await ensureQueuedRun(transaction, thread, {
       onInvalidSelection: "defer",
     });

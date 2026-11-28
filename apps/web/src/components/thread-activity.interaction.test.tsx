@@ -197,4 +197,47 @@ describe("a cold message link on the web", () => {
     await act(async () => listeners.forEach((listener) => listener()));
     expect(loadEarlier).toHaveBeenCalledWith(thread.id, { throughItemId: messageId });
   });
+
+  it("hides the composer and shows the ended notice when the task's chat or connected agent ended", async () => {
+    const idle = threadActivityScenarios(thread).find(({ status }) => status === "idle")!;
+    for (const [origin, expected] of [
+      [
+        "chat",
+        "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.",
+      ],
+      [
+        "agent",
+        "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.",
+      ],
+    ] as const) {
+      const node = await renderScenario(idle);
+      const snap = client!.getSnapshot();
+      vi.spyOn(client!, "getSnapshot").mockReturnValue({
+        ...snap,
+        threads: snap.threads.map((candidate) =>
+          candidate.id === thread.id ? { ...candidate, endedOrigin: origin } : candidate,
+        ),
+      });
+      await act(async () =>
+        root?.render(
+          <ToastProvider>
+            <MemoryRouter initialEntries={[`/tasks/${thread.id}`]}>
+              <Routes>
+                <Route element={<AppShell hostClient={client!} />}>
+                  <Route path="tasks/:threadId" element={<ThreadRoute />} />
+                </Route>
+              </Routes>
+            </MemoryRouter>
+          </ToastProvider>,
+        ),
+      );
+      expect(node.querySelector("textarea")).toBeNull();
+      expect(node.textContent).toContain(expected);
+      act(() => root?.unmount());
+      root = null;
+      client?.dispose();
+      client = null;
+      document.body.replaceChildren();
+    }
+  });
 });

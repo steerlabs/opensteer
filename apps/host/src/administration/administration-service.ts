@@ -1,18 +1,26 @@
+import type { CommandProposal } from "../commands/actor.js";
 import { removeDevice } from "./device-removal.js";
 import { DeviceDriverService } from "./device-driver-service.js";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHash } from "node:crypto";
-import { type AdministrationCommandIdentity, requirePersonalOwner } from "@opensteer/database";
+import {
+  commandAdmission,
+  type AdministrationCommandIdentity,
+  type AuthoritySubject,
+  requirePersonalOwner,
+} from "@opensteer/database";
 import { z } from "zod";
 import {
   EnvironmentIdSchema,
   OpensteerError,
+  raisedBeforeEffect,
   DeviceIdSchema,
   type AuthSessionId,
   type EnvironmentId,
 } from "@opensteer/core";
 import {
   hostApi,
+  BrowserProfileSchema,
   PendingBrowserProfileDeletionSchema,
   HarnessModelSettingsMapSchema,
   type HostApiCommand,
@@ -33,6 +41,8 @@ export type AdministrationCaller =
   | ({
       readonly kind: "person";
       readonly sessionId?: AuthSessionId;
+      /** An approved proposal's last admission, run where the change is written (K2). */
+      readonly readmit?: CommandProposal["readmit"];
     } & AdministrationActor);
 export type AdministrationDependencies = Pick<
   HostServerDependencies,
@@ -71,6 +81,7 @@ const coreTypes = [
   "iphone.screen.attach",
   "iphone.screen.detach",
   "machine.access.session.stop",
+  "browser.profile.create",
   "browser.profile.rename",
   "browser.profile.delete",
   "browser.history.remove",
@@ -87,10 +98,22 @@ export type AdministrationCommand =
   | Extract<
       HostApiCommand,
       {
-        type: "browser.site.remove" | "channel.binding.revoke" | "channel.connection.status.set";
+        type: "browser.site.remove" | "channel.connection.status.set";
       }
     >
   | Parameters<typeof executeDeviceAdministration>[2];
+/**
+ * The commands this service runs for agents as well as the person: its own, the browser's site
+ * removal, a chat account's status and the device administration it hands on.
+ */
+export const agentAdministrationTypes: ReadonlySet<string> = new Set([
+  ...coreTypes,
+  "browser.site.remove",
+  "channel.connection.status.set",
+  "plugin.remove",
+  "integration.grant.revoke",
+  "integration.disconnect",
+]);
 export function isAdministrationCommand(
   command: HostApiCommand,
 ): command is CoreAdministrationCommand {
@@ -144,29 +167,47 @@ export class AdministrationService {
       });
     return environment;
   }
+  /**
+   * The person's command, or an agent's the command door admitted: `admitted` is the subject the
+   * door admitted it as, which the write admits again; an agent's command without one is refused.
+   */
   async execute(
     caller: AdministrationCaller,
     command: AdministrationCommand,
     afterResponse?: (effect: () => void) => void,
+    admitted?: AuthoritySubject,
   ): Promise<HostApiCommandOutput> {
     if (caller.kind === "person") return this.#authorizedExecute(caller, command, afterResponse);
+    if (!admitted)
+      throw new OpensteerError({
+        code: "internal",
+        message: "An agent's administration command is admitted at the command door",
+      });
     return this.#mutations.run(JSON.stringify([caller.userId, command.idempotencyKey]), () =>
-      this.#authorizedExecute(caller, command, afterResponse),
+      this.#authorizedExecute(caller, command, afterResponse, admitted),
     );
   }
   async #authorizedExecute(
     caller: AdministrationCaller,
     command: AdministrationCommand,
     afterResponse?: (effect: () => void) => void,
+    admitted?: AuthoritySubject,
   ): Promise<HostApiCommandOutput> {
     await this.authorize(caller, command);
     const actor = await this.actor(caller);
     const administration =
-      caller.kind === "person" ? undefined : this.#commandIdentity(caller, command);
+      caller.kind === "person" || !admitted
+        ? undefined
+        : this.#commandIdentity(caller, command, admitted);
     if (administration) {
       if (command.type.startsWith("harness.") && "environmentId" in command)
         await this.admitHarnessManagement(actor, command.environmentId);
-      const replay = await this.dependencies.store.replayAdministrationCommand(administration);
+      // A read, under the agent's admission again: a refusal here comes before anything happened.
+      const replay = await this.dependencies.store
+        .replayAdministrationCommand(administration)
+        .catch((error: unknown) => {
+          throw error instanceof Error ? raisedBeforeEffect(error) : error;
+        });
       if (replay?.output) return hostApi["commands.dispatch"].success.parse(replay.output);
       if (replay && command.type === "machine.access.session.stop")
         return hostApi["commands.dispatch"].success.parse({
@@ -183,6 +224,7 @@ export class AdministrationService {
   #commandIdentity(
     caller: AgentCaller,
     command: AdministrationCommand,
+    admitted: AuthoritySubject,
   ): AdministrationCommandIdentity {
     const { idempotencyKey, type, ...fields } = command;
     const request =
@@ -204,6 +246,8 @@ export class AdministrationService {
         callerKind: caller.kind,
         callerKey: caller.key,
       },
+      // The one command rule, at commit: what an agent may change is the table's, not this list's.
+      ...commandAdmission({ ownerUserId: caller.userId, subject: admitted, command }),
       output: async (result) => {
         let fields: Record<string, unknown> = {};
         if (command.type.startsWith("harness.")) {
@@ -247,10 +291,17 @@ export class AdministrationService {
               deletion: PendingBrowserProfileDeletionSchema.optional(),
             })
             .parse(result);
-        if (command.type === "browser.profile.rename")
+        if (
+          command.type === "browser.profile.rename" ||
+          command.type === "browser.profile.create"
+        ) {
+          const { purpose, ...profile } = BrowserProfileSchema.extend({
+            purpose: z.enum(["person", "engine-sign-in"]).optional(),
+          }).parse(result);
           fields = {
-            profile: result,
+            profile: { ...profile, ...(purpose === "engine-sign-in" ? { purpose } : {}) },
           };
+        }
         return hostApi["commands.dispatch"].success.parse({
           type: command.type,
           ...fields,
@@ -300,15 +351,6 @@ export class AdministrationService {
           type: command.type,
         };
       }
-      case "channel.binding.revoke":
-        await dependencies.channels.service.revokeBinding(
-          command.bindingId,
-          userId,
-          administration,
-        );
-        return {
-          type: command.type,
-        };
       case "channel.connection.status.set":
         await dependencies.channels.service.setConnectionStatus(
           command.connectionId,
@@ -322,6 +364,7 @@ export class AdministrationService {
 
       case "settings.idleCompaction.set": {
         const policy = await dependencies.store.notificationState.setIdleCompactionPolicy({
+          administration,
           policy: command.policy,
           userId,
         });
@@ -591,6 +634,13 @@ export class AdministrationService {
             idempotency: {
               key: command.idempotencyKey,
               requestedBy: userId,
+              // An agent's Stop: its record names it, and it is admitted where it commits.
+              ...(administration
+                ? { authoritySource: administration.authoritySource, admit: administration.admit }
+                : {}),
+              // The person approving an agent's Stop: the agent that asked is admitted again
+              // where the end is written, before any socket closes (K2).
+              ...(caller.kind === "person" && caller.readmit ? { admit: caller.readmit } : {}),
             },
           },
         );
@@ -599,6 +649,19 @@ export class AdministrationService {
           type: command.type,
         };
       }
+      case "browser.profile.create":
+        return {
+          profile: await dependencies.browser.createProfile({
+            administration,
+            ...(command.input.homeRunnerId !== undefined
+              ? { homeRunnerId: command.input.homeRunnerId }
+              : {}),
+            name: command.input.name,
+            idempotencyKey: command.idempotencyKey,
+            ownerId: userId,
+          }),
+          type: command.type,
+        };
       case "browser.profile.rename":
         return {
           profile: await dependencies.browser.renameProfile({

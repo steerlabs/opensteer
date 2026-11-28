@@ -20,8 +20,68 @@ describe("browser profile settings", () => {
         ],
       }),
     ).toEqual([
-      { profileId: "bpr_deleted", status: "Will be erased when its computer is back online" },
+      { profileId: "bpr_deleted", status: "Will be erased when its device is back online" },
     ]);
+  });
+
+  it("says what a deleted profile is waiting for as its Cloud Computer goes offline and returns", () => {
+    const mock = new MockHostClient({ latencyMs: 0 });
+    try {
+      const computerId = createId("runner");
+      const machine = {
+        ...mock.getSnapshot().machines[0]!,
+        selfRunnerId: computerId,
+        name: "Main computer",
+        status: "online" as const,
+      };
+      const snapshot = {
+        machines: [machine],
+        browserPools: [
+          { runnerId: computerId, phase: "parked" as const, since: "2026-11-28T00:00:00Z" },
+        ],
+        browserProfileDeletions: [
+          { profileId: "bpr_deleted", computerId, state: "pending-computer" as const },
+        ],
+      };
+      expect(browserProfileDeletionRows(snapshot)).toEqual([
+        { profileId: "bpr_deleted", status: "Will be erased when the browser next starts" },
+      ]);
+      for (const status of [
+        "offline",
+        "pending",
+        "needs-update",
+        "updating",
+        "update-pending",
+      ] as const) {
+        expect(
+          browserProfileDeletionRows({ ...snapshot, machines: [{ ...machine, status }] }),
+          status,
+        ).toEqual([
+          { profileId: "bpr_deleted", status: "Will be erased when Main computer is back online" },
+        ]);
+      }
+      const report = snapshot.browserPools[0]!;
+      for (const browser of [
+        { ...report, phase: "failed" as const },
+        { ...report, notReady: { reason: "unreachable" } },
+        { ...report, notReady: { reason: "setting-up" } },
+        { ...report, phase: "waking" as const },
+        { ...report, phase: "starting" as const },
+        { ...report, phase: "restarting" as const },
+      ]) {
+        expect(browserProfileDeletionRows({ ...snapshot, browserPools: [browser] })).toEqual([
+          { profileId: "bpr_deleted", status: "Will be erased when the browser next starts" },
+        ]);
+      }
+      for (const browserPools of [[{ ...report, phase: "running" as const }], undefined]) {
+        expect(browserProfileDeletionRows({ ...snapshot, browserPools })).toEqual([
+          { profileId: "bpr_deleted", status: "Not erased yet" },
+        ]);
+      }
+      expect(browserProfileDeletionRows({ ...snapshot, browserProfileDeletions: [] })).toEqual([]);
+    } finally {
+      mock.dispose();
+    }
   });
 
   it("lists profiles by name with the projects allowed and says what deleting takes", () => {

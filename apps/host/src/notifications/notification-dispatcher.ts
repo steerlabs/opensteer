@@ -1,9 +1,6 @@
 import {
   notificationPushWindowMilliseconds,
-  NotificationViewSchema,
   createId,
-  type DeploymentId,
-  type TeamAgentRequestId,
   type EventId,
   type NotificationId,
   type NotificationKind,
@@ -16,7 +13,10 @@ import type {
 } from "@opensteer/database";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import type { NotificationPublicationClient } from "./notification-publication-client.js";
+import type {
+  NotificationPublicationClient,
+  NotificationPublicationResult,
+} from "./notification-publication-client.js";
 
 interface NotificationDispatchFailure {
   readonly eventId: EventId;
@@ -34,8 +34,27 @@ export interface NotificationDispatcherOptions {
   readonly onLive: (notification: DecidedNotification) => void;
   readonly onWarning: (failure: NotificationDispatchFailure) => void;
   readonly ready: Promise<void>;
-  readonly store: Pick<NotificationStore, "decide" | "publicationSkipReason" | "accountSubjects"> &
-    Partial<Pick<NotificationStore, "teamAsk">>;
+  readonly store: Pick<
+    NotificationStore,
+    | "decide"
+    | "publicationSkipReason"
+    | "accountSubjects"
+    | "beginPublication"
+    | "continuePublication"
+    | "settlePublication"
+  >;
+  /** A connected agent's alert has an outcome: its Disconnect can look again (A5). */
+  readonly onAttemptSettled?: () => void;
+}
+
+/** One alert of a connected agent's Request or Run as an attempt in its Disconnect set (A5, F1). */
+interface PublicationAttempt {
+  /** The hand-off, immediately before a request leaves: `false` sends nothing. */
+  handOff(signal: AbortSignal): Promise<boolean>;
+  /** What the account answered to the request that left. */
+  answered(result: NotificationPublicationResult): void;
+  /** Records the outcome once publication is over. */
+  settle(): Promise<void>;
 }
 
 const replyPushGraceMilliseconds = 5_000;
@@ -63,30 +82,6 @@ export class NotificationDispatcher {
     void pending.finally(() => this.#pending.delete(pending));
   }
 
-  dispatchTeamAsk(teamId: DeploymentId, requestId: TeamAgentRequestId): void {
-    if (this.#stop.signal.aborted || !this.#options.store.teamAsk) return;
-    const pending = (async () => {
-      const entry = await this.#options.store.teamAsk!(teamId, requestId);
-      if (!entry || this.#stop.signal.aborted || entry.expiresAt <= this.#now()) return;
-      this.#options.onLive({
-        userId: entry.userId,
-        view: NotificationViewSchema.parse({
-          ...entry,
-          occurredAt: entry.occurredAt.toISOString(),
-        }),
-      });
-      if (this.#options.client) await this.#send(entry);
-    })().catch(() =>
-      this.#report("onError", {
-        eventId: createId("event"),
-        reason: "Team ask notification failed",
-      }),
-    );
-    this.#pending.add(pending);
-    void pending.finally(() => this.#pending.delete(pending));
-  }
-
-  /** Awaits all admitted decisions and publications, including their grace and retries. */
   async drain(): Promise<void> {
     while (this.#pending.size) await Promise.all(this.#pending);
   }
@@ -100,7 +95,7 @@ export class NotificationDispatcher {
     const decisions = await this.#options.store.decide(change);
     if (this.#stop.signal.aborted) return;
     await Promise.all(
-      decisions.map(async ({ sequence, ...decision }) => {
+      decisions.map(async ({ sequence, connectionId, ...decision }) => {
         if (this.#remaining(decision.view.occurredAt) <= 0) return;
         this.#options.onLive(decision);
         if (!this.#options.client) return;
@@ -108,6 +103,7 @@ export class NotificationDispatcher {
           ...decision.view,
           eventId,
           sequence,
+          connectionId,
           userId: decision.userId,
           occurredAt: new Date(decision.view.occurredAt),
           expiresAt: new Date(
@@ -119,7 +115,77 @@ export class NotificationDispatcher {
     );
   }
 
+  /**
+   * Publishes one alert. A connected agent's alert (its Request, its Run's reply or failure) is also one attempt in its
+   * connection's Disconnect set (A5): handed off by `beginPublication` immediately before its
+   * request leaves, after every await, and settled when this ends: `done` once acknowledged,
+   * `failed` when nothing can have reached the account, otherwise `unknown` (a send whose
+   * acknowledgement was lost), which is never sent again. A send of the same notification id
+   * again is the completion of that one attempt, never a second alert: see `continuePublication`.
+   * Your own agents' alerts take the same path without an attempt, exactly as before.
+   */
   async #send(entry: NotificationPublication): Promise<void> {
+    const attempt = entry.connectionId ? this.#attempt(entry) : null;
+    try {
+      await this.#publish(entry, attempt);
+    } finally {
+      await attempt?.settle();
+    }
+  }
+
+  #attempt(entry: NotificationPublication): PublicationAttempt {
+    let id: string | null = null;
+    /** Some request of this attempt may have reached the account and been taken. */
+    let mayHaveLanded = false;
+    let inFlight = false;
+    let published = false;
+    return {
+      handOff: async (signal) => {
+        if (id === null) {
+          const handoff = await this.#options.store.beginPublication(entry);
+          if (handoff.kind !== "begun") return false;
+          id = handoff.attemptId;
+        } else if (!(await this.#options.store.continuePublication(id, entry))) return false;
+        // Shut down or out of time while it was handed off: recorded, and known never sent.
+        if (signal.aborted) return false;
+        inFlight = true;
+        return true;
+      },
+      answered: (result) => {
+        if (!inFlight) return;
+        inFlight = false;
+        if (result.status === "published") published = true;
+        else if (
+          result.status === "retry" ||
+          (result.status === "failed" && result.sent === "maybe")
+        )
+          mayHaveLanded = true;
+      },
+      settle: async () => {
+        if (id === null) return;
+        // A request cut off on its way (shutdown, the window closing) may have arrived.
+        if (inFlight) mayHaveLanded = true;
+        const state = published ? "done" : mayHaveLanded ? "unknown" : "failed";
+        try {
+          await this.#options.store.settlePublication(id, state);
+          this.#options.onAttemptSettled?.();
+        } catch {
+          // Left running, it is recorded as unknown when this Home next starts.
+          this.#report("onError", {
+            eventId: entry.eventId,
+            notificationId: entry.id,
+            kind: entry.kind,
+            reason: "Notification attempt could not be settled",
+          });
+        }
+      },
+    };
+  }
+
+  async #publish(
+    entry: NotificationPublication,
+    handoff: PublicationAttempt | null,
+  ): Promise<void> {
     const window = new AbortController();
     const timer = setTimeout(
       () => window.abort(),
@@ -161,7 +227,17 @@ export class NotificationDispatcher {
         const recipientAccountIds = await this.#options.store.accountSubjects(entry.userId);
         if (recipientAccountIds.length === 0) return;
         signal.throwIfAborted();
-        const result = await this.#options.client!.publish({ entry, recipientAccountIds, signal });
+        const result = await this.#options.client!.publish({
+          entry,
+          recipientAccountIds,
+          signal,
+          ...(handoff ? { handOff: () => handoff.handOff(signal) } : {}),
+        });
+        handoff?.answered(result);
+        if (result.status === "withdrawn") {
+          signal.throwIfAborted();
+          return;
+        }
         if (result.status === "published" || result.status === "no-target") return;
         if (result.status === "push-not-configured") {
           report("onWarning", "push-not-configured");

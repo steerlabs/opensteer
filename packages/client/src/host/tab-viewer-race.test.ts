@@ -1,8 +1,16 @@
-import { TabSchema, createId } from "@opensteer/core";
+import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  TabSchema,
+  createId,
+} from "@opensteer/core";
+import type { TabCommandResult } from "@opensteer/protocol";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
 import { HttpHostClient, type WebSocketClient } from "./host-session-client.js";
+import { TabStore } from "./tab-store.js";
+import { createTabsClient } from "./tabs-client.js";
 
 const disposals: (() => void)[] = [];
 afterEach(() => {
@@ -73,4 +81,35 @@ it("keeps a tab inventory read that lands before the viewer is known", async () 
   await vi.waitFor(() =>
     expect(client.getSnapshot().tabs.get(listed.tabId)?.title).toBe("Ada Lovelace"),
   );
+});
+
+it("does not bind a tab activation whose reconnect was cancelled before the answer", async () => {
+  const answer = Promise.withResolvers<TabCommandResult>();
+  const dispatch = vi.fn(() => answer.promise);
+  const activated = vi.fn();
+  const tabs = createTabsClient({
+    store: new TabStore(),
+    dispatch,
+    activated,
+    listApps: vi.fn(),
+    getApp: vi.fn(),
+  });
+  const abort = new AbortController();
+  const opening = tabs.activateTab(listed.tabId, { signal: abort.signal });
+  expect(dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "tab.activate", tabId: listed.tabId }),
+    abort.signal,
+  );
+  abort.abort();
+  answer.resolve({
+    type: "tab.activate",
+    tab: listed,
+    viewer: {
+      kind: "page",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
+      surfaceId: BrowserSurfaceIdSchema.parse(listed.tabId),
+    },
+  });
+  await expect(opening).rejects.toMatchObject({ name: "AbortError" });
+  expect(activated).not.toHaveBeenCalled();
 });

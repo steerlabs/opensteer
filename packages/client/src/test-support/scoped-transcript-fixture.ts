@@ -75,7 +75,6 @@ export function detailThread<Task extends { readonly id: string; readonly title:
       modelSelection: { providerId: "unknown", modelId: "unknown", options: {} },
       parentThreadId: null,
       pendingRequests: 0,
-      teamOrigin: null,
     }),
   };
 }

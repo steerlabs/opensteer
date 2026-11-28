@@ -1,3 +1,11 @@
+import { billingErrorDetails, billingEvent } from "../cloud-computers/billing-error.js";
+import { logAccountEvent } from "./events.js";
+import { sendHeartbeat } from "@opensteer/shared/heartbeat";
+import { AgentDirectoryStore } from "../agent-directory/store.js";
+import { CloudComputerClaimer, HttpManagedHomeClient } from "../cloud-computers/claim.js";
+import { cloudComputerPortalPath } from "../cloud-computers/portal-pages.js";
+import { CloudComputerStore } from "../cloud-computers/store.js";
+import { CloudComputerStripe } from "../cloud-computers/stripe.js";
 import { appleClientSecret } from "../auth/apple-sign-in.js";
 import {
   ControlPlaneAuthenticator,
@@ -7,7 +15,10 @@ import {
 import { BetterAuthAccountAdoptionCompletionGrantIssuer } from "../adoption/adoption-grant-issuer.js";
 import { AdoptionOperationCipher } from "../adoption/adoption-operation-crypto.js";
 import { HttpHostAccountAdoptionProofVerifier } from "../adoption/adoption-verifier.js";
-import { CloudflareConnectProvider } from "../account/cloudflare-connect-provider.js";
+import {
+  CloudflareConnectProvider,
+  type ConnectResourceProvider,
+} from "../account/cloudflare-connect-provider.js";
 import { assertNativeOAuthConfig, type ControlPlaneConfig } from "../config.js";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 import { createControlPlaneDatabase } from "../database/database.js";
@@ -16,7 +27,6 @@ import { HostedOAuthBrokerStore } from "../auth/hosted-oauth-broker-store.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import { PersonalAccountLinkOperationCipher } from "../account/personal-account-link-operation-crypto.js";
 import { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
-import { TeamIdentityGrantService } from "../account/team-identity-grants.js";
 import { portalCallbackUri, portalOAuthClientId, portalOAuthScopes } from "../portal/portal.js";
 import { PortalSessionStore } from "../portal/portal-sessions.js";
 import { createControlPlaneServer } from "./server.js";
@@ -29,23 +39,34 @@ import {
 import { ControlPlaneNotificationStore } from "../notifications/notification-store.js";
 import { NotificationTokenCipher } from "../notifications/notification-token-cipher.js";
 import { ControlPlaneStore } from "../database/store.js";
-import { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
-import {
-  HostedTeamBootstrapper,
-  hostedTeamOwnerCheck,
-} from "../hosted-teams/hosted-team-bootstrap.js";
-import { HttpHostedTeamHost } from "../hosted-teams/hosted-team-host.js";
-import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
-import { googleServiceAccountVerifier } from "../hosted-teams/provisioner-routes.js";
+import { CloudComputerSecretCipher } from "../cloud-computers/secret-cipher.js";
+import { googleServiceAccountVerifier } from "../cloud-computers/provisioner-verifier.js";
 
 const operationResultCleanupIntervalMilliseconds = 5 * 60 * 1_000;
 
-export async function startControlPlane(config: ControlPlaneConfig): Promise<{
+/**
+ * What a caller may hand the account service instead of building it from its configuration.
+ * Only the tunnel provider: a journey that runs the real account code on a machine with no
+ * Cloudflare credential passes a stand-in here. `main.ts` passes nothing, and the configuration
+ * has no field that names a provider, so a deployed account service always builds Cloudflare's.
+ */
+export interface ControlPlaneDependencies {
+  readonly connectProvider?: ConnectResourceProvider;
+}
+
+export async function startControlPlane(
+  config: ControlPlaneConfig,
+  dependencies: ControlPlaneDependencies = {},
+): Promise<{
   readonly close: () => Promise<void>;
 }> {
   assertNativeOAuthConfig(config);
   const database = createControlPlaneDatabase({ connectionString: config.databaseUrl });
-  let hostedTeamBootstrap: HostedTeamBootstrapper | undefined;
+  let cloudComputerClaimer: CloudComputerClaimer | undefined;
+  // Does nothing until the billing pass is set up below; its minute timer covers that.
+  let runBilling = (): void => undefined;
+  // The store reports billing attention before the server and its logger exist.
+  let logger: Parameters<typeof logAccountEvent>[0] | undefined;
   try {
     await migrateControlPlaneToLatest(database);
     const appleSignIn = config.appleSignIn;
@@ -62,21 +83,26 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     });
     const connectLifecycle = new ConnectLifecycleService(
       database,
-      new CloudflareConnectProvider(config.connectCloudflare),
+      dependencies.connectProvider ?? new CloudflareConnectProvider(config.connectCloudflare),
       { managedConnectDomain: config.connectDomain },
     );
-    const hostedTeamHost = new HttpHostedTeamHost();
-    const ownerCheck = hostedTeamOwnerCheck({
-      host: hostedTeamHost,
-      issuer: config.publicOrigin,
-      sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
-    });
-    const hostedTeams = config.hostedTeams
-      ? new HostedTeamStore(database, {
-          cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
-          ownerCheck,
-        })
+    const cloud = config.cloudComputers;
+    const stripe = cloud
+      ? new CloudComputerStripe({ key: cloud.stripeKey, returnUrl: config.publicOrigin })
       : undefined;
+    const cloudComputers =
+      cloud && stripe
+        ? new CloudComputerStore(database, {
+            config: cloud,
+            accountOrigin: config.publicOrigin,
+            portalOrigin: config.portalOrigin,
+            cipher: new CloudComputerSecretCipher(config.adoptionOperationKey),
+            stripe,
+            returnUrl: new URL(cloudComputerPortalPath, config.portalOrigin),
+            onBillingAttention: (message) =>
+              logAccountEvent(logger ?? console, "account.billing.failed", {}, message),
+          })
+        : undefined;
     const store = new ControlPlaneStore(database, config.publicOrigin, {
       adoptionCompletionGrantIssuer: new BetterAuthAccountAdoptionCompletionGrantIssuer(
         auth,
@@ -132,14 +158,18 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         authenticator: new ControlPlaneAuthenticator(auth, database, config.publicOrigin),
         connectLifecycle,
         ...(hostedOAuthBroker ? { hostedOAuthBroker } : {}),
-        ...(config.hostedTeams && hostedTeams
+        agentDirectory: new AgentDirectoryStore(database),
+        ...(cloud && cloudComputers
           ? {
-              hostedTeams: {
-                store: hostedTeams,
-                kickBootstrap: () => hostedTeamBootstrap?.kick(),
+              cloudComputers: {
+                store: cloudComputers,
+                kickBootstrap: () => cloudComputerClaimer?.kick(),
+                kickBilling: () => runBilling(),
+                stripeWebhookSecret: cloud.stripeWebhookSecret,
+                ...(config.websiteOrigin ? { websiteOrigin: config.websiteOrigin } : {}),
                 verifyProvisioner: googleServiceAccountVerifier({
                   audience: config.publicOrigin.origin,
-                  email: config.hostedTeams.provisionerEmail,
+                  email: cloud.provisionerEmail,
                 }),
               },
             }
@@ -157,11 +187,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         personalRemoteAccount,
         portalSessions,
         store,
-        teamIdentityGrants: new TeamIdentityGrantService({
-          auth,
-          database,
-          issuer: config.publicOrigin,
-        }),
         accountProfiles: createAccountProfiles(auth, database, config.publicOrigin),
       },
       { logger: config.environment !== "test" },
@@ -170,6 +195,15 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     await personalRemoteAccount.purgeExpired();
     await portalSessions.purgeExpired();
     await hostedOAuthBrokerStore?.purgeExpired(new Date());
+    logger = server.log;
+    const billingError = (error: unknown) =>
+      logAccountEvent(
+        server.log,
+        billingEvent(error),
+        billingErrorDetails(error),
+        "Cloud Computer billing reconciliation failed",
+      );
+    await cloudComputers?.checkOffer().catch(billingError);
     await server.listen({ host: config.listenHost, port: config.listenPort });
 
     server.log.info({ apns: Boolean(apns), fcm: Boolean(fcm) }, "Push providers configured");
@@ -199,17 +233,76 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         : undefined;
     notificationDelivery?.start();
 
-    hostedTeamBootstrap = hostedTeams
-      ? new HostedTeamBootstrapper({
-          teams: hostedTeams,
-          accounts: store,
-          host: hostedTeamHost,
-          ownerCheck,
+    cloudComputerClaimer = cloudComputers
+      ? new CloudComputerClaimer({
+          store: cloudComputers,
+          home: new HttpManagedHomeClient(),
           issuer: config.publicOrigin,
-          onError: (error) => server.log.error({ err: error }, "Hosted team setup failed"),
+          sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
+          onError: (error) =>
+            logAccountEvent(
+              server.log,
+              "account.cloud_computer.claim_failed",
+              { err: error },
+              "Cloud Computer claim failed",
+            ),
         })
       : undefined;
-    hostedTeamBootstrap?.start();
+    cloudComputerClaimer?.start();
+
+    let billingPass: Promise<boolean | void> | undefined;
+    runBilling = () => {
+      if (!billingPass && cloudComputers && cloud) {
+        // A heartbeat only after a pass that ran here, start to end, with nothing failing.
+        let failed = false;
+        const passError = (error: unknown) => {
+          failed = true;
+          billingError(error);
+        };
+        billingPass = cloudComputers
+          .reconcileBilling(passError, {
+            notReadyAfterMs: cloud.notReadyAfterMinutes * 60_000,
+            onFinding: ({ event, ...fields }) => logAccountEvent(server.log, event, fields),
+          })
+          .then((ran) => {
+            if (ran && !failed)
+              sendHeartbeat(cloud.heartbeatUrl, {
+                onError: (status) =>
+                  logAccountEvent(server.log, "account.heartbeat.failed", { status }),
+              });
+            return ran;
+          })
+          .catch(billingError)
+          .finally(() => {
+            billingPass = undefined;
+          });
+      }
+    };
+    const billingTimer = cloudComputers ? setInterval(runBilling, 60_000) : undefined;
+    billingTimer?.unref();
+    runBilling();
+
+    let backupPass: Promise<void> | undefined;
+    const backupError = () =>
+      logAccountEvent(
+        server.log,
+        "account.backup.erasure_pending",
+        {},
+        "Cloud Computer backup erasure is pending",
+      );
+    const runBackupErasure = () => {
+      if (!backupPass && cloudComputers) {
+        backupPass = cloudComputers
+          .reconcileBackupErasure(backupError)
+          .catch(backupError)
+          .finally(() => {
+            backupPass = undefined;
+          });
+      }
+    };
+    const backupTimer = cloudComputers ? setInterval(runBackupErasure, 15_000) : undefined;
+    backupTimer?.unref();
+    runBackupErasure();
 
     const cleanup = setInterval(() => {
       void Promise.all([
@@ -226,7 +319,11 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
       close: () => {
         closePromise ??= (async () => {
           clearInterval(cleanup);
-          await hostedTeamBootstrap?.close();
+          clearInterval(billingTimer);
+          clearInterval(backupTimer);
+          await billingPass;
+          await backupPass;
+          await cloudComputerClaimer?.close();
           await notificationDelivery?.close();
           apns?.close();
           await server.close();

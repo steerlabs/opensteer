@@ -18,6 +18,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient, mockCardUseRequest } from "@opensteer/client/mock";
 import { createThreadMutationGate, type ThreadMutationGate } from "./thread-mutation-gate.js";
+import { addressValue, addressWords } from "../ui/address-words.js";
 
 vi.mock("./agent-mark.js", () => ({
   AgentEngine: ({ children }: { readonly children: unknown }) => children,
@@ -435,6 +436,87 @@ describe("saved card consent", () => {
   );
 });
 
+/*
+ * A sign-in or card use the Home says is gone has no time left on it: the sheet never says it
+ * is "no longer running" beside "Expires in 14 minutes". While it still runs, it says how long.
+ */
+describe("a saved login or card that is no longer running", () => {
+  const approval = {
+    login: { stage: "approval", permissionVersion: 6, accounts: [] },
+    card: { stage: "card-approval", permissionVersion: 7, cards: [] },
+  } as const;
+  const gone = {
+    login: "This sign-in is no longer running.",
+    card: "This card use is no longer running.",
+  } as const;
+  const requestOf = (kind: "login" | "card"): Request =>
+    kind === "login"
+      ? passwordSignInRequest()
+      : mockCardUseRequest({ site: "https://shop.example.com" });
+
+  it.each(["login", "card"] as const)("says only that a gone %s has ended", async (kind) => {
+    const passwordRead = vi.fn(async () => ({ ok: true, data: { stage: "gone" } }));
+    await render(surface(requestOf(kind)), vi.fn(), { passwordRead });
+    await vi.waitFor(() => expect(text()).toContain(gone[kind]));
+    expect(text()).not.toMatch(/Expires in/u);
+    // Nor a deadline it no longer has.
+    expect(text()).not.toMatch(/can use it on \S+ until/u);
+  });
+
+  it("names a saved card's request once, however long its title", async () => {
+    const passwordRead = vi.fn(async () => ({ ok: true, data: approval.card }));
+    await render(surface(requestOf("card")), vi.fn(), { passwordRead });
+    await vi.waitFor(() => expect(passwordRead).toHaveBeenCalled());
+    expect(text().split("Use a saved card on shop.example.com?").length - 1).toBe(1);
+  });
+
+  it.each(["login", "card"] as const)("says how long a running %s has left", async (kind) => {
+    const passwordRead = vi.fn(async () => ({ ok: true, data: approval[kind] }));
+    await render(surface(requestOf(kind)), vi.fn(), { passwordRead });
+    await vi.waitFor(() => expect(passwordRead).toHaveBeenCalled());
+    expect(text()).toMatch(/Expires in \d+ minutes/u);
+    expect(text()).not.toContain(gone[kind]);
+  });
+});
+
+/*
+ * A Request answered in a page, such as signing in to a site, offers that page one tap away:
+ * the tab the Request names while the tab list still holds it, and nothing once it is gone.
+ */
+describe("Open the page, from a Request that names its tab", () => {
+  const named = "mock-tab-2-0";
+  const tabsWith = (rows: readonly { tabId: string; kind: string }[]) => {
+    const byId = new Map(rows.map((row) => [row.tabId, { usedBy: [], ...row }]));
+    return { get: (id: string) => byId.get(id), rows: byId, subscribe: () => () => undefined };
+  };
+  const namingRequest = (): Request =>
+    ({
+      ...signInRequest(),
+      payload: { ...signInRequest().payload, tabId: named },
+    }) as Request;
+
+  it("opens the Request's own tab while it is there", async () => {
+    const onOpenPage = vi.fn();
+    await render(surface(namingRequest()), vi.fn(), {
+      inspect: vi.fn(async () => inspection([])),
+      onOpenPage,
+      snapshot: { tabs: tabsWith([{ tabId: named, kind: "page" }]) },
+    });
+    await click("Open the page");
+    expect(onOpenPage).toHaveBeenCalledExactlyOnceWith(named);
+  });
+
+  it("offers nothing once that tab is gone, not another page of the task", async () => {
+    await render(surface(namingRequest()), vi.fn(), {
+      inspect: vi.fn(async () => inspection([])),
+      onOpenPage: vi.fn(),
+      snapshot: { tabs: tabsWith([{ tabId: "mock-tab-1-0", kind: "page" }]) },
+    });
+    expect(text()).toContain("Sign in to github.com");
+    expect(text()).not.toContain("Open the page");
+  });
+});
+
 describe("RequestSheetContent saved-password sign-ins", () => {
   it("names the Mac where it waits and declines with its own command", async () => {
     let answer: ((value: unknown) => void) | undefined;
@@ -444,12 +526,17 @@ describe("RequestSheetContent saved-password sign-ins", () => {
           answer = resolve;
         }),
     );
-    await render(surface(passwordSignInRequest()), dispatch);
+    // A sign-in still running: one the Home says is gone has no time left to show.
+    const passwordRead = vi.fn(async () => ({
+      ok: true,
+      data: { stage: "approval", permissionVersion: 6, accounts: [] },
+    }));
+    await render(surface(passwordSignInRequest()), dispatch, { passwordRead });
     expect(text()).toContain("Sign in to github.com");
 
     expect(text()).toContain("Sign in to github.com");
     expect(text()).toContain(
-      "Your agents can type your saved login on github.com and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.",
+      "Opensteer fills your saved login on github.com, and in apps on your devices, like your phone, for your own agents and connected agents you allow. It isn't handed to the agent, but an agent working in that page can read it, and a tricked agent could reveal it.",
     );
     expect(text()).toContain("Agent’s reason");
     expect(text().split("Open the pull request").length - 1).toBe(1);
@@ -512,6 +599,43 @@ describe("RequestSheetContent saved-password sign-ins", () => {
     expect(passwordRead).toHaveBeenCalledTimes(1);
   });
 
+  it("offers only Allow once when a connected agent asks for a saved login", async () => {
+    const dispatch = vi.fn(async () => ({
+      type: "browser.password-sign-in.respond",
+      status: "fulfilled",
+    }));
+    const passwordRead = vi.fn(async () => ({
+      ok: true,
+      data: {
+        stage: "approval",
+        permissionVersion: 6,
+        accounts: [
+          {
+            id: "00000000-0000-4000-8000-000000000001",
+            revision: 7,
+            username: "person@example.com",
+            host: "github.com",
+            onPage: false,
+            updatedAt: new Date().toISOString(),
+            label: null,
+          },
+        ],
+      },
+    }));
+    const request = {
+      ...passwordSignInRequest(),
+      originatingAgentSessionId: createId("agentSession"),
+    };
+    await render(surface(request), dispatch, { passwordRead });
+    expect(text()).not.toContain("from now on");
+    await click("Allow once");
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        decision: expect.objectContaining({ kind: "approve", remember: false }),
+      }),
+    );
+  });
+
   it.each([false, true])(
     "keeps account host groups and page matches (onPage=%s)",
     async (onPage) => {
@@ -536,11 +660,11 @@ describe("RequestSheetContent saved-password sign-ins", () => {
       }));
       await render(surface(passwordSignInRequest()), dispatch, { passwordRead });
       if (onPage) {
-        expect(text()).not.toContain("enterprise.github.com");
+        expect(addressValue(text())).not.toContain("enterprise.github.com");
         await click("Other accounts on github.com (2)");
       }
       for (const host of ["enterprise.github.com", "login.github.com"]) {
-        expect(text()).toContain(host);
+        expect(text()).toContain(addressWords(host));
         expect(button(`Sign in as same@example.com · ${host}`)).toBeDefined();
       }
       await click("Sign in as same@example.com · enterprise.github.com");
@@ -858,8 +982,12 @@ describe("RequestSheetContent external requests", () => {
       expect(text()).toContain("Sign in to github.com");
       expect(text()).toContain("Chrome isn’t connected yet");
 
-      expect(text()).toContain("Your agent wants to use your github.com sign-in from Chrome.");
-      expect(text()).toContain("Your agent will be able to use github.com as you.");
+      expect(text()).toContain(
+        `Your agent wants to use your ${addressWords("github.com")} sign-in from Chrome.`,
+      );
+      expect(text()).toContain(
+        `Your agent will be able to use ${addressWords("github.com")} as you.`,
+      );
       expect(text()).toContain("Connect Chrome from Opensteer on your computer.");
       expect(button("Allow").disabled).toBe(true);
 
@@ -901,7 +1029,9 @@ describe("RequestSheetContent external requests", () => {
     await render(surface(signInRequest()), dispatch, { inspect });
     await settle();
 
-    expect(text()).toContain("Several Chrome profiles are signed in to github.com");
+    expect(text()).toContain(
+      `Several Chrome profiles are signed in to ${addressWords("github.com")}`,
+    );
     expect(text()).toContain("Sharing github.com is stopped");
     expect(button("Old laptop").disabled).toBe(true);
     expect(button("Allow").disabled).toBe(true);
@@ -926,7 +1056,10 @@ describe("RequestSheetContent external requests", () => {
     await render(surface(signInRequest()), vi.fn(), { inspect });
     await settle();
 
-    expect(text()).toContain("Sharing github.com is stopped in Chrome on Mac");
+    // The site drawn as an address, in the sentence: read without the characters that hold it whole.
+    expect(text().replace(/[\u2060\u200B]/gu, "")).toContain(
+      "Sharing github.com is stopped in Chrome on Mac",
+    );
     expect(text()).toContain("Open the Opensteer extension in Chrome and choose Share again.");
     expect(button("Allow").disabled).toBe(true);
   });
@@ -945,6 +1078,7 @@ async function render(
     readonly gate?: ThreadMutationGate;
     readonly inspect?: ReturnType<typeof vi.fn>;
     readonly machines?: readonly MachineSummary[];
+    readonly onOpenPage?: (tabId: string) => void;
     readonly passwordRead?: ReturnType<typeof vi.fn>;
     readonly reason?: boolean;
     readonly review?: ReturnType<typeof vi.fn>;
@@ -1001,6 +1135,7 @@ async function render(
         onClose={() => {
           root.render(null);
         }}
+        {...(options.onOpenPage === undefined ? {} : { onOpenPage: options.onOpenPage })}
         reason={options.reason ?? false}
         surface={model}
       />,

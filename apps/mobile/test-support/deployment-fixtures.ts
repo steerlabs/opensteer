@@ -6,6 +6,7 @@ import {
   signTestDiscoveryEnvelope,
   signTestPersonalAccessRoute,
   testHostAuthorityKeys,
+  testHostIdentityProofAnswer,
 } from "@opensteer/client/test-support";
 import {
   DeploymentIdSchema,
@@ -33,11 +34,29 @@ const keys = testHostAuthorityKeys();
 
 const personalCanonicalOrigin = "http://127.0.0.1:4173";
 const personalRouteOrigin = "https://route.example.com";
-const serverCanonicalOrigin = "https://host.example.com";
+const homeCanonicalOrigin = "https://home.example.com";
 const verifiedAt = "2026-09-01T00:00:00.000Z";
+
+/**
+ * What a saved Home's address answers when a client asks it to prove itself:
+ * the same Home, or (`replaced`) a different Opensteer now serving there.
+ */
+export function testHomeProofAnswer(
+  url: string,
+  connection: DeploymentConnection,
+  replaced = false,
+): Response | null {
+  return testHostIdentityProofAnswer(
+    url,
+    connection.authority,
+    replaced ? testHostAuthorityKeys() : keys,
+  );
+}
 
 export function testDeploymentConnection(input: {
   readonly deploymentId?: string;
+  /** A Home on its own server: personal, listed by its own HTTPS canonical origin. */
+  readonly home?: boolean;
   readonly kind?: DeploymentDisplayKind;
   readonly name?: string;
   /** A Personal computer whose signed route is live. Off means asleep. */
@@ -50,13 +69,10 @@ export function testDeploymentConnection(input: {
   readonly route?: { readonly generation?: number; readonly kind?: "connect" | "private" };
   readonly source?: DeploymentConnection["source"];
 }): DeploymentConnection {
-  // A phone attaches to a personal computer; a team is the other kind of row.
-  const kind = input.kind ?? "personal";
-  const personal = kind === "personal";
+  const kind = "personal";
   const document = testDiscoveryDocument({
-    canonicalOrigin: personal ? personalCanonicalOrigin : serverCanonicalOrigin,
+    canonicalOrigin: input.home === true ? homeCanonicalOrigin : personalCanonicalOrigin,
     deploymentId: input.deploymentId ?? "dep_0192f4a1-1111-4000-8000-000000000001",
-    personal,
   });
   const authority = signTestDiscoveryEnvelope(document, keys);
   const timestamps = { createdAt: verifiedAt, lastUsedAt: null, updatedAt: verifiedAt };
@@ -65,15 +81,16 @@ export function testDeploymentConnection(input: {
     accountAccess: null,
     authority,
     kind,
-    name: input.name ?? (personal ? "Alex's Mac mini" : "host.example.com"),
+    name: input.name ?? "Alex's Mac mini",
     source: input.source ?? { kind: "manual" },
   };
 
-  if (!personal) {
+  if (input.home === true) {
     return DeploymentConnectionSchema.parse({
       ...common,
-      bootstrapMethods: ["oidc"],
-      endpoints: [{ kind: "canonical", origin: serverCanonicalOrigin, verifiedAt }],
+      bootstrapMethods: ["password"],
+      endpoints: [{ kind: "canonical", origin: homeCanonicalOrigin, verifiedAt }],
+      name: input.name ?? "home.example.com",
       preferredEndpointOrigin: null,
       reachability: "canonical",
     });
@@ -121,12 +138,11 @@ export function testDeploymentConnection(input: {
 function testDiscoveryDocument(input: {
   readonly canonicalOrigin: string;
   readonly deploymentId: string;
-  readonly personal: boolean;
 }): HostDiscoveryDocument {
   return HostDiscoveryDocumentSchema.parse({
     canonicalOrigin: input.canonicalOrigin,
     deploymentId: DeploymentIdSchema.parse(input.deploymentId),
-    deploymentShape: { kind: input.personal ? "personal" : "team" },
+    deploymentShape: { kind: "personal" },
     hostInstanceId: HostInstanceIdSchema.parse("hst_0192f4a1-2222-4000-8000-000000000002"),
     hostKey: { algorithm: "Ed25519" },
   });

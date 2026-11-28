@@ -27,6 +27,27 @@ export interface BrowserWatchState {
   readonly inputError?: ClientIssue | null;
 }
 const openFailed: ClientIssue = { code: "open-failed", resource: "this page" };
+/**
+ * How long the page's refusal of the person's input stays said after its latest refusal. The
+ * browser answers an input only when it refuses it, so nothing tells this view that a later one
+ * was taken: the words end with time, never with the person's next key, which would wipe them
+ * before they could be read at typing speed.
+ */
+export const browserInputRefusalShownMs = 4_000;
+/**
+ * Quiet interval after a `browser-input-overload` key refusal before typing resumes, so the rest of
+ * an in-progress burst stops cleanly instead of sending trailing keys past a dropped prefix.
+ */
+export const browserTypingBurstQuietMs = 300;
+const maxTrackedTypingSequences = 512;
+function isTypingCommand(command: BrowserCommand): boolean {
+  return (
+    command.type === "input.key" ||
+    command.type === "input.text" ||
+    command.type === "input.command" ||
+    command.type === "input.compose"
+  );
+}
 /** A Host or Browser Runtime too old for targeted viewing: refused for good, until it updates. */
 class TargetedViewingUnsupported extends Error {}
 const empty: BrowserWatchState = { frame: null, status: "unavailable", error: null };
@@ -48,6 +69,8 @@ interface Watch {
   holds: number;
   pictureHolds: number;
   asleepHolds: number;
+  /** Holds that keep this target and its last picture without asking for a socket. */
+  socketlessHolds: number;
   captureRegionHolds: number;
   frameWindowHolds: number;
   rasterDemandHolds: number;
@@ -66,6 +89,16 @@ interface Watch {
   terminal: boolean;
   sequence: number;
   generation: number;
+  /** Ends the shown refusal of the person's input. */
+  refusalTimer: ReturnType<typeof setTimeout> | null;
+  /** Physical key codes whose press left this viewer and whose release has not yet gone out. */
+  readonly heldKeys: Set<string>;
+  /** Recent typing command sequences so overload replies map accurately back to typing. */
+  readonly typingSequences: Set<number>;
+  lastInputKind: "typing" | "other" | null;
+  /** True after a typing overload refusal until the burst goes quiet or a new pointer/cancel runs. */
+  typingStopped: boolean;
+  typingQuietTimer: ReturnType<typeof setTimeout> | null;
 }
 /** One producer per exact target, with newest-frame storage and Watch credit. */
 export class BrowserWatchStore {
@@ -92,8 +125,10 @@ export class BrowserWatchStore {
   }
   readonly #authorityDenied = new Set<string>();
   #authorized: (sessionId: string, surfaceId: string) => boolean = () => true;
+  /** No socket at all: the client is offline, or nobody can see it. */
   #suspended = false;
-  #keepControlOnly = false;
+  /** Sockets already open stay, and nothing opens: the client is hidden, inside its grace. */
+  #keeping = false;
   #allowed: (sessionId: string, surfaceId: string, asleep: boolean) => boolean = () => true;
   #isAllowed(target: Watch): boolean {
     return this.#allowed(target.sessionId, target.surfaceId, target.asleepHolds > 0);
@@ -170,23 +205,84 @@ export class BrowserWatchStore {
       throw new Error("The targeted browser control is not synchronized.");
     }
     if (target.state.input === "basic" && !browserBasicInputAllows(command)) return;
-    if (
-      target.state.inputError &&
-      command.type !== "input.wheel" &&
-      !(command.type === "input.pointer" && command.action === "move") &&
-      command.type !== "viewport.follow"
-    )
-      this.#set(target, { ...target.state, inputError: null });
+    if (target.typingStopped && isTypingCommand(command)) {
+      this.#holdTypingStop(target);
+      // Keep reserved releases for keys already sent before overload so no key stays stuck down.
+      if (
+        command.type === "input.key" &&
+        command.action === "up" &&
+        command.code &&
+        target.heldKeys.has(command.code)
+      ) {
+        target.heldKeys.delete(command.code);
+      } else {
+        return;
+      }
+    } else if (command.type === "input.cancel") {
+      this.#clearTypingStop(target);
+      target.heldKeys.clear();
+      target.lastInputKind = "other";
+    } else if (command.type === "input.pointer" && command.action === "down") {
+      this.#clearTypingStop(target);
+      target.lastInputKind = "other";
+    } else if (isTypingCommand(command)) {
+      target.lastInputKind = "typing";
+      if (command.type === "input.key" && command.code) {
+        if (command.action === "down") target.heldKeys.add(command.code);
+        else if (command.action === "up") target.heldKeys.delete(command.code);
+      }
+    } else if (command.type.startsWith("input.")) {
+      target.lastInputKind = "other";
+    }
+    const sequence = ++target.sequence;
+    if (isTypingCommand(command)) this.#rememberTypingSequence(target, sequence);
     target.socket.send(
       JSON.stringify(
         TargetedBrowserClientMessageSchema.parse({
           ...command,
-          inputSequence: ++target.sequence,
+          inputSequence: sequence,
           inputGeneration: target.generation,
         }),
       ),
     );
     if (command.type === "input.cancel") target.generation++;
+  }
+  #rememberTypingSequence(target: Watch, sequence: number): void {
+    target.typingSequences.add(sequence);
+    if (target.typingSequences.size > maxTrackedTypingSequences) {
+      const oldest = target.typingSequences.values().next().value;
+      if (oldest !== undefined) target.typingSequences.delete(oldest);
+    }
+  }
+  #clearTypingStop(target: Watch): void {
+    if (target.typingQuietTimer) clearTimeout(target.typingQuietTimer);
+    target.typingQuietTimer = null;
+    target.typingStopped = false;
+  }
+  #holdTypingStop(target: Watch): void {
+    target.typingStopped = true;
+    if (target.typingQuietTimer) clearTimeout(target.typingQuietTimer);
+    target.typingQuietTimer = setTimeout(() => {
+      target.typingQuietTimer = null;
+      target.typingStopped = false;
+    }, browserTypingBurstQuietMs);
+  }
+  #clearTypingState(target: Watch): void {
+    this.#clearTypingStop(target);
+    target.heldKeys.clear();
+    target.typingSequences.clear();
+    target.lastInputKind = null;
+  }
+  #endRefusalLater(target: Watch): void {
+    if (target.refusalTimer) clearTimeout(target.refusalTimer);
+    target.refusalTimer = setTimeout(() => {
+      target.refusalTimer = null;
+      if (
+        this.#targets.get(this.#key(target.sessionId, target.surfaceId)) === target &&
+        target.state.inputError
+      )
+        this.#set(target, { ...target.state, inputError: null });
+    }, browserInputRefusalShownMs);
   }
   #key(sessionId: string, surfaceId: string): string {
     return JSON.stringify([sessionId, surfaceId]);
@@ -213,10 +309,16 @@ export class BrowserWatchStore {
       readonly frameWindow?: boolean;
       /** This holder's presenter states its raster density through `rasterDemand`. */
       readonly rasterDemand?: boolean;
+      /**
+       * False: keep this target and its last picture, and no socket for it. A view nobody can
+       * see holds its page this way, so it is no viewer to the Home and still has its picture.
+       */
+      readonly connect?: boolean;
     } = {},
   ): () => void {
-    const picture = options.picture !== false;
-    const asleep = !picture && options.asleep === true;
+    const socketless = options.connect === false;
+    const picture = !socketless && options.picture !== false;
+    const asleep = !picture && !socketless && options.asleep === true;
     const key = this.#key(sessionId, surfaceId);
     let target = this.#targets.get(key);
     if (!target) {
@@ -228,6 +330,7 @@ export class BrowserWatchStore {
         holds: 0,
         pictureHolds: 0,
         asleepHolds: 0,
+        socketlessHolds: 0,
         captureRegionHolds: 0,
         frameWindowHolds: 0,
         rasterDemandHolds: 0,
@@ -243,6 +346,12 @@ export class BrowserWatchStore {
         terminal: false,
         sequence: 0,
         generation: 0,
+        refusalTimer: null,
+        heldKeys: new Set(),
+        typingSequences: new Set(),
+        lastInputKind: null,
+        typingStopped: false,
+        typingQuietTimer: null,
       };
       this.#targets.set(key, target);
     }
@@ -253,6 +362,7 @@ export class BrowserWatchStore {
     const frameWindow = picture && options.frameWindow === true;
     const rasterDemand = picture && options.rasterDemand === true;
     target.holds++;
+    if (socketless) target.socketlessHolds++;
     if (picture) target.pictureHolds++;
     if (asleep) target.asleepHolds++;
     if (captureRegion) target.captureRegionHolds++;
@@ -267,7 +377,7 @@ export class BrowserWatchStore {
       this.#subscribeTarget(target);
     this.#diagnose({ stage: "retain", holds: target.holds });
     if (picture) this.#scheduleDemand(key);
-    if (!this.#paused(target) && this.#isAllowed(target) && !target.socket && !target.timer)
+    if (this.#mayOpen(target) && this.#isAllowed(target) && !target.socket && !target.timer)
       this.#open(target);
     const current = target;
     let released = false;
@@ -277,12 +387,21 @@ export class BrowserWatchStore {
       this.#diagnose({ stage: "release", holds: current.holds - 1 });
       const previouslyOptedIn = current.captureRegionHolds === current.pictureHolds;
       const previouslyWindowed = current.frameWindowHolds === current.pictureHolds;
+      if (socketless) current.socketlessHolds--;
       if (picture) current.pictureHolds--;
       if (asleep) current.asleepHolds--;
       if (captureRegion) current.captureRegionHolds--;
       if (frameWindow) current.frameWindowHolds--;
       if (rasterDemand) current.rasterDemandHolds--;
       if (--current.holds > 0) {
+        // Only socketless holds are left: the socket goes, the target and its picture stay.
+        if (!this.#needsSocket(current)) {
+          if (current.socket || current.timer) {
+            this.#close(current);
+            this.#set(current, this.#kept(current));
+          }
+          return;
+        }
         if (asleep && current.asleepHolds === 0 && !this.#isAllowed(current)) {
           this.#close(current);
           this.#set(current, this.#kept(current));
@@ -387,16 +506,26 @@ export class BrowserWatchStore {
         ),
       );
   }
-  suspend(suspended: boolean, keepControlOnly = false): void {
-    this.#suspended = suspended;
-    this.#keepControlOnly = keepControlOnly;
+  /** No socket while suspended: the client is offline, or nobody can see it. */
+  suspend(suspended: boolean): void {
+    this.presence(suspended ? "closed" : "open");
+  }
+  /**
+   * Whether this client is a viewer. `open`: sockets open as holds need them. `keep`: nobody
+   * can see the client, inside its grace: sockets already open stay, and nothing opens, not even
+   * a reconnect or a new hold. `closed`: no socket at all. Targets and their last pictures stay
+   * in every mode.
+   */
+  presence(mode: "open" | "keep" | "closed"): void {
+    this.#suspended = mode === "closed";
+    this.#keeping = mode === "keep";
     this.reconcile(this.#allowed, this.#authorized);
   }
-  #paused(target: Watch): boolean {
-    return (
-      this.#suspended &&
-      !(this.#keepControlOnly && this.mode === "control" && target.pictureHolds === 0)
-    );
+  #needsSocket(target: Watch): boolean {
+    return target.holds > target.socketlessHolds;
+  }
+  #mayOpen(target: Watch): boolean {
+    return !this.#suspended && !this.#keeping && this.#needsSocket(target);
   }
   reconcile(
     allowed: (sessionId: string, surfaceId: string, asleep: boolean) => boolean = this.#allowed,
@@ -425,11 +554,12 @@ export class BrowserWatchStore {
       if (!this.#isAllowed(target)) {
         this.#close(target);
         this.#set(target, this.#kept(target));
-      } else if (this.#paused(target)) {
+      } else if (this.#suspended || !this.#needsSocket(target)) {
         if (!target.socket && !target.timer) continue;
         this.#close(target);
         this.#set(target, this.#kept(target));
-      } else if (!target.socket && !target.timer && !target.terminal) this.#open(target);
+      } else if (this.#keeping) continue;
+      else if (!target.socket && !target.timer && !target.terminal) this.#open(target);
     }
   }
   /**
@@ -449,7 +579,7 @@ export class BrowserWatchStore {
       if (
         target.synchronized &&
         target.socket?.readyState === 1 &&
-        !this.#paused(target) &&
+        !this.#suspended &&
         this.#isAllowed(target)
       )
         this.#subscribeTarget(target);
@@ -467,6 +597,8 @@ export class BrowserWatchStore {
       if (!this.#targets.has(key)) for (const listener of listeners) listener();
   }
   dispose(): void {
+    for (const target of this.#targets.values())
+      if (target.refusalTimer) clearTimeout(target.refusalTimer);
     this.clear();
     this.#targets.clear();
     this.#listeners.clear();
@@ -476,7 +608,7 @@ export class BrowserWatchStore {
   }
   #open(target: Watch): void {
     if (
-      this.#paused(target) ||
+      !this.#mayOpen(target) ||
       !this.#isAllowed(target) ||
       !this.#authorized(target.sessionId, target.surfaceId)
     )
@@ -518,6 +650,7 @@ export class BrowserWatchStore {
     ) => {
       if (target.socket !== socket) return;
       this.#disconnect(target);
+      this.#clearTypingState(target);
       target.socket = null;
       target.synchronized = false;
       target.awaiting.clear();
@@ -626,16 +759,44 @@ export class BrowserWatchStore {
               message.inputGeneration !== undefined
             )
               target.generation = Math.max(target.generation, message.inputGeneration + 1);
-            if (this.mode === "control")
-              this.#set(target, {
-                ...target.state,
-                inputError: {
-                  code: "rejected",
-                  action: "send that to the page",
-                  done: "sent",
-                  ...(message.error.reason ? { reason: message.error.reason } : {}),
-                },
-              });
+            if (this.mode === "control") {
+              const isTypingOverload =
+                message.error.reason === "browser-input-overload" &&
+                (message.inputSequence !== undefined
+                  ? target.typingSequences.has(message.inputSequence)
+                  : target.typingStopped ||
+                    target.heldKeys.size > 0 ||
+                    target.lastInputKind === "typing");
+              if (isTypingOverload) {
+                const alreadyStopped =
+                  target.typingStopped &&
+                  target.state.inputError?.reason === "browser-typing-overload";
+                this.#holdTypingStop(target);
+                if (!alreadyStopped) {
+                  this.#set(target, {
+                    ...target.state,
+                    inputError: {
+                      code: "rejected",
+                      action: "send that to the page",
+                      done: "sent",
+                      reason: "browser-typing-overload",
+                    },
+                  });
+                }
+                this.#endRefusalLater(target);
+              } else {
+                this.#set(target, {
+                  ...target.state,
+                  inputError: {
+                    code: "rejected",
+                    action: "send that to the page",
+                    done: "sent",
+                    ...(message.error.reason ? { reason: message.error.reason } : {}),
+                  },
+                });
+                this.#endRefusalLater(target);
+              }
+            }
             this.onMessage?.(target.sessionId, message, target.surfaceId);
             return;
           }
@@ -720,6 +881,7 @@ export class BrowserWatchStore {
           event.code === 4003 ? "access-ended" : event.code === 4002 ? "protocol" : "transport",
       });
       this.#disconnect(target);
+      this.#clearTypingState(target);
       target.socket = null;
       target.synchronized = false;
       target.awaiting.clear();
@@ -733,7 +895,7 @@ export class BrowserWatchStore {
     });
   }
   #retry(target: Watch): void {
-    if (this.#paused(target) || !target.holds) return;
+    if (!this.#mayOpen(target) || !target.holds) return;
     const delay = this.retryDelay(target.attempt++, target.unreadableFrames);
     if (target.unreadableFrames > 0) target.unreadableRetryAt = Date.now() + delay;
     target.timer = setTimeout(() => {
@@ -769,6 +931,7 @@ export class BrowserWatchStore {
   }
   #close(target: Watch): void {
     this.#disconnect(target);
+    this.#clearTypingState(target);
     if (target.timer) clearTimeout(target.timer);
     target.timer = null;
     const socket = target.socket;

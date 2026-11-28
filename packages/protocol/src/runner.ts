@@ -5,18 +5,23 @@ import {
   RunnerAppStateSchema,
   RunnerAppsSyncResultSchema,
 } from "./apps.js";
-import { RunMaintenanceSchema } from "@opensteer/core";
-export { TeamTurnContextSchema, type TeamTurnContext } from "@opensteer/core";
+import { RunMaintenanceSchema, isLoopbackHostname } from "@opensteer/core";
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
 import { RunnerSettingsReportSchema } from "./runner-agent-home-settings.js";
 
 import { HostRunFileRequestSchema, RunnerRunFileResultSchema } from "./run-files.js";
+import {
+  HostHomeFileRequestSchema,
+  HostOutputImageUploadSchema,
+  RunnerAgentHomeReportSchema,
+  RunnerHomeFileResultSchema,
+  RunnerOutputImagePublishSchema,
+} from "./home-files.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
   AssignmentRunContextSchema,
-  TeamTurnContextSchema,
   CommandIdSchema,
   EnvironmentIdSchema,
   ExecutionNodeIdSchema,
@@ -62,11 +67,8 @@ import {
   type EnvironmentId,
 } from "@opensteer/core";
 import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-app";
-import {
-  TriggerExecutionOutputSchema,
-  TriggerProgramEventSchema,
-  TriggerProgramSchema,
-} from "@opensteer/triggers/models";
+import { TriggerExecutionOutputSchema, TriggerScriptEventSchema } from "@opensteer/triggers/models";
+import { AutomationScriptSchema } from "@opensteer/triggers/script";
 import { z } from "zod";
 import { RunEgressPlanSchema } from "./access.js";
 import {
@@ -151,8 +153,15 @@ const capabilityTokenSchema = z.string().min(1).max(4_096);
 export const RunExecutionContextSchema = z.strictObject({
   maintenance: RunMaintenanceSchema.optional(),
   maintenanceExpiresAt: z.number().int().nonnegative().optional(),
-  teamTurnContext: TeamTurnContextSchema.nullable().default(null),
+  /** A Home before team removal still sends null here; nothing reads it. */
+  teamTurnContext: z.null().optional(),
   personalContext: z.boolean(),
+  /**
+   * The task and every task it descends from are the person's own: no
+   * connected agent's lineage and no chat in it. Only such a Run starts its
+   * engine with the engine's own configuration.
+   */
+  personLineage: z.boolean(),
   accessMode: ThreadAccessModeSchema,
   assignment: AssignmentRunContextSchema.nullable(),
   /** Scoped to files already admitted to this provider session and this frozen Run. */
@@ -233,8 +242,6 @@ export const HarnessInputSchema = z
     /** Sent only to a Runner advertising `message-origin-v1`. */
     origin: MessageOriginSchema.optional(),
     quote: MessageQuoteSchema.optional(),
-    /** A teammate's ask whose words the owner edited before approving it. */
-    ownerEdited: z.literal(true).optional(),
   })
   .superRefine((input, context) => {
     if (!messageAuthorCanWriteKind(input.author, input.kind)) {
@@ -314,13 +321,18 @@ export type WatchReconcileActivation = z.infer<typeof WatchReconcileActivationSc
 export const TriggerExecutionContextSchema = z.strictObject({
   anchorThreadId: ThreadIdSchema,
   browserCdp: TriggerCapabilityPlanSchema.nullable(),
-  event: TriggerProgramEventSchema,
+  event: TriggerScriptEventSchema,
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   mcp: TriggerCapabilityPlanSchema,
   occurrenceId: TriggerOccurrenceIdSchema,
-  program: TriggerProgramSchema,
   revisionId: TriggerRevisionIdSchema,
+  script: AutomationScriptSchema,
+  secrets: z.record(z.string(), z.string()).optional(),
   triggerId: TriggerIdSchema,
+  webhookBodyBase64: z
+    .string()
+    .max(400 * 1_024)
+    .optional(),
 });
 export type TriggerExecutionContext = z.infer<typeof TriggerExecutionContextSchema>;
 
@@ -330,9 +342,21 @@ const ExecuteTriggerSchema = runnerCommandBase.extend({
   type: z.literal("trigger.execute"),
 });
 
+export const attemptStopStateCapability = "attempt-stop-state-v1" as const;
+const AttemptStopSchema = z.strictObject({
+  id: CommandIdSchema,
+  bootId: z.string(),
+});
+const AttemptStopStateSchema = z.enum(["ended", "still-ending", "never-seen"]);
+export type AttemptStopState = z.infer<typeof AttemptStopStateSchema>;
+
 const ReconcileWatchesSchema = runnerCommandBase.extend({
   desired: z.array(WatchReconcileActivationSchema).max(32),
   reconcileGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  stop: AttemptStopSchema.extend({
+    activationId: TriggerWatchActivationIdSchema,
+    executionGeneration: z.number().int().positive(),
+  }).optional(),
   type: z.literal("watch.reconcile"),
 });
 
@@ -345,6 +369,7 @@ const StopNodeSchema = runnerCommandBase.extend({
 });
 
 const InterruptExecutionSchema = runnerCommandBase.extend({
+  stop: AttemptStopSchema.optional(),
   /** Present when only that execution of the Run is to stop: a restart's predecessor. */
   bindingGeneration: z.number().int().positive().optional(),
   type: z.literal("run.interrupt"),
@@ -352,7 +377,11 @@ const InterruptExecutionSchema = runnerCommandBase.extend({
   threadId: ThreadIdSchema,
 });
 
+export const triggerStopGenerationCapability = "trigger-stop-generation-v1" as const;
+
 const InterruptTriggerExecutionSchema = runnerCommandBase.extend({
+  stop: AttemptStopSchema.optional(),
+  executionGeneration: z.number().int().positive().optional(),
   occurrenceId: TriggerOccurrenceIdSchema,
   type: z.literal("trigger.interrupt"),
 });
@@ -1127,6 +1156,24 @@ export const HarnessAuthenticationStateViewSchema = z.discriminatedUnion("status
 export type HarnessAuthenticationState = z.infer<typeof HarnessAuthenticationStateSchema>;
 
 /**
+ * Whether a browser sign-in finishes only on the engine's own computer: its
+ * authorization sends the browser back to a loopback `redirect_uri`, which a
+ * browser anywhere else cannot reach. Read from the address itself, so it holds
+ * for every engine without each one declaring it.
+ */
+export function harnessChallengeReturnsToLoopback(
+  challenge: Extract<HarnessAuthenticationState, { status: "pending" }>["challenge"],
+): boolean {
+  if (challenge.kind !== "browser-code") return false;
+  try {
+    const redirect = new URL(challenge.authorizationUrl).searchParams.get("redirect_uri");
+    return redirect !== null && isLoopbackHostname(new URL(redirect).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The model servers an account of a Model server source can talk to, by the
  * API each one answers. `generic` is any server with an OpenAI model list.
  */
@@ -1224,58 +1271,89 @@ const runnerMessageBase = {} as const;
 const fencedMessageBase = { ...RunnerConnectionFenceSchema.shape } as const;
 
 /**
+ * Capability advertised by Runners that notify the Home when their computer is
+ * about to sleep (macOS/Windows desktop Runners; never Linux or Android).
+ */
+export const runnerPowerStateCapability = "runner-power-state-v1" as const;
+
+export const RunnerPowerSleepingSchema = z.strictObject({
+  ...fencedMessageBase,
+  type: z.literal("runner.power.sleeping"),
+});
+export type RunnerPowerSleeping = z.infer<typeof RunnerPowerSleepingSchema>;
+
+export const runnerRestartingCloseCode = 4012;
+
+/**
+ * Capability advertised by Runners that tell the Home when the person stopped
+ * agents on their computer (the desktop app's "Stop everything on this Mac")
+ * and when they resume. Sent only to a Home whose welcome accepts it.
+ */
+export const runnerAgentStopCapability = "runner-agent-stop-v1" as const;
+/** A Runner that parses a connected agent session's `alwaysAsk` and `noLaunch` fields. */
+export const agentSessionGuardsCapability = "agent-session-guards-v1" as const;
+
+/** The person stopped agents on this computer; nothing new starts until they resume. */
+export const RunnerAgentsStoppedSchema = z.strictObject({
+  ...fencedMessageBase,
+  /** When the person stopped them, as this computer saved it. */
+  stoppedAt: IsoDateTimeSchema,
+  type: z.literal("runner.agents.stopped"),
+});
+export type RunnerAgentsStopped = z.infer<typeof RunnerAgentsStoppedSchema>;
+
+/** The person resumed agents on this computer; held work may start now. */
+export const RunnerAgentsResumedSchema = z.strictObject({
+  ...fencedMessageBase,
+  type: z.literal("runner.agents.resumed"),
+});
+export type RunnerAgentsResumed = z.infer<typeof RunnerAgentsResumedSchema>;
+
+/**
  * Everything an agent-executing machine offers. Only this module carries an
  * environment, harnesses and storage: a Runner that exists to relay a browser
  * or a messaging transport has no work location and must not be made to invent
  * one.
  */
-export const RunnerAgentsModuleSchema = z
-  .object({
-    // Exactly one. A Runner holds a single unscoped harness registry and its
-    // identity refuses any other environment, so advertising a list the
-    // reconciler could never honor per-environment only invited callers to
-    // loop over it.
-    environmentIds: z.array(EnvironmentIdSchema).length(1),
-    computerTool: z.literal(1).optional(),
-    reconcileHarnessInspection: z
-      .number()
-      .int()
-      .positive()
-      .transform((version) => (version === 1 ? (1 as const) : undefined))
-      .optional(),
-    /** Absent on Runners that cannot give a Run files or take them from it. */
-    runFiles: z.literal(1).optional(),
-    harnessDrivers: RunnerHarnessDriversSchema,
-    // Present exactly when this Runner advertises local-directory. It carries
-    // the disk's durable identity plus what that disk currently holds, so a
-    // reconnect is reconciled without asking binding by binding.
+export const RunnerAgentsModuleSchema = z.object({
+  // Exactly one. A Runner holds a single unscoped harness registry and its
+  // identity refuses any other environment, so advertising a list the
+  // reconciler could never honor per-environment only invited callers to
+  // loop over it.
+  environmentIds: z.array(EnvironmentIdSchema).length(1),
+  computerTool: z.literal(1).optional(),
+  reconcileHarnessInspection: z
+    .number()
+    .int()
+    .positive()
+    .transform((version) => (version === 1 ? (1 as const) : undefined))
+    .optional(),
+  /** Absent on Runners that cannot give a Run files or take them from it. */
+  runFiles: z.literal(1).optional(),
+  harnessDrivers: RunnerHarnessDriversSchema,
+  // Present exactly when this Runner advertises local-directory. It carries
+  // the disk's durable identity plus what that disk currently holds, so a
+  // reconnect is reconciled without asking binding by binding.
 
-    loginFill: z
-      .number()
-      .int()
-      .positive()
-      .transform((version) => (version === 1 ? (1 as const) : undefined))
-      .optional(),
-    maxConcurrentRuns: z.number().int().positive().max(1_000),
-    // New choices may coexist with supported ones; a required set must remain usable.
-    providerStateModes: z
-      .array(z.string())
-      .max(100)
-      .transform((values) =>
-        values.filter((value) => HarnessInstanceStateKindSchema.safeParse(value).success),
-      )
-      .pipe(z.array(HarnessInstanceStateKindSchema).min(1).max(2)),
-    // New choices may coexist with supported ones; a required set must remain usable.
-  })
-  .superRefine((module, context) => {
-    if (new Set(module.providerStateModes).size !== module.providerStateModes.length) {
-      context.addIssue({ code: "custom", message: "Runner provider state modes must be unique" });
-    }
-  });
+  loginFill: z
+    .number()
+    .int()
+    .positive()
+    .transform((version) => (version === 1 ? (1 as const) : undefined))
+    .optional(),
+  maxConcurrentRuns: z.number().int().positive().max(1_000),
+});
 export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 
 export const RunnerBrowserModuleSchema = z
   .object({
+    standardCdp: z.literal(1).optional().catch(undefined),
+    standardCdpLineage: z.literal(1).optional().catch(undefined),
+    /** The runtime enforces a connected agent's CDP itself when a command says it is one's. */
+    connectionCommands: z.literal(1).optional().catch(undefined),
+    wholeContextCdp: z.literal(1).optional().catch(undefined),
+    standardCdpLeaseRecovery: z.literal(1).optional().catch(undefined),
+    standardCdpAttemptRecovery: z.literal(1).optional().catch(undefined),
     cardFill: z
       .number()
       .int()
@@ -1312,6 +1390,13 @@ export const RunnerBrowserModuleSchema = z
       .transform((version) => (version === 1 ? version : undefined))
       .optional(),
     popupFollowVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    /** It reads the attach ticket's `actor` claim, so the Home may issue one. */
+    actorClaim: z
       .number()
       .int()
       .positive()
@@ -1638,7 +1723,10 @@ export function advertisedRunnerModules(modules: RunnerModules): readonly Runner
 
 export const RunnerDescriptorSchema = z
   .object({
+    agentsStoppedSince: IsoDateTimeSchema.nullable().optional(),
     bootId: RunnerBootIdSchema,
+    /** Stable identity of the host OS boot; changes on machine reboot. */
+    machineBootId: z.string().trim().min(1).max(128).optional(),
     // Capability names are an extensible set, independent of required semantics.
     capabilities: z
       .array(z.string())
@@ -1864,10 +1952,13 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
   RunnerSettingsReportSchema,
+  RunnerAgentHomeReportSchema,
   RunnerAppResultSchema,
   RunnerAppStateSchema,
   RunnerAppsSyncResultSchema,
   RunnerRunFileResultSchema,
+  RunnerHomeFileResultSchema,
+  RunnerOutputImagePublishSchema,
   z.strictObject({
     ...fencedMessageBase,
     type: z.literal("runner.heartbeat"),
@@ -1914,6 +2005,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("runner.command-accepted"),
     commandId: CommandIdSchema,
     correlationId: CorrelationIdSchema,
+    stopState: AttemptStopStateSchema.optional(),
   }),
   z.strictObject({
     ...fencedMessageBase,
@@ -1961,7 +2053,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     healthySince: IsoDateTimeSchema.nullable(),
     lastError: z.string().max(20_000).nullable(),
     lastExitCode: z.number().int().nullable(),
-    observed: z.enum(["starting", "running", "backoff", "expired", "stopped"]),
+    observed: z.enum(["starting", "running", "backoff", "halted", "expired", "stopped"]),
     restartCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     stderrTail: watchLogTailSchema,
     stdoutTail: watchLogTailSchema,
@@ -2011,7 +2103,35 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
         }),
       )
       .max(1_000),
+    firings: z
+      .array(
+        z.strictObject({
+          environmentId: EnvironmentIdSchema,
+          executionGeneration: z.number().int().positive(),
+          occurrenceId: TriggerOccurrenceIdSchema,
+          terminal: z.boolean(),
+        }),
+      )
+      .max(1_000)
+      .optional(),
     type: z.literal("runner.executions.attach"),
+  }),
+  z.strictObject({
+    ...fencedMessageBase,
+    requestId: CorrelationIdSchema,
+    target: z.discriminatedUnion("kind", [
+      z.strictObject({
+        executionGeneration: z.number().int().positive(),
+        kind: z.literal("firing"),
+        occurrenceId: TriggerOccurrenceIdSchema,
+      }),
+      z.strictObject({
+        activationId: TriggerWatchActivationIdSchema,
+        executionGeneration: z.number().int().positive(),
+        kind: z.literal("watch"),
+      }),
+    ]),
+    type: z.literal("runner.proxy-token.renew"),
   }),
   z.strictObject({
     ...fencedMessageBase,
@@ -2041,6 +2161,15 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     requestId: CorrelationIdSchema,
     result: RunnerVoiceResultSchema,
   }),
+  z.strictObject({
+    ...fencedMessageBase,
+    type: z.literal("runner.thread.stop.recheck.result"),
+    requestId: CorrelationIdSchema,
+    proven: z.boolean(),
+  }),
+  RunnerPowerSleepingSchema,
+  RunnerAgentsStoppedSchema,
+  RunnerAgentsResumedSchema,
 ]);
 export type RunnerOperationalMessage = z.infer<typeof RunnerOperationalMessageSchema>;
 
@@ -2071,12 +2200,20 @@ export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ ...fencedMessageBase, type: z.literal("host.shell.probe-full-disk-access") }),
+  z.strictObject({
+    ...fencedMessageBase,
+    type: z.literal("host.thread.stop.recheck"),
+    requestId: CorrelationIdSchema,
+    threadId: ThreadIdSchema,
+  }),
   z.strictObject({ ...fencedMessageBase, type: z.literal("host.live.resync"), runId: RunIdSchema }),
   HostBackgroundTextSchema,
   RunnerChallengeSchema,
   HostAppsSyncSchema,
   ...HostAppRequestSchema.options,
   ...HostRunFileRequestSchema.options,
+  ...HostHomeFileRequestSchema.options,
+  HostOutputImageUploadSchema,
   z.strictObject({
     ...fencedMessageBase,
     /**
@@ -2087,8 +2224,15 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     connectionLeaseExpiresAt: IsoDateTimeSchema,
     environmentIds: z.array(EnvironmentIdSchema).max(100),
     heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
-    /** The hosting computer's Agent home, sent only to a Runner advertising `agent-home-settings-v1`. */
+    acceptsPowerState: z.literal(true).optional(),
+    /** The Home understands `runner.agents.stopped` and `runner.agents.resumed`. */
+    acceptsAgentStop: z.literal(true).optional(),
+    acceptsHomeFiles: z.literal(true).optional(),
+    acceptsAttemptStopState: z.literal(true).optional(),
+    /** The Home understands `firings` on attach, `firingResults`, `firingAcks`, and proxy token renewal. */
+    acceptsAutomationScripts: z.literal(true).optional(),
     agentHome: ComputerFolderSchema.optional(),
+    agentHomeIsProvisional: z.literal(true).optional(),
     /** Present and true when the Host accepts `run.retry` events; sent only to a Runner advertising `run-retry-v1`. */
     runRetryEvents: z.literal(true).optional(),
     serverTime: IsoDateTimeSchema,
@@ -2160,6 +2304,22 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
         ]),
       )
       .max(1_000),
+    firingResults: z
+      .array(
+        z.discriminatedUnion("status", [
+          z.strictObject({
+            occurrenceId: TriggerOccurrenceIdSchema,
+            status: z.literal("attached"),
+          }),
+          z.strictObject({
+            occurrenceId: TriggerOccurrenceIdSchema,
+            reason: z.string().trim().min(1).max(500),
+            status: z.literal("revoked"),
+          }),
+        ]),
+      )
+      .max(1_000)
+      .optional(),
     type: z.literal("host.executions.attached"),
   }),
   /**
@@ -2167,19 +2327,40 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
    * `throughOrdinal`, and the session binding when `sessionBound`. The Runner
    * stops holding them for replay.
    */
+  z
+    .strictObject({
+      ...fencedMessageBase,
+      acks: z
+        .array(
+          z.strictObject({
+            runId: RunIdSchema,
+            sessionBound: z.boolean(),
+            throughOrdinal: z.number().int().min(-1),
+          }),
+        )
+        .max(1_000),
+      firingAcks: z
+        .array(
+          z.strictObject({
+            executionGeneration: z.number().int().positive(),
+            occurrenceId: TriggerOccurrenceIdSchema,
+          }),
+        )
+        .max(1_000)
+        .optional(),
+      type: z.literal("host.executions.acked"),
+    })
+    .refine(
+      (message) => message.acks.length > 0 || (message.firingAcks?.length ?? 0) > 0,
+      "At least one Run or firing acknowledgement is required",
+    ),
   z.strictObject({
     ...fencedMessageBase,
-    acks: z
-      .array(
-        z.strictObject({
-          runId: RunIdSchema,
-          sessionBound: z.boolean(),
-          throughOrdinal: z.number().int().min(-1),
-        }),
-      )
-      .min(1)
-      .max(1_000),
-    type: z.literal("host.executions.acked"),
+    browserCdp: WatchCapabilityPlanSchema.nullable(),
+    mcp: WatchCapabilityPlanSchema.nullable(),
+    reason: z.string().trim().min(1).max(500).optional(),
+    requestId: CorrelationIdSchema,
+    type: z.literal("host.proxy-token.renewed"),
   }),
   /**
    * The Host renewed these Runs' leases for `leaseMs` from the heartbeat sent

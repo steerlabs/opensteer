@@ -26,6 +26,9 @@ export function browserClientLifecycle(
     }),
     onBackground: (listener) => visibilityListener(false, listener),
     onForeground: (listener) => visibilityListener(true, listener),
+    // Page Lifecycle: a frozen page runs no timers, so the client lets go before it is frozen.
+    onFreeze: (listener) => documentListener("freeze", listener),
+    onResume: (listener) => documentListener("resume", listener),
     onNetworkChange: (listener) => {
       if (ignoreNetwork) return () => undefined;
       const online = () => listener("online", "changed");
@@ -48,4 +51,10 @@ function visibilityListener(visible: boolean, listener: () => void): () => void 
   return observePageVisibility(() => {
     if (pageVisible() === visible) listener();
   });
+}
+
+function documentListener(type: "freeze" | "resume", listener: () => void): () => void {
+  if (typeof document === "undefined") return () => undefined;
+  document.addEventListener(type, listener);
+  return () => document.removeEventListener(type, listener);
 }

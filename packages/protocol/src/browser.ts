@@ -1,3 +1,4 @@
+import { StandardCdpAttemptSchema, StandardCdpModeSchema } from "./standard-cdp.js";
 import {
   browserPersonalTabUrlMaxLength,
   BrowserFaviconSchema,
@@ -60,6 +61,7 @@ import {
   EditingClipboardPartSchema,
   EditingCommandSchema,
   EditingCompositionSchema,
+  EditingContextIdSchema,
   EditingContextSchema,
   EditingModifiersSchema,
   EditingTextEditSchema,
@@ -162,6 +164,7 @@ export type InitialPageReady = z.infer<typeof InitialPageReadySchema>;
 /** Private bridge readiness; never a viewer message. */
 const BrowserBridgeAttachedWireSchema = z.strictObject({
   type: z.literal("browser.attached"),
+  standardCdpMode: StandardCdpModeSchema.optional(),
   initialPage: InitialPageReadySchema.optional(),
 });
 export function createBrowserBridgeAttachedSchema() {
@@ -170,17 +173,46 @@ export function createBrowserBridgeAttachedSchema() {
 export const BrowserBridgeAttachedSchema = createBrowserBridgeAttachedSchema();
 export type BrowserBridgeAttached = z.infer<typeof BrowserBridgeAttachedSchema>;
 
+/** `ThisHomeAddresses` (`@opensteer/shared/homeAddress`) on the wire. */
+export const BrowserHomeAddressesSchema = z.strictObject({
+  origins: z.array(z.string().min(1).max(2_048)).max(8),
+  loopbackPorts: z.array(z.number().int().min(1).max(65_535)).max(8),
+});
+export type BrowserHomeAddresses = z.infer<typeof BrowserHomeAddressesSchema>;
+
 export const BrowserAttachTicketClaimsSchema = z
   .strictObject({
     access: BrowserProfileAccessSchema,
     audience: z.literal("opensteer-browser-runtime"),
     creationOrigin: z.enum(["agent", "person"]),
+    /**
+     * Whom this attachment acts for, as the Home knows from the binding it
+     * issued the ticket for. Issued only to a runtime advertising
+     * `actorClaim`; a runtime given none falls back to `creationOrigin`.
+     */
+    actor: z.enum(["agent", "person"]).optional(),
+    /** Authorizes an existing session on the runtime's raw CDP endpoint. */
+    standardCdp: StandardCdpModeSchema.optional(),
+    standardCdpAttempt: StandardCdpAttemptSchema.optional(),
+    standardCdpLineage: z
+      .strictObject({ attachmentId: z.uuid(), seedSurfaceId: BrowserSurfaceIdSchema })
+      .optional(),
+    standardCdpLease: z
+      .object({
+        generation: z.number().int().positive(),
+        bindingId: z.string().min(1).max(512),
+        bootId: z.uuid().optional(),
+      })
+      .strict()
+      .optional(),
     passkeys: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
     wireVersion: z.literal(browserRuntimeWireVersion),
     operationExpiresAt: IsoDateTimeSchema,
     remainingBudgetMs: z.number().int().positive().max(20_000),
     initialNavigation: InitialNavigationSchema.optional(),
+    /** May reconnect to the existing session, never create it. */
+    reattach: z.literal(true).optional(),
     /** Host opt-in to navigation IDs and committed-document reports. */
     navigationAttributionVersion: z.literal(1).optional(),
     /**
@@ -205,6 +237,12 @@ export const BrowserAttachTicketClaimsSchema = z
      */
     personFillVersion: PersonFillVersionSchema.optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
+    /**
+     * This Home's addresses when the ticket is issued (`ThisHomeAddresses`), before the browser's
+     * first page loads: no page of a browser the Home owns loads one, the person's or an agent's
+     * (G1). A route change later reaches a connected runtime as `home.addresses`.
+     */
+    homeAddresses: BrowserHomeAddressesSchema.optional(),
     expiresAt: IsoDateTimeSchema,
     identity: BrowserAttachTicketIdentitySchema,
     issuedAt: IsoDateTimeSchema,
@@ -235,6 +273,24 @@ export const BrowserAttachTicketClaimsSchema = z
     },
   );
 export type BrowserAttachTicketClaims = z.infer<typeof BrowserAttachTicketClaimsSchema>;
+
+export const PooledBrowserAttachTicketClaimsSchema = BrowserAttachTicketClaimsSchema.safeExtend({
+  pool: z.strictObject({
+    slot: z.string().min(1).max(200),
+    term: z.number().int().positive(),
+    instance: z.uuid(),
+    epoch: z.number().int().positive(),
+    attachment: z.number().int().positive().optional(),
+    /**
+     * Only ends this session (the Home's end request, never an attach): the runtime tears it
+     * down without reviving it, and refuses the ticket on every attach.
+     */
+    end: z.literal(true).optional(),
+  }),
+});
+type PooledBrowserAttachTicketClaims = z.infer<typeof PooledBrowserAttachTicketClaimsSchema>;
+export type RuntimeBrowserAttachTicketClaims = BrowserAttachTicketClaims &
+  Partial<Pick<PooledBrowserAttachTicketClaims, "pool">>;
 
 export const BrowserSurfaceSchema = z.strictObject({
   state: z.enum(["live", "suspended"]).optional(),
@@ -295,6 +351,19 @@ export const BrowserCdpMethodSchema = z
 export const BrowserCdpSessionIdSchema = z.string().min(1).max(512);
 export const BrowserCdpParametersSchema = z.record(z.string(), z.unknown());
 
+export const browserScriptScreenshotMaxBytes = 323 * 1024;
+
+export const BrowserCdpReplyBudgetSchema = z.strictObject({
+  maxBytes: z
+    .number()
+    .int()
+    .min(2)
+    .max(1024 * 1024 - 4096),
+  maxDepth: z.number().int().min(1).max(32),
+  maxEntries: z.number().int().min(1).max(16_384),
+  maxImageBytes: z.number().int().min(1).max(browserScriptScreenshotMaxBytes).optional(),
+});
+
 export const BrowserCdpCommandSchema = z.strictObject({
   method: BrowserCdpMethodSchema,
   parameters: BrowserCdpParametersSchema.optional(),
@@ -312,6 +381,7 @@ export const BrowserCdpEventSchema = z.strictObject({
   parameters: BrowserCdpParametersSchema,
   sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   sessionId: BrowserCdpSessionIdSchema.optional(),
+  scriptAttachmentId: z.uuid().optional(),
 });
 
 const browserRequestBase = {
@@ -389,6 +459,8 @@ export const BrowserSessionStateSchema = z.strictObject({
   personUsed: z.array(BrowserSurfaceIdSchema),
   pinned: z.array(BrowserSurfaceIdSchema),
   keepAwake: z.boolean().optional(),
+  /** Tabs a live Run or connected agent's session works in: slept last, under pressure only. */
+  agentTabs: z.array(BrowserSurfaceIdSchema).optional(),
 });
 export type BrowserSessionState = z.infer<typeof BrowserSessionStateSchema>;
 
@@ -579,6 +651,11 @@ const BaselineBrowserClientMessageSchema = z
        */
       ended: z.literal(true).optional(),
     }),
+    /**
+     * A key press carries no field context, by design: it goes to whatever has focus when it
+     * arrives, as a key on a keyboard does. (A paste, an edit, a composition and a command name
+     * the field they were made for.)
+     */
     z.strictObject({
       ...browserBase,
       type: z.literal("input.key"),
@@ -602,6 +679,19 @@ const BaselineBrowserClientMessageSchema = z
       consumerToken: z.uuid().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       command: EditingCommandSchema,
+      /**
+       * The context of the field the command was made for (CV1), always. A move or the backward
+       * deletion under an earlier context of the focused field applies at its caret; any command
+       * under another field's context is refused alone. A target with no field contexts (a Mac
+       * app, a phone screen) takes its commands on its own wire, display.input, which carries
+       * none.
+       */
+      contextId: EditingContextIdSchema,
+      /**
+       * CZ7: a move computed from the edit this producer sent just before: refused when that
+       * edit was. A person's own move carries nothing.
+       */
+      follows: z.literal(true).optional(),
     }),
     /** Editing sessions only: the composition in progress, shown live in the page. */
     z.strictObject({
@@ -618,6 +708,8 @@ const BaselineBrowserClientMessageSchema = z
       targeted: z.boolean().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       edit: EditingTextEditSchema,
+      /** P2 (S2): an insertion over a selection follows its selection-removal edit as one unit. */
+      follows: z.literal(true).optional(),
     }),
     /**
      * Editing sessions only. The person's copy or cut: the runtime performs its
@@ -631,6 +723,8 @@ const BaselineBrowserClientMessageSchema = z
       consumerToken: z.uuid().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       operationId: EditingClipboardOperationIdSchema,
+      /** PH5: the context of the field it was made for, refused whole in any other. */
+      contextId: EditingContextIdSchema,
     }),
     /**
      * Editing sessions only. The person's paste: its bytes follow in
@@ -645,6 +739,13 @@ const BaselineBrowserClientMessageSchema = z
       surfaceId: BrowserSurfaceIdSchema,
       operationId: EditingClipboardOperationIdSchema,
       items: EditingClipboardItemsSchema,
+      /**
+       * CZ5: a paste is one act on one field: the context of the field it was made for. The page
+       * refuses it whole when that field is no longer the one focused, as it does an edit.
+       */
+      contextId: EditingContextIdSchema,
+      /** PH2: set when this paste follows a selection-deletion edit so both fail as one unit. */
+      follows: z.literal(true).optional(),
     }),
     z.strictObject({
       ...browserBase,
@@ -666,15 +767,43 @@ const BaselineBrowserClientMessageSchema = z
       targeted: z.boolean().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       text: z.string().max(browserPasteTextMaxLength),
+      /** CZ5: the context of the field it was made for, refused whole in any other. */
+      contextId: EditingContextIdSchema,
+      /** PH2: set when this paste follows a selection-deletion edit so both fail as one unit. */
+      follows: z.literal(true).optional(),
     }),
     z.strictObject({
       ...browserRequestBase,
       command: BrowserCdpCommandSchema,
+      replyBudget: BrowserCdpReplyBudgetSchema.optional(),
+      scriptAttachmentId: z.uuid().optional(),
+      scriptEventBudget: BrowserCdpReplyBudgetSchema.optional(),
       actorToken: z.uuid().optional(),
       attachmentId: z.uuid().optional(),
+      /**
+       * The command is a connected agent's work, as the Home decided for its attachment. Sent only
+       * to a runtime advertising `connectionCommands`, which then holds the standard CDP lists, the
+       * auto-attach limit and the clipboard and permission rules itself.
+       */
+      connection: z.literal(true).optional(),
+      /**
+       * The Home's authority rule admitted this execution to persist or remove profile Chrome
+       * extensions (`Extensions.loadUnpacked`, `Extensions.uninstall`): Full access with personal
+       * context on the person's own lineage. Omitted everywhere else; never defaulted on.
+       */
+      manageExtensions: z.literal(true).optional(),
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
       navigationId: z.uuid().optional(),
       type: z.literal("cdp.command"),
+    }),
+    /**
+     * Host-only. This Home's addresses changed (Remote access on, off, a new route): the runtime
+     * holds them from now on, for every page of its browser (G1).
+     */
+    z.strictObject({
+      ...browserBase,
+      homeAddresses: BrowserHomeAddressesSchema,
+      type: z.literal("home.addresses"),
     }),
     /**
      * Host-only; the Host never relays it from a viewer or an agent. Replaces
@@ -816,7 +945,12 @@ const {
   ...runtimeSnapshotShape
 } = BrowserViewerSnapshotSchema.shape;
 export const BrowserRuntimeSnapshotSchema = z
-  .strictObject(runtimeSnapshotShape)
+  .strictObject({
+    ...runtimeSnapshotShape,
+    cdpReplyBudget: z.literal(1).optional(),
+    scriptAttachments: z.literal(1).optional(),
+    scriptCancellation: z.literal(1).optional(),
+  })
   .superRefine((snapshot, context) => {
     if (
       snapshot.editingVersion === 2
@@ -1010,6 +1144,7 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
     ...browserBase,
     type: z.literal("browser.error"),
     error: ProtocolErrorSchema,
+    operationId: z.uuid().optional(),
   }),
   /**
    * The viewer named by `consumerToken` opened this popup with its own input.
@@ -1147,6 +1282,8 @@ export const BrowserProfileSchema = z.object({
   homeRunnerId: RunnerIdSchema.nullable().default(null),
   id: BrowserProfileIdSchema,
   name: z.string().min(1).max(120),
+  /** The profile an AI engine signs in through: never offered to a connected agent's grant. */
+  purpose: z.literal("engine-sign-in").optional(),
 });
 export type BrowserProfile = z.infer<typeof BrowserProfileSchema>;
 
@@ -1305,9 +1442,12 @@ export type BrowserHistoryIcons = z.infer<typeof BrowserHistoryIconsSchema>;
 export const browserHostMethods = {
   openTab: "Opensteer.openTab",
   closeTab: "Opensteer.closeTab",
+  fenceTab: "Opensteer.fenceTab",
   resumeTab: "Opensteer.resumeTab",
   listTabs: "Opensteer.listTabs",
   contextCandidate: "Opensteer.contextCandidate",
+  closeScriptAttachment: "Opensteer.closeScriptAttachment",
+  cancelScriptCommand: "Opensteer.cancelScriptCommand",
 } as const;
 export const TargetedBrowserClientMessageSchema = BrowserClientMessageSchema.superRefine(
   (message, context) => {
@@ -1347,7 +1487,12 @@ export type TargetedBrowserClientMessage = z.infer<typeof TargetedBrowserClientM
 export type BrowserSessionOpener = z.infer<typeof BrowserSessionOpenerSchema>;
 export const BrowserSessionOpenerRecordSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("person"), userId: UserIdSchema }),
-  z.strictObject({ kind: z.literal("task"), threadId: ThreadIdSchema, runId: RunIdSchema }),
+  // A connected agent's own session works on a task without a Run.
+  z.strictObject({
+    kind: z.literal("task"),
+    threadId: ThreadIdSchema,
+    runId: RunIdSchema.optional(),
+  }),
   z.strictObject({ kind: z.literal("opensteer"), threadId: ThreadIdSchema }),
   z.strictObject({ kind: z.literal("automation") }),
 ]);
@@ -1382,6 +1527,11 @@ export const HostedBrowserSessionSchema = z.object({
   profileId: BrowserProfileIdSchema.nullable(),
   runtimeId: z.string().min(1).max(255),
   state: HostedBrowserSessionStateSchema,
+  /**
+   * W15: Stop never got its replaced browser's confirmation; kept closing honestly until the
+   * person removes it from their list.
+   */
+  closeUnconfirmed: z.literal(true).optional(),
   attachedRunIds: z.array(RunIdSchema).max(browserSessionMaxAttachedRuns).optional(),
   /**
    * An agent is acting in this browser now: it sent a command within the last
@@ -1405,6 +1555,7 @@ export const AgentBrowserSessionSummarySchema = HostedBrowserSessionSchema.omit(
   navigationVersion: true,
   tabRestoreVersion: true,
   acting: true,
+  closeUnconfirmed: true,
   opener: true,
   attachedRunIds: true,
   page: true,
@@ -1427,6 +1578,63 @@ export const BrowserProfileDeletionsViewSchema = z
   )
   .optional();
 export const BrowserPlacementsViewSchema = z.array(BrowserPlacementSchema).max(129);
+
+/**
+ * A Cloud Computer's pooled browser, as its Home reports it with the placements. Only a Home
+ * with a pooled browser sends it; every field is additive and optional on the wire.
+ */
+export const BrowserPoolReportSchema = z.object({
+  runnerId: z.string().min(1).max(200),
+  phase: z.enum(["running", "preparing", "parked", "waking", "starting", "restarting", "failed"]),
+  /** When the phase began, by the Home's clock. */
+  since: z.string().max(64),
+  start: z
+    .object({
+      reason: z.enum(["expired", "host", "update", "security-update", "person"]),
+      /** Identifies that start, so each note about it is said once. */
+      at: z.string().max(200),
+    })
+    .optional(),
+  failures: z.number().int().nonnegative().optional(),
+  /** Pages that did not come back as they were, until the person has seen them. */
+  pages: z
+    .array(
+      z.object({
+        surfaceId: z.string().min(1).max(200),
+        /** The notice's id: a client sends it back once the person has seen the note. */
+        noticeId: z.string().min(1).max(200).optional(),
+        outcome: z.enum(["reloaded", "lost"]),
+        /** Whether the page held typed text that was not sent: known yes, known no, or not known. */
+        typed: z.enum(["yes", "no", "unknown"]),
+      }),
+    )
+    .max(500)
+    .optional(),
+  /**
+   * Why the browser cannot be used now, while it cannot: `setting-up` (no browser placed yet, or
+   * a new place awaited), `egress-required`, `profile-disk-missing`, `unreachable` (nothing has
+   * answered for long), or a reason this client does not know. Optional; a released client
+   * ignores it.
+   */
+  notReady: z
+    .object({ reason: z.string().min(1).max(64), savedStateKept: z.boolean().optional() })
+    .optional(),
+  /**
+   * W15: sessions of a replaced browser whose Stop never confirmed, with their open tabs, until
+   * the person removes them from their list.
+   */
+  unconfirmedClosings: z
+    .array(
+      z.object({
+        sessionId: BrowserSessionIdSchema,
+        surfaceIds: z.array(z.string().min(1).max(200)).max(128),
+      }),
+    )
+    .max(128)
+    .optional(),
+});
+export type BrowserPoolReportView = z.infer<typeof BrowserPoolReportSchema>;
+export const BrowserPoolReportsViewSchema = z.array(BrowserPoolReportSchema).max(129);
 export const BrowserProfileHomesViewSchema = z.array(RunnerIdSchema).max(129).optional();
 export const BrowserProfilesViewSchema = z.array(BrowserProfileSchema).max(128);
 
@@ -1679,6 +1887,11 @@ export const BrowserTabOpenRefusalReasonSchema = z.enum([
   "browser-profile-unavailable",
   "browser-profile-home-unavailable",
   "browser-placement-unavailable",
+  "browser-pool-refused",
+  "browser-pool-start-refused",
+  "browser-pool-setting-up",
+  "browser-pool-unreachable",
+  "browser-pool-disconnected",
   "browser-placement-ambiguous",
   "browser-tab-open-outcome-unknown",
   "browser-tab-open-failed",
@@ -1721,3 +1934,5 @@ export const BrowserTabCloseResultSchema = z.object({
 export type BrowserTabCloseCommand = z.infer<typeof BrowserTabCloseCommandSchema>;
 export type BrowserTabCloseResult = z.infer<typeof BrowserTabCloseResultSchema>;
 export const staleBrowserTabInventoryReason = "stale-tab-inventory";
+/** A fenced pooled reattach confirmed the guest holds nothing of this session. */
+export const browserPoolSessionGoneReason = "session-gone";

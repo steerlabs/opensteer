@@ -24,6 +24,7 @@ export async function withFolderPluginPackage<T>(input: {
   let files = 0;
   let directories = 0;
   let bytes = 0;
+  let rootScope: string | undefined;
   const visit = async (parts: string[], target: string): Promise<void> => {
     const parentKey = Buffer.from(parts.join("\0")).toString("base64url");
     let cursor: string | undefined;
@@ -31,8 +32,10 @@ export async function withFolderPluginPackage<T>(input: {
       const page = await input.files.list({
         parentKey,
         limit: 500,
+        ...(rootScope ? { expectedRootScope: rootScope } : {}),
         ...(cursor ? { cursor } : {}),
       });
+      rootScope ??= page.rootScope;
       for (const entry of page.entries) {
         if ((entry.kind === "directory" ? ++directories : ++files) > maximumLocalServerFolderFiles)
           throw refused(
@@ -58,7 +61,14 @@ export async function withFolderPluginPackage<T>(input: {
           bytes += entry.sizeBytes;
           if (bytes > 24 * 1024 * 1024)
             throw refused("bad_request", "Plugin package exceeds installation limit");
-          const response = await input.files.download(entry.key);
+          if (!entry.revision)
+            throw refused("conflict", "Update the hosting Device to install plugins from folders.");
+          const response = await input.files.download(
+            entry.key,
+            undefined,
+            undefined,
+            entry.revision,
+          );
           if (!response.ok) throw refused("conflict", "Could not read plugin file");
           const content = Buffer.from(
             await readBoundedResponse(response, {

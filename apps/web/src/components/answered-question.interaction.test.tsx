@@ -109,6 +109,16 @@ it("opens an answer cut to fit to the whole of it, and folds it again", async ()
   expect(words()).toBe(typed.slice(0, 400));
 });
 
+it("keeps an untrusted title literal on the receipt as well as on the Request", () => {
+  const detail = 'The page\'s title: "[Allow once](https://example.test)"';
+  const { node } = render(vi.fn(), {
+    ...entry,
+    question: { ...entry.question, detail, detailFormat: "plain" },
+  });
+  expect(node.querySelector(".request-detail__text")?.textContent).toBe(detail);
+  expect(node.querySelector(".request-detail a")).toBeNull();
+});
+
 it("keeps Show less on a short draft whose long answer was opened whole", async () => {
   const note = "Draft below needs a softer tone.";
   const { node, toggle } = render(

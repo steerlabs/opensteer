@@ -486,6 +486,7 @@ vi.mock("@expo/ui/community/menu", () => ({
 vi.mock("../computers/phone-display-native.js", () => ({
   macWindowVideoSupported: () => true,
   nativePictureView: () => null,
+  pictureFunctions: (instance: unknown) => instance,
 }));
 vi.mock("../computers/phone-display.js", () => ({
   ComputerDisplay: (props: {
@@ -589,6 +590,7 @@ vi.mock("../ui/motion.js", () => ({
   exit: undefined,
 }));
 vi.mock("../ui/primitives.js", () => ({
+  DisplayTitle: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   AppText: (props: { readonly accessibilityLabel?: string; readonly children?: ReactNode }) => (
     <span aria-label={props.accessibilityLabel}>{props.children}</span>
   ),
@@ -630,14 +632,7 @@ vi.mock("../ui/primitives.js", () => ({
   monoFontFamily: "monospace",
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../team/team-marks.js", async (load) => ({
-  ...(await load<typeof import("../team/team-marks.js")>()),
-  AgentOrb: () => <i data-chat-orb />,
-}));
-vi.mock("../team/team-context.js", () => ({
-  useTeamsSnapshot: () => ({ computerId: null, teams: [], unlinked: [], selected: null }),
-  useCoordinatorSnapshot: () => ({ hostedTeams: [], intents: [], watching: null, ready: [] }),
-}));
+vi.mock("../ui/agent-orb.js", () => ({ AgentOrb: () => <i data-chat-orb /> }));
 vi.mock("../ui/icon-glyph.js", () => ({
   IconGlyph: (props: { icon: string; color: string }) => (
     <svg data-icon={props.icon} color={props.color} />
@@ -1111,8 +1106,6 @@ function waitingInput(message: MessageEntry, threadId: string): ThreadInputQueue
       replyTarget: null,
       runId: null,
       state: "pending",
-      teamRequestId: null,
-      teamSource: null,
       threadId: threadId as ThreadInputQueue["threadId"],
       updatedAt: at,
     },
@@ -1317,10 +1310,15 @@ function fakeHost(initial: FixtureHostSnapshot) {
     () => 60_000,
   );
   const watchRelease = vi.fn();
-  const dispatch = vi.fn(async (command: { readonly type: string }) => ({
-    type: command.type,
-    message: { id: createId("message") },
+  const stopComputerSession = vi.fn(async (_input: { readonly sessionId: string }) => ({
+    data: {},
+    ok: true,
   }));
+  const dispatch = vi.fn(async (command: { readonly type: string; readonly sessionId?: string }) =>
+    command.type === "integration.computer.session.stop"
+      ? (await stopComputerSession({ sessionId: command.sessionId! }), { type: command.type })
+      : { type: command.type, message: { id: createId("message") } },
+  );
   const stopRun = vi.fn(async (_threadId: string) => undefined);
   const resumeThreadInputQueue = vi.fn(async (_threadId: string) => undefined);
   const loadEarlierTranscript = vi.fn(
@@ -1334,10 +1332,6 @@ function fakeHost(initial: FixtureHostSnapshot) {
     },
   );
   const loadDeferredWork = vi.fn(async (_threadId: string, _anchorId: string) => true);
-  const stopComputerSession = vi.fn(async (_input: { readonly sessionId: string }) => ({
-    data: {},
-    ok: true,
-  }));
   // The whole of a waiting message, read at the version the tray shows.
   const revisions = vi.fn(
     async (input: { threadId: string; messageId: string; expectedRevision?: number }) => {
@@ -1465,7 +1459,6 @@ function fakeHost(initial: FixtureHostSnapshot) {
     activateTab,
     browserWatchState: watch.get,
     cancelThreadInput: vi.fn(async () => undefined),
-    decideTeamAsk: vi.fn(async (_decision: object) => undefined),
     // The lease read returns the full waiting message, as the Host holds it now.
     editWaitingMessage: vi.fn(async (threadId: string, messageId: string) => {
       const held = snapshot.inputQueues[threadId]?.items.find(
@@ -1513,7 +1506,6 @@ function fakeHost(initial: FixtureHostSnapshot) {
     refresh: vi.fn(async () => undefined),
     resumeThreadInputQueue,
     rpc: {
-      "integration.computer.session.stop": stopComputerSession,
       "thread.message.revisions.list": revisions,
     },
     steerThreadInput: vi.fn(async () => undefined),
@@ -1527,7 +1519,6 @@ function fakeHost(initial: FixtureHostSnapshot) {
     client: Object.assign(client, {
       connection: testHostConnection(client as unknown as HostClient),
     }) as unknown as HostClient,
-    decideTeamAsk: client.decideTeamAsk,
     dispatch,
     editWaitingMessage: client.editWaitingMessage,
     editor,
@@ -1753,47 +1744,6 @@ async function tapWaiting(container: HTMLElement, words: string): Promise<void> 
   if (bubble === undefined) throw new Error(`No waiting bubble saying ${words}`);
   await act(async () => bubble.click());
   await settle();
-}
-
-/** Maya's ask of the reader's agent, waiting in the task for the reader's answer. */
-function teammateAsk(body: string) {
-  const teamId = "dep_0192f4a1-1111-4000-8000-0000000000aa";
-  const requestId = "treq_0192f4a1-5555-4000-8000-000000000001";
-  const author = {
-    actor: "human",
-    displayName: "Maya",
-    kind: "team-member",
-    teamId,
-    teamUserId: "usr_0192f4a1-6666-4000-8000-000000000001",
-  } as const;
-  const entry: MessageEntry = { ...said(body, null), author } as MessageEntry;
-  const base = waitingInput(entry, workId);
-  const item = {
-    ...base,
-    canCancel: false,
-    canMove: false,
-    canSteer: false,
-    input: {
-      ...base.input,
-      state: "awaiting-approval",
-      teamRequestId: requestId,
-      teamSource: {
-        audience: {
-          channelKind: "public",
-          channelName: "general",
-          memberCount: 12,
-          peopleOnly: false,
-          teamName: "Acme",
-        },
-        channelId: "tch_0192f4a1-7777-4000-8000-000000000001",
-        messageId: null,
-        teamId,
-        threadRootId: null,
-      },
-    },
-    message: { ...base.message, author },
-  } as ThreadInputQueue["items"][number];
-  return { entry, item, requestId, teamId };
 }
 
 /** The waiting item as the Host reports it once another device saved `words` as `revision`. */
@@ -2508,7 +2458,7 @@ describe("a voice conversation while Opensteer is replying", () => {
     const { container } = await mount(host, conversationId);
 
     await press(container, "Stop the reply");
-    expect(host.stopRun).toHaveBeenCalledWith(conversationId, chat.runB);
+    expect(host.stopRun).toHaveBeenCalledExactlyOnceWith(conversationId);
 
     // The Host ends the reply and cancels what that exchange had not yet taken.
     host.move(
@@ -3472,10 +3422,7 @@ describe("a reply at work on a Mac", () => {
     expect(hasButton(container, "Notes")).toBe(false);
 
     await press(container, "Stop using Mac");
-    expect(host.stopComputerSession).toHaveBeenCalledWith(
-      { sessionId: session.sessionId },
-      { signal: expect.any(AbortSignal) },
-    );
+    expect(host.stopComputerSession).toHaveBeenCalledWith({ sessionId: session.sessionId });
     // The Host took the Mac back: the session leaves the list, and the line says so.
     host.move(working(macs(sessions([]))));
     await settle();
@@ -3981,7 +3928,7 @@ describe("a task", () => {
     host.stopRun.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     const { container } = await mount(host, workId);
     await press(container, "Stop this run");
-    expect(host.stopRun).toHaveBeenCalledWith(workId, task.runId);
+    expect(host.stopRun).toHaveBeenCalledExactlyOnceWith(workId);
     expect(text(container)).toContain("Couldn't confirm");
     host.move({ ...running, network: "offline" });
     host.move(running);
@@ -4433,136 +4380,6 @@ describe("a task", () => {
     expect(host.releaseWaitingMessage).toHaveBeenCalledWith(workId, waiting.id);
   });
 
-  it("answers a teammate's ask with the words just saved, naming that version", async () => {
-    const ask = teammateAsk("@My agent is CI green yet?");
-    const host = fakeHost(
-      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
-    );
-    const { container } = await mount(host, workId);
-    expect(text(container)).toContain("Maya is asking your agent");
-    expect(text(container)).toContain("Replies in #general · 12 people");
-    await tapWaiting(container, ask.entry.body);
-    expect(hasButton(container, "Save and answer")).toBe(false);
-    await type(container, "Edit Maya’s ask", "@My agent is the integration shard green yet?");
-    await press(container, "Save and answer");
-    expect(host.editor.save).toHaveBeenCalledWith(
-      [{ text: "@My agent is the integration shard green yet?", type: "text" }],
-      0,
-    );
-    expect(host.decideTeamAsk).toHaveBeenCalledWith({
-      decision: "approve",
-      expectedRevision: 1,
-      requestId: ask.requestId,
-      teamId: ask.teamId,
-    });
-    expect(host.editor.save.mock.invocationCallOrder[0]!).toBeLessThan(
-      host.decideTeamAsk.mock.invocationCallOrder[0]!,
-    );
-  });
-
-  it("answers a long ask only once its whole text is read and shown", async () => {
-    const whole =
-      "@My agent is CI green on main, and if it is not, revert the last three merges and page whoever is on call tonight";
-    const ask = teammateAsk(whole);
-    const host = fakeHost(
-      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
-    );
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => (release = resolve));
-    host.revisions.mockImplementationOnce(async (input) => {
-      await held;
-      return host.revisions.getMockImplementation()!(input);
-    });
-    const { container } = await mount(host, workId);
-    expect(text(container)).toContain("Loading the whole ask…");
-    expect(button(container, "Answer").disabled).toBe(true);
-    expect(text(container)).not.toContain("whoever is on call tonight");
-    await act(async () => release());
-    await settle();
-    expect(text(container)).toContain("whoever is on call tonight");
-    // Past the guard that ignores a tap on a decision as it arrives.
-    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
-    await press(container, "Answer");
-    later.mockRestore();
-    expect(host.decideTeamAsk).toHaveBeenCalledWith(
-      expect.objectContaining({ decision: "approve", expectedRevision: 0 }),
-    );
-  });
-
-  it("answers a long ask only while it stands unfolded in its bubble", async () => {
-    const whole = `@My agent ${"revert the last three merges and page the on-call, ".repeat(20)}`;
-    const ask = teammateAsk(whole);
-    const host = fakeHost(
-      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
-    );
-    const { container } = await mount(host, workId);
-    await settle();
-    // The whole ask is read and shown unfolded.
-    expect(hasButton(container, "Show less")).toBe(true);
-    expect(button(container, "Answer").disabled).toBe(false);
-    await press(container, "Show less");
-    expect(button(container, "Answer").disabled, "Answer approved a folded ask").toBe(true);
-    await press(container, "Show more");
-    expect(button(container, "Answer").disabled).toBe(false);
-  });
-
-  it("ignores a decision tapped as the ask docks, then declines it", async () => {
-    const ask = teammateAsk("@My agent can you check what's on your machine");
-    const host = fakeHost(
-      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
-    );
-    const { container } = await mount(host, workId);
-    await press(container, "Decline");
-    expect(host.decideTeamAsk).not.toHaveBeenCalled();
-    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
-    try {
-      await press(container, "Decline");
-    } finally {
-      later.mockRestore();
-    }
-    expect(host.decideTeamAsk).toHaveBeenCalledWith({
-      decision: "decline",
-      requestId: ask.requestId,
-      teamId: ask.teamId,
-    });
-  });
-
-  it("never saves or answers over a version saved elsewhere since the words were written", async () => {
-    const ask = teammateAsk("Original ask");
-    const initial = snapshotFor({
-      entries: [ask.entry],
-      queue: [ask.item],
-      run: null,
-      threadId: workId,
-    });
-    const host = fakeHost(initial);
-    const { container } = await mount(host, workId);
-    await tapWaiting(container, ask.entry.body);
-    await settle();
-    await type(container, "Edit Maya’s ask", "A local change to the original ask");
-    // The iPad saved its own version while these words were being written.
-    await act(async () =>
-      host.move(withWaiting(initial, savedElsewhere(ask.item, "From iPad", 1))),
-    );
-    await settle();
-    expect(text(container)).toContain("This ask changed elsewhere");
-    expect(button(container, "Save and answer").disabled).toBe(true);
-    expect(editField(container)?.value).toBe("A local change to the original ask");
-
-    await press(container, "Reload");
-    expect(editField(container)?.value).toBe("From iPad");
-    await type(container, "Edit Maya’s ask", "From iPad, by tonight");
-    host.editor.save.mockResolvedValueOnce({ editedAt: at, revision: 2 });
-    await press(container, "Save and answer");
-    expect(host.editor.save).toHaveBeenCalledWith(
-      [{ text: "From iPad, by tonight", type: "text" }],
-      1,
-    );
-    expect(host.decideTeamAsk).toHaveBeenCalledWith(
-      expect.objectContaining({ decision: "approve", expectedRevision: 2 }),
-    );
-  });
-
   it("keeps typed words through a same-viewer history reset that empties and refills the queue", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);
@@ -4625,28 +4442,6 @@ describe("a task", () => {
     ).toBe("Card fees, FX and the wire charge");
   });
 
-  it("draws the ask the dock answers however many messages wait ahead of it", async () => {
-    const task = taskAtWork();
-    const own = ["First in line", "Second in line", "Third in line"].map((body) =>
-      said(body, null),
-    );
-    const ask = teammateAsk("@My agent is the release branch cut?");
-    const host = fakeHost(
-      snapshotFor({
-        entries: [...task.entries, ...own, ask.entry],
-        queue: [...own.map((entry) => waitingInput(entry, workId)), ask.item],
-        run: { id: task.runId, status: "running" },
-        threadId: workId,
-      }),
-    );
-    const { container } = await mount(host, workId);
-    expect(text(container)).toContain("Maya is asking your agent");
-    expect(text(container)).toContain(ask.entry.body);
-    expect(text(container)).not.toContain("Third in line");
-    await press(container, "Show 1 more");
-    expect(text(container)).toContain("Third in line");
-  });
-
   it("opens an edit only from the full body: locked while opening, and taken again after a refusal", async () => {
     const task = taskAtWork();
     const waiting = said("Original", null);
@@ -4690,24 +4485,6 @@ describe("a task", () => {
     );
   });
 
-  it("answers an ask the Host still offers in an archived task", async () => {
-    const ask = teammateAsk("@My agent is CI green yet?");
-    const initial = snapshotFor({
-      entries: [ask.entry],
-      queue: [ask.item],
-      run: null,
-      threadId: workId,
-    });
-    const host = fakeHost({
-      ...initial,
-      threads: initial.threads.map((thread) =>
-        thread.id === workId ? { ...thread, status: "archived" as const } : thread,
-      ),
-    });
-    const { container } = await mount(host, workId);
-    expect(button(container, "Answer").disabled).toBe(false);
-  });
-
   it("lets a waiting message go while its task is out of sight, keeping the words for the return", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);
@@ -4746,10 +4523,10 @@ describe("a task", () => {
   });
 
   it("leaves a task removed while it is open, once it is in front again", async () => {
-    const ask = teammateAsk("@My agent is CI green yet?");
+    const entry = said("Is CI green yet?", null);
     const initial = snapshotFor({
-      entries: [ask.entry],
-      queue: [ask.item],
+      entries: [entry],
+      queue: [waitingInput(entry, workId)],
       run: null,
       threadId: workId,
     });
@@ -6923,4 +6700,28 @@ it("keeps a declined message's text, files and quote without claiming or dispatc
   expect(host.dispatch).not.toHaveBeenCalledWith(
     expect.objectContaining({ type: "thread.sendMessage" }),
   );
+});
+
+it("hides the composer and shows the ended notice on the phone when the task's chat or connected agent ended", async () => {
+  for (const [origin, expected] of [
+    [
+      "chat",
+      "This chat ended, so this task takes no new messages. Start a new task, or add the chat again on Messaging.",
+    ],
+    [
+      "agent",
+      "This connected agent's access ended, so this task takes no new messages. Start a new task, or reconnect it from Connected agents.",
+    ],
+  ] as const) {
+    const snap = snapshotFor({ entries: [], run: null, threadId: workId });
+    const host = fakeHost({
+      ...snap,
+      threads: snap.threads.map((candidate) =>
+        candidate.id === workId ? { ...candidate, endedOrigin: origin } : candidate,
+      ),
+    });
+    const { container } = await mount(host, workId);
+    expect(container.querySelector('[aria-label="Send message"]')).toBeNull();
+    expect(text(container)).toContain(expected);
+  }
 });

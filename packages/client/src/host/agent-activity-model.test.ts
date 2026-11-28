@@ -874,6 +874,36 @@ describe("a task's turn", () => {
     const failed = turns([run({ status: "failed" }), note, command("ls")])[0]!;
     expect(turnWords(failed)).toEqual([note]);
 
+    const unproven = activityFeedPresentation(
+      run({
+        error: {
+          code: "execution_termination_unproven",
+          message: "The Runner could not verify that all Run processes stopped.",
+          retryable: false,
+        },
+        status: "failed",
+      }),
+    );
+    expect(unproven.label).toBe("Couldn’t confirm this stopped");
+    expect(unproven.detail).toContain("may still be running on that device");
+
+    const retired = activityFeedPresentation(
+      run({
+        interruptedCause: "engine-retired",
+        status: "interrupted",
+      }),
+    );
+    expect(retired.label).toBe("Run cut short");
+    expect(retired.detail).toContain(
+      "end its shared engine to make sure another task had stopped; it will start again when work next needs it",
+    );
+    expect(retired.marker).toBe("stopped");
+
+    const stopped = activityFeedPresentation(run({ status: "interrupted" }));
+    expect(stopped.label).toBe("Run stopped.");
+    expect(stopped.detail).toBe("");
+    expect(stopped.marker).toBe("stopped");
+
     const joined = groupTranscriptEntries([
       run({ status: "running" }),
       command("ls"),
@@ -2426,7 +2456,18 @@ describe("threadWatch", () => {
         thread: { ...thread, status: "idle" },
         waitingRequests: [asked],
       }),
-    ).toEqual({ kind: "needs-you" });
+    ).toEqual({ kind: "needs-you", runId: null, stopping: false });
+  });
+
+  it("keeps the Run a question waits in, so the row can stop it as well as answer", () => {
+    expect(
+      threadWatch({
+        entries: [run({ status: "running" })],
+        runQueue: [{ ...queued, status: "running" }],
+        thread: { ...thread, status: "waiting" },
+        waitingRequests: [asked],
+      }),
+    ).toEqual({ kind: "needs-you", runId: "run-a", stopping: false });
   });
 
   it("says nothing for an idle Thread or another Thread's question", () => {
@@ -2839,22 +2880,6 @@ describe("page stops", () => {
       rows: grouped,
     });
   });
-});
-
-it("keeps a delivery-only turn visible after a Run ends without a reply", () => {
-  const entry = run({
-    startedBy: { kind: "platform", cause: "assignment-result" },
-    delivery: {
-      state: "blocked",
-      via: "final",
-      answerMessageId: null,
-      teamMessageId: null,
-      reason: "Channel unavailable",
-    },
-  });
-  expect(
-    conversationRows(groupTranscriptEntries([entry]), { live: false, atComputer: () => false }),
-  ).toHaveLength(1);
 });
 
 it("keeps one maintenance summary for completed, failed and interrupted Runs", () => {

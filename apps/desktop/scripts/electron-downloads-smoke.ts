@@ -59,6 +59,9 @@ import {
   electronBrowserPartition,
 } from "../src/browser/electron-browser-launcher.js";
 import { DesktopDownloads } from "../src/downloads/desktop-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("downloads", 180000);
 
 const artifactDirectory =
   process.env.OPENSTEER_DOWNLOADS_E2E_ARTIFACT_DIR ??
@@ -246,8 +249,9 @@ async function run(): Promise<void> {
     DesktopDownloadIdSchema.parse(entry.id);
     return entry;
   };
+  // A navigation's URL commits before its document has a body; the anchor waits for one.
   const anchor = (url: string, name?: string) =>
-    `(() => { const a=document.createElement('a'); a.href=${JSON.stringify(url)}; ${name === undefined ? "" : `a.download=${JSON.stringify(name)};`} document.body.append(a); a.click(); a.remove(); })()`;
+    `(async () => { if (!document.body && document.readyState === 'loading') await new Promise((ready) => document.addEventListener('DOMContentLoaded', ready, { once: true })); const a=document.createElement('a'); a.href=${JSON.stringify(url)}; ${name === undefined ? "" : `a.download=${JSON.stringify(name)};`} document.body.append(a); a.click(); a.remove(); })()`;
   const ended = async (item: DesktopDownload, expected: DesktopDownload["state"] = "completed") => {
     await waitFor(
       () =>
@@ -280,7 +284,7 @@ async function run(): Promise<void> {
     assert.equal(item?.filename, "anchor.txt");
   });
   const blobAnchor = (name: string) =>
-    `(() => { const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([${JSON.stringify(payload.toString())}])); a.download=${JSON.stringify(name)}; document.body.append(a); a.click(); a.remove(); })()`;
+    `(async () => { if (!document.body && document.readyState === 'loading') await new Promise((ready) => document.addEventListener('DOMContentLoaded', ready, { once: true })); const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([${JSON.stringify(payload.toString())}])); a.download=${JSON.stringify(name)}; document.body.append(a); a.click(); a.remove(); })()`;
   await check("A03-blob-origin", async () => {
     const item = await ended(await start(blobAnchor("blob.txt")));
     assert.equal(item?.site, new URL(origin).hostname);

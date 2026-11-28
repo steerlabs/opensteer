@@ -50,6 +50,41 @@ afterEach(() => {
   state.host = null;
 });
 
+it("shows the requested Apps value while saving and the Home's answer afterward", async () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  const machineId = "rnr_33333333-3333-4333-8333-333333333333";
+  const saved = Promise.withResolvers<void>();
+  const update = host.updateMachineAccess.bind(host);
+  vi.spyOn(host, "updateMachineAccess").mockImplementation(async (input) => {
+    await saved.promise;
+    return update(input);
+  });
+  const apps = () => {
+    const row = state.page?.sections.flatMap(({ rows }) => rows).find(({ key }) => key === "apps");
+    if (row?.kind !== "toggle") throw new Error("Missing Apps switch");
+    return row;
+  };
+  await host.load();
+  state.host = host;
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () =>
+      root.render(
+        <DevicePageScreen route={{ params: { deploymentId: "dep_fixture", machineId } }} />,
+      ),
+    );
+    const before = apps().value;
+    await act(async () => apps().onChange(!before));
+    expect(apps()).toMatchObject({ value: !before, disabled: true, detail: "Saving…" });
+    await act(async () => saved.resolve());
+    expect(apps()).toMatchObject({ value: !before, disabled: false });
+  } finally {
+    saved.resolve();
+    await act(async () => root.unmount());
+    host.dispose();
+  }
+});
+
 it("keeps native Cancel setup on the device page when redemption won", async () => {
   const host = new MockHostClient({ latencyMs: 0 });
   const minted = await host.dispatch({

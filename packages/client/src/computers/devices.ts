@@ -1,6 +1,8 @@
+import { deviceWords } from "./devices-copy.js";
 import { computerStatus, isServiceMachine } from "./computers.js";
 import type { AuthSessionSummary } from "@opensteer/core";
 import {
+  deviceAccess,
   type DesktopDeviceMembership,
   type MachineSummary,
   type OtherDevice,
@@ -49,11 +51,58 @@ export function deviceMembership(input: DeviceMembershipInput): DeviceMembership
   return { state: input.membership?.state === "active" ? "ready" : "needs-setup" };
 }
 
+/** Designer copy for a sleeping Device on its detail page. */
+export const deviceAsleepExplanation = deviceWords("devices.asleep.explain");
+
+/**
+ * Whether the Home currently reports this Device as asleep (disconnected after
+ * its Runner reported going to sleep, within the Home's sleep window).
+ */
+export function isDeviceAsleep(machine: Pick<MachineSummary, "status" | "asleepSince">): boolean {
+  return (
+    machine.status === "offline" &&
+    typeof machine.asleepSince === "string" &&
+    machine.asleepSince.length > 0
+  );
+}
+
+/**
+ * Whether the person stopped agents on this Device from the Device itself
+ * ("Stop everything on this Mac"), as its Runner told the Home.
+ */
+export function isDeviceStopped(machine: Pick<MachineSummary, "agentsStoppedSince">): boolean {
+  return typeof machine.agentsStoppedSince === "string" && machine.agentsStoppedSince.length > 0;
+}
+
+/** "Stopped on Studio Mac · since 10:42 AM", or null when agents are not stopped there. */
+export function deviceStoppedLabel(
+  machine: Pick<MachineSummary, "agentsStoppedSince" | "name">,
+  now = new Date(),
+  locale?: string,
+): string | null {
+  if (!isDeviceStopped(machine)) return null;
+  const at = new Date(machine.agentsStoppedSince!);
+  const when =
+    at.toDateString() === now.toDateString()
+      ? at.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" })
+      : at.toLocaleDateString(locale, { month: "short", day: "numeric" });
+  return `Stopped on ${machine.name} · since ${when}`;
+}
+
+/** Calm explanation shown on a sleeping Device's page, or null when not asleep. */
+export function deviceAsleepDetail(
+  machine: Pick<MachineSummary, "status" | "asleepSince">,
+): string | null {
+  return isDeviceAsleep(machine) ? deviceAsleepExplanation : null;
+}
+
 export interface DeviceRow {
   readonly machine: MachineSummary;
   readonly sessions: readonly AuthSessionSummary[];
   readonly label: string;
   readonly status: string;
+  readonly asleep: boolean;
+  readonly asleepDetail: string | null;
   readonly capabilitySummary: string | null;
   readonly thisDevice: boolean;
 }
@@ -85,10 +134,14 @@ export function devicesView(input: {
         machine,
         sessions: input.sessions.filter((session) => session.deviceId === machine.id),
         label: machine.name,
+        asleep: isDeviceAsleep(machine),
+        asleepDetail: deviceAsleepDetail(machine),
         capabilitySummary: machine.phoneDisplay ? "Screen control" : null,
-        status: isHomeDevice(machine)
-          ? "Home · your agent runs here"
-          : computerStatus(machine).label,
+        status:
+          deviceStoppedLabel(machine) ??
+          (isHomeDevice(machine)
+            ? "Home · your own agents run here"
+            : computerStatus(machine).label),
         thisDevice: machine.id === input.hereId,
       })),
     alsoSignedIn: input.sessions
@@ -114,6 +167,16 @@ export function isHomeDevice(machine: MachineSummary): boolean {
 export type DeviceCapability = "browser" | "apps" | "files";
 
 const deviceCapabilities: readonly DeviceCapability[] = ["browser", "apps", "files"];
+
+/** Whether supported access is on in the latest policy this viewer holds. */
+export function deviceSwitchOn(
+  machine: MachineSummary,
+  capability: DeviceCapability,
+): boolean | null {
+  const supported = machine.capabilities?.[capability].supported;
+  if (supported === false) return false;
+  return supported && machine.access ? deviceAccess(machine.access.policy)[capability] : null;
+}
 
 export type DeviceAccessRow =
   | {
@@ -141,7 +204,7 @@ export function deviceAccessRows(
     if (!fact.configurable) return [{ capability, kind: "fixed", reason: "home" }];
     if (!devicesAvailable && capability !== "files")
       return [{ capability, kind: "fixed", reason: "older-host" }];
-    return [{ capability, kind: "switch", on: machine.access ? fact.enabled : null }];
+    return [{ capability, kind: "switch", on: deviceSwitchOn(machine, capability) }];
   });
 }
 

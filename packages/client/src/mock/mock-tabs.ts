@@ -1,4 +1,5 @@
 import {
+  BrowserSourceIdSchema,
   AppIdSchema,
   TabSchema,
   TabGroupColorSchema,
@@ -53,6 +54,12 @@ function fail(code: string, message: string, status: number): never {
  */
 export class MockTabCatalog {
   readonly store = new TabStore();
+  #sharedChromeTab: TabId | null = null;
+
+  markSharedFromChrome(tabId: TabId): void {
+    this.#sharedChromeTab = tabId;
+  }
+
   readonly #native = new Map<TabId, MockNativeTab>();
   /** Page tabs closed from the list; the browser world keeps their pages. */
   readonly #hiddenPages = new Set<TabId>();
@@ -88,6 +95,11 @@ export class MockTabCatalog {
     this.#native.set(tab.tabId, tab);
     this.#place(tab.tabId, groupId ?? null, null);
   }
+  /** The app quit or closed this window, as the Host then reports its tab. */
+  closeWindow(tabId: TabId): void {
+    const native = this.#native.get(tabId);
+    if (native?.kind === "window") this.#native.set(tabId, { ...native, closedWindow: true });
+  }
   /** Seeds a group over tabs already listed, as a person would have arranged it. */
   group(name: string, color: TabGroup["color"], tabIds: readonly TabId[]): TabGroupId {
     const groupId = createId("tabGroup");
@@ -109,8 +121,22 @@ export class MockTabCatalog {
     if (!this.#snapshot) return;
     const rows = new Map<TabId, Tab>();
     if (source.session === "authenticated") {
-      for (const tab of this.#pageTabs(source))
-        if (!this.#hiddenPages.has(tab.tabId)) rows.set(tab.tabId, tab);
+      for (const tab of this.#pageTabs(source)) {
+        if (this.#hiddenPages.has(tab.tabId)) continue;
+        rows.set(
+          tab.tabId,
+          tab.tabId === this.#sharedChromeTab
+            ? {
+                ...tab,
+                profile: null,
+                sharedByPerson: {
+                  sourceId: BrowserSourceIdSchema.parse("bsr_00000000-0000-4000-8000-000000000001"),
+                  computerName: tab.computer.name,
+                },
+              }
+            : tab,
+        );
+      }
       for (const native of this.#native.values())
         rows.set(native.tabId, this.#nativeTab(source, native));
     }
@@ -339,6 +365,24 @@ export class MockTabCatalog {
     );
     this.#revision++;
   }
+  /** As the Home's store does it: the members it has now close, then the group if empty. */
+  closeGroup(groupId: TabGroupId): Omit<TabCloseResult, "layout"> & { groupClosed: boolean } {
+    const held = this.#items.find(
+      (item) => item.kind === "group" && item.group.groupId === groupId,
+    );
+    if (held?.kind !== "group") fail("not_found", "This group no longer exists.", 404);
+    const result = held.group.tabIds.length
+      ? this.close(held.group.tabIds)
+      : { closed: [], failed: [] };
+    const remaining = this.#items.find(
+      (item) => item.kind === "group" && item.group.groupId === groupId,
+    );
+    if (remaining?.kind === "group" && remaining.group.tabIds.length === 0) {
+      this.#items = this.#items.filter((item) => item !== remaining);
+      this.#revision++;
+    }
+    return { ...result, groupClosed: !this.groups().some((group) => group.groupId === groupId) };
+  }
   groups(): TabGroup[] {
     return this.#items.flatMap((item) => (item.kind === "group" ? [item.group] : []));
   }
@@ -441,9 +485,17 @@ export class MockTabCatalog {
                 }
               : {}),
             openedBy: group.opener.kind === "task" ? { taskId: group.opener.threadId } : "person",
+            // Each task once, with when its work last took the tab up, as the Home says it.
             usedBy: [...new Set(row.occupants.map((occupant) => occupant.threadId))]
               .sort()
-              .map((taskId) => ({ taskId })),
+              .map((taskId) => {
+                const times = row.occupants
+                  .filter((occupant) => occupant.threadId === taskId)
+                  .map(({ lastActiveAt }) => lastActiveAt)
+                  .sort();
+                const since = times.at(-1);
+                return since ? { taskId, since } : { taskId };
+              }),
             createdAt: row.createdAt,
             updatedAt: group.updatedAt,
             iconRef: row.iconRef,

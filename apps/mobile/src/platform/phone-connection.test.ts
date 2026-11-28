@@ -143,7 +143,13 @@ test("every phone relay variant crosses the native boundary without converting n
     expect(sent.epoch).toBe(7);
     expect(JSON.parse(sent.message as string)).toStrictEqual(JSON.parse(JSON.stringify(message)));
   }
+  // A phone never advertises lease recovery, so it is never asked to reconcile and never replies.
+  const neverFromAPhone = new Set<string>(["browser.standard-cdp.reconciled"]);
   expect(covered).toEqual(
-    new Set(BrowserRelayToHostMessageSchema.options.map((option) => option.shape.type.value)),
+    new Set(
+      BrowserRelayToHostMessageSchema.options
+        .map((option) => option.shape.type.value)
+        .filter((type) => !neverFromAPhone.has(type)),
+    ),
   );
 });

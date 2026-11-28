@@ -38,7 +38,7 @@ export function TasksHome({
       <div className="tasks-home__scroll">
         <div className="tasks-home__inner">
           <div className="tasks-home__hero">
-            <h1 className="hero__title">What should your agent do?</h1>
+            <h1 className="hero__title">What should your own agents do?</h1>
             {firstRun ? (
               <p className="hero__subtitle">
                 {agentHome === null

@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   OpensteerError,
   type EventData,
@@ -55,7 +56,8 @@ export async function startExecutionNode(
       sessionRef: node.sessionRef,
       startedAt: input.startedAt,
       status: "running",
-      title: node.title,
+      // An engine's name for a subagent, cleaned as an engine's task title is.
+      title: outsideName(node.title, 240) || "Subagent",
     })
     .execute();
   await publishExecutionNode(transaction, node.nodeId);
@@ -72,6 +74,8 @@ export async function updateExecutionNode(
     .select(["title", "parentNodeId"])
     .where("id", "=", update.nodeId)
     .executeTakeFirstOrThrow();
+  const title =
+    update.title === undefined ? undefined : outsideName(update.title, 240) || before.title;
   if (update.stopping !== undefined)
     throw new OpensteerError({
       code: "conflict",
@@ -112,13 +116,13 @@ export async function updateExecutionNode(
       ...(update.model === undefined ? {} : { model: update.model }),
       ...(update.originCallId === undefined ? {} : { originCallId: update.originCallId }),
       ...(update.prompt === undefined ? {} : { prompt: update.prompt }),
-      ...(update.title === undefined ? {} : { title: update.title }),
+      ...(title === undefined ? {} : { title }),
     })
     .where("id", "=", update.nodeId)
     .execute();
   await publishExecutionNode(transaction, update.nodeId);
   // Only a real change to what a waiting Request shows of its asker moves its list.
-  const retitled = update.title !== undefined && update.title !== before.title;
+  const retitled = title !== undefined && title !== before.title;
   const reparented =
     update.parentNodeId !== undefined && update.parentNodeId !== before.parentNodeId;
   if (retitled || reparented)

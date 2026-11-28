@@ -17,6 +17,13 @@ Inspect `apps/desktop/release/contributor/mac-arm64/`. The ad-hoc app has develo
 0.0.0 and no updater metadata, and cannot be prepared for distribution. Never set
 `OPENSTEER_DESKTOP_UPDATE_*` for it.
 
+**Trial beside an installed app.** Tim runs `bash scripts/desktop-trial.sh` himself (never an
+agent on his Mac); `scripts/desktop-trial-remove.sh` lists, then removes, what it made. It is a
+development launch with `OPENSTEER_DESKTOP_TRIAL_ROOT` (`config.ts`): everything under
+`~/Opensteer Trial`, no Opensteer account, no callback scheme, and no Computer use, Passwords or
+Dictation, whose helpers and grants every Opensteer on a Mac shares. The keyless proof is no trial:
+it is `com.opensteer.opensteer` and opens the installed app's data.
+
 **Signed local install**, only when Tim authorizes it and supplies the configuration. Close other
 Opensteer copies, since two copies must never share one Personal store; use a clean checkout and a
 full source SHA:

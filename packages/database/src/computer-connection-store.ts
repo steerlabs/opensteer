@@ -252,8 +252,29 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     readonly appApproval: "ask" | "automatic";
     readonly revision: number;
   }> {
+    const { accessPolicy: _accessPolicy, ...policy } = await this.deviceComputerUseFacts(input);
+    return policy;
+  }
+
+  /**
+   * A device's computer-use policy with its own switches, in the one read the policy takes: what
+   * its Apps switch says, for a listing that decides the device's own refusal from it.
+   */
+  async deviceComputerUseFacts(input: {
+    readonly deviceId: DeviceId;
+    readonly ownerUserId: UserId;
+  }): Promise<{
+    readonly appApproval: "ask" | "automatic";
+    readonly revision: number;
+    readonly accessPolicy: unknown;
+  }> {
     return withPersonalReadTransaction(this.database, async (transaction) => {
-      await this.#computerUsePolicyOwner(transaction, input.deviceId, input.ownerUserId, false);
+      const device = await this.#computerUsePolicyOwner(
+        transaction,
+        input.deviceId,
+        input.ownerUserId,
+        false,
+      );
       const policy = await computerUsePolicyInTransaction(
         transaction,
         input.deviceId,
@@ -261,6 +282,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
       );
       return {
         ...policy,
+        accessPolicy: device.accessPolicy,
       };
     });
   }
@@ -273,7 +295,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
   ) {
     const runner = await transaction
       .selectFrom("devices")
-      .select(["id", "name", "removedAt"])
+      .select(["id", "name", "removedAt", "accessPolicy"])
       .where("id", "=", deviceId)
       .$if(lock, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
@@ -787,9 +809,11 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
   async getDeviceComputerConnectionForCall(input: {
     readonly connectionId: IntegrationConnectionId;
     readonly ownerUserId: UserId;
+    readonly includeRecordedAppName?: boolean;
   }): Promise<{
     readonly access: IntegrationAccess;
     readonly connection: IntegrationConnectionSummary;
+    readonly recordedAppName?: string | null;
     readonly deviceId: DeviceId;
     readonly deviceName: string;
     readonly deviceAddedAt: Date;
@@ -797,6 +821,8 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     readonly deviceProfile: "iphone" | null;
     readonly runnerRevoked: boolean;
     readonly runnerUpdateRequired: boolean;
+    /** The device's switches, read with it, so a listing reads no device again. */
+    readonly deviceAccessPolicy?: unknown;
   } | null> {
     const row = await this.database
       .selectFrom("integrationConnections")
@@ -816,7 +842,20 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
         "runners.deviceProfile",
         "runners.updateRequired",
         "devices.removedAt as runnerRevokedAt",
+        "devices.accessPolicy as deviceAccessPolicy",
       ])
+      .$if(input.includeRecordedAppName === true, (query) =>
+        query.select((eb) =>
+          eb
+            .selectFrom("integrationGrants")
+            .select("alias")
+            .whereRef("integrationGrants.connectionId", "=", "integrationConnections.id")
+            .whereRef("integrationGrants.ownerUserId", "=", "integrationConnections.ownerUserId")
+            .where("integrationGrants.revokedAt", "is", null)
+            .limit(1)
+            .as("recordedAppName"),
+        ),
+      )
       .where("integrationConnections.id", "=", input.connectionId)
       .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
       .where("integrationConnections.connectionKind", "=", "computer")
@@ -826,6 +865,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     return {
       access: row.computerAccess,
       connection: integrationConnectionFromRow(row),
+      ...(input.includeRecordedAppName ? { recordedAppName: row.recordedAppName ?? null } : {}),
       deviceId: row.deviceId,
       deviceName: row.runnerName,
       deviceAddedAt: row.deviceAddedAt,
@@ -833,6 +873,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
       deviceProfile: row.deviceProfile,
       runnerRevoked: row.runnerRevokedAt !== null,
       runnerUpdateRequired: row.updateRequired !== null,
+      deviceAccessPolicy: row.deviceAccessPolicy,
     };
   }
 }

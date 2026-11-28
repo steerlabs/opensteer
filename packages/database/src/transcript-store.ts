@@ -10,7 +10,6 @@ import {
   type MessageAuthor,
   type MessageKind,
   type ToolOutputImage,
-  type TeamSource,
   utf8ByteLength,
   utf8Prefix,
 } from "@opensteer/core";
@@ -119,7 +118,6 @@ export function describeTranscriptMessage(input: {
   readonly edited: boolean;
   readonly edit?: MessageEdit;
   readonly cancelReason?: string | null;
-  readonly teamSource?: TeamSource;
   readonly admittedSeed: boolean;
   readonly seedInRun: boolean;
   readonly assigned: boolean;
@@ -176,7 +174,6 @@ export function describeTranscriptMessage(input: {
       ...(messageKind ? { messageKind, messageAuthor: input.author } : {}),
       ...(input.edit ? { edit: input.edit } : {}),
       ...(delivery ? { delivery } : {}),
-      ...(input.teamSource ? { teamSource: input.teamSource } : {}),
       edited: input.edited,
       published,
       preview,

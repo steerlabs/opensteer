@@ -1,4 +1,5 @@
 export * from "./browser/backend.js";
+export * from "./browser-pool.js";
 export { browserMemoryBudgetBytes } from "./browser/memory-budget.js";
 export * from "./browser/viewport-capture.js";
 export * from "./browser/controller.js";
@@ -9,6 +10,7 @@ export * from "./browser/sign-in.js";
 export * from "./browser/site-cookies.js";
 export * from "./browser/page-ownership.js";
 export * from "./browser/surface-ledger.js";
+export { TabSleeper } from "./browser/tab-sleeper.js";
 export { BrowserRuntimeError } from "./errors.js";
 export * from "./local-profile-store.js";
 export * from "./runtime.js";
@@ -21,3 +23,33 @@ export type { BrowserOpenTiming } from "./runtime.js";
 
 export { normalizeElectronCursor } from "./browser/cursor-hints.js";
 export { pageWithTarget } from "./browser/target-lookup.js";
+
+export {
+  cdpCommandRefusal,
+  decodeNestedCdpMessage,
+  invalidNestedMessageRefusal,
+  nestedTooDeepRefusal,
+  connectionAutoAttachParameters,
+  connectionCdpRefusal,
+  connectionMethodRefusal,
+  connectionNestedAutoAttachRefusal,
+  nestsAutoAttach,
+  clipboardPermissionRefusal,
+  connectionClipboardRefusal,
+  connectionPermissionRefusal,
+  extensionManagementRefusal,
+  isExtensionMutationCommand,
+  SessionCdpRouter,
+  SessionCdpRouterError,
+  type BrowserCdpBackend,
+  type CdpChannel,
+  type CdpParameters,
+  type StandardCdpAttachment,
+} from "@opensteer/browser-core";
+
+export {
+  answerTooLargeMessage,
+  answerTooLargeWords,
+  boundedJsonSize,
+  type JsonSizeBudget,
+} from "@opensteer/browser-core/bounded-json";

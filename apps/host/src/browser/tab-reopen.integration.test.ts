@@ -47,11 +47,14 @@ integration("reopen tab admission", () => {
     ]);
     expect(a).toEqual(b);
     expect(a.tabIds).toEqual([tabId]);
+    // The close let go of its page in its own commit: reopened, the tab keeps its identity and
+    // address and loads them in a page of its own.
     expect(await f.tabs.get(f.ownerId, tabId)).toMatchObject({
       id: tabId,
       generation: 3,
       title: "Saved",
-      pageBinding: { sessionId },
+      url: "https://saved.test/path#hash",
+      pageBinding: null,
     });
     expect((await f.tabs.snapshot(f.ownerId)).rows).toHaveLength(1);
     await expect(f.tabs.reopen(f.ownerId, undefined, "nothing-closed")).rejects.toMatchObject({

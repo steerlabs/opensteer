@@ -7,13 +7,14 @@ import Foundation
 /// It is the control plane and lives on the main actor with the overlay.
 /// Accessibility reads and posted events run on the work executor
 /// (`WorkActor`); passive capture runs in its own bounded lane. That lets
-/// the pill's `Stop`, `session.close`,
+/// a window chip's `Stop`, `session.close`,
 /// `session.open` and `hello` answer at once while an app is not answering.
 @MainActor
 public final class HelperRuntime {
-  public nonisolated static let protocolVersion = 10
-  /// Protocol 10 addresses windows explicitly and separates observation from input.
-  public nonisolated static let minProtocolVersion = 10
+  public nonisolated static let protocolVersion = 11
+  /// Protocol 11 adds `helper.exit`, which the desktop sends as it quits. The
+  /// app and its helper are one release, so no earlier protocol is served.
+  public nonisolated static let minProtocolVersion = 11
   /// No session and no connection for this long and the helper quits; the
   /// desktop relaunches it on demand.
   static let processIdleTimeout: TimeInterval = 15 * 60
@@ -36,7 +37,7 @@ public final class HelperRuntime {
     "display.resolve", "display.start", "display.demand", "display.refresh", "display.stop",
     "display.attach", "display.input-reset", "display.input",
     "view.open", "view.activate", "view.renew", "view.close",
-    "permissions.get", "session.open", "session.close",
+    "permissions.get", "session.open", "session.close", "helper.exit",
     "data.status", "data.request", "data.invoke",
     "imessage.account", "imessage.poll", "imessage.send",
   ]
@@ -60,6 +61,13 @@ public final class HelperRuntime {
   private var appMutations: [String: AppMutationCoordinator] = [:]
   private(set) var ownerAttachments: [String: MacOwnerAttachment] = [:]
   var videoProducerFactory: MacWindowVideoRegistry.ProducerFactory?
+  var openOwnerWindow: @WorkActor (AppBundleRecord, String, SessionCancellation, WorkBudget) async throws
+    -> (OwnerViewWindow.Binding, Wire.ViewStateResult.OwnerWindowSummary) = {
+      record, windowID, cancellation, budget in
+      let binding = try await OwnerViewWindow.open(
+        record: record, windowID: windowID, cancellation: cancellation, budget: budget)
+      return (binding, try binding.summary())
+    }
   private lazy var video = MacWindowVideoRegistry(
     makeProducer: videoProducerFactory,
     retainBinding: { [unowned self] target in
@@ -74,6 +82,9 @@ public final class HelperRuntime {
   private let imessage: IMessageChannel
   /// `data.invoke` calls under way, which a pending restart waits for.
   private var appCallsInFlight = 0
+  /// Calls answered outside the serial lane and still running, which an exit
+  /// waits for as it does the lane.
+  private var outOfBandInFlight = 0
   /// `Stop` ends the session at once; the Run learns it on its next call.
   private var stoppedSessions: [String: Date] = [:]
   private var idleSince: Date? = Date()
@@ -81,10 +92,17 @@ public final class HelperRuntime {
   /// ScreenCaptureKit reads the Screen Recording grant at process start, so the
   /// first time it is granted the helper has to be restarted to use it.
   private var quitOnceIdleReason: String?
+  /// A desktop quit and asked this process to go; it does once nothing else
+  /// uses it (`helper.exit`). Another desktop connecting cancels it.
+  private var exitRequested = false
+  private var exiting = false
   private var lastPermissions: PermissionsState?
 
   private let permissions: @Sendable () -> PermissionsState
   private let appRunning: @Sendable (String, String) -> Bool
+  /// How this process ends when the desktop that quit asked it to. Tests
+  /// replace it, so asking a test's runtime to exit never ends the test.
+  private let terminate: @MainActor () -> Void
 
   public convenience init(
     helperVersion: String, peerRequirement: PeerRequirementMode,
@@ -107,10 +125,14 @@ public final class HelperRuntime {
     permissions: @escaping @Sendable () -> PermissionsState,
     appRunning: @escaping @Sendable (String, String) -> Bool = {
       AppProcess.anyInstanceRunning(bundleId: $0, path: $1)
-    }
+    },
+    overlay: OverlayController? = nil,
+    terminate: @escaping @MainActor () -> Void = { NSApplication.shared.terminate(nil) }
   ) {
     self.permissions = permissions
     self.appRunning = appRunning
+    self.overlay = overlay
+    self.terminate = terminate
     self.helperVersion = helperVersion
     self.peerRequirement = peerRequirement
     self.catalog = catalog
@@ -134,9 +156,9 @@ public final class HelperRuntime {
         }
       }
     }
-    let overlay = OverlayController(onStop: { [weak self] in self?.stopFromOverlay() })
+    let overlay = OverlayController(onStop: { [weak self] key in self?.stopFromOverlay(app: key) })
     self.overlay = overlay
-    // The drawn pointer and outline follow the windows they sit on.
+    // The chips follow the windows they sit on.
     monitor.onWindowEvent = { [weak overlay] in
       Task { @MainActor in overlay?.windowsChanged() }
     }
@@ -289,6 +311,14 @@ public final class HelperRuntime {
     guard !closedConnectionIDs.contains(connection.id) else { return }
     connections[connection.id] = connection
     idleSince = nil
+    let outOfBand = envelope.method != "helper.exit" && Self.outOfBandMethods.contains(envelope.method)
+    if outOfBand { outOfBandInFlight += 1 }
+    defer {
+      if outOfBand {
+        outOfBandInFlight -= 1
+        if exitRequested { DispatchQueue.main.async { [weak self] in self?.exitIfUnused() } }
+      }
+    }
     do {
       let result = try await perform(
         method: envelope.method, envelope: envelope, connection: connection,
@@ -386,6 +416,7 @@ public final class HelperRuntime {
     guard !closedConnectionIDs.contains(connection.id) else { return }
     connections[connection.id] = connection
     idleSince = nil
+    exitRequested = false
   }
 
   private func perform(
@@ -415,9 +446,14 @@ public final class HelperRuntime {
     case "display.input":
       return try await ownerInput(envelope, connection: connection, budget: budget)
     case "display.start":
-      return try await video.start(envelope, connection: connection, budget: budget)
+      let result = try await video.start(envelope, connection: connection, budget: budget)
+      restoreConnection(video.app(of: envelope, connection: connection))
+      return result
     case "display.resolve", "display.demand", "display.refresh", "display.stop", "display.attach":
       let result = try video.perform(envelope, connection: connection)
+      if method == "display.attach" || method == "display.demand" {
+        restoreConnection(video.app(of: envelope, connection: connection))
+      }
       tickOwnerInput()
       for attachment in ownerAttachments.values where !attachment.active.current {
         await waitForOwnerCleanup(attachment)
@@ -454,11 +490,13 @@ public final class HelperRuntime {
       try Self.requireUnlocked()
       let record = try await catalog.verifiedRecord(for: app)
       return try await Self.resolveTabWindow(record: record, budget: budget)
-    case "session.windows", "session.bind":
+    case "session.windows", "session.windowsExisting", "session.bind", "session.bindExisting":
+      let binding = method == "session.bind" || method == "session.bindExisting"
+      let noLaunch = method == "session.windowsExisting" || method == "session.bindExisting"
       let requested: SessionApp
       let sessionID: String
       let window: String?
-      if method == "session.bind" {
+      if binding {
         let params = try envelope.decodeParams(Wire.BindParams.self, method: method)
         requested = params.app
         sessionID = params.sessionId
@@ -475,7 +513,7 @@ public final class HelperRuntime {
       let cancellation = opened.cancellation
       let inventory = try await SessionWindows.windows(
         app: state, monitor: monitor, budget: budget,
-        check: { try cancellation.check() }, launching: window == nil,
+        check: { try cancellation.check() }, launching: !noLaunch && window == nil,
         processAcquired: { pid in
           try await MainActor.run {
             try Self.validateObservationCommit(
@@ -491,7 +529,7 @@ public final class HelperRuntime {
       try Self.validateObservationCommit(
         current: registry.sessions[sessionID], expected: opened, app: state,
         connectionID: connection.id)
-      if method == "session.windows" { return Wire.WindowsResult(windows: inventory) }
+      if !binding { return Wire.WindowsResult(windows: inventory) }
       let selected = try await SessionWindows.bind(app: state, window: window, monitor: monitor,
         check: { try cancellation.check(); try budget.check() })
       try await publishCurrent(of: state, in: opened, connectionID: connection.id)
@@ -509,6 +547,8 @@ public final class HelperRuntime {
         params: try envelope.decodeParams(Wire.SessionOpenParams.self, method: method),
         connection: connection
       )
+    case "helper.exit":
+      return requestExit(connection: connection)
     case "session.close":
       let params = try envelope.decodeParams(Wire.SessionParams.self, method: method)
       try closeRequestedSession(params.sessionId, connection: connection)
@@ -530,6 +570,7 @@ public final class HelperRuntime {
       appCallsInFlight += 1
       defer {
         appCallsInFlight -= 1
+        if exitRequested { DispatchQueue.main.async { [weak self] in self?.exitIfUnused() } }
         if quitOnceIdleReason != nil {
           DispatchQueue.main.async { [weak self] in self?.restartIfGrantPending() }
         }
@@ -547,6 +588,7 @@ public final class HelperRuntime {
       appCallsInFlight += 1
       defer {
         appCallsInFlight -= 1
+        if exitRequested { DispatchQueue.main.async { [weak self] in self?.exitIfUnused() } }
         if quitOnceIdleReason != nil {
           // After this call's answer has been written.
           DispatchQueue.main.async { [weak self] in self?.restartIfGrantPending() }
@@ -565,6 +607,7 @@ public final class HelperRuntime {
       appCallsInFlight += 1
       defer {
         appCallsInFlight -= 1
+        if exitRequested { DispatchQueue.main.async { [weak self] in self?.exitIfUnused() } }
         if quitOnceIdleReason != nil {
           DispatchQueue.main.async { [weak self] in self?.restartIfGrantPending() }
         }
@@ -669,6 +712,71 @@ public final class HelperRuntime {
     NSApplication.shared.terminate(nil)
   }
 
+  // MARK: - Exit
+
+  /// The desktop is quitting. Its connection ends here exactly as a dropped
+  /// one does, sessions and all; the process then goes too, unless another
+  /// Opensteer app on this Mac still holds a connection to it (one installed
+  /// helper serves Stable and Beta).
+  func requestExit(connection: IPCConnection) -> Wire.HelperExitResult {
+    Log.lifecycle.notice("The desktop is quitting; ending its connection.")
+    // Every socket of the app that is quitting ends with it: a watched window
+    // has a video socket of its own, and it is not another app. Close both
+    // peer-PID matches and any media sockets attached to this connection's
+    // streams (covering cases where `peerProcessIdentifier` is unavailable).
+    var peerConnections: [IPCConnection] = []
+    if let quitting = connection.peerProcessIdentifier {
+      peerConnections.append(
+        contentsOf: connections.values.filter {
+          $0 !== connection && $0.peerProcessIdentifier == quitting
+        })
+    }
+    for mediaID in video.attachedMediaConnectionIDs(for: connection) {
+      if let media = connections[mediaID], media !== connection,
+        !peerConnections.contains(where: { $0 === media })
+      {
+        peerConnections.append(media)
+      }
+    }
+    for other in peerConnections {
+      connectionClosed(other, ending: .ended)
+      other.close()
+    }
+    // A quit is not a lost connection: no chip turns amber.
+    connectionClosed(connection, ending: .ended)
+    guard connections.isEmpty, registry.sessions.isEmpty else {
+      Log.lifecycle.notice("Another desktop still uses this helper; staying.")
+      return Wire.HelperExitResult(exiting: false)
+    }
+    exitRequested = true
+    // After the answer to this request has been written.
+    DispatchQueue.main.async { [weak self] in self?.exitIfUnused() }
+    return Wire.HelperExitResult(exiting: true)
+  }
+
+  /// Exits once an app call under way has ended and the serial lane has run
+  /// out: closing the sessions cancelled that work between actions, and the
+  /// action in hand finishes rather than being cut off by the process ending.
+  func exitIfUnused() {
+    guard exitRequested, !exiting, connections.isEmpty, registry.sessions.isEmpty,
+      appCallsInFlight == 0, outOfBandInFlight == 0, ownerAttachments.isEmpty
+    else { return }
+    let runtime = self
+    executor.enqueue {
+      await MainActor.run {
+        guard runtime.exitRequested, !runtime.exiting, runtime.connections.isEmpty,
+          runtime.registry.sessions.isEmpty, runtime.appCallsInFlight == 0,
+          runtime.outOfBandInFlight == 0, runtime.ownerAttachments.isEmpty
+        else { return }
+        runtime.exiting = true
+        Log.lifecycle.notice("Quitting: the desktop quit.")
+        runtime.server?.stop()
+        runtime.server = nil
+        runtime.terminate()
+      }
+    }
+  }
+
   // MARK: - Sessions
 
   private func session(_ sessionId: String, connection: IPCConnection) throws -> HelperSession {
@@ -685,7 +793,7 @@ public final class HelperRuntime {
     return session
   }
 
-  /// Bookkeeping only: it names the session and the task the pill shows. It
+  /// Bookkeeping only: it names the session. It
   /// claims nothing, resolves nothing and waits on nothing, so it is never
   /// `busy` and never slow.
   private func openSession(
@@ -707,8 +815,6 @@ public final class HelperRuntime {
       }
       guard existing.runId == params.runId else { throw LoginEnvelopeCrypto.refusal }
       existing.lastUsedAt = Date()
-      existing.threadTitle = params.threadTitle
-      updateOverlay()
       return Wire.SessionOpenResult(sessionId: existing.sessionId)
     }
     if quitOnceIdleReason != nil, registry.sessions.isEmpty {
@@ -717,8 +823,7 @@ public final class HelperRuntime {
         "Opensteer Computer Use is restarting to finish Screen Recording setup.")
     }
     let opened = HelperSession(
-      sessionId: params.sessionId, connectionID: connection.id, threadTitle: params.threadTitle,
-      runId: params.runId)
+      sessionId: params.sessionId, connectionID: connection.id, runId: params.runId)
     registry.insert(opened)
     idleSince = nil
     updateOverlay()
@@ -728,25 +833,32 @@ public final class HelperRuntime {
 
   func isMonitoring(_ pid: pid_t) -> Bool { monitor.isWatching(pid) }
 
+  /// How the last sessions that went away were shown as ending.
+  private(set) var lastOverlayEnding: OverlayModel.Ending?
+
+  /// The person reached `app` again through Opensteer: only that app's
+  /// connection notice goes.
+  private func restoreConnection(_ app: AppIdentity?) {
+    guard let app else { return }
+    overlay?.connectionRestored(app: app.bundleId.lowercased())
+  }
+
+  /// The agents' sessions only: the person's own viewing and typing through
+  /// Opensteer draws nothing on this Mac.
   private func updateOverlay(ending: OverlayModel.Ending = .ended) {
-    let ownerInput = ownerAttachments.values.filter { $0.active.current }.map { lease in
-      OverlayModel.Session(id: lease.id, threadTitle: nil,
-        apps: [.init(key: lease.binding.target.app.bundleId.lowercased(), name: lease.binding.target.app.displayName,
-          access: .readWrite, path: lease.path)], ownerInput: true)
-    }
-    overlay?.update(sessions: registry.sessions.values, owners: registry.owners, ending: ending, ownerInput: ownerInput)
+    lastOverlayEnding = ending
+    overlay?.update(sessions: registry.sessions.values, owners: registry.owners, ending: ending)
   }
 
   private func closeAllSessions(reason: SessionStoppedReason?) {
     for id in Array(registry.sessions.keys) {
       closeSession(id, reason: reason, overlayEnding: nil)
     }
-    updateOverlay(ending: reason == .user ? .stopped : .ended)
+    updateOverlay()
   }
 
   /// `overlayEnding` is nil while several sessions close at once; the caller
-  /// then updates the overlay once, so its notice names every Thread that
-  /// ended together.
+  /// then updates the overlay once, for every session that ended together.
   private func closeSession(
     _ id: String, reason: SessionStoppedReason?, overlayEnding: OverlayModel.Ending? = .ended
   ) {
@@ -789,7 +901,13 @@ public final class HelperRuntime {
     closeSession(sessionId, reason: nil)
   }
 
-  func stopFromOverlay() {
+  /// The person pressed `Stop` on the chip of the app `key`: every agent
+  /// session holding that app ends, with the person's reason, and so do that
+  /// session's holds on any other app. Sessions holding only other apps keep
+  /// working. The person's own input through Opensteer is still released
+  /// everywhere on this Mac, as every `Stop` here always has: someone at the
+  /// Mac pressing it is never left with remote input still going.
+  func stopFromOverlay(app key: String) {
     Log.session.notice("The person pressed Stop.")
     for attachment in ownerAttachments.values {
       if let id = attachment.source.viewId, let generation = attachment.source.generation {
@@ -797,7 +915,11 @@ public final class HelperRuntime {
       }
     }
     releaseAllOwnerInput(reason: "stopped")
-    closeAllSessions(reason: .user)
+    let holding = registry.sessions.values.filter { registry.owners[key] == $0.sessionId }
+    for session in holding {
+      closeSession(session.sessionId, reason: .user, overlayEnding: nil)
+    }
+    updateOverlay()
   }
 
   nonisolated static func requireUnlocked(
@@ -834,7 +956,6 @@ public final class HelperRuntime {
 
     if let cached = session.app(key), AppCatalog.sameIdentity(cached.identity, requested.identity) {
       try registry.claim(cached, for: session)
-      session.noteAccess(requested.access, for: cached)
       updateOverlay()
       return cached
     }
@@ -858,7 +979,7 @@ public final class HelperRuntime {
       session.remove(replaced)
     }
     try registry.claim(state, for: session)
-    session.add(state, access: requested.access)
+    session.add(state)
     updateOverlay()
     return state
   }
@@ -895,10 +1016,15 @@ public final class HelperRuntime {
         window: closed ? nil : view.windowSummary)
     }
     func opened(_ view: OwnerViewRegistry.View) -> any Encodable {
-      guard view.target != nil else {
+      guard let target = view.target else {
         return Wire.ViewUnavailableResult(
           viewId: view.id, generation: view.generation, kind: "unavailable",
           reason: view.unavailableReason)
+      }
+      if method == "view.open", target.process.isCurrent,
+        view.window?.unavailableReason != "window-closed"
+      {
+        restoreConnection(target.app)
       }
       return state(view)
     }
@@ -934,9 +1060,8 @@ public final class HelperRuntime {
       else { throw HelperError(.noSession, "That owner view ended while opening.") }
       let cancellation = view.cancellation
       do {
-        let binding = try await OwnerViewWindow.open(
-          record: record, windowID: target.windowId, cancellation: cancellation, budget: budget)
-        let summary = try await binding.summary()
+        let (binding, summary) = try await openOwnerWindow(
+          record, target.windowId, cancellation, budget)
         view.window = binding
         view.target = binding.target
         view.windowSummary = summary
@@ -993,10 +1118,12 @@ public final class HelperRuntime {
     overlay?.workStarted(on: state)
     defer { overlay?.workEnded(on: state) }
     let cancellation = opened.cancellation
+    let key = state.key, overlay = overlay
     let observation = try await AppObserver.observe(
       app: state, window: params.window, monitor: monitor, budget: budget,
       includeScreenshot: includeScreenshot, cancellation: cancellation,
-      check: { try cancellation.check() })
+      check: { try cancellation.check() },
+      verified: { window in await overlay?.bind(app: key, window: window) })
     try await commit(observation, of: state, in: opened, connectionID: connection.id)
     return observation
   }
@@ -1058,10 +1185,12 @@ public final class HelperRuntime {
       publicationFailure = HelperError(
         .failed, "The input completed but its view could not be updated.")
     }
+    let reason = cancellation.reason
+    let failure = reason == .stoppedByUser
+      ? reason?.error : (run.error ?? reason?.error ?? publicationFailure)
     return Wire.ActResult(
       performed: run.performed,
-      error: (run.error ?? cancellation.reason?.error ?? publicationFailure).map(
-        Wire.ActResult.Failure.init))
+      error: failure.map(Wire.ActResult.Failure.init))
   }
 
   private func publishCurrent(
@@ -1205,7 +1334,6 @@ public final class HelperRuntime {
       connection: connection, binding: binding, producer: producer,
       mutations: mutations(for: binding.target.app.bundleId.lowercased()), path: path, verification: verification)
     ownerAttachments[id] = attachment
-    updateOverlay()
     return attachment
   }
 
@@ -1225,22 +1353,52 @@ public final class HelperRuntime {
     }
   }
 
-  private func ownerInput(_ envelope: RequestEnvelope, connection: IPCConnection, budget: WorkBudget)
+  private func waitForOwnerCleanup(_ attachment: MacOwnerAttachment, budget: WorkBudget) async -> Bool {
+    let remaining = budget.remaining()
+    guard remaining > 0 else { return false }
+    let wait = QueuedWork()
+    return await withCheckedContinuation { continuation in
+      let timeout = Task {
+        do { try await Task.sleep(for: .seconds(remaining)) } catch { return }
+        if wait.expire() { continuation.resume(returning: false) }
+      }
+      attachment.queue.enqueue {
+        guard wait.start() else { return }
+        timeout.cancel()
+        continuation.resume(returning: true)
+      }
+    }
+  }
+
+  func ownerInput(_ envelope: RequestEnvelope, connection: IPCConnection, budget: WorkBudget)
     async throws -> MacOwnerInput.Result {
     let params = try envelope.decodeParams(MacOwnerInput.InputParams.self, method: envelope.method)
-    guard params.sequence >= 0, params.sequence <= 9_007_199_254_740_991,
-      params.geometry > 0, params.geometry <= 9_007_199_254_740_991 else {
-      throw HelperError(.failed, "Owner input needs a valid generation and sequence.")
-    }
     guard connection.negotiatedOwnerInputVersion == 2, params.source.kind == "owner-view"
     else { return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "unavailable") }
-    tickOwnerInput()
     let id = attachmentKey(streamID: params.streamId, source: params.source)
-    if let previous = ownerAttachments[id], !previous.active.current {
-      await waitForOwnerCleanup(previous)
+    func releaseRefusedSource() async {
+      guard let attachment = ownerAttachments[id], attachment.connection === connection else { return }
+      releaseOwnerInput(attachment, reason: "batch-refused")
+      await waitForOwnerCleanup(attachment)
+    }
+    guard params.sequence >= 0, params.sequence <= 9_007_199_254_740_991,
+      params.geometry > 0, params.geometry <= 9_007_199_254_740_991 else {
+      await releaseRefusedSource()
+      throw HelperError(.failed, "Owner input needs a valid generation and sequence.")
     }
     do {
       try budget.check()
+      tickOwnerInput()
+      if let previous = ownerAttachments[id], !previous.active.current,
+        previous.connection === connection || previous.connection.closedFlag
+          || closedConnectionIDs.contains(previous.connection.id)
+      {
+        // Cleanup still owns the key. A replacement waits for that release, within its own budget.
+        guard await waitForOwnerCleanup(previous, budget: budget) else {
+          return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "unavailable")
+        }
+        try budget.check()
+      }
       try Self.requireUnlocked()
       guard (1...64).contains(params.events.count) else { throw MacOwnerInput.Refusal("unsupported") }
       for event in params.events { try event.validate() }
@@ -1258,16 +1416,27 @@ public final class HelperRuntime {
       let bytes = try JSONCoding.encoder.encode(envelope.params).count
       let reservation = try lease.admission.admit(sequence: params.sequence, bytes: bytes)
       let deadline = ProcessInfo.processInfo.systemUptime + budget.remaining()
-      return await withCheckedContinuation { continuation in
+      let result: MacOwnerInput.Result = await withCheckedContinuation { continuation in
         if lease.mailbox.append(.init(params: params, reservation: reservation, deadline: deadline, reply: continuation)) {
           lease.queue.enqueue { await lease.worker.drain(lease) }
         }
       }
-    } catch let refusal as MacOwnerInput.Refusal {
-      return MacOwnerInput.Result(sequence: params.sequence,
-        outcome: refusal.reason == "stale" ? "stale" : "refused", reason: refusal.reason)
+      let expired = result.outcome == "dispatched" && ProcessInfo.processInfo.systemUptime >= deadline
+      if expired {
+        releaseOwnerInput(lease, reason: "timed-out")
+        await waitForOwnerCleanup(lease)
+      }
+      if expired || result.outcome == "unknown" {
+        throw HelperError(.outcomeUnknown, "Some of the input may already have reached this app.")
+      }
+      return result
+    } catch let error as HelperError where error.code == .outcomeUnknown {
+      throw error
     } catch {
-      return MacOwnerInput.Result(sequence: params.sequence, outcome: "refused", reason: "unavailable")
+      await releaseRefusedSource()
+      let reason = (error as? MacOwnerInput.Refusal)?.reason ?? "unavailable"
+      return MacOwnerInput.Result(sequence: params.sequence,
+        outcome: reason == "stale" ? "stale" : "refused", reason: reason)
     }
   }
 
@@ -1284,12 +1453,18 @@ public final class HelperRuntime {
   }
   private func finishOwnerRelease(_ lease: MacOwnerAttachment, reason: String) {
     if ownerAttachments[lease.id] === lease { ownerAttachments[lease.id] = nil }
+    // Held keys and focus are given back before a requested exit goes.
+    if exitRequested { exitIfUnused() }
     let counts = lease.counters.current.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
     Log.session.notice("Owner input released: reason=\(reason, privacy: .public) counters=\(counts, privacy: .public)")
-    updateOverlay()
   }
   private func releaseAllOwnerInput(reason: String) {
     for lease in ownerAttachments.values { releaseOwnerInput(lease, reason: reason) }
+  }
+  func expireOwnerInputHold(_ lease: MacOwnerAttachment, now: TimeInterval) -> Bool {
+    guard let deadline = lease.heldDeadline.current, now >= deadline else { return false }
+    releaseOwnerInput(lease, reason: "timed-out")
+    return true
   }
   private func tickOwnerInput() {
     let now = ProcessInfo.processInfo.systemUptime
@@ -1299,10 +1474,10 @@ public final class HelperRuntime {
       if (try? Self.requireUnlocked()) == nil { reason = "secure-lock" }
       else if !AXIsProcessTrusted() || lease.guardFailed.current || source == nil || !lease.producer.inputVisible || !lease.binding.target.process.isCurrent || lease.binding.unavailable != nil { reason = "stream-lost" }
       else if lease.producer.inputMap?.generation != lease.generation { reason = "stream-lost" }
-      else if lease.heldDeadline.current.map({ now >= $0 }) == true { reason = "timed-out" }
+      else if expireOwnerInputHold(lease, now: now) { continue }
       else { reason = nil }
       if let reason { releaseOwnerInput(lease, reason: reason) }
-      else if lease.admission.pendingBatches == 0, !lease.burstActive.current,
+      else if lease.admission.pendingBatches == 0, !lease.burstActive.current, !lease.mutations.agentActive,
         lease.contextPending.withLock({ value in if value { return false }; value = true; return true }) {
         Task {
           await lease.worker.publishUnlessPending(lease, idle: true)
@@ -1314,7 +1489,9 @@ public final class HelperRuntime {
 
   // MARK: - Connections and clocks
 
-  func connectionClosed(_ connection: IPCConnection) {
+  func connectionClosed(
+    _ connection: IPCConnection, ending: OverlayModel.Ending = .connectionLost
+  ) {
     for lease in ownerAttachments.values where lease.connection === connection { releaseOwnerInput(lease, reason: "viewer-gone") }
     video.disconnected(connection)
     closedConnectionIDs.insert(connection.id)
@@ -1323,7 +1500,7 @@ public final class HelperRuntime {
     for session in Array(registry.sessions.values) where session.connectionID == connection.id {
       closeSession(session.sessionId, reason: nil, overlayEnding: nil)
     }
-    updateOverlay(ending: .connectionLost)
+    updateOverlay(ending: ending)
     if connections.isEmpty, registry.sessions.isEmpty { idleSince = Date() }
   }
 
@@ -1336,6 +1513,7 @@ public final class HelperRuntime {
 
     // A pending restart does not wait for the connections to go away.
     restartIfGrantPending()
+    exitIfUnused()
 
     if registry.sessions.isEmpty, connections.isEmpty {
       let since = idleSince ?? Date()

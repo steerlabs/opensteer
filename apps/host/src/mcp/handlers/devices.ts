@@ -1,10 +1,32 @@
+import { createHash } from "node:crypto";
 import { immediateRequestResult, requestResult as domainRequestResult } from "../request-result.js";
 import type { z } from "zod";
+import { connectionComputerKinds } from "@opensteer/agent-tools";
 import type { AppAccessRequestInputSchema } from "@opensteer/agent-tools/tools";
 import type { IntegrationRequester } from "@opensteer/database";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
-import { refused, type Request, type DeviceId } from "@opensteer/core";
+import {
+  OpensteerError,
+  refused,
+  requestOperationCallsMaxLength,
+  ThreadIdSchema,
+  ToolBlockedError,
+  type Request,
+  type DeviceId,
+  type RunId,
+  type RunnerId,
+  type ThreadId,
+  type UserId,
+} from "@opensteer/core";
+import {
+  type AgentSessionService,
+  type DirectOperationResult,
+  type DirectOperationContext,
+} from "../../agent-sessions/agent-session-service.js";
+import { callerLineage, type ConnectionCaller } from "../agent-caller.js";
+import { directResult, endedScriptOutput, requireDirectWork, scriptFailure } from "./direct.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
+import type { ComputerInventoryAuthority } from "../../computer-use/computer-use-service.js";
 import type { DeviceService } from "../../devices/device-service.js";
 import type {
   AccessAsker,
@@ -21,6 +43,7 @@ import {
   unknownPhone,
 } from "../../devices/computer-use-discovery.js";
 import type { ToolCall } from "./types.js";
+import { lentNow, lentRequester } from "../lent-now.js";
 import { operationId, requireRun } from "../operations.js";
 
 type DeviceToolDevices = Pick<
@@ -31,6 +54,10 @@ type DeviceToolDevices = Pick<
   | "computerUseVersion"
   | "listCallableTools"
   | "runComputerCode"
+  | "runProgramComputerCode"
+  | "runSessionComputerCode"
+  | "sessionComputerTarget"
+  | "runSessionInventory"
   | "store"
 >;
 
@@ -41,15 +68,36 @@ type DeviceToolDevices = Pick<
 export class DeviceToolHandlers {
   readonly #devices: DeviceToolDevices;
   readonly #access: Pick<AccessRequests, "requestDataApp" | "requestLocalServer">;
+  readonly #sessions: AgentSessionService | undefined;
   constructor(options: {
     readonly devices: DeviceToolDevices;
     readonly access: Pick<AccessRequests, "requestDataApp" | "requestLocalServer">;
+    /** The session pipeline a connected agent's own `computer_use` runs through. */
+    readonly sessions?: AgentSessionService;
   }) {
     this.#devices = options.devices;
     this.#access = options.access;
+    this.#sessions = options.sessions;
   }
 
   async computer_use(call: ToolCall<"computer_use">) {
+    if (call.caller.kind === "connection") return this.#sessionComputerUse(call.caller, call);
+    if (call.caller.kind === "program") {
+      const replKey =
+        `run_${createHash("sha256").update(call.caller.key).digest("hex").slice(0, 24)}` as RunId;
+      return this.#devices.runProgramComputerCode(
+        {
+          ownerUserId: call.caller.userId,
+          threadId: call.caller.anchor.id,
+          bindingId: call.caller.key,
+          replKey,
+          ...(call.checkLive ? { recheck: call.checkLive } : {}),
+          ...(callerLineage(call.caller) ? { connectionWork: true as const } : {}),
+        },
+        call.input.code,
+        call.signal ?? AbortSignal.timeout(100_000),
+      );
+    }
     const run = requireRun(call.caller).claims;
     if (!(await this.#devices.computerToolEnabled(run)))
       throw refused(
@@ -57,9 +105,92 @@ export class DeviceToolHandlers {
         "computer_use is not available on this computer yet. Update Opensteer on it to use it.",
       );
     return this.#devices.runComputerCode(
-      { run, threadId: run.threadId },
+      {
+        run,
+        threadId: run.threadId,
+        agentBindingId: `run:${run.runId}`,
+        ...(call.caller.agentConnection ? { connectionWork: true as const } : {}),
+      },
       call.input.code,
       call.signal ?? AbortSignal.timeout(100_000),
+    );
+  }
+
+  /**
+   * A connected agent drives the one app or phone screen it names, reviewed as one operation on
+   * that target: the script is shown in full, and every callback stays on that target.
+   */
+  async #sessionComputerUse(caller: ConnectionCaller, call: ToolCall<"computer_use">) {
+    const { code, computerId, app, taskId, reason, readOnly = false } = call.input;
+    // A named app the grant does not hold reads as any other thing outside it (rule 5), below.
+    const { phones } = connectionComputerKinds(caller.grant);
+    if (!computerId)
+      throw refused(
+        "bad_request",
+        "Name the app or phone screen shared with you: computerId, and app for a Mac app, from discover.",
+      );
+    if (!phones && !app)
+      throw refused(
+        "bad_request",
+        "Name the Mac app shared with you in app (name or bundleId from discover).",
+      );
+    if (code.length > requestOperationCallsMaxLength)
+      throw refused(
+        "bad_request",
+        `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected computer operation.`,
+      );
+    const named = await this.#devices.sessionComputerTarget(
+      { ownerUserId: caller.userId, connectionId: caller.connectionId },
+      computerId,
+      app,
+    );
+    // The device's own refusal first, as a read hears it: no operation, so no Request to answer.
+    if (named.blocked) throw new ToolBlockedError(named.blocked);
+    if (!readOnly && named.access === "read")
+      throw refused("forbidden", "This target allows observation only. Use readOnly: true.");
+    return sessionScriptOutput(
+      await requireDirectWork(this.#sessions).run({
+        ownerUserId: caller.userId,
+        agentConnectionId: caller.connectionId,
+        taskId,
+        reason,
+        operationKey: call.operationKey,
+        tool: "computer_use",
+        input: call.input,
+        target: named.target,
+        targetGeneration: named.generation,
+        effect: readOnly ? "read" : "write",
+        calls: code,
+        execute: async (context) => {
+          await context.recheck();
+          const result = await this.#devices.runSessionComputerCode(
+            {
+              ownerUserId: context.ownerUserId,
+              sessionId: context.sessionId,
+              taskId: context.taskId,
+              bindingId: context.bindingId,
+              target: named.connectionId,
+              deviceId: named.deviceId,
+              ...(named.driver ? { driver: named.driver } : {}),
+              generation: named.generation,
+              readOnly,
+              recheck: context.recheck,
+              ...(context.computerSubmitted ? { submitted: context.computerSubmitted } : {}),
+              ...(app && context.computerStopped ? { stopped: context.computerStopped } : {}),
+            },
+            code,
+            context.signal,
+          );
+          if (context.signal.aborted && context.signal.reason instanceof OpensteerError)
+            context.signal.throwIfAborted();
+          return result;
+        },
+        scriptFailure,
+        summarize: (result) => ({
+          failed: result.isError === true,
+          content: result.content.length,
+        }),
+      }),
     );
   }
 
@@ -67,18 +198,25 @@ export class DeviceToolHandlers {
     const caller = call.caller;
     if (caller.kind === "connection")
       await this.#devices.store.connectionDiscoveryScope(caller.userId, caller.connectionId);
-    const requester: IntegrationRequester =
+    // What the one rule lends the caller's connection lineage now, read once for the call.
+    const lent = await lentNow(caller, (owner, grant) =>
+      this.#devices.store.grantedDeviceApprovals(owner, grant),
+    );
+    const requester: IntegrationRequester & { readonly direct?: true } =
       caller.kind === "connection"
-        ? { ownerUserId: caller.userId, connectionId: caller.connectionId }
-        : {
+        ? // A connected agent drives what it holds itself, through computer_use.
+          {
             ownerUserId: caller.userId,
-            threadId: caller.kind === "run" ? caller.thread.id : caller.anchor.id,
-          };
+            connectionId: caller.connectionId,
+            direct: true,
+            ...lentRequester(lent),
+          }
+        : { ownerUserId: caller.userId, agentBindingId: caller.key, ...lentRequester(lent) };
     const run = caller.kind === "run" ? caller.claims : null;
     const { computerId, query, limit } = call.input;
     const offset = call.input.cursor ?? 0;
     return computerId
-      ? this.#installedApps(requester, run, computerId, query, limit, offset)
+      ? this.#installedApps(requester, run, computerId, query, limit, offset, call)
       : this.#overview(requester, run);
   }
 
@@ -86,38 +224,45 @@ export class DeviceToolHandlers {
     const caller = call.caller;
     const { operationKey: _operationKey, ...input } = call.input;
     const callId = operationId(caller, call.operationKey, "app_access_request");
-    if (input.dataApp === undefined && input.server === undefined) {
-      const { claims } = requireRun(caller);
-      return (
-        (await this.#replay({ originatingRunId: claims.runId }, callId)) ??
-        (input.app === undefined
-          ? this.#requestPhone(claims, input, callId)
-          : this.#requestComputerApp(claims, { ...input, app: input.app }, callId))
-      );
-    }
-    const scope =
-      caller.kind === "run"
-        ? caller.claims
-        : caller.kind === "program" && caller.program.kind === "trigger"
-          ? caller.program
-          : null;
-    if (!scope)
+    if (caller.kind === "connection")
       throw refused(
         "forbidden",
-        "Only a running task or Trigger occurrence can ask for local access.",
+        "Only a running task or automation script can ask for local access.",
       );
-    const origin =
-      "runId" in scope
-        ? { originatingRunId: scope.runId }
-        : { originatingOccurrenceId: scope.occurrenceId };
+    const origin: AccessRequestOrigin =
+      caller.kind === "run"
+        ? { originatingRunId: caller.claims.runId }
+        : caller.program.kind === "trigger"
+          ? { originatingOccurrenceId: caller.program.occurrenceId }
+          : { originatingWatchActivationId: caller.program.activationId };
+    const threadId = caller.kind === "run" ? caller.claims.threadId : caller.anchor.id;
+    const requestedBy = caller.userId;
+    const runnerId =
+      caller.kind === "run"
+        ? caller.claims.runnerId
+        : caller.program.kind === "trigger"
+          ? caller.program.runnerId
+          : undefined;
+    if (input.dataApp === undefined && input.server === undefined) {
+      return (
+        (await this.#replay(origin, callId)) ??
+        (input.app === undefined
+          ? this.#requestPhone({ origin, requestedBy, threadId }, input, callId)
+          : this.#requestComputerApp(
+              { origin, requestedBy, threadId, ...(runnerId ? { runnerId } : {}) },
+              { ...input, app: input.app },
+              callId,
+            ))
+      );
+    }
     const replay = await this.#replay(origin, callId);
     if (replay) return replay;
     const asker: AccessAsker = {
       origin,
       callId,
       reason: input.reason,
-      requestedBy: scope.requestedBy,
-      threadId: scope.threadId,
+      requestedBy,
+      threadId,
     };
     const outcome =
       input.dataApp !== undefined
@@ -140,7 +285,12 @@ export class DeviceToolHandlers {
    * ones instead of picking.
    */
   async #requestComputerApp(
-    scope: RunToolScope,
+    scope: {
+      readonly origin: AccessRequestOrigin;
+      readonly requestedBy: UserId;
+      readonly threadId: ThreadId;
+      readonly runnerId?: RunnerId;
+    },
     input: { readonly app: string; readonly computerId?: DeviceId | undefined } & Pick<
       z.infer<typeof AppAccessRequestInputSchema>,
       "access" | "reason"
@@ -149,11 +299,14 @@ export class DeviceToolHandlers {
   ) {
     const { machines: macs, phones } =
       await this.#devices.computerAppApprovals.computerUseInventory(scope.requestedBy);
-    const executingDeviceId = await this.#devices.store.requireSelfDeviceId(scope.runnerId);
+    const executingDeviceId = scope.runnerId
+      ? await this.#devices.store.requireSelfDeviceId(scope.runnerId)
+      : undefined;
     const named = input.computerId
       ? macs.find(({ deviceId }) => deviceId === input.computerId)
-      : (macs.find(({ deviceId }) => deviceId === executingDeviceId) ??
-        (macs.length === 1 ? macs[0] : undefined));
+      : ((executingDeviceId
+          ? macs.find(({ deviceId }) => deviceId === executingDeviceId)
+          : undefined) ?? (macs.length === 1 ? macs[0] : undefined));
     if (!named) {
       const phone = input.computerId
         ? phones.find(({ deviceId }) => deviceId === input.computerId)
@@ -178,12 +331,18 @@ export class DeviceToolHandlers {
       app: input.app,
       reason: input.reason,
       callId,
-      originatingRunId: scope.runId,
+      ...("originatingRunId" in scope.origin && scope.origin.originatingRunId
+        ? { originatingRunId: scope.origin.originatingRunId }
+        : "originatingOccurrenceId" in scope.origin && scope.origin.originatingOccurrenceId
+          ? { originatingOccurrenceId: scope.origin.originatingOccurrenceId }
+          : scope.origin.originatingWatchActivationId
+            ? { originatingWatchActivationId: scope.origin.originatingWatchActivationId }
+            : {}),
       ownerUserId: scope.requestedBy,
       deviceId: named.deviceId,
       threadId: scope.threadId,
     });
-    return computerAccessResult(created);
+    return computerAccessResult(created, "originatingRunId" in scope.origin);
   }
 
   /**
@@ -192,7 +351,11 @@ export class DeviceToolHandlers {
    * the same unknown id as a typo.
    */
   async #requestPhone(
-    scope: RunToolScope,
+    scope: {
+      readonly origin: AccessRequestOrigin;
+      readonly requestedBy: UserId;
+      readonly threadId: ThreadId;
+    },
     input: Omit<z.infer<typeof AppAccessRequestInputSchema>, "operationKey">,
     callId: string,
   ) {
@@ -216,12 +379,18 @@ export class DeviceToolHandlers {
       app: null,
       reason: input.reason,
       callId,
-      originatingRunId: scope.runId,
+      ...("originatingRunId" in scope.origin && scope.origin.originatingRunId
+        ? { originatingRunId: scope.origin.originatingRunId }
+        : "originatingOccurrenceId" in scope.origin && scope.origin.originatingOccurrenceId
+          ? { originatingOccurrenceId: scope.origin.originatingOccurrenceId }
+          : scope.origin.originatingWatchActivationId
+            ? { originatingWatchActivationId: scope.origin.originatingWatchActivationId }
+            : {}),
       ownerUserId: scope.requestedBy,
       deviceId: phone.deviceId,
       threadId: scope.threadId,
     });
-    return computerAccessResult(created);
+    return computerAccessResult(created, "originatingRunId" in scope.origin);
   }
 
   /** A retried ask answers with the Request it already opened. */
@@ -249,6 +418,7 @@ export class DeviceToolHandlers {
     query: string,
     limit: number,
     offset: number,
+    call: ToolCall<"computer_apps">,
   ) {
     const approvals = this.#devices.computerAppApprovals;
     const access = await this.#devices.computerAccess(requester, run ?? undefined);
@@ -256,41 +426,134 @@ export class DeviceToolHandlers {
       offset + count < total ? String(offset + limit) : null;
     const phone = access.phones.find((candidate) => candidate.deviceId === deviceId);
     if (phone && isPhoneDisplayDefinitionId(phone.definitionId)) {
-      const installed = await approvals.installedComputerApps(
-        {
-          actorUserId: requester.ownerUserId,
-          deviceId,
-          query,
-          limit,
-          offset,
-          definitionId: phone.definitionId,
-        },
-        access.phones,
-      );
-      return {
-        apps: installed.apps,
-        total: installed.total,
-        nextCursor: nextCursor(installed.total, installed.apps.length),
-      };
+      const definitionId = phone.definitionId;
+      return this.#liveInventory(call, deviceId, phone.name, true, async (authority) => {
+        const installed = await approvals.installedComputerApps(
+          {
+            actorUserId: requester.ownerUserId,
+            deviceId,
+            query,
+            limit,
+            offset,
+            definitionId,
+          },
+          access.phones,
+          authority,
+        );
+        return {
+          apps: installed.apps,
+          total: installed.total,
+          nextCursor: nextCursor(installed.total, installed.apps.length),
+        };
+      });
     }
     const machine = access.machines.find((candidate) => candidate.deviceId === deviceId);
-    if (!machine) throw refused("not_found", unknownComputerUseMac(deviceId));
-    const installed = await approvals.installedComputerApps(
-      { actorUserId: requester.ownerUserId, deviceId, query, limit, offset, icons: false },
-      access.machines,
-    );
-    const apps = installed.apps.map(({ identity }) => ({
-      name: identity.displayName,
-      bundleId: identity.bundleId,
-      ...access.app(machine, identity),
-    }));
-    return {
-      computer: { computerId: deviceId, name: machine.name, ...access.machine(machine), apps },
-      total: installed.total,
-      nextCursor: nextCursor(installed.total, apps.length),
-    };
+    if (!machine)
+      throw refused(
+        "not_found",
+        access.grantScoped
+          ? "That computer is unavailable to this connected agent."
+          : unknownComputerUseMac(deviceId),
+      );
+    if (access.grantScoped) {
+      // A selected grant learns nothing else installed on the Mac: only its own apps, paged.
+      const needle = query.toLowerCase();
+      const granted = access
+        .appEntries(machine)
+        .filter(
+          (app) =>
+            !needle ||
+            app.name.toLowerCase().includes(needle) ||
+            app.bundleId.toLowerCase().includes(needle),
+        )
+        .map(({ id: _id, ...app }) => app);
+      const apps = granted.slice(offset, offset + limit);
+      return {
+        computer: { computerId: deviceId, name: machine.name, ...access.machine(machine), apps },
+        total: granted.length,
+        nextCursor: nextCursor(granted.length, apps.length),
+      };
+    }
+    return this.#liveInventory(call, deviceId, machine.name, false, async (authority) => {
+      const installed = await approvals.installedComputerApps(
+        { actorUserId: requester.ownerUserId, deviceId, query, limit, offset, icons: false },
+        access.machines,
+        authority,
+      );
+      const apps = installed.apps.map(({ identity }) => ({
+        name: identity.displayName,
+        bundleId: identity.bundleId,
+        ...access.app(machine, identity),
+      }));
+      return {
+        computer: { computerId: deviceId, name: machine.name, ...access.machine(machine), apps },
+        total: installed.total,
+        nextCursor: nextCursor(installed.total, apps.length),
+      };
+    });
   }
 
+  async #liveInventory<Result extends { readonly total: number }>(
+    call: ToolCall<"computer_apps">,
+    deviceId: DeviceId,
+    name: string,
+    phone: boolean,
+    read: (authority?: ComputerInventoryAuthority) => Promise<Result>,
+  ) {
+    const caller = call.caller;
+    if (caller.kind !== "connection") return read();
+    const named = phone
+      ? await this.#devices.sessionComputerTarget(
+          { ownerUserId: caller.userId, connectionId: caller.connectionId },
+          deviceId,
+          undefined,
+        )
+      : null;
+    return directResult(
+      await requireDirectWork(this.#sessions).run({
+        ownerUserId: caller.userId,
+        agentConnectionId: caller.connectionId,
+        taskId: ThreadIdSchema.optional().parse(
+          "taskId" in call.input ? call.input.taskId : undefined,
+        ),
+        operationKey: call.operationKey,
+        tool: "computer_apps",
+        input: call.discoveryInput
+          ? { discovery: call.discoveryInput, read: call.input }
+          : call.input,
+        ...(call.discoveryInput ? { reportReplay: true } : {}),
+        target: named?.target ?? null,
+        targetName: name,
+        targetGeneration: named?.generation ?? null,
+        effect: "read",
+        calls: "List installed apps",
+        execute: async (context: DirectOperationContext) => {
+          await context.recheck();
+          const result = await this.#devices.runSessionInventory(
+            deviceId,
+            context,
+            context.signal,
+            named
+              ? {
+                  ...context,
+                  target: named.connectionId,
+                  deviceId,
+                  generation: named.generation,
+                  readOnly: true,
+                  ...(named.driver ? { driver: named.driver } : {}),
+                }
+              : undefined,
+            read,
+          );
+          context.signal.throwIfAborted();
+          return result;
+        },
+        summarize: ({ total }) => ({ count: total }),
+      }),
+    );
+  }
+
+  // Cached discovery only; no device receives a lookup.
   async #overview(requester: IntegrationRequester, run: RunToolScope | null) {
     const access = await this.#devices.computerAccess(requester, run ?? undefined);
     return {
@@ -318,11 +581,52 @@ export class DeviceToolHandlers {
   }
 }
 
+/**
+ * A connected agent's `computer_use` answer in the tool's own shape: the script's content, or a
+ * line saying what to do next, with the task and operation receipt beside it.
+ */
+function sessionScriptOutput(
+  outcome: DirectOperationResult<Awaited<ReturnType<DeviceService["runSessionComputerCode"]>>>,
+) {
+  if ((outcome.status === "failed" || outcome.status === "unknown") && outcome.scriptError) {
+    const { status, taskId, operationId, next } = outcome;
+    return endedScriptOutput(
+      { status, taskId, operationId, next },
+      outcome.scriptError,
+      outcome.result?.content,
+    );
+  }
+  const receipt = directResult(
+    outcome.status === "completed"
+      ? { status: outcome.status, taskId: outcome.taskId, operationId: outcome.operationId }
+      : outcome,
+  );
+  if (outcome.status === "completed")
+    return outcome.result
+      ? {
+          ...outcome.result,
+          structuredContent: { ...outcome.result.structuredContent, ...receipt },
+        }
+      : {
+          content: [{ type: "text" as const, text: "This script already ran." }],
+          structuredContent: receipt,
+        };
+  return {
+    content: [
+      ...(outcome.status === "unknown" ? (outcome.result?.content ?? []) : []),
+      { type: "text" as const, text: outcome.next },
+    ],
+    structuredContent: receipt,
+  };
+}
+
 /** What a task's ask for an app or a phone answers. */
 function computerAccessResult(
   created: Awaited<ReturnType<DeviceService["computerAppApprovals"]["requestComputerAppAccess"]>>,
+  fromRun = true,
 ) {
-  if (created.status === "pending") return requestResult(created.request, created.replayed);
+  if (created.status === "pending")
+    return requestResult(created.request, created.replayed, fromRun);
   return {
     ...immediateRequestResult(
       "computer.app.access",

@@ -16,6 +16,12 @@ import type { PersonalResources } from "./personal-resources.js";
 import { installWebSocketLiveness, scheduleWebSocketExpiration } from "./websocket-liveness.js";
 
 const authorityCloseCode = 4003;
+/**
+ * A native sign-in's access token ran out while its session lives on: the
+ * client reconnects with a refreshed one, and a session that did end refuses
+ * that reconnect. "Going away", never "Session ended".
+ */
+const credentialRenewalCloseCode = 1001;
 /** How long before the handshake deadline the session is checked again. */
 const sessionRecheckLeadMilliseconds = 60_000;
 const socketBudget = personalSocketBudget;
@@ -33,6 +39,10 @@ export function attachPersonalSocket(options: {
   resources: PersonalResources;
   refreshOwner: () => void;
   probeMachines: () => void;
+  /** What this person is told on this socket alone as it attaches: current in-memory facts. */
+  attachedNotices?: (
+    userId: AuthenticatedHostSession["session"]["user"]["id"],
+  ) => readonly HostToClientMessage[];
   liveText?: import("../runtime/personal-live-text.js").PersonalLiveText;
   /**
    * Authenticates the upgrade's credential again, or answers null. Use renews a
@@ -44,10 +54,22 @@ export function attachPersonalSocket(options: {
   const {
     socket,
     realtime,
-    authenticated: { session, surface },
+    authenticated: { credentialKind, session, surface },
     reads,
     resources,
   } = options;
+  // A native token's deadline is the token's, and the session it names outlives it:
+  // only this socket goes, to come back with a fresh token. Any other credential's
+  // deadline is its session's.
+  const renewsCredential = credentialKind === "native-oauth";
+  const endAtDeadline = () => {
+    if (!renewsCredential) {
+      realtime.closeSession(session.id);
+      return;
+    }
+    if (socket.readyState === socket.OPEN)
+      socket.close(credentialRenewalCloseCode, "Sign-in renewal needed");
+  };
   const deadline = (current: AuthenticatedHostSession["session"]) =>
     Math.min(Date.parse(current.expiresAt), Date.parse(current.absoluteExpiresAt));
   let expires = deadline(session);
@@ -64,7 +86,8 @@ export function attachPersonalSocket(options: {
       return false;
     }
     if (Date.now() >= expires) {
-      socket.close(authorityCloseCode, "Session ended");
+      if (renewsCredential) endAtDeadline();
+      else socket.close(authorityCloseCode, "Session ended");
       return false;
     }
     if (!guard()) return false;
@@ -150,7 +173,7 @@ export function attachPersonalSocket(options: {
     cancelDeadline();
     cancelRecheck();
     const at = expires;
-    cancelDeadline = scheduleWebSocketExpiration(at, () => realtime.closeSession(session.id));
+    cancelDeadline = scheduleWebSocketExpiration(at, endAtDeadline);
     const reauthenticate = options.reauthenticate;
     if (!reauthenticate) return;
     cancelRecheck = scheduleWebSocketExpiration(at - sessionRecheckLeadMilliseconds, () => {
@@ -212,6 +235,8 @@ export function attachPersonalSocket(options: {
             ...(message.selected ? { selected: { ...message.selected, cursor: undefined } } : {}),
           });
         } else sync.attach(message);
+        for (const notice of options.attachedNotices?.(session.user.id) ?? [])
+          void sink.send(notice).catch(() => undefined);
         return;
       }
       if (!attached) throw new Error("Attach before subscribing");

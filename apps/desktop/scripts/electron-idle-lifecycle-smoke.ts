@@ -7,125 +7,99 @@ import { setTimeout as delay } from "node:timers/promises";
 import { app, BrowserWindow, ipcMain, powerMonitor, protocol, systemPreferences } from "electron";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
-import { createId } from "@opensteer/core";
-import { BrowserServerMessageSchema, hostApi, BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import { MockHostClient, MockPersonalHost } from "@opensteer/client/mock";
+import { BrowserServerMessageSchema, BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import type { CdpSession } from "@opensteer/browser-runtime-core";
 import { DesktopLocalVisibility } from "../src/app/local-visibility.js";
 import { desktopWebPreferences } from "../src/app/electron-window.js";
 import { registerDesktopBridge } from "../src/bridge/registration.js";
 import type { DesktopBridgeOptions } from "../src/bridge/context.js";
+import {
+  bridgeMockPersonalRealtime,
+  handleMockPersonalRpc,
+} from "./test-support/mock-personal-host-server.js";
 
 /** Native lifecycle → real preload → shared client sockets and OwnerView effects. */
 export async function idleLifecyclePhase(platform: CdpSession, directory: string): Promise<void> {
-  const sessionId = "bsn_00000000-0000-4000-8000-000000000044";
-  const surfaceId = BrowserSurfaceIdSchema.parse("surface_00000000-0000-4000-8000-000000000044");
-  const selected = {
-    id: createId("deployment"),
-    access: "owner" as const,
-    activeOrigin: "http://127.0.0.1:4310",
-    canonicalOrigin: "http://127.0.0.1:4310",
-    kind: "personal" as const,
-    lastUsedAt: null,
-    name: "Idle smoke",
-    onThisComputer: true,
-    routes: [],
-  };
-  const ids = {
-    environmentId: createId("environment"),
-    runnerId: createId("runner"),
-    userId: createId("user"),
-  };
-  const shell = hostApi["personal.shell.get"].success.parse({
-    deploymentId: selected.id,
-    epoch: crypto.randomUUID(),
-    viewerId: ids.userId,
-    tasks: [],
-    activeTaskIds: [],
-    activeNextBefore: null,
-    recentTaskIds: [],
-    nextBefore: null,
-    taskCounts: { active: 0, open: 0 },
-    visits: [],
-    attention: [],
-    attentionHasMore: false,
-    counts: {
-      pendingRequestCount: 0,
-      pendingRequestsRevision: "0",
-      needsYouCount: 0,
-      unreadTaskCount: 0,
-    },
-    session: {
-      sessionId: createId("authSession"),
-      sessionSurface: "canonical",
-      can: {
-        createTasks: true,
-        useVoice: true,
-        manageComputers: true,
-        managePrivateResources: true,
-      },
-      user: {
-        id: ids.userId,
-        disabledAt: null,
-        displayName: "Idle smoke",
-        email: "idle@opensteer.invalid",
-        emailVerified: true,
-        image: null,
-      },
-    },
-  });
+  const mock = new MockHostClient({ latencyMs: 0 });
+  await mock.load();
+  const pageTab = [...mock.getSnapshot().tabs.rows.values()].find((tab) => tab.kind === "page");
+  assert(pageTab, "MockHostClient has no page tab for idle lifecycle smoke.");
+  const activated = await mock.activateTab(pageTab.tabId);
+  assert(activated.kind === "page", "Expected MockHostClient page viewer.");
+  const sessionId = activated.sessionId;
+  const surfaceId = BrowserSurfaceIdSchema.parse(pageTab.tabId);
+  const personalHost = new MockPersonalHost(mock);
   const server = createServer((request, response) => {
-    response.setHeader("access-control-allow-origin", "app://opensteer");
-    response.setHeader("access-control-allow-credentials", "true");
-    response.setHeader(
-      "access-control-allow-headers",
-      request.headers["access-control-request-headers"] ?? "content-type",
-    );
-    response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
-    if (request.method === "OPTIONS") {
-      response.writeHead(204).end();
-      return;
-    }
-    response.setHeader("content-type", "application/json");
-    response.end(
-      JSON.stringify(
-        request.url?.includes("personal.shell.get")
-          ? { ok: true, data: shell }
-          : { ok: false, error: { code: "not_found", message: "Outside smoke", retryable: false } },
-      ),
-    );
+    void (async () => {
+      response.setHeader("access-control-allow-origin", "app://opensteer");
+      response.setHeader("access-control-allow-credentials", "true");
+      response.setHeader(
+        "access-control-allow-headers",
+        request.headers["access-control-request-headers"] ?? "content-type",
+      );
+      response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+      if (request.method === "OPTIONS") {
+        response.writeHead(204).end();
+        return;
+      }
+      if (await handleMockPersonalRpc(personalHost, request, response)) return;
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          ok: false,
+          error: { code: "not_found", message: "Outside smoke", retryable: false },
+        }),
+      );
+    })().catch((error) => {
+      response.statusCode = 500;
+      response.end(String(error));
+    });
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
   assert(address && typeof address !== "string");
   const origin = `http://127.0.0.1:${address.port}`;
-  const sockets = new WebSocketServer({ server });
+  const sockets = new WebSocketServer({ noServer: true });
   const subscriptions = new Set<string>();
   let opened = 0;
   let stopping = false;
-  sockets.on("connection", (socket, request) => {
+  server.on("upgrade", (request, socket, head) => {
     if (stopping) {
-      socket.terminate();
+      socket.destroy();
       return;
     }
-    const key = `${++opened}:${request.url?.includes("mode=watch") ? "watch" : "control"}`;
-    socket.send(
-      JSON.stringify(
-        BrowserServerMessageSchema.parse({
-          type: "browser.snapshot",
-          sessionId,
-          state: "ready",
-          access: "read-write",
-          dialog: null,
-          targetedStreamingVersion: 1,
-          surfaces: [{ active: true, id: surfaceId, title: "Idle smoke", url: "about:blank" }],
-        }),
-      ),
-    );
-    socket.on("message", (raw) => {
-      if (JSON.parse(raw.toString()).type === "stream.subscribe") subscriptions.add(key);
+    if (request.url?.startsWith("/v1/realtime")) {
+      sockets.handleUpgrade(request, socket, head, (ws) => {
+        bridgeMockPersonalRealtime(personalHost, ws);
+      });
+      return;
+    }
+    if (!request.url?.includes("/browser-sessions/")) {
+      socket.destroy();
+      return;
+    }
+    sockets.handleUpgrade(request, socket, head, (ws) => {
+      const key = `${++opened}:${request.url?.includes("mode=watch") ? "watch" : "control"}`;
+      ws.send(
+        JSON.stringify(
+          BrowserServerMessageSchema.parse({
+            type: "browser.snapshot",
+            sessionId,
+            state: "ready",
+            access: "read-write",
+            dialog: null,
+            targetedStreamingVersion: 1,
+            surfaces: [{ active: true, id: surfaceId, title: "Idle smoke", url: "about:blank" }],
+          }),
+        ),
+      );
+      ws.on("message", (raw) => {
+        if (JSON.parse(raw.toString()).type === "stream.subscribe") subscriptions.add(key);
+      });
+      ws.on("close", () => subscriptions.delete(key));
     });
-    socket.on("close", () => subscriptions.delete(key));
   });
   const notifications = new Map<string, () => void>();
   const visibility = new DesktopLocalVisibility(
@@ -266,18 +240,21 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     powerMonitor.emit("lock-screen");
     const locked = await snapshot(
       "simulated-lock",
-      (s) =>
-        !s.visible && subscriptions.size === 0 && s.retains === s.releases && s.openDisplays === 0,
+      (s) => !s.visible && s.retains === s.releases && s.openDisplays === 0,
     );
     assert.equal(locked.visible, false);
-    assert.equal(locked.subscriptions.length, 0);
+    // Browser viewers stay through `browserViewerGraceMs`, so a short hidden spell reconnects
+    // nothing; the display sockets pause at once.
+    assert.equal(locked.subscriptions.length, 2);
     assert.equal(locked.retains, locked.releases);
-    // Hiding pauses every picture socket; the views keep their holds and last pictures.
+    // The views keep their holds and last pictures.
     assert.equal(locked.openDisplays, 0);
     assert(locked.finderRetains > locked.finderReleases);
-    // Longer than the real owner-view renewal period: no fake clock.
+    // Longer than the real owner-view renewal period and the browser viewer grace: no fake clock.
     await delay(31_000);
-    const quiet = await snapshot("locked-past-renewal");
+    const quiet = await snapshot("locked-past-renewal", () => subscriptions.size === 0);
+    // Past the grace the hidden client is no longer a browser viewer.
+    assert.equal(quiet.subscriptions.length, 0);
     assert.equal(quiet.captures, locked.captures);
     assert.equal(quiet.openDisplays, 0);
     assert.equal(quiet.renewals, locked.renewals);
@@ -301,12 +278,10 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     assert.equal(unlocked.subscriptions.length, 2);
     notifications.get("NSWorkspaceScreensDidSleepNotification")?.();
     powerMonitor.emit("unlock-screen");
-    const asleep = await snapshot(
-      "display-asleep-after-unlock",
-      (s) => !s.visible && subscriptions.size === 0,
-    );
+    const asleep = await snapshot("display-asleep-after-unlock", (s) => !s.visible);
     assert.equal(asleep.visible, false);
-    assert.equal(asleep.subscriptions.length, 0);
+    // Within the grace: the browser viewers stay.
+    assert.equal(asleep.subscriptions.length, 2);
     notifications.get("NSWorkspaceScreensDidWakeNotification")?.();
     const awake = await snapshot("display-wake", (s) => s.visible);
     assert(awake.visible);
@@ -315,18 +290,15 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     powerMonitor.emit("unlock-screen");
     const hidden = await snapshot(
       "hidden-document-after-unlock",
-      (s) => !s.visible && subscriptions.size === 0 && s.openDisplays === 0,
+      (s) => !s.visible && s.openDisplays === 0,
     );
     assert.equal(hidden.visible, false);
-    assert.equal(hidden.subscriptions.length, 0);
+    assert.equal(hidden.subscriptions.length, 2);
     assert.equal(hidden.openDisplays, 0);
     await window.webContents.executeJavaScript("window.idleLifecycleSmoke.documentVisible(true)");
     powerMonitor.emit("suspend");
-    const suspended = await snapshot(
-      "system-suspend",
-      (s) => subscriptions.size === 0 && s.openDisplays === 0,
-    );
-    assert.equal(suspended.subscriptions.length, 0);
+    const suspended = await snapshot("system-suspend", (s) => s.openDisplays === 0);
+    assert.equal(suspended.subscriptions.length, 2);
     assert.equal(suspended.openDisplays, 0);
     powerMonitor.emit("resume");
     const resumed = await snapshot("system-resume", (s) => s.visible && subscriptions.size === 2);
@@ -365,6 +337,7 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     // Renderer disposal can leave an HTTP keepalive or an upgrade in flight.
     // Stop admission before draining sockets, then close every fixture transport.
     const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()));
+    personalHost.dispose();
     server.closeAllConnections();
     for (const socket of sockets.clients) socket.terminate();
     await new Promise<void>((resolve) => sockets.close(() => resolve()));

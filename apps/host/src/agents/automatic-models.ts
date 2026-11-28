@@ -17,7 +17,12 @@ import {
   type ThreadAccessMode,
   type UserId,
 } from "@opensteer/core";
-import type { HarnessInstanceRecord, OpensteerStore } from "@opensteer/database";
+import {
+  hostingComputerNotReady,
+  requirePersonalOwner,
+  type HarnessInstanceRecord,
+  type OpensteerStore,
+} from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import {
   usageWindowAppliesToProvider,
@@ -276,7 +281,11 @@ export async function readAutomaticModelPreview(
     .selectFrom("personalSettings")
     .select(["agentHomeComputerId", "executionPreferences"])
     .where("ownerId", "=", userId)
-    .executeTakeFirstOrThrow();
+    .executeTakeFirst();
+  if (!personal) {
+    await requirePersonalOwner(store.database, userId);
+    throw hostingComputerNotReady();
+  }
   const [environment, workers, { settings, file }, snapshot] = await Promise.all([
     store.database
       .selectFrom("executionEnvironments")

@@ -14,8 +14,6 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
   try {
     config = parseHostConfig(environment);
   } finally {
-    delete environment.OPENSTEER_ACCOUNT_BUNDLE_FD;
-    delete environment.OPENSTEER_ACCOUNT_BUNDLE_PATH;
     delete environment.OPENSTEER_AUTH_SECRET;
     delete environment.OPENSTEER_AUTH_SECRET_FILE;
     delete environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN;
@@ -24,12 +22,22 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
     delete environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE;
     delete environment.OPENSTEER_NATIVE_MODEL_API_KEY;
     delete environment.OPENSTEER_NATIVE_MODEL_API_KEY_FILE;
+    delete environment.OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN;
+    delete environment.OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN_FILE;
+    delete environment.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET;
+    delete environment.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET_FILE;
+    delete environment.OPENSTEER_PROBLEM_REPORTS_TOKEN;
+    delete environment.OPENSTEER_PROBLEM_REPORTS_TOKEN_FILE;
   }
   let lastProgressAt = -Infinity;
   let lastStage: string | undefined;
   const runtime = await createHostRuntime(config, {
     onPersonalUpgradeHeartbeat: () => {
       process.stdout.write(`${personalUpgradeHeartbeatLine}\n`);
+    },
+    // Before the Host listens nothing else says a long update is under way, on any Home.
+    onDatabaseMigration: (step, of) => {
+      process.stdout.write(`Updating your Home's database: step ${step} of ${of}\n`);
     },
     onPersonalUpgradeBatch: (stage) => {
       const now = performance.now();
@@ -68,7 +76,9 @@ function safeRequestLog(request: { readonly method?: unknown; readonly url?: unk
   const rawUrl = typeof request.url === "string" ? request.url : "";
   return {
     method: typeof request.method === "string" ? request.method : undefined,
-    path: rawUrl.replace(/(\/media\/)[^/?]+/gu, "$1[redacted]").split("?", 1)[0],
+    path: rawUrl
+      .replace(/(\/media\/|\/v1\/browser\/connect\/)[^/?]+/giu, "$1[redacted]")
+      .split("?", 1)[0],
   };
 }
 

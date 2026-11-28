@@ -2,13 +2,20 @@ import { phoneScreenUnavailableWords } from "./phone-screen.js";
 import { deviceReasonLabel } from "../host/device-projection.js";
 import type { MachineSummary } from "@opensteer/protocol";
 
-/** Whether the Host reports a live display for this computer's task sessions. */
+/**
+ * Whether the Host reports a live display for this computer's task sessions. The Home, a Mac
+ * running the Opensteer app ("computer") and any other Mac: one whose Runner was connected
+ * without the app is "unknown" (or "server" by its form), and it is still a Mac. Its picture is
+ * the Home's to report.
+ */
 export function canWatchComputer(machine: MachineSummary): boolean {
   if (machine.capabilities)
     return machine.phoneDisplay
       ? ["phone", "agent-phone"].includes(machine.kind ?? "unknown") &&
           machine.phoneDisplay.view.state === "ready"
-      : (machine.kind === "home" || machine.kind === "computer") &&
+      : (machine.kind === "home" ||
+          machine.kind === "computer" ||
+          machine.device?.platform === "macos") &&
           machine.computerUse?.displayStreamSupported === true;
   return machine.status === "online" && machine.computerUse?.displayStreamSupported === true;
 }
@@ -17,6 +24,8 @@ export function canWatchComputer(machine: MachineSummary): boolean {
 export type ComputerNotReady =
   | "not-connected"
   | "driver-offline"
+  | "driver-asleep"
+  | "driver-stopped"
   | "locked"
   | "protected"
   | "setup-required"
@@ -57,6 +66,8 @@ export function computerReadiness(input: {
     switch (reason) {
       case "not-connected":
       case "driver-offline":
+      case "driver-asleep":
+      case "driver-stopped":
       case "locked":
       case "protected":
       case "access-off":
@@ -152,6 +163,8 @@ export function computerNotReadyStatus(reason: ComputerNotReady): ComputerNotRea
   switch (reason) {
     case "not-connected":
     case "driver-offline":
+    case "driver-asleep":
+    case "driver-stopped":
       return { label: deviceReasonLabel({ kind: reason }), tone: "away" };
     case "locked":
     case "protected":
@@ -192,10 +205,16 @@ export function computerReasonWords(
   names: { readonly target: string; readonly machine: string; readonly phone: boolean },
 ): string {
   switch (reason) {
+    case "device-restarting":
+      return "The device is restarting.";
     case "not-connected":
       return `${names.machine} is not connected.`;
     case "driver-offline":
-      return `The computer driving ${names.machine} is offline.`;
+      return `The Mac connected to ${names.machine} is offline.`;
+    case "driver-asleep":
+      return `The Mac connected to ${names.machine} is asleep.`;
+    case "driver-stopped":
+      return `Agents are stopped on the Mac connected to ${names.machine}.`;
     case "setup-required":
     case "trust-required":
     case "developer-mode-required":
@@ -217,10 +236,15 @@ export function computerReasonWords(
     case "connecting":
       return `Connecting to ${names.machine}…`;
     case "unsupported":
-    case "computer-view-unsupported":
+      // The Mac itself cannot capture this window (its macOS lacks what that takes).
       return names.phone
         ? phoneScreenUnavailableWords(names.machine)
-        : `Live view isn’t available for ${names.target} on ${names.machine} yet.`;
+        : `Live view isn’t available for ${names.target} on ${names.machine}.`;
+    case "computer-view-unsupported":
+      // A Mac answers this only once it has said its Opensteer cannot show windows.
+      return names.phone
+        ? phoneScreenUnavailableWords(names.machine)
+        : `Update Opensteer on ${names.machine} to see ${names.target}.`;
     case "window-unreadable":
     case "accessibility-error":
       return `${names.target}’s window can’t be read.`;
@@ -271,6 +295,10 @@ export function computerReasonWords(
       return `${names.target} is minimized on ${names.machine}.`;
     case "window-closed":
       return `${names.target} has no open window on ${names.machine}.`;
+    case "no-answer":
+      return `${names.machine} didn’t answer in time. Open ${names.target} again.`;
+    case "window-identity-lost":
+      return `${names.machine} no longer knows which ${names.target} window this was. Choose the window again.`;
     case "target-unavailable":
       return names.phone
         ? `${names.machine} isn’t reachable right now.`

@@ -1,10 +1,8 @@
 import { parseFileHref, isNetworkPath, type FileLinkTarget } from "@opensteer/shared/fileHref";
 import { parseReferenceHref, type Reference } from "./references.js";
-import { parseTeamPageLink, type TeamPageLink } from "./team-links.js";
 
 export type ClassifiedHref =
   | { readonly kind: "reference"; readonly reference: Reference }
-  | { readonly kind: "team-page"; readonly page: TeamPageLink }
   | { readonly kind: "file"; readonly file: FileLinkTarget }
   | { readonly kind: "web"; readonly url: string }
   | { readonly kind: "mail"; readonly url: string }
@@ -15,8 +13,6 @@ export function classifyHref(href: string): ClassifiedHref {
     return { kind: "none" };
   const reference = parseReferenceHref(href);
   if (reference) return { kind: "reference", reference };
-  const page = parseTeamPageLink(href);
-  if (page) return { kind: "team-page", page };
   const file = parseFileHref(href);
   if (file) return { kind: "file", file };
   try {

@@ -83,7 +83,10 @@ it("socket close releases real runtime channels and held input without a final d
       attachCdpForAgent: async () => ({ close: () => {}, dispatch }),
     } as unknown as BrowserService,
     {
-      authenticate: async () => ({ requestedBy: "user", runId: "run" }),
+      authenticateExecution: async () => ({
+        claims: { requestedBy: "user", runId: "run" },
+        lineage: null,
+      }),
       reauthorize: async (scope: unknown) => scope,
     } as unknown as RunToolTokenService,
   );

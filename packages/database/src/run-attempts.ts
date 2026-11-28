@@ -5,7 +5,7 @@ import {
   type RunId,
   type RunnerId,
 } from "@opensteer/core";
-import type { Kysely, Selectable, Transaction } from "kysely";
+import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { DatabaseSchema, RunAttemptTable } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
@@ -48,6 +48,8 @@ export async function recordAttemptDispatch(
   input: {
     readonly attemptId: RunAttemptId;
     readonly bindingGeneration: number;
+    readonly connectionId?: string | null;
+    readonly machineBootId?: string | null;
     readonly modelSelection: ModelSelection;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
@@ -57,7 +59,12 @@ export async function recordAttemptDispatch(
     .updateTable("runAttempts")
     .set({
       bindingGeneration: input.bindingGeneration,
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       dispatchedAt: new Date(),
+      machineBootId:
+        input.machineBootId !== undefined
+          ? input.machineBootId
+          : sql<string | null>`(select machine_boot_id from runners where id = ${input.runnerId})`,
       modelSelection: jsonValue(input.modelSelection),
       runnerBootId: input.runnerBootId,
       runnerId: input.runnerId,
@@ -73,6 +80,7 @@ export async function recordAttemptDispatch(
 export async function supersedeCurrentAttempt(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
+  reason: "steer_restart" | "recovery" = "steer_restart",
 ): Promise<{ readonly successor: RunAttemptRow; readonly superseded: RunAttemptRow | null }> {
   const current = await currentRunAttempt(transaction, runId);
   // The current attempt has not been sent yet: it is the replacement itself.
@@ -91,7 +99,7 @@ export async function supersedeCurrentAttempt(
     .values({
       id: createId("runAttempt"),
       ordinal: current.ordinal + 1,
-      reason: "steer_restart",
+      reason,
       runId,
       status: "current",
     })

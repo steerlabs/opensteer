@@ -18,11 +18,7 @@ import {
   type RunId,
   type ThreadId,
 } from "@opensteer/core";
-import {
-  HarnessRegistry,
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
-} from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import {
   ClaudeHarnessDriver,
   type ClaudeAgentSdk,
@@ -172,7 +168,6 @@ integration("Execution nodes", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
     const threadId = await stack.createThread({
@@ -419,7 +414,6 @@ integration("Execution nodes", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
     const model = stack.catalog.models[0]!;
@@ -609,7 +603,6 @@ integration("Execution nodes", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
     const model = stack.catalog.models[0]!;
@@ -906,7 +899,7 @@ function fakeClaudeSdk(script: ClaudeScript, control?: ClaudeStopControl): Claud
           claude_code_version: harnessMinimumVersion("claude"),
           cwd: "/workspace",
           fast_mode_state: "off",
-          mcp_servers: [],
+          mcp_servers: [{ name: "opensteer", source: "dynamic", status: "connected" }],
           model: "claude-test-1",
           output_style: "default",
           permissionMode: "default",

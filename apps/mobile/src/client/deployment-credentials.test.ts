@@ -18,7 +18,7 @@ const credentials = (hostStatus: "signed-in" | "signed-out") => {
       oauth: {
         authorizationHeader: async () => (hostStatus === "signed-in" ? "Bearer host" : null),
         hostCredentialState: () => ({
-          connection: testDeploymentConnection({ kind: "team" }),
+          connection: testDeploymentConnection({ home: true }),
           detail: null,
           key: "key",
           status: hostStatus,
@@ -31,20 +31,35 @@ const credentials = (hostStatus: "signed-in" | "signed-out") => {
 };
 
 describe("createDeploymentCredentials", () => {
-  it("presents a team Host its own OAuth bearer", async () => {
+  it("presents a Home at its own address its own OAuth bearer", async () => {
     const { credentials: held } = credentials("signed-in");
-    const connection = testDeploymentConnection({ kind: "team" });
+    const connection = testDeploymentConnection({ home: true });
 
     expect(await held.authorization(connection)).toBe("Bearer host");
     expect(await held.held(connection)).toBe(true);
   });
 
-  it("holds nothing for a team Host this phone is signed out of", async () => {
+  it("holds nothing for a Home at its own address this phone is signed out of", async () => {
     const { credentials: held } = credentials("signed-out");
-    const connection = testDeploymentConnection({ kind: "team" });
+    const connection = testDeploymentConnection({ home: true });
 
     expect(await held.authorization(connection)).toBeNull();
     expect(await held.held(connection)).toBe(false);
+  });
+
+  it("presents a Home on its own server the bearer its own sign-in issued", async () => {
+    const { credentials: held, sessions } = credentials("signed-in");
+    const connection = testDeploymentConnection({ home: true });
+    await sessions.save({
+      absoluteExpiresAt: "2026-09-21T00:00:00.000Z",
+      deploymentId: connection.authority.document.deploymentId,
+      expiresAt: "2026-09-15T00:00:00.000Z",
+      token,
+    });
+
+    expect(await held.authorization(connection)).toBe("Bearer host");
+    expect(await held.held(connection)).toBe(true);
+    expect(await credentials("signed-out").credentials.held(connection)).toBe(false);
   });
 
   it("presents a personal computer its pairing session, never a bearer", async () => {

@@ -62,6 +62,7 @@ export function mockScopedTask(
   lastReplyPreview: string | null,
   failurePreview: string | null,
   runs: readonly { readonly threadId: string; readonly status: string }[] = [],
+  session?: Pick<ThreadSummary, "agentSessionId" | "externalWork">,
 ) {
   const own = runs.filter(({ threadId }) => threadId === thread.id);
   return {
@@ -80,6 +81,8 @@ export function mockScopedTask(
     latestRunCompletedAt: thread.latestRunCompletedAt,
     environmentId: thread.environmentId,
     harnessInstanceId: thread.harnessInstanceId,
+    ...(session?.agentSessionId ? { agentSessionId: session.agentSessionId } : {}),
+    ...(session?.externalWork ? { externalWork: session.externalWork } : {}),
     runQueued:
       own.some(({ status }) => status === "queued") &&
       !own.some(({ status }) => status !== "queued"),
@@ -102,27 +105,17 @@ export function mockScopedShell(
   const tasks = [...threads.values()]
     .slice(0, 256)
     .map(({ thread, lastReply, failure }) =>
-      mockScopedTask(toThread(thread), revision, lastReply, failure, snapshot.runQueue),
+      mockScopedTask(toThread(thread), revision, lastReply, failure, snapshot.runQueue, thread),
     );
   const listed = new Set<string>(tasks.map(({ id }) => id));
   const activeIds = active.map(({ thread }) => thread.id).filter((id) => listed.has(id));
-  const attention = (snapshot.needsYou?.entries ?? []).slice(0, 200).map((entry) =>
-    entry.kind === "request"
-      ? {
-          id: entry.request.id,
-          kind: "request",
-          threadId: entry.originThreadId,
-          revision,
-          title: entry.title,
-        }
-      : {
-          id: entry.requestId,
-          kind: "team-ask",
-          threadId: entry.task?.threadId ?? null,
-          revision,
-          title: "Teammate ask",
-        },
-  );
+  const attention = (snapshot.needsYou?.entries ?? []).slice(0, 200).map((entry) => ({
+    id: entry.request.id,
+    kind: "request",
+    threadId: entry.originThreadId,
+    revision,
+    title: entry.title,
+  }));
 
   return PersonalNetworkShellSnapshotSchema.parse({
     deploymentId: snapshot.deploymentId,
@@ -445,7 +438,7 @@ export function mockScopedDetail(
     ).flatMap(([kind, entries]) => (entries.length > 20 ? [[kind, `${revision}:20`]] : [])),
   );
   const snapshotThread = {
-    ...mockScopedTask(toThread(thread), revision, null, null, snapshot.runQueue),
+    ...mockScopedTask(toThread(thread), revision, null, null, snapshot.runQueue, thread),
     thread: toThread(thread),
   };
   const activeItems = [...tools, ...nodes].slice(0, 20);
@@ -679,6 +672,8 @@ export function mockScopedResource(
       profiles: unknown;
       profileDeletions?: unknown;
       placements: unknown;
+      /** A pooled browser's report, as only a Home with one sends it. */
+      pools?: unknown;
       profileHomes: unknown;
       available: boolean;
     };
@@ -714,7 +709,11 @@ export function mockScopedResource(
         deletions: bootstrap.browser.profileDeletions,
       };
     case "browser-placement":
-      return { kind, placements: bootstrap.browser.placements };
+      return {
+        kind,
+        placements: bootstrap.browser.placements,
+        ...(bootstrap.browser.pools ? { pools: bootstrap.browser.pools } : {}),
+      };
     case "browser-home":
       return { kind, homes: bootstrap.browser.profileHomes };
     case "plugin":
@@ -723,7 +722,6 @@ export function mockScopedResource(
     case "plugin-webhooks":
     case "plugin-webhook-sources":
     case "plugin-schedules":
-    case "team-replies":
       return { kind };
     case "plugin-engine":
       return { kind, engine: { status: "idle" } };
@@ -775,14 +773,6 @@ export function mockInputQueue(
         truncated: false,
       },
       input: { messageId: input.messageId, queueRank: String(index), state: input.state },
-      ask:
-        input.teamRequestId && input.teamSource
-          ? {
-              requestId: input.teamRequestId,
-              teamId: input.teamSource.teamId,
-              audience: input.teamSource.audience,
-            }
-          : null,
       lease: lease
         ? {
             deviceLabel: lease.deviceLabel,

@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Opensteer tab sharing",
+  "description": "Let a connected agent act as you in a Chrome tab you share, until you stop sharing.",
+  "version": "0.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw/uJcJ9G5s6+kLB5i5ot8sspJdUZcNCDgvL2+vJyPVIJIDWajurr8KtXT8wn7SuLMzMgs4AdR+ZBjcBdCo3Y+Pz6fMRF2V+JEiAYx52Xorpt2I9FDNWUg2usIUGARm7IszBd0ZVSSRznMi3qBk1PbjFhuMzCL+OZIwFlClhVmjOyi5pMU3/3rKfVYrH4++pdwc1tiTpIz/NCbG0PunKxgR4aFW1Xdl8pUtbmkU1RET6bDYhT4ZyGa1XQz6585iwrl1mOlCQkrJ6YwQe5wggJhIWNoUPyKU4+tjDgQRTANP4UD5Hs0y8Uc8NZqb6bj1AjMosPvhcqL09pT71OAsWQjQIDAQAB",
+  "minimum_chrome_version": "130",
+  "incognito": "not_allowed",
+  "permissions": [
+    "alarms",
+    "cookies",
+    "debugger",
+    "declarativeNetRequestWithHostAccess",
+    "storage",
+    "webNavigation"
+  ],
+  "host_permissions": ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"],
+  "background": {
+    "service_worker": "worker.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Opensteer tab sharing",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["connect.html", "icons/probe.png"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ]
+}

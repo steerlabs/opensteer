@@ -1,3 +1,4 @@
+import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { ThreadAccessModeSchema } from "@opensteer/core";
 import { onTestFinished } from "vitest";
 import { DeviceIdSchema } from "@opensteer/core";
@@ -34,12 +35,11 @@ import {
   opensteer_task_read,
   opensteer_task_send,
   opensteer_task_list,
-  show_to_person,
   opensteer_task_configure,
+  show_to_person,
   opensteer_task_queue,
   opensteer_task_delegate,
   opensteer_task_update,
-  opensteer_delegation_status,
   opensteer_task_interrupt,
   opensteer_delegation_wait,
   opensteer_request_list,
@@ -279,7 +279,10 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
   const wait = (timeoutMs = 2_000, caller: AgentCaller = s.caller, signal?: AbortSignal) =>
     s.product.opensteer_task_wait({
       caller,
-      input: opensteer_delegation_wait.input.parse({ delegationId: assignmentId, timeoutMs }),
+      input:
+        caller.kind === "connection"
+          ? opensteer_task_wait.input.parse({ taskId: task.threadId, timeoutMs })
+          : opensteer_delegation_wait.input.parse({ delegationId: assignmentId, timeoutMs }),
       operationKey: randomUUID(),
       checkLive,
       ...(signal ? { signal } : {}),
@@ -1565,14 +1568,16 @@ describeStore("shaped agent task tools", (it) => {
     await s.settle();
     expect(
       (
-        await s.status({
+        await s.wait(2_000, {
           kind: "connection",
+          grant: { scope: "everything" },
+          grantRevision: 1,
           key: `connection:${connection.id}`,
           connectionId: connection.id,
           userId: s.f.userId,
           accessMode: "full-access",
         })
-      ).result,
+      ).task?.result,
     ).toBe("42");
     await storeFixture.store.drainAssignmentReturn(s.assignmentId);
     expect(await s.returns()).toHaveLength(1);
@@ -1625,33 +1630,51 @@ describeStore("shaped agent task tools", (it) => {
       void result.then(created.resolve, created.reject);
       return result;
     });
+    const reading = Promise.withResolvers<void>();
+    const checkLive = vi.fn(async () => {
+      if (checkLive.mock.calls.length === 2) reading.resolve();
+    });
+    const abort = new AbortController();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const pending = s.product.opensteer_task_delegate({
       caller: s.caller,
       input,
       operationKey: randomUUID(),
+      checkLive,
+      signal: abort.signal,
     });
     void pending.catch(created.reject);
-    const delegated = await withTimeout(created.promise, 1000, {
-      timeoutError: () => new Error("wait-mode delegation never committed its delegation"),
-    });
-    const assignmentId = delegated.assignment.id;
-    expect(assignmentId).not.toBe(s.assignmentId);
-    await storeFixture.runDelegatedTurn(
-      s.f,
-      { id: delegated.run.id, threadId: delegated.thread.id },
-      {
-        replies: ["84"],
-        end: "completed",
-        suffix: "delegate-wait-mode",
-      },
-    );
-    await storeFixture.store.drainRunFinish(delegated.run.id);
-    expect(await pending).toMatchObject({
-      result: "84",
-      status: "completed",
-      wait: { status: "settled" },
-    });
-    await expect(storeFixture.store.drainAssignmentReturn(assignmentId)).resolves.toBe("settled");
+    try {
+      const delegated = await created.promise;
+      const assignmentId = delegated.assignment.id;
+      expect(assignmentId).not.toBe(s.assignmentId);
+      await Promise.race([
+        reading.promise,
+        pending.then(() => {
+          throw new Error("The delegation returned before its waiter read the open task");
+        }),
+      ]);
+      await storeFixture.runDelegatedTurn(
+        s.f,
+        { id: delegated.run.id, threadId: delegated.thread.id },
+        {
+          replies: ["84"],
+          end: "completed",
+          suffix: "delegate-wait-mode",
+        },
+      );
+      await storeFixture.store.drainRunFinish(delegated.run.id);
+      expect(await pending).toMatchObject({
+        result: "84",
+        status: "completed",
+        wait: { status: "settled" },
+      });
+      await expect(storeFixture.store.drainAssignmentReturn(assignmentId)).resolves.toBe("settled");
+    } finally {
+      abort.abort();
+      await pending.catch(() => undefined);
+      vi.useRealTimers();
+    }
   });
 
   it("returns a task's Request promptly and reads it without exposing its payload", async ({
@@ -2163,6 +2186,8 @@ describeStore("shaped agent task tools", (it) => {
     });
     const connection: AgentCaller = {
       kind: "connection",
+      grant: { scope: "everything" },
+      grantRevision: 1,
       key: "connection:test",
       connectionId: "test",
       userId: f.userId,
@@ -2182,6 +2207,32 @@ describeStore("shaped agent task tools", (it) => {
         operationKey: randomUUID(),
       }),
     ).rejects.toThrow("must name taskId");
+    const mcp = new OpensteerMcpService({
+      callers: { authenticate: async () => connection },
+      handlers: {
+        opensteer_task_configure: (call) => s.product.opensteer_task_configure(call),
+        opensteer_task_queue: (call) => s.product.opensteer_task_queue(call),
+      },
+      store: storeFixture.store,
+      publicUrl: new URL("https://host.test"),
+    });
+    try {
+      const options = { operationKey: randomUUID() };
+      const absent = await mcp.callToolResult("token", "unknown_fixture_tool", {}, options);
+      expect(absent).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "not_found" } },
+      });
+      for (const [name, input] of [
+        ["opensteer_task_configure", { modelSelection: testModelSelection }],
+        ["opensteer_task_queue", { action: "list" }],
+      ] as const)
+        expect(JSON.stringify(await mcp.callToolResult("token", name, input, options))).toBe(
+          JSON.stringify(absent),
+        );
+    } finally {
+      await mcp.close();
+    }
     await expect(s.read({}, connection)).rejects.toThrow("must name taskId");
   });
 
@@ -2206,7 +2257,8 @@ describeStore("shaped agent task tools", (it) => {
         }),
       ),
     );
-    const link = formatReferenceLink(sent.messageId, `Message · ${target.thread.title}`);
+    expect(sent.messageId).not.toBeNull();
+    const link = formatReferenceLink(sent.messageId!, `Message · ${target.thread.title}`);
     expect(sent.link).toBe(link);
     expect(sent.disposition).toBe("pending");
     const queue = opensteer_task_queue.output.parse(
@@ -2374,6 +2426,11 @@ describeStore("shaped agent task tools", (it) => {
       })
       .where("id", "=", next.assignmentId!)
       .execute();
+    await storeFixture.database
+      .updateTable("runs")
+      .set({ status: "completed", completedAt: new Date() })
+      .where("id", "=", next.runId!)
+      .execute();
     const connections = new AgentConnectionStore(storeFixture.database);
     const record = await connections.create({
       userId: f.userId,
@@ -2386,17 +2443,19 @@ describeStore("shaped agent task tools", (it) => {
     await connections.activate(record.id, "2".repeat(64));
     const connection: AgentCaller = {
       kind: "connection",
+      grant: { scope: "everything" },
+      grantRevision: 1,
       key: `connection:${record.id}`,
       connectionId: record.id,
       userId: f.userId,
       accessMode: "approval-required",
     };
-    const status = await s.product.opensteer_delegation_status({
+    const status = await s.product.opensteer_task_wait({
       caller: connection,
-      input: opensteer_delegation_status.input.parse({ delegationId: next.assignmentId }),
+      input: opensteer_task_wait.input.parse({ taskId: next.threadId }),
       operationKey: randomUUID(),
     });
-    expect(status.result).toBe(result);
+    expect(status.task?.result).toBe(result);
     expect((await list()).threads.find((t) => t.id === delegated.threadId)).toMatchObject({
       assignmentId: next.assignmentId,
       taskStatus: "completed",

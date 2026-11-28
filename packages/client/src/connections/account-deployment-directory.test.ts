@@ -1,6 +1,7 @@
 import {
   AccountDeploymentDirectoryEntrySchema,
   ControlPlaneAccountIdSchema,
+  maximumAccountDeployments,
   type AccountDeploymentDirectoryEntry,
   type PersonalHostAccessRouteEnvelope,
 } from "@opensteer/control-plane-protocol";
@@ -64,7 +65,7 @@ const discovery: HostDiscoveryDocument = {
   hostInstanceId,
   hostKey: { algorithm: "Ed25519" },
   deploymentShape: {
-    kind: "team" as const,
+    kind: "personal" as const,
   },
 };
 const personalDeploymentId = createId("deployment");
@@ -87,7 +88,10 @@ describe("AccountDeploymentDirectoryService", () => {
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       const headers = init?.headers as Record<string, string> | undefined;
-      if (url === "https://accounts.opensteer.test/v1/account/deployments") {
+      if (
+        url ===
+        "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal"
+      ) {
         expect(headers?.authorization).toBe("Bearer account");
         return json({ deployments: [directoryDeployment()] }, url);
       }
@@ -115,7 +119,7 @@ describe("AccountDeploymentDirectoryService", () => {
           bootstrapMethods: ["password"],
           capabilities: [],
           endpoints: [expect.objectContaining({ kind: "canonical", origin: canonicalOrigin })],
-          kind: "team",
+          kind: "personal",
           name: "Home",
           reachability: "canonical",
           source: accountSource,
@@ -124,6 +128,90 @@ describe("AccountDeploymentDirectoryService", () => {
       directoryDeployments: [directoryDeployment()],
       source: accountSource,
     });
+  });
+
+  it("lists a ready Cloud Computer as a personal Home reached at its own address", async () => {
+    const home: HostDiscoveryDocument = {
+      ...discovery,
+      deploymentShape: { kind: "personal" },
+    };
+    const entry = AccountDeploymentDirectoryEntrySchema.parse({
+      ...directoryDeployment(),
+      authorityEnvelope: signDiscovery(home),
+      name: "Cloud Computer",
+    });
+    const reconcileAccountDeployments = vi.fn();
+    const service = new AccountDeploymentDirectoryService({
+      accountOrigin: "https://accounts.opensteer.test",
+      authorization: accountAuthorization(),
+      catalog: { reconcileAccountDeployments },
+      fetch: vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        return url ===
+          "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal"
+          ? json({ deployments: [entry] }, url)
+          : json(testHostDescriptor(signDiscovery(home), ["oidc"]), url);
+      }),
+    });
+
+    await expect(service.sync()).resolves.toMatchObject({ syncedDeploymentIds: [deploymentId] });
+    expect(reconcileAccountDeployments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connections: [
+          expect.objectContaining({
+            bootstrapMethods: ["oidc"],
+            endpoints: [expect.objectContaining({ kind: "canonical", origin: canonicalOrigin })],
+            kind: "personal",
+            name: "Cloud Computer",
+            reachability: "canonical",
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("drops a team server an older Account still lists before counting or reconciling", async () => {
+    const entry = AccountDeploymentDirectoryEntrySchema.parse({
+      ...directoryDeployment(),
+      authorityEnvelope: signDiscovery(discovery),
+    });
+    const signed = signDiscovery(discovery);
+    // As a release that served team servers listed one; enough of them to pass the list limit.
+    const retired = Array.from({ length: maximumAccountDeployments }, () => {
+      const id = createId("deployment");
+      return {
+        ...entry,
+        id,
+        authority: { ...entry.authority, deploymentId: id },
+        authorityEnvelope: {
+          ...signed,
+          document: { ...signed.document, deploymentId: id, deploymentShape: { kind: "team" } },
+        },
+      };
+    });
+    const reconcileAccountDeployments = vi.fn();
+    const service = new AccountDeploymentDirectoryService({
+      accountOrigin: "https://accounts.opensteer.test",
+      authorization: accountAuthorization(),
+      catalog: { reconcileAccountDeployments },
+      fetch: vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        return url ===
+          "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal"
+          ? json({ deployments: [...retired, entry] }, url)
+          : json(testHostDescriptor(signed, ["oidc"]), url);
+      }),
+    });
+
+    await expect(service.sync()).resolves.toMatchObject({
+      syncedDeploymentIds: [deploymentId],
+      unavailable: [],
+    });
+    expect(reconcileAccountDeployments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connections: [expect.objectContaining({ kind: "personal", reachability: "canonical" })],
+      }),
+    );
   });
 
   it("never commits a directory result after its Account authorization is invalidated", async () => {
@@ -153,7 +241,10 @@ describe("AccountDeploymentDirectoryService", () => {
     const reconcileAccountDeployments = vi.fn();
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
-      if (url === "https://accounts.opensteer.test/v1/account/deployments") {
+      if (
+        url ===
+        "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal"
+      ) {
         return json({ deployments: [deployment] }, url);
       }
       expect(init).toMatchObject({ credentials: "omit", redirect: "error" });
@@ -197,7 +288,9 @@ describe("AccountDeploymentDirectoryService", () => {
     let deployment = personalDirectoryDeployment(route, "offline");
     const fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
-      expect(url).toBe("https://accounts.opensteer.test/v1/account/deployments");
+      expect(url).toBe(
+        "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal",
+      );
       return json({ deployments: [deployment] }, url);
     });
     const service = new AccountDeploymentDirectoryService({
@@ -270,7 +363,7 @@ describe("AccountDeploymentDirectoryService", () => {
     const personalProjection = vi.fn(async () => undefined);
     const fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
-      if (url === `${accountSource.issuer}/v1/account/deployments`) {
+      if (url === `${accountSource.issuer}/v1/account/deployments?understands=canonical-personal`) {
         return json({ deployments: [personal, cloud] }, url);
       }
       expect(url).toBe(`${canonicalOrigin}/.well-known/opensteer`);
@@ -296,7 +389,7 @@ describe("AccountDeploymentDirectoryService", () => {
     expect(reconcileAccountDeployments).toHaveBeenCalledWith({
       connections: [
         expect.objectContaining({ kind: "personal" as const, name: "Studio Mac" }),
-        expect.objectContaining({ kind: "team", name: "Home" }),
+        expect.objectContaining({ kind: "personal", name: "Home" }),
       ],
       directoryDeployments: [personal, cloud],
       source: accountSource,
@@ -311,7 +404,10 @@ describe("AccountDeploymentDirectoryService", () => {
     let route = personalAccessRoute("https://old.connect.opensteer.test", 7);
     const fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
-      if (url === "https://accounts.opensteer.test/v1/account/deployments") {
+      if (
+        url ===
+        "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal"
+      ) {
         return json({ deployments: [personalDirectoryDeployment(route, "ready")] }, url);
       }
       return url.endsWith("/personal-access-route")

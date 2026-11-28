@@ -1,5 +1,6 @@
 import { countGraphemes } from "unicode-segmenter/grapheme";
 import {
+  committedRemainder,
   editingTextMaxLength,
   type EditingContext,
   type EditingTextEdit,
@@ -32,6 +33,13 @@ interface Composition {
   readonly end: number;
   readonly sent: boolean;
   readonly detached: boolean;
+  /**
+   * CY4: detached by the change of its context, its text committed to the far side then: what was
+   * committed. The input method's own commit that follows, in that context's own reducer, still
+   * goes as far as it differs from it. An interruption (a click, a blur) sets none: focus may have
+   * moved, and what the input method commits after it belongs to no field.
+   */
+  readonly committed?: string;
 }
 export interface EditingState {
   readonly platform: EditingViewerPlatform;
@@ -43,7 +51,7 @@ export interface EditingState {
   readonly pendingEcho: { readonly expected: EditingProxyState } | null;
   readonly replacement?: string | null;
   readonly nativeKey?: EditingKeyState | "choice" | null;
-  readonly compositionTail: "commit" | "discard" | null;
+  readonly compositionTail: "commit" | "cancel" | "discard" | "discard-cancel" | null;
   readonly suppressedInput: string | null;
   readonly down: readonly EditingKeyState[];
   readonly resetPending: boolean;
@@ -123,6 +131,10 @@ function textEdit(
   let diff = difference(old.value, next.value);
   if (replacement !== null) {
     let range: { start: number; end: number; text: string } | null = null;
+    // A candidate the text around it matches exactly explains the whole change. One that also
+    // holds the plain diff is preferred; with a repeated neighbour the plain diff can sit one
+    // character past the replacement, and the exact one is then the replacement.
+    let exact: { start: number; end: number; text: string } | null = null;
     for (const start of new Set([
       next.selectionEnd - replacement.length,
       next.value.lastIndexOf(replacement, next.selectionEnd),
@@ -134,14 +146,17 @@ function textEdit(
         start,
         start + replacement.length,
       );
+      if (candidate?.text !== replacement) continue;
+      exact ??= candidate;
       if (
-        candidate?.text === replacement &&
-        (old.value === next.value || (candidate.start <= diff.start && candidate.end >= diff.end))
+        old.value === next.value ||
+        (candidate.start <= diff.start && candidate.end >= diff.end)
       ) {
         range = candidate;
         break;
       }
     }
+    range ??= old.value === next.value ? null : exact;
     if (!range) return "unverified";
     diff = range;
   } else if (old.value === next.value) return null;
@@ -154,6 +169,25 @@ function textEdit(
     before: old.value.slice(start, caret),
     after: old.value.slice(caret, end),
   };
+}
+/**
+ * Text the person typed at their selection: `next` is `base` with the selection (collapsed or
+ * not) replaced by `text`, the caret after it. Anything else (an autocorrect, a deletion) is not.
+ */
+function typedInsertion(
+  base: EditingProxyState,
+  next: EditingProxyState,
+  inputType: string,
+): { start: number; end: number; text: string } | null {
+  if (!["insertText", "insertReplacementText", "insertFromComposition"].includes(inputType))
+    return null;
+  const { selectionStart: start, selectionEnd: end } = base;
+  if (next.selectionStart !== next.selectionEnd || start > end) return null;
+  const length = next.value.length - (base.value.length - (end - start));
+  if (length <= 0 || next.selectionEnd !== start + length) return null;
+  const text = next.value.slice(start, start + length);
+  if (next.value !== base.value.slice(0, start) + text + base.value.slice(end)) return null;
+  return { start, end, text };
 }
 function compositionText(
   transaction: Composition,
@@ -230,6 +264,24 @@ function composingValue(
       if (range) return compositionText(transaction, range.start, range.end, nativeText);
     }
   }
+  // An emptied composition is still its own range when the text outside it is unchanged (a
+  // browser cancels with compositionupdate("") and an input, or Safari with deleteCompositionText,
+  // before compositionend): a plain diff would widen it over a neighbour that repeats the
+  // selection's first character.
+  if (commitText === undefined) {
+    const range = snapshotCompositionRange(
+      transaction.base.value,
+      proxy,
+      transaction.rawStart,
+      transaction.rawStart,
+    );
+    if (
+      range?.end === transaction.rawEnd &&
+      proxy.selectionStart === transaction.rawStart &&
+      proxy.selectionEnd === transaction.rawStart
+    )
+      return compositionText(transaction, range.start, range.end, "");
+  }
   if (commitText !== undefined)
     return compositionText(transaction, transaction.rawStart, transaction.rawEnd, commitText);
   const diff = difference(transaction.base.value, proxy.value);
@@ -255,7 +307,17 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
   const prevent = () => {
     instruction = { ...instruction, preventDefault: true };
   };
-  const emit = (operation: EditingOperation): boolean => {
+  const emit = (computed: EditingOperation): boolean => {
+    // CZ3, PH5: a command or clipboard op carries the context it was computed for: this reducer's.
+    const operation =
+      (computed.kind === "command" ||
+        computed.kind === "paste" ||
+        computed.kind === "copy" ||
+        computed.kind === "cut") &&
+      computed.contextId === undefined &&
+      state.context
+        ? { ...computed, contextId: state.context.contextId }
+        : computed;
     if (operation.kind === "compose" && !state.abilities.composition) return false;
     if (operation.kind === "command" && !state.abilities.commands) {
       refusal = "commands";
@@ -302,7 +364,18 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
   const commit = (transaction: Composition, text: string) => {
     if (!transaction.contextId) return;
     if (!text) {
-      if (transaction.sent)
+      if (!transaction.sent) return;
+      // A composition sent with the text around it restated (it began over a selection away
+      // from the far caret) keeps that text when it is cancelled, as the native field does.
+      const restated =
+        transaction.base.value.slice(transaction.start, transaction.rawStart) +
+        transaction.base.value.slice(transaction.rawEnd, transaction.end);
+      if (restated)
+        emit({
+          kind: "edit",
+          edit: { contextId: transaction.contextId, text: restated, before: "", after: "" },
+        });
+      else
         emit({
           kind: "compose",
           composition: {
@@ -332,6 +405,11 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     if (transaction && !transaction.detached) {
       commit(transaction, transaction.text);
       state.composition = { ...transaction, detached: true };
+    } else if (transaction?.committed !== undefined) {
+      // CZ2: a tap or a blur after a change of context ends what that change committed: the
+      // input method's commit after it adds nothing.
+      const { committed: _committed, ...ended } = transaction;
+      state.composition = ended;
     }
     reset();
   };
@@ -373,10 +451,15 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     if (key && typeof key !== "string" && inputType === "insertText" && data === key.key)
       printableKey(key);
   };
-  const move = (from: number, to: number, text: string) => {
+  const move = (from: number, to: number, text: string, follows = false) => {
     const distance = countGraphemes(text.slice(Math.min(from, to), Math.max(from, to)));
     for (let count = 0; count < distance; count++)
-      emit({ kind: "command", command: to < from ? "moveBackward" : "moveForward" });
+      // CZ7: only a compensating move computed from a preceding edit carries follows: true.
+      emit({
+        kind: "command",
+        command: to < from ? "moveBackward" : "moveForward",
+        ...(follows ? { follows: true as const } : {}),
+      });
   };
   const publishComposition = (transaction: Composition, proxy: EditingProxyState): Composition => {
     if (!transaction.contextId || !state.abilities.composition) return transaction;
@@ -416,6 +499,31 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         state.compositionTail = null;
       }
       state.context = event.context;
+      break;
+    }
+    case "refused": {
+      // CU5: a composition the transport refused never reached the target, and the field is the
+      // same one (a change of context ends the composition, and nothing is sent again across it:
+      // the reducer cannot know where the person is then). Its next send is a fresh start,
+      // restating what it replaces.
+      const transaction = state.composition;
+      const operation = event.operation;
+      if (
+        operation.kind === "compose" &&
+        transaction &&
+        !transaction.detached &&
+        transaction.sent &&
+        transaction.contextId === operation.composition.contextId &&
+        transaction.contextId === state.context?.contextId
+      )
+        state.composition = { ...transaction, sent: false };
+      else if (
+        !transaction &&
+        (operation.kind === "edit" || operation.kind === "paste") &&
+        (operation.kind === "edit" ? operation.edit.contextId : operation.contextId) ===
+          state.context?.contextId
+      )
+        reset();
       break;
     }
     case "pointerdown":
@@ -506,9 +614,42 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       if (!transaction) break;
       let proxy = event.proxy,
         remoteCaret = proxy.selectionEnd;
+      // CY4: the input method commits a composition the change of its context already committed.
+      // What it commits goes as an insertion under the composition's own context, deleting
+      // nothing: the part after what was committed when that extends it, nothing when it is that,
+      // else all of it. Only the reducer of that context sends it (the context left keeps its own
+      // reducer; a change of context leaves this one with the composition it ended).
+      if (
+        transaction.detached &&
+        transaction.committed !== undefined &&
+        event.data &&
+        transaction.contextId &&
+        transaction.contextId === state.context?.contextId
+      ) {
+        const text = committedRemainder(transaction.committed, event.data);
+        if (text)
+          emit({
+            kind: "edit",
+            edit: { contextId: transaction.contextId, text, before: "", after: "" },
+          });
+      }
       if (!transaction.detached) {
-        if (!event.data) commit(transaction, "");
-        else {
+        if (!event.data) {
+          commit(transaction, "");
+          // A cancelled composition's restated text went back in its place: the far caret is
+          // after it, and moves to the native caret.
+          const restated =
+            transaction.base.value.slice(transaction.start, transaction.rawStart) +
+            transaction.base.value.slice(transaction.rawEnd, transaction.end);
+          if (transaction.sent && restated) {
+            const appliedCaret = transaction.start + restated.length;
+            if (proxy.selectionStart === proxy.selectionEnd) {
+              move(appliedCaret, proxy.selectionEnd, proxy.value, true);
+              if (!state.abilities.commands && appliedCaret !== proxy.selectionEnd)
+                state.resetPending = true;
+            } else remoteCaret = appliedCaret;
+          }
+        } else {
           const final = composingValue(transaction, event.proxy, event.data);
           commit(final, final.text);
           const value =
@@ -523,7 +664,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
             };
           const appliedCaret = final.start + final.text.length;
           if (proxy.selectionStart === proxy.selectionEnd) {
-            move(appliedCaret, proxy.selectionEnd, value);
+            move(appliedCaret, proxy.selectionEnd, value, true);
             if (!state.abilities.commands && appliedCaret !== proxy.selectionEnd)
               state.resetPending = true;
           } else remoteCaret = appliedCaret;
@@ -531,7 +672,13 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       }
       state.composition = null;
       state.pendingEcho = null;
-      state.compositionTail = transaction.detached ? "discard" : "commit";
+      state.compositionTail = transaction.detached
+        ? event.data
+          ? "discard"
+          : "discard-cancel"
+        : event.data
+          ? "commit"
+          : "cancel";
       state.proxy = proxy;
       state.caret = proxy.selectionStart === proxy.selectionEnd ? proxy.selectionEnd : remoteCaret;
       if (transaction.detached || state.resetPending || !state.abilities.rangeEdits) reset();
@@ -633,6 +780,10 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       break;
     }
     case "beforeinput": {
+      // A suppression waits for the input of the beforeinput that set it. Another beforeinput
+      // means that input never came (the adapter honoured preventDefault): a later deletion's
+      // input is its own, never swallowed for the earlier one.
+      state.suppressedInput = null;
       if (state.composition) break;
       if (state.abilities.basicInput && event.inputType === "insertReplacementText") {
         prevent();
@@ -653,6 +804,19 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         emit({ kind: "command", command: deletion });
         state.suppressedInput = event.inputType;
         reset();
+      } else if (
+        deletion &&
+        event.inputType.includes("Backward") &&
+        state.proxy.selectionStart === 0 &&
+        state.proxy.selectionEnd === 0 &&
+        !state.pendingEcho
+      ) {
+        // CV1: a backward deletion at the mirror's start is the page's, at its caret: the page may
+        // hold text before it that the mirror does not (it begins where the page's caret was).
+        // The mirror after the caret is unchanged either way.
+        prevent();
+        emit({ kind: "command", command: deletion });
+        state.suppressedInput = event.inputType;
       }
       break;
     }
@@ -696,11 +860,19 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         state.suppressedInput = null;
         break;
       }
+      // The input a composition's end carries is its own: a commit's, or the deletion that
+      // cancelled it (its beforeinput came while composing). A Backspace after a *commit* is never
+      // a composition tail, even when an adapter emits input without a preceding beforeinput; only
+      // a *cancelled* composition's trailing deleteContentBackward is consumed (regime C, seeds
+      // 1605 and 2225: the cancel's input, read before the mirror was cleared, sent the field again).
+      const tail = state.compositionTail;
+      const isCancelTail = tail === "cancel" || tail === "discard-cancel";
       if (
-        state.compositionTail &&
-        ["insertFromComposition", "insertCompositionText"].includes(event.inputType)
+        tail &&
+        (["insertFromComposition", "insertCompositionText"].includes(event.inputType) ||
+          (event.inputType === "deleteContentBackward" && isCancelTail))
       ) {
-        const discard = state.compositionTail === "discard";
+        const discard = tail === "discard" || tail === "discard-cancel";
         state.compositionTail = null;
         if (!discard) {
           state.proxy = event.proxy;
@@ -714,6 +886,11 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         state.suppressedInput = null;
         break;
       }
+      // Another input means the suppressed one is not coming (an adapter that reports input
+      // without a beforeinput): a later deletion's input, or line break, is its own. No recorded
+      // browser puts such an input between an Enter key and its own line break; the inputs there
+      // are an IME's commit, which return above.
+      state.suppressedInput = null;
       const echo = state.pendingEcho;
       state.pendingEcho = null;
       const base = echo?.expected ?? state.proxy;
@@ -726,6 +903,96 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         reset();
         break;
       }
+      // Backspace is the page's, relative to its caret (CU4, CV1): the page's own Backspace goes,
+      // never a range deletion the page could find changed, and the mirror takes what the page
+      // then holds. A letter written with combining marks loses only its last mark there, where
+      // the native field removed the whole letter.
+      const at = event.proxy.selectionEnd;
+      const removed = base.value.length - event.proxy.value.length;
+      if (
+        edit &&
+        !echo &&
+        event.inputType === "deleteContentBackward" &&
+        // A Backspace at a caret; a selection deleted is the selection.
+        base.selectionStart === base.selectionEnd &&
+        state.abilities.commands &&
+        event.proxy.selectionStart === at &&
+        removed > 0 &&
+        caret === at + removed &&
+        base.value.slice(0, at) === event.proxy.value.slice(0, at) &&
+        base.value.slice(at + removed) === event.proxy.value.slice(at) &&
+        countGraphemes(base.value.slice(at, at + removed)) === 1
+      ) {
+        const letter = base.value.slice(at, at + removed);
+        const mark = Array.from(letter).at(-1)!;
+        const kept =
+          letter.length > mark.length && /\p{M}/u.test(mark)
+            ? letter.slice(0, letter.length - mark.length)
+            : "";
+        emit({ kind: "command", command: "deleteBackward" });
+        state.proxy = {
+          value: base.value.slice(0, at) + kept + base.value.slice(at + removed),
+          selectionStart: at + kept.length,
+          selectionEnd: at + kept.length,
+        };
+        state.caret = at + kept.length;
+        if (kept) instruction = { ...instruction, set: state.proxy };
+        if (!state.abilities.rangeEdits || state.resetPending) reset();
+        break;
+      }
+      // CV1, P2 (S2): what the person types goes as an insertion at the page's caret, with nothing
+      // around it the page could find changed: the far caret is brought to where it goes, and over
+      // a selection the selection's deletion goes first, with any compensating moves and the typed
+      // insertion marked follows: true so if the removal is refused, nothing after it applies.
+      const typed = typedInsertion(base, event.proxy, event.inputType);
+      if (
+        edit &&
+        typed &&
+        state.context &&
+        state.abilities.commands &&
+        (typed.start === typed.end || state.abilities.rangeEdits)
+      ) {
+        const contextId = state.context.contextId;
+        let far = caret;
+        let deletedSelection = false;
+        if (typed.start < typed.end) {
+          const removal = textEdit(
+            base,
+            {
+              value: base.value.slice(0, typed.start) + base.value.slice(typed.end),
+              selectionStart: typed.start,
+              selectionEnd: typed.start,
+            },
+            caret,
+            contextId,
+            null,
+          );
+          if (removal && removal !== "unverified") {
+            if (!emit({ kind: "edit", edit: removal })) {
+              reset();
+              break;
+            }
+            far = caret - removal.before.length + removal.text.length;
+            deletedSelection = true;
+          }
+        }
+        const text = base.value.slice(0, typed.start) + base.value.slice(typed.end);
+        if (far !== typed.start) move(far, typed.start, text, deletedSelection);
+        if (
+          !emit({
+            kind: "edit",
+            edit: { contextId, text: typed.text, before: "", after: "" },
+            ...(deletedSelection ? { follows: true as const } : {}),
+          })
+        ) {
+          reset();
+          break;
+        }
+        state.proxy = event.proxy;
+        state.caret = event.proxy.selectionEnd;
+        if (!state.abilities.rangeEdits || state.resetPending) reset();
+        break;
+      }
       let remoteCaret = event.proxy.selectionEnd;
       if (edit) {
         if (state.abilities.rangeEdits || (!edit.before && !edit.after)) {
@@ -736,7 +1003,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
           }
           const appliedCaret = caret - edit.before.length + edit.text.length;
           if (event.proxy.selectionStart === event.proxy.selectionEnd) {
-            move(appliedCaret, event.proxy.selectionEnd, event.proxy.value);
+            move(appliedCaret, event.proxy.selectionEnd, event.proxy.value, true);
             if (!state.abilities.commands && appliedCaret !== event.proxy.selectionEnd)
               state.resetPending = true;
           } else remoteCaret = appliedCaret;
@@ -759,6 +1026,18 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       break;
     }
     case "selection":
+      if (event.moves !== undefined) {
+        // The distances the person moved the caret in a mirror that has since been cleared: the
+        // far caret moves by each in turn (stopping at either end, as the page's does). A mirror
+        // holding text since then no longer sits at the far caret, so it is cleared.
+        if (state.composition || state.pendingEcho) break;
+        for (const distance of event.moves)
+          for (let count = 0; count < Math.abs(distance); count++)
+            emit({ kind: "command", command: distance < 0 ? "moveBackward" : "moveForward" });
+        if (state.proxy.value) reset();
+        else state.caret = 0;
+        break;
+      }
       if (!state.composition && !state.pendingEcho && event.proxy.value === state.proxy.value) {
         if (event.proxy.selectionStart === event.proxy.selectionEnd) {
           move(state.caret, event.proxy.selectionEnd, state.proxy.value);
@@ -770,20 +1049,111 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     case "copy":
     case "cut": {
       prevent();
+      if (event.contextId !== undefined && event.contextId !== state.context?.contextId) {
+        if (event.type === "cut" && state.abilities.basicInput) break;
+        emit({ kind: event.type, contextId: event.contextId });
+        break;
+      }
       interrupt();
       if (event.type === "cut" && state.abilities.basicInput) break;
-      emit({ kind: event.type });
+      emit({ kind: event.type, ...(event.contextId ? { contextId: event.contextId } : {}) });
       break;
     }
     case "paste": {
       prevent();
-      interrupt();
       // Clipboard items are representations of one copy; a text target keeps its plain text.
       const text = event.items.find(
         (item) => item.type === "text/plain" && item.name === undefined,
       );
-      const items = state.abilities.clipboard === "full" ? event.items : text ? [text] : [];
-      if (items.length) emit({ kind: "paste", items });
+      // Whether it may be pasted is decided before anything is deleted: whole, or refused whole.
+      const items =
+        state.abilities.clipboard === "none"
+          ? []
+          : state.abilities.clipboard === "full"
+            ? event.items
+            : text
+              ? [text]
+              : [];
+      // PH3: a paste captured for an earlier context (before a menu click or desktop IPC
+      // round-trip) carries that context untouched and must not mutate the newer field's mirror.
+      if (event.contextId !== undefined && event.contextId !== state.context?.contextId) {
+        if (items.length) emit({ kind: "paste", items, contextId: event.contextId });
+        else if (event.items.length) refusal = "clipboard";
+        break;
+      }
+      // A paste over a selection replaces it, as typing over it does. The far field has no
+      // selection: the selection is deleted first, and the paste goes in where it was.
+      const { value, selectionStart: start, selectionEnd: end } = state.proxy;
+      let selected = start === end;
+      let deletedSelection = false;
+      if (items.length && !state.composition && start < end) {
+        const removed = {
+          value: value.slice(0, start) + value.slice(end),
+          selectionStart: start,
+          selectionEnd: start,
+        };
+        // CY12: without a field context there is nothing to delete it in.
+        const edit = state.context
+          ? textEdit(state.proxy, removed, state.caret, state.context.contextId, null)
+          : null;
+        const deletion =
+          edit &&
+          edit !== "unverified" &&
+          (state.abilities.rangeEdits || (!edit.before && !edit.after))
+            ? edit
+            : null;
+        // CY12: the far caret goes where the selection was, by commands, or nothing goes.
+        const far = deletion ? state.caret - deletion.before.length + deletion.text.length : 0;
+        const placed = deletion !== null && (far === start || state.abilities.commands);
+        if (deletion && placed && emit({ kind: "edit", edit: deletion })) {
+          move(far, start, removed.value, true);
+          selected = true;
+          deletedSelection = true;
+        } else {
+          // CW9 (CT8): the selection could not go first, so the paste does not go either.
+          refusal ??= deletion && !placed ? "commands" : "range-edits";
+          break;
+        }
+      }
+      // The pasted text is known: on a target that verifies range edits the mirror keeps it where
+      // it went, and no place still waiting in the native field is lost to a reset. What the page
+      // makes of it is verified with the next edit, like typed text.
+      const plain = text ? new TextDecoder().decode(text.bytes) : null;
+      if (
+        items.length &&
+        plain !== null &&
+        selected &&
+        !state.composition &&
+        !state.resetPending &&
+        state.context &&
+        state.abilities.rangeEdits &&
+        value.length - (end - start) + plain.length < editingTextMaxLength
+      ) {
+        if (start === end && state.caret !== start) {
+          // CY12: the paste goes where the person's caret is, or not at all.
+          if (!state.abilities.commands) {
+            refusal ??= "commands";
+            break;
+          }
+          move(state.caret, start, value);
+        }
+        emit({ kind: "paste", items, ...(deletedSelection ? { follows: true as const } : {}) });
+        const at = start + plain.length;
+        state.proxy = {
+          value: value.slice(0, start) + plain + value.slice(end),
+          selectionStart: at,
+          selectionEnd: at,
+        };
+        state.caret = at;
+        state.pendingEcho = null;
+        state.replacement = null;
+        state.nativeKey = null;
+        instruction = { ...instruction, set: state.proxy, edit: { start, end, text: plain } };
+        break;
+      }
+      interrupt();
+      if (items.length)
+        emit({ kind: "paste", items, ...(deletedSelection ? { follows: true as const } : {}) });
       else if (event.items.length) refusal = "clipboard";
       break;
     }

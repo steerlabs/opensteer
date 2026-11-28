@@ -1,4 +1,6 @@
 import {
+  BrowserAttachTicketClaimsSchema,
+  browserRuntimeWireVersion,
   LocalProfileBindingSchema,
   RunnerAuxiliaryFrameFenceSchema,
   type HeldLocalProfile,
@@ -26,7 +28,7 @@ const binding = LocalProfileBindingSchema.parse({
   runnerId: `rnr_${randomUUID()}`,
   profileId: `bpr_${randomUUID()}`,
 });
-function fixture(negotiated = true) {
+function fixture(negotiated = true, stopped = false) {
   const bridge = new LocalBrowserRuntimeBridge({
     bridgeToken: "x".repeat(64),
     runtimeId: "runtime_test",
@@ -36,7 +38,7 @@ function fixture(negotiated = true) {
     wireVersion: 2,
     localProfileStorage: storage,
   });
-  const relay = new BrowserModuleRelay(bridge);
+  const relay = new BrowserModuleRelay(bridge, stopped);
   const messages: Record<string, unknown>[] = [];
   const notices = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
   const fence = RunnerAuxiliaryFrameFenceSchema.parse({
@@ -93,7 +95,101 @@ function fixture(negotiated = true) {
   return { bridge, relay, stream, inventory, messages, lease, capability, send, wait };
 }
 
+it("refuses an agent attach in stopped mode before asking the local browser", async () => {
+  const f = fixture(true, true);
+  const attach = vi.spyOn(f.bridge, "attach");
+  try {
+    await f.relay.attach(f.stream);
+    await f.send({ type: "capability.grant", lease: f.lease });
+    const failed = f.wait("browser.command-error");
+    await f.send({
+      type: "browser.attach",
+      capability: f.capability,
+      channelId: `bch_${randomUUID()}`,
+      attachTicket: "abc.def.ghi",
+    });
+    await failed;
+    expect(f.messages.at(-1)).toMatchObject({
+      type: "browser.command-error",
+      error: { reason: "device-stopped" },
+    });
+    expect(attach).not.toHaveBeenCalled();
+  } finally {
+    f.relay.detach();
+  }
+});
+
+it("relays a person's attachment in stopped mode", async () => {
+  const f = fixture(true, true);
+  const attach = vi.spyOn(f.bridge, "attach").mockResolvedValue({ type: "browser.attached" });
+  const now = new Date().toISOString();
+  const claims = BrowserAttachTicketClaimsSchema.parse({
+    access: "read-write",
+    actor: "person",
+    audience: "opensteer-browser-runtime",
+    creationOrigin: "person",
+    expiresAt: now,
+    identity: { kind: "fresh" },
+    issuedAt: now,
+    nonce: randomUUID(),
+    operationExpiresAt: now,
+    remainingBudgetMs: 1000,
+    runtimeId: "runtime_test",
+    sessionId: `bsn_${randomUUID()}`,
+    subject: "person",
+    wireVersion: browserRuntimeWireVersion,
+  });
+  const attachTicket = `test.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.test`;
+  try {
+    await f.relay.attach(f.stream);
+    await f.send({ type: "capability.grant", lease: f.lease });
+    const attached = f.wait("browser.attached");
+    await f.send({
+      type: "browser.attach",
+      capability: f.capability,
+      channelId: `bch_${randomUUID()}`,
+      attachTicket,
+    });
+    await attached;
+    expect(attach).toHaveBeenCalledOnce();
+  } finally {
+    f.relay.detach();
+  }
+});
+
 describe("BrowserModuleRelay native profiles", () => {
+  it.each([
+    [true, 1011, "a pool guest's runtime that did not take the close"],
+    [false, 1000, "a local runtime, as before"],
+  ] as const)("answers a Host's close with %s → %s (%s)", async (pooled, code, _case) => {
+    const f = fixture();
+    vi.spyOn(f.bridge, "attach").mockResolvedValue({ type: "browser.attached" });
+    vi.spyOn(f.bridge, "pooled", "get").mockReturnValue(pooled);
+    const receipt = vi.spyOn(f.bridge, "closeWithReceipt").mockResolvedValue(1011);
+    const close = vi.spyOn(f.bridge, "close");
+    try {
+      await f.relay.attach(f.stream);
+      await f.send({ type: "capability.grant", lease: f.lease });
+      const channelId = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+      const attached = f.wait("browser.attached");
+      await f.send({
+        type: "browser.attach",
+        capability: f.capability,
+        channelId,
+        attachTicket: "abc.def.ghi",
+      });
+      await attached;
+      const closed = f.wait("browser.closed");
+      await f.send({ type: "browser.close", capability: f.capability, channelId });
+      await closed;
+      expect(f.messages.at(-1)).toMatchObject({ type: "browser.closed", channelId, code });
+      expect(receipt).toHaveBeenCalledTimes(pooled ? 1 : 0);
+      expect(close).toHaveBeenCalledTimes(pooled ? 0 : 1);
+    } finally {
+      f.relay.detach();
+    }
+  });
+
   it("opens relay channel 33", async () => {
     const f = fixture();
     vi.spyOn(f.bridge, "attach").mockResolvedValue({ type: "browser.attached" });
@@ -421,5 +517,131 @@ it("closes only the channel whose runtime frame exceeds the module byte cap", as
     });
   } finally {
     f.relay.detach();
+  }
+});
+
+it("S1: enforces a live stopped predicate for agent attaches and CDP frames while allowing person frames", async () => {
+  const bridge = new LocalBrowserRuntimeBridge({
+    bridgeToken: "x".repeat(64),
+    runtimeId: "runtime_test",
+    url: new URL("http://127.0.0.1:4312"),
+  });
+  vi.spyOn(bridge, "capabilities").mockResolvedValue({
+    wireVersion: 2,
+    localProfileStorage: storage,
+  });
+  vi.spyOn(bridge, "localProfileInventory").mockResolvedValue({ storage, profiles: [] });
+  const attach = vi.spyOn(bridge, "attach").mockResolvedValue({ type: "browser.attached" });
+  const sendBridge = vi.spyOn(bridge, "send").mockResolvedValue(undefined);
+  let stopped = false;
+  const relay = new BrowserModuleRelay(bridge, (() => stopped) as unknown as boolean);
+  const messages: Record<string, unknown>[] = [];
+  const fence = RunnerAuxiliaryFrameFenceSchema.parse({
+    auxiliaryStreamId: `rax_${randomUUID()}`,
+    bootId: `rbt_${randomUUID()}`,
+    connectionId: `rcn_${randomUUID()}`,
+    connectionGeneration: 1,
+    connectionLeaseId: `rls_${randomUUID()}`,
+    module: "browser",
+    runnerId: binding.runnerId,
+  });
+  const keys = generateKeyPairSync("ed25519");
+  const lease = BrowserCapabilityLeaseSchema.parse({
+    capabilityGeneration: 1,
+    capabilityLeaseId: `bcl_${randomUUID()}`,
+    runtimeId: "runtime_test",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const capability = {
+    capabilityGeneration: lease.capabilityGeneration,
+    capabilityLeaseId: lease.capabilityLeaseId,
+    runtimeId: lease.runtimeId,
+  };
+  const send = (message: Record<string, unknown>) =>
+    relay.handleFrame(
+      Buffer.from(JSON.stringify({ ...fence, requestId: `req:${randomUUID()}`, ...message })),
+      false,
+    );
+  const agentTicket = `h.${Buffer.from(JSON.stringify({ actor: "agent" })).toString("base64url")}.s`;
+  const personTicket = `h.${Buffer.from(JSON.stringify({ actor: "person" })).toString("base64url")}.s`;
+  try {
+    await relay.attach({
+      browserWireVersion: 2,
+      fence,
+      browserAttachPublicKeys: [
+        {
+          keyId: "test",
+          publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+        },
+      ],
+      send: async (frame) => {
+        messages.push(createBrowserRelayToHostMessageSchema().parse(JSON.parse(String(frame))));
+      },
+    });
+    await send({ type: "capability.grant", lease });
+    const openChannel = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+    await send({
+      type: "browser.attach",
+      capability,
+      channelId: openChannel,
+      attachTicket: personTicket,
+    });
+    await vi.waitFor(() => expect(attach).toHaveBeenCalledTimes(1));
+
+    stopped = true;
+    const refusedChannel = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+    await send({
+      type: "browser.attach",
+      capability,
+      channelId: refusedChannel,
+      attachTicket: agentTicket,
+    });
+    await vi.waitFor(() =>
+      expect(messages.at(-1)).toMatchObject({
+        type: "browser.command-error",
+        channelId: refusedChannel,
+        error: { code: "forbidden" },
+      }),
+    );
+    expect(attach).toHaveBeenCalledTimes(1);
+
+    const cdpRequestId = randomUUID();
+    await relay.handleFrame(
+      Buffer.from(
+        JSON.stringify({
+          ...fence,
+          type: "browser.client-message",
+          capability,
+          channelId: openChannel,
+          message: {
+            type: "cdp.command",
+            requestId: cdpRequestId,
+            command: { method: "Runtime.evaluate", parameters: { expression: "1" } },
+          },
+        }),
+        "utf8",
+      ),
+      false,
+    );
+    await vi.waitFor(() =>
+      expect(messages.at(-1)).toMatchObject({
+        type: "browser.server-message",
+        channelId: openChannel,
+        message: { type: "cdp.error", requestId: cdpRequestId, error: { code: "forbidden" } },
+      }),
+    );
+    expect(sendBridge).not.toHaveBeenCalled();
+
+    stopped = false;
+    const resumedChannel = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+    await send({
+      type: "browser.attach",
+      capability,
+      channelId: resumedChannel,
+      attachTicket: agentTicket,
+    });
+    await vi.waitFor(() => expect(attach).toHaveBeenCalledTimes(2));
+  } finally {
+    relay.detach();
   }
 });

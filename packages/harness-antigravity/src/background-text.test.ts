@@ -1,5 +1,4 @@
 import { ModelSelectionSchema, createId } from "@opensteer/core";
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,7 +45,6 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   const context = {
     environment: { PATH: process.env.PATH ?? "" },
     providerState,
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     scratchDirectory: directory,
     wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => launch,
   };

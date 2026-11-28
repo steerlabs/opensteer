@@ -175,3 +175,54 @@ target "gateway" {
   cache-from = cache_from("gateway")
   cache-to   = cache_to("gateway")
 }
+
+target "home-provisioner" {
+  inherits   = ["_common"]
+  target     = "home-provisioner"
+  tags       = ["${REGISTRY}/home-provisioner:${TAG}"]
+  cache-from = cache_from("home-provisioner")
+  cache-to   = cache_to("home-provisioner")
+}
+
+group "home" {
+  targets = ["home-host", "home-runner", "home-browser-runtime", "home-browser-egress", "home-channel-runtime", "home-gateway"]
+}
+
+target "_home" {
+  inherits  = ["_common"]
+  platforms = ["linux/amd64", "linux/arm64"]
+  args = {
+    OPENSTEER_AGENT_PHONE_MODE = "none"
+  }
+}
+
+target "home-host" {
+  inherits = ["host", "_home"]
+  tags     = ["${REGISTRY}/opensteer-home-host:${TAG}"]
+}
+
+target "home-runner" {
+  inherits = ["runner", "_home"]
+  tags     = ["${REGISTRY}/opensteer-home-runner:${TAG}"]
+}
+
+target "home-browser-runtime" {
+  inherits = ["browser-runtime", "_home"]
+  tags     = ["${REGISTRY}/opensteer-home-browser-runtime:${TAG}"]
+}
+
+target "home-browser-egress" {
+  inherits = ["browser-egress", "_home"]
+  tags     = ["${REGISTRY}/opensteer-home-browser-egress:${TAG}"]
+}
+
+target "home-channel-runtime" {
+  inherits = ["channel-runtime", "_home"]
+  tags     = ["${REGISTRY}/opensteer-home-channel-runtime:${TAG}"]
+}
+
+target "home-gateway" {
+  inherits = ["_home"]
+  target   = "home-gateway"
+  tags     = ["${REGISTRY}/opensteer-home-gateway:${TAG}"]
+}

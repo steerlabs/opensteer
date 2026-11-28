@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { stripRefs } from "./stripRefs.js";
 import { markdownSourceTree, visitMarkdownSource } from "./markdownParser.js";
-import { teamMentionHandles } from "./teamMentions.js";
+import { mentionHandles } from "./mentionHandles.js";
 
 const href = "opensteer:thr_12345678-1234-4234-8234-123456789abc";
 describe("stripRefs", () => {
@@ -99,9 +99,9 @@ describe("stripRefs", () => {
       "[web @tim-agent](https://team.example/c/x) [see @other-agent](" + href + ")",
       "@tim-agent [see @tim-agent](" + href + ")",
     ]) {
-      const original = new Set(teamMentionHandles(source));
+      const original = new Set(mentionHandles(source));
       const result = stripRefs(source);
-      expect(teamMentionHandles(result).every((handle) => original.has(handle))).toBe(true);
+      expect(mentionHandles(result).every((handle) => original.has(handle))).toBe(true);
       expect(stripRefs(result)).toBe(result);
     }
     expect(stripRefs("[word ](" + href + ")@tim-agent")).toBe("word \\@tim-agent");
@@ -120,7 +120,7 @@ describe("stripRefs", () => {
     });
     expect(destinations).toEqual(["https://example.test"]);
     expect(result.startsWith(prefix)).toBe(true);
-    expect(teamMentionHandles(result)).toEqual([]);
+    expect(mentionHandles(result)).toEqual([]);
     expect(stripRefs(result)).toBe(result);
   });
 });

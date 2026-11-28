@@ -1,6 +1,9 @@
+import { runTerminationUnprovenCode } from "@opensteer/core";
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import {
   heldThread,
+  phoneSentence,
+  type SentencePart,
   reviewHostAction,
   type ActionReview,
   sameTaskRow,
@@ -42,6 +45,8 @@ import { useShowsLive } from "../ui/connection-live.js";
 import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { RowSubtitle, type ActionLineValue } from "../ui/action-line.js";
 import { screenAction, useScreenAction } from "../ui/client-feedback.js";
+import { ExternalAgentMark } from "../screens/external-agent-mark.js";
+import { useSessionRow } from "../thread/agent-session-hooks.js";
 
 /**
  * One of the reader's tasks, as the sidebar, search and Done
@@ -71,6 +76,7 @@ export interface TaskRowProps {
   readonly onOpen: (threadId: string) => void;
   readonly onSetDone: (row: TaskRow, done: boolean) => void;
   readonly row: TaskRow;
+  readonly origin?: readonly SentencePart[] | undefined;
   readonly selected: boolean;
   readonly shelf: TaskShelf;
   /** When it stopped, from `taskTime`, read by the list as it draws. */
@@ -88,7 +94,12 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
   const inMenu = move !== null && width !== null;
   // Done or Reopen from a menu or a swipe answers here, in the second line's place.
   const line = useTaskDoneLine(row.threadId);
-  const subtitle = line === null ? (props.ask ?? null) : line;
+  // A connected agent's own task wears the agent's mark and says what it is using.
+  const session = useSessionRow(useSelectedHostClient(), row.threadId);
+  const ask = props.ask ?? null;
+  const said = ask ?? (session ? phoneSentence(session.lineParts) : null);
+  const subtitle = line === null ? said : line;
+  const startedBy = props.origin ? phoneSentence(props.origin) : null;
 
   const content = (
     <Pressable
@@ -96,7 +107,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
       accessibilityHint="Opens this task"
       accessibilityLabel={`${taskRowLabel(row)}${row.unread && needsYou ? ", unread" : ""}${
         props.drafted === true ? `, ${draftPenLabel}` : ""
-      }`}
+      }${startedBy ? ` — ${startedBy}` : ""}`}
       accessibilityRole="button"
       accessibilityState={{ selected: props.selected }}
       onAccessibilityAction={(event: AccessibilityActionEvent) => {
@@ -124,8 +135,16 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
               : styles.pressed),
       ]}
     >
-      <TaskMark mark={taskMark(row)} quiet={row.quiet && !props.selected} />
-      {subtitle === null ? (
+      {session === null ? (
+        <TaskMark mark={taskMark(row)} quiet={row.quiet && !props.selected} />
+      ) : (
+        <ExternalAgentMark
+          initial={session.agent.initial}
+          providerId={session.agent.providerId}
+          size={markColumn}
+        />
+      )}
+      {subtitle === null && startedBy === null ? (
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
           numberOfLines={1}
@@ -144,14 +163,20 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
           >
             {row.title}
           </AppText>
-          {line === null ? (
+          {startedBy ? (
+            <AppText numberOfLines={1} role="caption" tone="muted">
+              {startedBy}
+            </AppText>
+          ) : null}
+          {subtitle === null ? null : line === null ? (
             <AppText
               maxFontSizeMultiplier={controlFontScaleLimit}
               numberOfLines={1}
               role="caption"
-              style={styles.ask}
+              style={ask === null ? undefined : styles.ask}
+              tone={ask === null ? "muted" : "default"}
             >
-              {props.ask}
+              {said}
             </AppText>
           ) : (
             <RowSubtitle line={line} subtitle={null} />
@@ -213,7 +238,9 @@ export function TaskRowState(
       )
     ) : row.tone === "failed" ? (
       <AppText role="caption" tone="danger">
-        Couldn't finish
+        {row.failureCode === runTerminationUnprovenCode
+          ? "Couldn’t confirm it stopped"
+          : "Couldn't finish"}
       </AppText>
     ) : row.tone === "waiting" ? (
       <AppText role="caption" tone="muted">
@@ -287,6 +314,8 @@ function Time(props: { readonly text: string }): ReactNode {
 function sameTaskRowProps(left: TaskRowProps, right: TaskRowProps): boolean {
   return (
     left.drafted === right.drafted &&
+    left.ask === right.ask &&
+    left.origin === right.origin &&
     left.onOpen === right.onOpen &&
     left.onSetDone === right.onSetDone &&
     left.selected === right.selected &&
@@ -372,7 +401,9 @@ export function setTaskDone(
   const review = reviewHostAction(hostClient, { kind: "task-done", threadId, done });
   const thread = heldThread(hostClient.getSnapshot(), threadId);
   const confirm = () => {
-    const next = advance ? taskAfter(taskList(hostClient.getSnapshot()), threadId) : null;
+    const next = advance
+      ? taskAfter(taskList(hostClient.getSnapshot(), { personTasksOnly: true }), threadId)
+      : null;
     void runTaskDone(hostClient, threadId, done, review).then((outcome) => {
       if (outcome.kind !== "confirmed" || !outcome.value) return;
       AccessibilityInfo.announceForAccessibility(done ? "Marked Done" : "Reopened");

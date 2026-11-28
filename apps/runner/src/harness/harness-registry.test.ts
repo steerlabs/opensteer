@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { claudeInstallGuidance } from "@opensteer/harness-claude";
 import { createHarnessRegistry } from "./harness-registry.js";
 
 const harnessExecutables = harnessKindRecord((kind) => `/opt/fake/${kind}`);
@@ -62,6 +63,47 @@ describe("Runner harness registry", () => {
       retryable: true,
     });
     await harnesses.close();
+  });
+
+  it("offers the engines a computer ships and says how to install the rest", () => {
+    vi.stubEnv("PATH", "/nonexistent");
+    const harnesses = createHarnessRegistry(harnessExecutables, harnessRuntime);
+    const finds = "Opensteer finds it within a minute; if it doesn't, restart Opensteer.";
+    expect(
+      Object.fromEntries(harnesses.listDrivers().map(({ kind, readiness }) => [kind, readiness])),
+    ).toEqual({
+      antigravity: expect.objectContaining({ status: "runtime-check" }),
+      claude: { reason: claudeInstallGuidance, status: "unavailable" },
+      codex: expect.objectContaining({ status: "runtime-check" }),
+      cursor: {
+        reason: `Cursor's CLI is not installed on this computer. Install it from https://cursor.com/install. ${finds}`,
+        status: "unavailable",
+      },
+      grok: {
+        reason: `Grok's CLI is not installed on this computer. Install it from https://x.ai/cli. ${finds}`,
+        status: "unavailable",
+      },
+      muse: {
+        reason: `Muse Code's CLI is not installed on this computer. Install it from https://dev.meta.ai/docs/muse-code. ${finds}`,
+        status: "unavailable",
+      },
+      opencode: expect.objectContaining({ status: "runtime-check" }),
+      pi: expect.objectContaining({ status: "runtime-check" }),
+    });
+    // Without the person's own Codex, only an Opensteer-managed account is on offer.
+    expect(
+      harnesses
+        .driverSources(HarnessIdSchema.parse("codex"))
+        ?.flatMap(({ stateKinds }) => stateKinds),
+    ).not.toContain("ambient");
+  });
+
+  it("offers a Claude Code found on PATH", () => {
+    const harnesses = createHarnessRegistry(harnessExecutables, harnessRuntime);
+    expect(harnesses.canRunDriver(HarnessIdSchema.parse("claude"))).toBe(true);
+    expect(
+      harnesses.driverSources(HarnessIdSchema.parse("claude"))?.map(({ sourceId }) => sourceId),
+    ).toContain("anthropic");
   });
 
   it("declares the access modes every catalog engine can enforce", () => {
@@ -145,4 +187,69 @@ describe("Runner harness registry", () => {
       }),
     ).resolves.toMatchObject({ status: "available" });
   });
+});
+
+/**
+ * Several copies of an engine the person installed: the Runner reads each
+ * one's version. Codex, which Opensteer also ships, runs Opensteer's own copy
+ * when every copy here is too old; Claude Code, which it does not ship, keeps
+ * the person's and lets its own check say what to update.
+ */
+describe("Runner harness registry with several copies of an installed engine", () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "opensteer-engine-copies-"));
+  });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  async function copies(command: string, outputs: readonly string[]): Promise<void> {
+    const directories = outputs.map((_, index) => join(root, `bin-${index}`));
+    for (const [index, output] of outputs.entries()) {
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(directories[index]!, { recursive: true });
+      await writeFile(join(directories[index]!, command), `#!/bin/sh\necho '${output}'\n`, {
+        mode: 0o755,
+      });
+    }
+    vi.stubEnv("PATH", directories.join(":"));
+  }
+
+  it.skipIf(process.platform === "win32")(
+    "says when Opensteer's own Codex runs because every Codex here is too old",
+    async () => {
+      await copies("codex", ["codex-cli 0.146.1", "codex-cli 0.150.0"]);
+      const harnesses = createHarnessRegistry(harnessExecutables, harnessRuntime);
+      await expect(harnesses.installationNotice(HarnessIdSchema.parse("codex"))).resolves.toBe(
+        "Using Opensteer’s own Codex 0.162.0: the one on this computer (0.150.0) is too old.",
+      );
+      await harnesses.close();
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "says nothing when a newer Codex here is supported",
+    async () => {
+      await copies("codex", ["codex-cli 0.146.1", "codex-cli 0.161.0"]);
+      const harnesses = createHarnessRegistry(harnessExecutables, harnessRuntime);
+      await expect(
+        harnesses.installationNotice(HarnessIdSchema.parse("codex")),
+      ).resolves.toBeUndefined();
+      await harnesses.close();
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps the person's Claude Code, which Opensteer does not ship",
+    async () => {
+      await copies("claude", ["2.1.100 (Claude Code)", "2.1.200 (Claude Code)"]);
+      const harnesses = createHarnessRegistry(harnessExecutables, harnessRuntime);
+      await expect(
+        harnesses.installationNotice(HarnessIdSchema.parse("claude")),
+      ).resolves.toBeUndefined();
+      await harnesses.close();
+    },
+  );
 });

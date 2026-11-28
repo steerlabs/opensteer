@@ -18,11 +18,7 @@ import {
   type RunId,
   type ThreadId,
 } from "@opensteer/core";
-import {
-  HarnessRegistry,
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessDriver,
-} from "@opensteer/harness";
+import { HarnessRegistry, type HarnessDriver } from "@opensteer/harness";
 import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
@@ -37,6 +33,8 @@ import {
   RunnerChallengeIdSchema,
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
+  agentHomeFilesCapability,
+  triggerStopGenerationCapability,
   runnerEnvironmentIds,
   RunnerToHostMessageSchema,
   type RunnerCommand,
@@ -777,7 +775,6 @@ describe("runnerWebSocketUrl", () => {
       bootId,
       deploymentShape: serverDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: new HarnessRegistry(),
       maxConcurrentRuns: 1,
       dataDirectory: "/tmp/opensteer-browser-agents-test",
@@ -971,7 +968,6 @@ describe("runnerWebSocketUrl", () => {
       bootId,
       deploymentShape: serverDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       maxConcurrentRuns: 1,
       dataDirectory: dirname("/tmp/opensteer-runner-connection-test/state"),
@@ -1963,7 +1959,6 @@ describe("runnerWebSocketUrl", () => {
       bootId,
       deploymentShape: serverDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: new HarnessRegistry(),
       maxConcurrentRuns: 1,
       dataDirectory: join(agentHome, ".runner"),
@@ -2107,7 +2102,6 @@ describe("runnerWebSocketUrl", () => {
       bootId,
       deploymentShape: serverDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       maxConcurrentRuns: 1,
       dataDirectory: dirname("/tmp/opensteer-runner-reenroll-test/state"),
@@ -2504,7 +2498,59 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     }
   });
 
-  function engineRecheckRunner(hostUrl: URL, installed: () => boolean) {
+  it("keeps a socket to a strict older Home open without sending home-files reports", async () => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), "runner-legacy-home-")));
+    const host = await fakeAgentsHost(home);
+    const runner = engineRecheckRunner(host.url, () => false, home);
+    const outgoing = vi.spyOn(CausallyOrderedRunnerSink.prototype, "send");
+    const handled = Promise.withResolvers<void>();
+    const handle = AgentsWorkSession.prototype.handle;
+    const incoming = vi
+      .spyOn(AgentsWorkSession.prototype, "handle")
+      .mockImplementation(async function (this: AgentsWorkSession, message) {
+        await handle.call(this, message);
+        if (message.type === "host.home-files.list") handled.resolve();
+      });
+    const abort = new AbortController();
+    const running = runner.connection.run(abort.signal);
+    try {
+      const hello = await Promise.race([host.firstAttach, host.rejected]);
+      expect(hello).toContain(agentHomeFilesCapability);
+      expect(hello).toContain(triggerStopGenerationCapability);
+      const sink = outgoing.mock.contexts.find(
+        (context) => context instanceof CausallyOrderedRunnerSink,
+      );
+      if (!(sink instanceof CausallyOrderedRunnerSink)) throw new Error("Runner did not attach");
+      const imagePath = join(home, `${"a".repeat(64)}.png`);
+      await writeFile(imagePath, "image");
+      await Promise.race([
+        sink.publishOutputImage({ path: imagePath, mediaType: "image/png" }, abort.signal),
+        host.rejected,
+      ]);
+      host.send(1, {
+        limit: 1,
+        offset: 0,
+        pathSegmentsBase64: [],
+        requestId: randomUUID(),
+        type: "host.home-files.list",
+      });
+      await Promise.race([handled.promise, host.rejected]);
+      expect(outgoing.mock.calls.map(([message]) => message.type)).not.toContain(
+        "runner.home-files.result",
+      );
+      expect(runner.errors).toEqual([]);
+    } finally {
+      abort.abort();
+      await running;
+      outgoing.mockRestore();
+      incoming.mockRestore();
+      await runner.runtime.close();
+      await host.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  function engineRecheckRunner(hostUrl: URL, installed: () => boolean, home?: string) {
     const registry = new HarnessRegistry();
     const driver: HarnessDriver = {
       accessModes: ThreadAccessModeSchema.options,
@@ -2553,17 +2599,20 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       bootId,
       deploymentShape: serverDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       maxConcurrentRuns: 1,
-      dataDirectory: "/tmp/opensteer-engine-recheck-test",
-      privateStateDirectory: "/tmp/opensteer-engine-recheck-test/state",
+      dataDirectory: home ?? "/tmp/opensteer-engine-recheck-test",
+      privateStateDirectory: home
+        ? join(home, "state")
+        : "/tmp/opensteer-engine-recheck-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      agentHome: {
-        folder: async ({ path }) => path,
-        prepare: async () => Promise.reject(new Error("not used")),
-      },
+      agentHome: home
+        ? new AgentHomeManager(runnerId)
+        : {
+            folder: async ({ path }) => path,
+            prepare: async () => Promise.reject(new Error("not used")),
+          },
     });
     const pair = generateKeyPairSync("ed25519");
     const identity = {
@@ -2617,7 +2666,19 @@ describe("ReconnectingHostConnection engine rechecks", () => {
  * A Host that welcomes every hello and records, per connection, the engines it
  * advertised, the Runs it attached and how many heartbeats it sent.
  */
-async function fakeAgentsHost(options: { readonly usageWindowProviderIds?: true } = {}) {
+async function fakeAgentsHost(
+  arg?: string | { readonly legacyAgentHome?: string; readonly usageWindowProviderIds?: true },
+) {
+  const legacyAgentHome = typeof arg === "string" ? arg : arg?.legacyAgentHome;
+  const options = typeof arg === "object" && arg !== null ? arg : {};
+  const unsupportedLegacyFrames = new Set([
+    "runner.agent-home.report",
+    "runner.output-image.publish",
+    "runner.home-files.result",
+  ]);
+  const firstAttach = Promise.withResolvers<readonly string[]>();
+  const rejected = Promise.withResolvers<never>();
+  void rejected.promise.catch(() => undefined);
   const server = createServer();
   const webSockets = new WebSocketServer({
     path: "/internal/v1/runners",
@@ -2657,9 +2718,22 @@ async function fakeAgentsHost(options: { readonly usageWindowProviderIds?: true 
         type: "host.challenge",
       }),
     );
+    let capabilities: readonly string[] = [];
     socket.on("message", (raw) => {
-      const message = RunnerToHostMessageSchema.parse(JSON.parse(raw.toString("utf8")));
+      const decoded = RunnerToHostMessageSchema.safeParse(JSON.parse(raw.toString("utf8")));
+      if (!decoded.success) {
+        rejected.reject(decoded.error);
+        socket.close(1002, "Unsupported Runner frame");
+        return;
+      }
+      const message = decoded.data;
+      if (legacyAgentHome && unsupportedLegacyFrames.has(message.type)) {
+        rejected.reject(new Error(`Older Home cannot parse ${message.type}`));
+        socket.close(1002, "Unsupported Runner frame");
+        return;
+      }
       if (message.type === "runner.enroll" || message.type === "runner.authenticate") {
+        capabilities = message.descriptor.capabilities;
         hellos.push(message.descriptor.modules.agents?.harnessDrivers);
         agentsModules.push(message.descriptor.modules.agents);
         const fence = {
@@ -2674,6 +2748,9 @@ async function fakeAgentsHost(options: { readonly usageWindowProviderIds?: true 
           JSON.stringify({
             ...fence,
             allowedModules: ["agents"],
+            ...(legacyAgentHome
+              ? { agentHome: { computerId: fence.runnerId, path: legacyAgentHome } }
+              : {}),
             connectionLeaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
             environmentIds: runnerEnvironmentIds(message.descriptor),
             heartbeatIntervalMs: 1_000,
@@ -2683,6 +2760,7 @@ async function fakeAgentsHost(options: { readonly usageWindowProviderIds?: true 
         );
       } else if (message.type === "runner.executions.attach") {
         attaches.push(message.executions);
+        firstAttach.resolve(capabilities);
       } else if (message.type === "runner.heartbeat") {
         heartbeats.set(generation, (heartbeats.get(generation) ?? 0) + 1);
       } else if (message.type === "runner.harness-catalog") {
@@ -2692,6 +2770,8 @@ async function fakeAgentsHost(options: { readonly usageWindowProviderIds?: true 
     });
   });
   return {
+    firstAttach: firstAttach.promise,
+    rejected: rejected.promise,
     agentsModules,
     catalogs,
     attaches,

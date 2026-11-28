@@ -1,3 +1,4 @@
+import { homesChooserTitle } from "@opensteer/client/computers";
 import { DeploymentIdSchema } from "@opensteer/core";
 import { useState } from "react";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
@@ -40,7 +41,7 @@ export function DeviceRemovedScreen({
       description={
         unconfirmed
           ? (detail ?? `Signed out here. Removal from ${name} is unconfirmed.`)
-          : "Your agent can no longer use it. Your files stay on this Mac."
+          : "Your own agents can no longer use it. Your files stay on this Mac."
       }
       live
       title={`This Mac was removed from ${name}`}
@@ -174,7 +175,7 @@ export function DeviceSignInScreen({
         </button>
       ) : null}
       <button className="btn btn--ghost" type="button" onClick={onChoose}>
-        Choose an Opensteer
+        {homesChooserTitle}
       </button>
     </OnboardingCard>
   );

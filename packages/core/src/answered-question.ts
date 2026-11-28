@@ -10,6 +10,7 @@ export const AnsweredQuestionSchema = z.object({
   /** Dismissed is the person's no to the whole question: it carries no answers. */
   outcome: z.enum(["answered", "dismissed"]),
   detail: z.string().max(requestTextMaxLength).optional(),
+  detailFormat: z.enum(["plain"]).optional(),
   /** One per question, in the order asked: chosen labels, or the words typed instead. */
   answers: z
     .array(
@@ -134,8 +135,8 @@ export function answeredQuestion(
     hasSecretRequestFields(request)
   )
     return null;
-  const { detail, fields } = request.presentation;
-  const asked = detail ? { detail } : {};
+  const { detail, detailFormat, fields } = request.presentation;
+  const asked = { ...(detail ? { detail } : {}), ...(detailFormat ? { detailFormat } : {}) };
   // A dismissal keeps what was asked, with no answer to any of it.
   if (request.status === "declined")
     return {
@@ -190,7 +191,12 @@ export function answeredQuestionWithin(
       break;
     }
   }
-  const rest: AnsweredQuestion = { outcome: question.outcome, answers, truncated: true };
+  const rest: AnsweredQuestion = {
+    outcome: question.outcome,
+    answers,
+    truncated: true,
+    ...(question.detailFormat ? { detailFormat: question.detailFormat } : {}),
+  };
   if (question.detail === undefined) return rest;
   let detail = utf8Prefix(question.detail, Math.max(0, maxBytes - bytes(rest)));
   while (detail && bytes({ ...rest, detail }) > maxBytes)

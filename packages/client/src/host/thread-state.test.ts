@@ -23,3 +23,97 @@ it("retains return hints across stale pages and clears them when the next scoped
   projection.reconcile({ ...thread, returnHint: null }, SequenceSchema.parse("3"));
   expect(projection.reconcile(thread, SequenceSchema.parse("2")).returnHint).toBeNull();
 });
+
+it("keeps a newer session end when an older task detail arrives", () => {
+  const projection = new ThreadStateProjection();
+  const thread = {
+    id: createId("thread"),
+    status: "running",
+    pendingRequests: 0,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  } as unknown as ThreadSummary;
+  const sessionId = createId("agentSession");
+  const externalWork = {
+    sessionId,
+    status: "active",
+    endReason: null,
+    connection: { id: "mcn_fixture", label: "Fixture", clientName: "Fixture" },
+  } as const;
+  const active = { ...thread, agentSessionId: sessionId, externalWork };
+  const ended = { ...externalWork, status: "ended", endReason: "stopped" } as const;
+  projection.reconcile(active, SequenceSchema.parse("1"));
+  projection.reconcile(
+    { ...thread, status: "idle", agentSessionId: null, externalWork: ended },
+    SequenceSchema.parse("2"),
+    undefined,
+    {},
+  );
+  expect(projection.view(active)).toMatchObject({ agentSessionId: null, externalWork: ended });
+  expect(projection.reconcile(active, SequenceSchema.parse("1"))).toMatchObject({
+    agentSessionId: null,
+    externalWork: ended,
+  });
+});
+
+it("fills in fields omitted by the command response from the same revision's socket change", () => {
+  const projection = new ThreadStateProjection();
+  const thread = {
+    id: createId("thread"),
+    status: "idle",
+    doneAt: null,
+    pendingRequests: 0,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  } as unknown as ThreadSummary;
+  const sessionId = createId("agentSession");
+  const externalWork = {
+    sessionId,
+    status: "active",
+    endReason: null,
+    connection: { id: "mcn_fixture", label: "Fixture", clientName: "Fixture" },
+  } as const;
+  const hint = {
+    eligible: true,
+    eligibleAt: 123,
+    sourceRunId: createId("run"),
+    sessionRevision: "session:1:2",
+  };
+  projection.reconcile(
+    {
+      ...thread,
+      agentSessionId: sessionId,
+      externalWork,
+      returnHint: hint,
+      retry: { attempt: 1, message: "Retrying", status: "retrying" },
+      runQueued: true,
+    },
+    SequenceSchema.parse("1"),
+  );
+  const done = { ...thread, doneAt: "2026-01-02T00:00:00.000Z", returnHint: null };
+  const sequence = SequenceSchema.parse("2");
+  projection.reconcile(done, sequence);
+  const ended = { ...externalWork, status: "ended", endReason: "done" } as const;
+  const full = {
+    ...done,
+    agentSessionId: null,
+    externalWork: ended,
+    returnHint: hint,
+    retry: null,
+    endedOrigin: "agent",
+    runQueued: false,
+    originConnectionId: externalWork.connection.id,
+    revision: sequence,
+  } as const;
+  expect(projection.reconcile(full, sequence)).toMatchObject({
+    doneAt: done.doneAt,
+    agentSessionId: null,
+    externalWork: ended,
+    returnHint: null,
+    retry: null,
+    endedOrigin: "agent",
+    runQueued: false,
+  });
+  expect(projection.reconcile(done, sequence)).toMatchObject({
+    ...full,
+    returnHint: null,
+  });
+});

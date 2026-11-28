@@ -1,5 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { OpensteerError } from "@opensteer/core";
+import type { AgentHomeFiles } from "../threads/agent-home-files.js";
 import type { PluginInput } from "./engine-protocol.js";
 
 export async function pluginSourceFiles(
@@ -25,18 +27,14 @@ export async function pluginSourceFiles(
   return { kind: "files", files };
 }
 
-/** Writes a new draft through the same contained, no-follow helper used to read Agent home. */
+/** Exports a plugin draft into Agent home through the hosting Runner's no-follow helper. */
 export async function exportPluginSource(
-  root: string,
+  homeFiles: Pick<AgentHomeFiles, "writeDirectory">,
   directory: string,
   files: Extract<PluginInput<"install">, { kind: "files" }>["files"],
-  helperPath: string,
   authorize: () => Promise<void>,
   callerSignal?: AbortSignal,
 ) {
-  const { NativeFsHelper, NativeFsHelperError } =
-    await import("@opensteer/shared/files/native-fs-helper");
-  const { OpensteerError } = await import("@opensteer/core");
   const parts = (path: string) => {
     const segments = path.split("/");
     if (segments.some((s) => !s || s === "." || s === ".." || s.includes("\\") || s.includes("\0")))
@@ -48,7 +46,7 @@ export async function exportPluginSource(
   };
   parts(directory);
   const entries = files.map((file) => {
-    const segments = parts(file.path);
+    parts(file.path);
     if (!("content" in file))
       throw new OpensteerError({
         code: "bad_request",
@@ -61,7 +59,7 @@ export async function exportPluginSource(
         code: "bad_request",
         message: "Plugin source has invalid binary content.",
       });
-    return { segments, bytes };
+    return { path: file.path, bytes };
   });
   if (
     files.length > 10000 ||
@@ -71,36 +69,21 @@ export async function exportPluginSource(
       code: "bad_request",
       message: "Plugin source exceeds the 24 MiB export limit.",
     });
-  const helper = new NativeFsHelper({ binary: helperPath, rootPolicy: "managed-local" });
   const timeout = AbortSignal.timeout(60000);
   const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
-  const expectedRootIdentity = await helper.directoryIdentity({ root, path: "." }, signal);
   await authorize();
   signal.throwIfAborted();
   try {
-    await helper.createDirectory({ root, path: directory, expectedRootIdentity }, signal);
-    const made = new Set([directory]);
-    for (const { segments, bytes } of entries) {
-      let parent = directory;
-      for (const segment of segments.slice(0, -1)) {
-        parent += "/" + segment;
-        if (!made.has(parent)) {
-          await helper.createDirectory({ root, path: parent, expectedRootIdentity }, signal);
-          made.add(parent);
-        }
-      }
-      await helper.writeBinary(
-        {
-          root,
-          path: parent + "/" + segments.at(-1)!,
-          contentBase64: bytes.toString("base64"),
-          expectedRootIdentity,
-        },
-        signal,
-      );
-    }
+    await homeFiles.writeDirectory(
+      { directory, files: entries, maxBytes: 24 * 1024 * 1024 },
+      signal,
+    );
   } catch (error) {
-    if (error instanceof NativeFsHelperError)
+    if (
+      error instanceof OpensteerError &&
+      error.code === "conflict" &&
+      error.reason !== "unsupported-runner"
+    )
       throw new OpensteerError({
         code: "conflict",
         message:

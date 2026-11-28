@@ -23,7 +23,15 @@ import { type Readable, type Writable } from "node:stream";
 import WebSocket, { type RawData } from "ws";
 import { z } from "zod";
 import type { RunnerLogger } from "../host/host-connection.js";
+import {
+  executionScopeVariable,
+  type ExecutionContainment,
+} from "../runtime/execution-containment.js";
 import { shellSentence, shellSocketCloseWaitMs } from "./shell-transport.js";
+
+/** Every shell this module hosts is an agent Run's: its authority names the Run. */
+export const shellAgentsStoppedSentence =
+  "Agents are stopped on this computer by its person. Shells open again when they resume them.";
 
 const maximumControlFrameBytes = 1024 * 1024;
 const maximumLifecycleLineBytes = 8 * 1024;
@@ -74,6 +82,8 @@ type ShellOutboundReport =
     };
 
 export interface ShellModuleHandlerOptions {
+  readonly stopped?: boolean;
+  readonly containment?: ExecutionContainment;
   readonly cleanupWaitMs?: number;
   readonly helperBinary: string;
   readonly hostKeyPath: string;
@@ -97,6 +107,10 @@ export class ShellModuleHandler {
 
   constructor(options: ShellModuleHandlerOptions) {
     this.#options = options;
+  }
+
+  get busy(): boolean {
+    return this.#sessions.size > 0;
   }
 
   get maxPayloadBytes(): number {
@@ -147,6 +161,14 @@ export class ShellModuleHandler {
       });
       return;
     }
+    if (this.#options.stopped) {
+      void this.#send({
+        error: { code: "computer_stopped", message: shellAgentsStoppedSentence },
+        sessionId: message.sessionId,
+        type: "runner.shell.session.rejected",
+      });
+      return;
+    }
     const session = new ShellTargetSession({
       cleanupWaitMs: this.#options.cleanupWaitMs ?? shellHelperCleanupWaitMs,
       helperBinary: this.#options.helperBinary,
@@ -155,6 +177,7 @@ export class ShellModuleHandler {
         ? {}
         : { idleTimeoutMs: this.#options.idleTimeoutMs }),
       logger: this.#options.logger,
+      ...(this.#options.containment ? { containment: this.#options.containment } : {}),
       message,
       onFinished: () => this.#sessions.delete(message.sessionId),
       ...(this.#options.resolveDataTransport
@@ -176,6 +199,7 @@ export class ShellModuleHandler {
 }
 
 interface ShellTargetSessionOptions {
+  readonly containment?: ExecutionContainment;
   readonly cleanupWaitMs: number;
   readonly helperBinary: string;
   readonly hostKeyPath: string;
@@ -218,7 +242,10 @@ class ShellTargetSession {
   async #start(): Promise<void> {
     try {
       this.#setupAbort.signal.throwIfAborted();
-      const child = spawnShellHelper(this.#options.helperBinary);
+      const child = spawnShellHelper(
+        this.#options.helperBinary,
+        this.#options.containment?.scope(this.#options.message.sessionId),
+      );
       this.#child = child;
       child.stdin.on("error", (error) => {
         if (!this.#closing) {
@@ -530,6 +557,10 @@ class ShellTargetSession {
     const child = this.#child;
     const socket = this.#dataSocket;
     for (const pump of this.#pumps.splice(0)) pump.stop();
+    if (child)
+      await this.#options.containment
+        ?.note(this.#options.message.sessionId, [...this.#processGroups])
+        .catch(() => undefined);
     stopWebSocket(socket, reason);
     const forceSocketClosed = socket
       ? setTimeout(() => {
@@ -594,9 +625,12 @@ class ShellTargetSession {
   }
 }
 
-function spawnShellHelper(binary: string): ShellChild {
+function spawnShellHelper(binary: string, scope?: string): ShellChild {
   const child = spawn(binary, ["shell-serve"], {
-    env: shellHelperEnvironment(process.env),
+    env: {
+      ...shellHelperEnvironment(process.env),
+      ...(scope ? { [executionScopeVariable]: scope } : {}),
+    },
     stdio: ["pipe", "pipe", "pipe", "pipe"],
   });
   const stdin = child.stdin;
@@ -619,10 +653,25 @@ async function lifecycleWithin(promise: Promise<void>, timeoutMs: number): Promi
   );
 }
 
+/**
+ * The certificate switch every Runner is started with
+ * (`deploy/container/opensteer-node-trust.mjs`, `nodeTrustVariable`), named
+ * here because the Runner's image builds without that directory.
+ */
+export const runnerTrustVariable = "NODE_USE_SYSTEM_CA";
+
+/**
+ * The person's own environment, without what Opensteer set for itself: its
+ * configuration and the Runner's certificate switch, which is the Runner's,
+ * not their shells'.
+ */
 export function shellHelperEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const output: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(environment)) {
-    if (value !== undefined && !name.startsWith("OPENSTEER_")) output[name] = value;
+    const upper = name.toUpperCase();
+    if (value === undefined || upper.startsWith("OPENSTEER_") || upper === runnerTrustVariable)
+      continue;
+    output[name] = value;
   }
   return output;
 }

@@ -78,7 +78,7 @@ const clientSurfaces = {
 /**
  * Which arm of the one session-exchange contract this attachment can present.
  * `null` means the attachment does not exchange a credential at all: a
- * team Host signs the person in itself, and a Personal Host running on
+ * Home at its own address signs the person in itself, and a Personal Host running on
  * this machine already owns its owner session. Pure and total — the access
  * arm was decided by the resolver, never again here.
  */
@@ -341,8 +341,8 @@ export class HostSessionExchange {
         credentials: "include",
         headers: {
           accept: "application/json",
-          // Only Personal Hosts exchange sessions; team Hosts sign people in themselves.
-          ...apiVersionHeaders("personal"),
+          // Only a Home reached by its route exchanges sessions; one at its own address signs people in itself.
+          ...apiVersionHeaders(),
           origin,
           ...(input.body === undefined ? {} : { "content-type": "application/json" }),
         },
@@ -372,7 +372,7 @@ function accountFailure(error: unknown): HostSessionExchangeError {
     if (error.status === 401) {
       return new HostSessionExchangeError(
         "account-required",
-        "Sign in to your Opensteer Account again to reconnect this Opensteer.",
+        "Sign in to your Opensteer account again to reconnect this Opensteer.",
       );
     }
     if (error.status === 403 || error.status === 404) {
@@ -381,7 +381,7 @@ function accountFailure(error: unknown): HostSessionExchangeError {
   }
   return new HostSessionExchangeError(
     "unavailable",
-    "The Opensteer Account could not authorize this Opensteer right now.",
+    "The Opensteer account could not authorize this Opensteer right now.",
   );
 }
 

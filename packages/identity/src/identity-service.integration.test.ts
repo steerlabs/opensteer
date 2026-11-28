@@ -11,15 +11,11 @@ import {
   type NativeOAuthClient,
 } from "@opensteer/core";
 import { createDatabase, migrateToLatest } from "@opensteer/database";
-import { sql } from "kysely";
+import { sql, type Transaction } from "kysely";
+import type { DatabaseSchema } from "@opensteer/database";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { IdentityService } from "./identity-service.js";
-import { TeamIdentityAdmission } from "./team-admission.js";
-import { TeamAccessStore } from "@opensteer/database/team-access";
-import { TeamInvitesStore } from "@opensteer/database/team-invites";
-import { HostKeyFingerprintSchema } from "@opensteer/core";
 import { issueLocalAdministratorPasswordRecovery } from "./operator-password-reset.js";
-import type { VerifiedAccountAdoptionGrant } from "./types.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -29,6 +25,35 @@ const database = createDatabase({
   maxConnections: 4,
 });
 const hostKeyFingerprint = `sha256:${"A".repeat(43)}`;
+const accountIssuer = "https://accounts.example.test";
+
+/** What the Home's claim route adds to a managed claim: the Account link, committed with its owner. */
+function accountLinked(subject: string, issuer = accountIssuer, cloudComputerId = "cc_1") {
+  return {
+    cloudComputerId,
+    issuer,
+    subject,
+    commit: async (transaction: Transaction<DatabaseSchema>, existing: boolean) => {
+      if (existing) return;
+      const now = new Date();
+      await transaction
+        .insertInto("personalRemoteAccountLink")
+        .values({
+          challengeId: cloudComputerId,
+          grantId: "grant",
+          hostCredential: "credential",
+          issuer,
+          linkGeneration: "1",
+          linkedAt: now,
+          singletonKey: "opensteer-account",
+          state: "active",
+          subject,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+    },
+  };
+}
 
 integration("IdentityService", () => {
   beforeAll(async () => {
@@ -91,7 +116,7 @@ integration("IdentityService", () => {
 
   it("creates a token-free password session with idle and absolute policy", async () => {
     const identity = new IdentityService(database, {
-      deployment: { kind: "team", name: null },
+      deployment: { kind: "personal", name: null },
       localPasswordEnabled: true,
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:4310"),
@@ -178,7 +203,7 @@ integration("IdentityService", () => {
   it("lets the local operator issue one-use browser recovery and revokes every session", async () => {
     const endedSessions: string[] = [];
     const identity = new IdentityService(database, {
-      deployment: { kind: "team", name: null },
+      deployment: { kind: "personal", name: null },
       localPasswordEnabled: true,
       onSessionEnded: (sessionId) => endedSessions.push(sessionId),
       oidcProviders: [],
@@ -263,7 +288,7 @@ integration("IdentityService", () => {
 
   it("requires a browser-bound admission when signup is invite-only", async () => {
     const identity = new IdentityService(database, {
-      deployment: { kind: "team", name: null },
+      deployment: { kind: "personal", name: null },
       localPasswordEnabled: true,
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:4310"),
@@ -280,11 +305,11 @@ integration("IdentityService", () => {
         },
         new Headers({ origin: "http://127.0.0.1:4310" }),
       ),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({ code: "not_found" });
     expect(await database.selectFrom("users").select("id").execute()).toEqual([]);
   });
 
-  it.each(["personal", "team"] as const)(
+  it.each(["personal"] as const)(
     "completes %s OIDC discovery, PKCE and sign-in with the appropriate provider-token custody",
     async (kind) => {
       const accessToken = "fixture-access-token-that-must-not-be-stored-in-plaintext";
@@ -393,72 +418,12 @@ integration("IdentityService", () => {
         expect(configuredIssuer.status).toBe(200);
         expect(new URL(configuredIssuer.data.redirectUrl).origin).toBe(issuerOrigin);
 
-        const logicalProviderId = kind === "team" ? "opensteer-account" : "enterprise";
+        const logicalProviderId = "enterprise";
         const configuredProviderId = `oidc.${logicalProviderId}.${createHash("sha256")
           .update(issuerOrigin)
           .digest("base64url")
           .slice(0, 22)}`;
-        let team: TeamIdentityAdmission | undefined;
-        let ownerId: ReturnType<typeof createId<"user">> | undefined;
-        let invite: Awaited<ReturnType<TeamInvitesStore["create"]>> | undefined;
-        let laterInvite: Awaited<ReturnType<TeamInvitesStore["create"]>> | undefined;
-        if (kind === "team") {
-          const deployment = await ensureDeployment({
-            canonicalOrigin: publicOrigin,
-            deploymentId: createId("deployment"),
-            hostInstanceId: createId("hostInstance"),
-            deploymentShape: { kind: "team" },
-          });
-          const access = new TeamAccessStore(database);
-          await access.initialize();
-          const invites = new TeamInvitesStore(access, publicOrigin);
-          team = new TeamIdentityAdmission({
-            access,
-            invites,
-            authority: {
-              canonicalOrigin: publicOrigin,
-              deploymentId: deployment.id,
-              hostInstanceId: deployment.hostInstanceId,
-              hostKeyFingerprint: HostKeyFingerprintSchema.parse(hostKeyFingerprint),
-            },
-            grantVerifier: {
-              async verify() {
-                throw new Error("No adoption grant in OIDC fixture");
-              },
-            },
-            async installAccountBundle() {
-              throw new Error("No bundle in OIDC fixture");
-            },
-          });
-          ownerId = await createUser("Team Owner");
-          await database
-            .insertInto("teamMembers")
-            .values({
-              userId: ownerId,
-              handle: "owner",
-              role: "owner",
-              state: "active",
-              joinedAt: new Date(),
-              changedAt: new Date(),
-              changedBy: null,
-            })
-            .execute();
-          await database
-            .insertInto("accountDirectoryProvider")
-            .values({
-              singletonKey: "opensteer-account",
-              providerId: configuredProviderId,
-              issuer: issuerOrigin,
-            })
-            .execute();
-          invite = await invites.create({ kind: "human", userId: ownerId }, createId("teamInvite"));
-          laterInvite = await invites.create(
-            { kind: "human", userId: ownerId },
-            createId("teamInvite"),
-          );
-        }
         const identity = identityService({
-          ...(team ? { team } : {}),
           localPasswordEnabled: false,
           oidcProviders: [
             {
@@ -530,51 +495,7 @@ integration("IdentityService", () => {
         expect(nativeLoginUrl.pathname).toBe("/");
         const nativeOAuthQuery = nativeLoginUrl.search.slice(1);
         expect(nativeOAuthQuery).toContain("sig=");
-        const proveInvite = async (url: URL) =>
-          cookieHeader(
-            (
-              await identity.exchangeTeamInvitation(
-                url.pathname.split("/").pop()!,
-                url.hash.slice(1),
-                new Headers({ origin: publicOrigin }),
-              )
-            ).headers,
-          );
-        /** The native sign-in's trip through Account, with the cookies this browser holds. */
-        const signInThroughAccount = async (admission: string) => {
-          const begun = await identity.beginOidcSignIn({
-            headers: new Headers({ origin: publicOrigin }),
-            oauthQuery: nativeOAuthQuery,
-            providerId: logicalProviderId,
-            returnPath: "/",
-          });
-          const authorization = new URL(begun.data.redirectUrl);
-          expectedCodeChallenge = authorization.searchParams.get("code_challenge");
-          return identity.handleOidcCallback(
-            new Request(
-              `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(authorization.searchParams.get("state") ?? "")}`,
-              {
-                headers: {
-                  accept: "text/html",
-                  cookie: [admission, cookieHeader(begun.headers)].filter(Boolean).join("; "),
-                  "sec-fetch-mode": "navigate",
-                },
-              },
-            ),
-          );
-        };
-        const sessionCount = async () =>
-          (await database.selectFrom("authSessions").select("id").execute()).length;
-        if (team) {
-          // Account knows the person, the team doesn't: no invite proven here, no way in.
-          const sessions = await sessionCount();
-          expect((await signInThroughAccount("")).status).toBe(403);
-          expect(await database.selectFrom("teamMembers").select("userId").execute()).toEqual([
-            { userId: ownerId },
-          ]);
-          expect(await sessionCount()).toBe(sessions);
-        }
-        const admissionCookie = invite ? await proveInvite(new URL(invite.url)) : "";
+        const admissionCookie = "";
         const started = await identity.beginOidcSignIn({
           headers: new Headers({ origin: publicOrigin, "user-agent": "OIDC integration test" }),
           oauthQuery: nativeOAuthQuery,
@@ -640,51 +561,8 @@ integration("IdentityService", () => {
           providerId: configuredProviderId,
           refreshToken: null,
         });
-        if (kind === "personal") {
-          expect(account.accessToken).toMatch(/^(?:\$ba\$|[a-f0-9]{96,})/u);
-          expect(account.accessToken).not.toContain(accessToken);
-        } else {
-          expect(account.accessToken).toBeNull();
-          const stored = await database
-            .selectFrom("authAccounts")
-            .select(["idToken", "password", "refreshToken"])
-            .where("providerId", "=", configuredProviderId)
-            .executeTakeFirstOrThrow();
-          expect(stored).toEqual({ idToken: null, password: null, refreshToken: null });
-          expect(
-            await database
-              .selectFrom("teamMembers")
-              .select(["role", "state"])
-              .where("userId", "=", authenticated!.user.id)
-              .executeTakeFirst(),
-          ).toEqual({ role: "member", state: "active" });
-          expect(
-            await database
-              .selectFrom("authSessions")
-              .select("memberGeneration")
-              .where("id", "=", authenticated!.id)
-              .executeTakeFirst(),
-          ).toEqual({ memberGeneration: "1" });
-
-          // Removed, they can't come back with an invite made before the removal.
-          await database
-            .updateTable("teamMembers")
-            .set({ state: "removed", changedAt: new Date(), changedBy: ownerId })
-            .where("userId", "=", authenticated!.user.id)
-            .execute();
-          const sessions = await sessionCount();
-          await expect(
-            signInThroughAccount(await proveInvite(new URL(laterInvite!.url))),
-          ).rejects.toMatchObject({ reason: "invite-invalid" });
-          expect(
-            await database
-              .selectFrom("teamMembers")
-              .select("state")
-              .where("userId", "=", authenticated!.user.id)
-              .executeTakeFirst(),
-          ).toEqual({ state: "removed" });
-          expect(await sessionCount()).toBe(sessions);
-        }
+        expect(account.accessToken).toMatch(/^(?:\$ba\$|[a-f0-9]{96,})/u);
+        expect(account.accessToken).not.toContain(accessToken);
       } finally {
         await new Promise<void>((resolve, reject) => {
           issuer.close((error) => (error ? reject(error) : resolve()));
@@ -692,6 +570,585 @@ integration("IdentityService", () => {
       }
     },
   );
+
+  it("claims a managed Home once for its Account subject, and never by a setup link", async () => {
+    const setupCode = "managed-home-setup-code-with-plenty-of-entropy";
+    const managed = (overrides: Partial<ConstructorParameters<typeof IdentityService>[1]> = {}) =>
+      identityService({
+        initialOwnerEnrollment: {
+          expiresAt: new Date(Date.now() + 3_600_000),
+          tokenDigest: digestSecret(setupCode),
+        },
+        localPasswordEnabled: false,
+        managedOwner: { providerId: "opensteer-account" },
+        oidcProviders: [accountProvider("https://accounts.example.test")],
+        signupPolicy: "closed",
+        ...overrides,
+      });
+    const identity = managed();
+    await identity.initialize();
+    const owner = {
+      displayName: "Pat Owner",
+      email: "pat@example.test",
+      emailVerified: true,
+    };
+    const claim = (subject: string, claimKey = `cc_1:1:${subject}`, code = setupCode) =>
+      identity.claimManagedOwner({
+        ...accountLinked(subject),
+        claimKey,
+        owner,
+        receipt: { claimKey, subject },
+        setupCode: code,
+      });
+
+    // The password and setup-link doors stay shut on a managed Home.
+    await expect(identity.exchangeInitialOwnerEnrollment(setupCode)).rejects.toMatchObject({
+      reason: "managed-home-setup-link-refused",
+    });
+    await expect(
+      identity.claimInitialOwner(
+        { email: "intruder@example.test", password: "a-password-long-enough" },
+        new Headers({ origin: "http://127.0.0.1:4310" }),
+      ),
+    ).rejects.toMatchObject({ reason: "managed-home-setup-link-refused" });
+    await expect(
+      claim("acct_subject_a", "k", "wrong-setup-code-with-plenty-of-entropy"),
+    ).rejects.toMatchObject({ reason: "managed-home-setup-code-invalid" });
+
+    // Two claims race for the same code: exactly one becomes the owner.
+    const raced = await Promise.allSettled([claim("acct_subject_a"), claim("acct_subject_b")]);
+    const won = raced.filter((result) => result.status === "fulfilled");
+    expect(won).toHaveLength(1);
+    const winner = (won[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof claim>>>).value;
+    expect(winner.replayed).toBe(false);
+    const subject = (winner.receipt as { subject: string }).subject;
+    const loser = subject === "acct_subject_a" ? "acct_subject_b" : "acct_subject_a";
+    expect(raced.find((result) => result.status === "rejected")).toMatchObject({
+      reason: { reason: "managed-home-owned" },
+    });
+    const users = await database.selectFrom("users").select(["id", "email"]).execute();
+    expect(users).toEqual([{ id: expect.any(String), email: "pat@example.test" }]);
+    await expect(
+      database.selectFrom("authAccounts").select(["accountId", "userId"]).execute(),
+    ).resolves.toEqual([{ accountId: subject, userId: users[0]!.id }]);
+
+    // The same claim again answers the first receipt; nothing else gets in.
+    await expect(claim(subject)).resolves.toEqual({ receipt: winner.receipt, replayed: true });
+    await expect(claim(loser)).rejects.toMatchObject({ reason: "managed-home-owned" });
+    // A replacement restored from this Home's backup is claimed again under a new key: the same
+    // Account, Cloud Computer and issuer are confirmed as the owner, and nobody new is created.
+    await expect(claim(subject, "another-claim")).resolves.toEqual({
+      receipt: { claimKey: "another-claim", subject },
+      replayed: false,
+    });
+    await expect(claim(loser, "another-claim")).rejects.toMatchObject({
+      reason: "managed-home-owned",
+    });
+    await expect(
+      identity.claimManagedOwner({
+        ...accountLinked(subject, accountIssuer, "cc_2"),
+        claimKey: "a-different-cloud-computer",
+        owner,
+        receipt: {},
+        setupCode,
+      }),
+    ).rejects.toMatchObject({ reason: "managed-home-owned" });
+    await expect(database.selectFrom("users").select("id").execute()).resolves.toHaveLength(1);
+
+    // A bring-your-own Home has no Account-bound claim.
+    const byo = identityService({
+      initialOwnerEnrollment: {
+        expiresAt: new Date(Date.now() + 3_600_000),
+        tokenDigest: digestSecret(setupCode),
+      },
+    });
+    await expect(
+      byo.claimManagedOwner({
+        ...accountLinked("acct_subject_a"),
+        claimKey: "k",
+        owner,
+        receipt: {},
+        setupCode,
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("refuses a restored managed Home claim from a different Account issuer", async () => {
+    const setupCode = "managed-home-setup-code-with-plenty-of-entropy";
+    const identity = identityService({
+      initialOwnerEnrollment: {
+        expiresAt: new Date(Date.now() + 3_600_000),
+        tokenDigest: digestSecret(setupCode),
+      },
+      localPasswordEnabled: false,
+      managedOwner: { providerId: "opensteer-account" },
+      oidcProviders: [accountProvider(accountIssuer)],
+      signupPolicy: "closed",
+    });
+    await identity.initialize();
+    const subject = "acct_subject";
+    const owner = { displayName: "Pat Owner", email: "pat@example.test", emailVerified: true };
+    await identity.claimManagedOwner({
+      ...accountLinked(subject),
+      claimKey: "cc_1:1:acct_subject",
+      owner,
+      receipt: {},
+      setupCode,
+    });
+    const commit = async () => {
+      throw new Error("A claim from a different issuer must not reach commit");
+    };
+    await expect(
+      identity.claimManagedOwner({
+        ...accountLinked(subject, "https://other-account.example.test"),
+        claimKey: "cc_1:2:acct_subject",
+        owner,
+        receipt: {},
+        setupCode,
+        commit,
+      }),
+    ).rejects.toMatchObject({ reason: "managed-home-owned" });
+  });
+
+  it("refuses an expired managed Home setup code", async () => {
+    const setupCode = "expired-managed-home-setup-code-with-entropy";
+    const identity = identityService({
+      initialOwnerEnrollment: {
+        expiresAt: new Date(Date.now() - 1_000),
+        tokenDigest: digestSecret(setupCode),
+      },
+      localPasswordEnabled: false,
+      managedOwner: { providerId: "opensteer-account" },
+      oidcProviders: [accountProvider("https://accounts.example.test")],
+      signupPolicy: "closed",
+    });
+    await identity.initialize();
+    await expect(
+      identity.claimManagedOwner({
+        ...accountLinked("acct_subject_a"),
+        claimKey: "k",
+        owner: { displayName: "Pat", email: "pat@example.test", emailVerified: true },
+        receipt: {},
+        setupCode,
+      }),
+    ).rejects.toMatchObject({ reason: "managed-home-setup-code-invalid" });
+    expect(await database.selectFrom("users").select("id").execute()).toEqual([]);
+  });
+
+  it("signs a managed Home's owner in with their Account, and nobody else", async () => {
+    let subject = "acct_bound_subject";
+    let expectedCodeChallenge: string | null = null;
+    const issuer = createServer((request, response) => {
+      void (async () => {
+        const origin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/.well-known/openid-configuration") {
+          response.end(
+            JSON.stringify({
+              authorization_endpoint: `${origin}/authorize`,
+              issuer: origin,
+              jwks_uri: `${origin}/jwks`,
+              token_endpoint: `${origin}/token`,
+              userinfo_endpoint: `${origin}/userinfo`,
+            }),
+          );
+          return;
+        }
+        if (request.method === "POST" && request.url === "/token") {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+          const challenge = createHash("sha256")
+            .update(body.get("code_verifier") ?? "")
+            .digest("base64url");
+          if (challenge !== expectedCodeChallenge) {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "invalid_grant" }));
+            return;
+          }
+          response.end(
+            JSON.stringify({
+              access_token: "account-access",
+              expires_in: 600,
+              token_type: "Bearer",
+            }),
+          );
+          return;
+        }
+        if (request.url === "/userinfo") {
+          response.end(
+            JSON.stringify({
+              email: `${subject}@example.test`,
+              email_verified: true,
+              name: "Account Person",
+              sub: subject,
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      })().catch((error: unknown) =>
+        response.destroy(error instanceof Error ? error : new Error("Issuer failed")),
+      );
+    });
+    await new Promise<void>((resolve) => issuer.listen(0, "127.0.0.1", resolve));
+    try {
+      const issuerOrigin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+      const publicOrigin = "http://127.0.0.1:4310";
+      const setupCode = "managed-home-sign-in-setup-code-with-entropy";
+      const identity = identityService({
+        initialOwnerEnrollment: {
+          expiresAt: new Date(Date.now() + 3_600_000),
+          tokenDigest: digestSecret(setupCode),
+        },
+        localPasswordEnabled: false,
+        managedOwner: { providerId: "opensteer-account" },
+        oidcProviders: [{ ...accountProvider(issuerOrigin), allowPrivateNetwork: true }],
+        signupPolicy: "closed",
+      });
+      await identity.initialize();
+      await identity.claimManagedOwner({
+        ...accountLinked("acct_bound_subject", issuerOrigin),
+        claimKey: "k",
+        owner: { displayName: "Pat Owner", email: "pat@example.test", emailVerified: true },
+        receipt: {},
+        setupCode,
+      });
+      const signIn = async () => {
+        const begun = await identity.beginOidcSignIn({
+          headers: new Headers({ origin: publicOrigin }),
+          providerId: "opensteer-account",
+          returnPath: "/",
+        });
+        const authorization = new URL(begun.data.redirectUrl);
+        expectedCodeChallenge = authorization.searchParams.get("code_challenge");
+        const callback = await identity.handleOidcCallback(
+          new Request(
+            `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(authorization.searchParams.get("state") ?? "")}`,
+            {
+              headers: {
+                accept: "text/html",
+                cookie: cookieHeader(begun.headers),
+                "sec-fetch-mode": "navigate",
+              },
+            },
+          ),
+        );
+        const session = callback.headers
+          .getSetCookie()
+          .map((value) => value.split(";", 1)[0])
+          .find((value) => /(?:^|\s)(?:__Host-)?opensteer\.session=.+/u.test(value ?? ""));
+        return session ? identity.authenticate(new Headers({ cookie: session })) : null;
+      };
+
+      // The bound subject is the owner, even under an Account email the Home never saw.
+      await expect(signIn()).resolves.toMatchObject({ user: { email: "pat@example.test" } });
+
+      // Anyone else the Account vouches for is not admitted, and no account is created.
+      subject = "acct_someone_else";
+      await expect(signIn().catch(() => null)).resolves.toBeNull();
+      expect(await database.selectFrom("users").select("email").execute()).toEqual([
+        { email: "pat@example.test" },
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        issuer.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("starts a Home sign-in whose state lapsed again once, and ends every other failure on the Home's own page", async () => {
+    let expectedCodeChallenge: string | null = null;
+    const issuer = createServer((request, response) => {
+      void (async () => {
+        const origin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/.well-known/openid-configuration") {
+          response.end(
+            JSON.stringify({
+              authorization_endpoint: `${origin}/authorize`,
+              issuer: origin,
+              jwks_uri: `${origin}/jwks`,
+              token_endpoint: `${origin}/token`,
+              userinfo_endpoint: `${origin}/userinfo`,
+            }),
+          );
+          return;
+        }
+        if (request.method === "POST" && request.url === "/token") {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+          const challenge = createHash("sha256")
+            .update(body.get("code_verifier") ?? "")
+            .digest("base64url");
+          if (challenge !== expectedCodeChallenge) {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "invalid_grant" }));
+            return;
+          }
+          response.end(
+            JSON.stringify({
+              access_token: "account-access",
+              expires_in: 600,
+              token_type: "Bearer",
+            }),
+          );
+          return;
+        }
+        if (request.url === "/userinfo") {
+          response.end(
+            JSON.stringify({
+              email: "acct_bound_subject@example.test",
+              email_verified: true,
+              name: "Account Person",
+              sub: "acct_bound_subject",
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      })().catch((error: unknown) =>
+        response.destroy(error instanceof Error ? error : new Error("Issuer failed")),
+      );
+    });
+    await new Promise<void>((resolve) => issuer.listen(0, "127.0.0.1", resolve));
+    try {
+      const issuerOrigin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+      const publicOrigin = "http://127.0.0.1:4310";
+      const setupCode = "managed-home-restart-setup-code-with-entropy";
+      const identity = identityService({
+        initialOwnerEnrollment: {
+          expiresAt: new Date(Date.now() + 3_600_000),
+          tokenDigest: digestSecret(setupCode),
+        },
+        localPasswordEnabled: false,
+        managedOwner: { providerId: "opensteer-account" },
+        oidcProviders: [{ ...accountProvider(issuerOrigin), allowPrivateNetwork: true }],
+        signupPolicy: "closed",
+      });
+      await identity.initialize();
+      await identity.claimManagedOwner({
+        ...accountLinked("acct_bound_subject", issuerOrigin),
+        claimKey: "k",
+        owner: { displayName: "Pat Owner", email: "pat@example.test", emailVerified: true },
+        receipt: {},
+        setupCode,
+      });
+      const callback = (query: string, cookie?: string) =>
+        identity.handleOidcCallback(
+          new Request(`${publicOrigin}/v1/auth/oidc/callback?${query}`, {
+            headers: {
+              accept: "text/html",
+              ...(cookie ? { cookie } : {}),
+              "sec-fetch-mode": "navigate",
+            },
+          }),
+        );
+      const errorPage = (response: Response) => {
+        expect(response.status).toBeGreaterThanOrEqual(300);
+        expect(response.status).toBeLessThan(400);
+        const location = new URL(response.headers.get("location") ?? "", publicOrigin);
+        expect(location.origin).toBe(publicOrigin);
+        expect(location.pathname).toBe("/auth/error");
+        return location.searchParams;
+      };
+      const begun = await identity.beginOidcSignIn({
+        headers: new Headers({ origin: publicOrigin }),
+        providerId: "opensteer-account",
+        returnPath: "/",
+      });
+      const first = new URL(begun.data.redirectUrl);
+
+      // The Home's state cookie lapsed while the person signed in at the Account: no cookie
+      // comes back. The Home starts the sign-in again, once, with a fresh state of its own.
+      const lapsed = await callback(
+        `code=fixture-code&state=${encodeURIComponent(first.searchParams.get("state") ?? "")}`,
+      );
+      expect(lapsed.status).toBeGreaterThanOrEqual(300);
+      expect(lapsed.status).toBeLessThan(400);
+      const restarted = new URL(lapsed.headers.get("location") ?? "");
+      expect(restarted.origin).toBe(issuerOrigin);
+      expect(restarted.pathname).toBe("/authorize");
+      expect(restarted.searchParams.get("state")).not.toBe(first.searchParams.get("state"));
+      expectedCodeChallenge = restarted.searchParams.get("code_challenge");
+      const signedIn = await callback(
+        `code=fixture-code&state=${encodeURIComponent(restarted.searchParams.get("state") ?? "")}`,
+        cookieHeader(lapsed.headers),
+      );
+      const session = signedIn.headers
+        .getSetCookie()
+        .map((value) => value.split(";", 1)[0])
+        .find((value) => /(?:^|\s)(?:__Host-)?opensteer\.session=.+/u.test(value ?? ""));
+      await expect(
+        session ? identity.authenticate(new Headers({ cookie: session })) : null,
+      ).resolves.toMatchObject({ user: { email: "pat@example.test" } });
+
+      // The restarted attempt lapses too (this browser keeps no cookie): the Home's own page
+      // says so, and nothing starts again.
+      const again = await identity.beginOidcSignIn({
+        headers: new Headers({ origin: publicOrigin }),
+        providerId: "opensteer-account",
+        returnPath: "/",
+      });
+      const lapsedOnce = await callback(
+        `code=fixture-code&state=${encodeURIComponent(new URL(again.data.redirectUrl).searchParams.get("state") ?? "")}`,
+      );
+      const restartedOnce = new URL(lapsedOnce.headers.get("location") ?? "");
+      const lapsedTwice = await callback(
+        `code=fixture-code&state=${encodeURIComponent(restartedOnce.searchParams.get("state") ?? "")}`,
+      );
+      expect(errorPage(lapsedTwice).get("error")).toBe("state_mismatch");
+
+      // The person declined at the Account: the Home's own page, never its internal path.
+      const declined = await identity.beginOidcSignIn({
+        headers: new Headers({ origin: publicOrigin }),
+        providerId: "opensteer-account",
+        returnPath: "/",
+      });
+      const refused = await callback(
+        `error=access_denied&state=${encodeURIComponent(new URL(declined.data.redirectUrl).searchParams.get("state") ?? "")}`,
+        cookieHeader(declined.headers),
+      );
+      expect(errorPage(refused).get("error")).toBe("access_denied");
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        issuer.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("ends a sign-in by another Opensteer account on the Home's page, saying whose Home it is", async () => {
+    let expectedCodeChallenge: string | null = null;
+    const issuer = createServer((request, response) => {
+      void (async () => {
+        const origin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/.well-known/openid-configuration") {
+          response.end(
+            JSON.stringify({
+              authorization_endpoint: `${origin}/authorize`,
+              issuer: origin,
+              jwks_uri: `${origin}/jwks`,
+              token_endpoint: `${origin}/token`,
+              userinfo_endpoint: `${origin}/userinfo`,
+            }),
+          );
+          return;
+        }
+        if (request.method === "POST" && request.url === "/token") {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+          const challenge = createHash("sha256")
+            .update(body.get("code_verifier") ?? "")
+            .digest("base64url");
+          if (challenge !== expectedCodeChallenge) {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "invalid_grant" }));
+            return;
+          }
+          response.end(
+            JSON.stringify({
+              access_token: "account-access",
+              expires_in: 600,
+              token_type: "Bearer",
+            }),
+          );
+          return;
+        }
+        if (request.url === "/userinfo") {
+          // The browser still holds another Opensteer account's session.
+          response.end(
+            JSON.stringify({
+              email: "someone-else@example.test",
+              email_verified: true,
+              name: "Someone Else",
+              sub: "acct_other_subject",
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      })().catch((error: unknown) =>
+        response.destroy(error instanceof Error ? error : new Error("Issuer failed")),
+      );
+    });
+    await new Promise<void>((resolve) => issuer.listen(0, "127.0.0.1", resolve));
+    try {
+      const issuerOrigin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+      const publicOrigin = "http://127.0.0.1:4310";
+      const setupCode = "managed-home-other-account-setup-code-with-entropy";
+      const identity = identityService({
+        initialOwnerEnrollment: {
+          expiresAt: new Date(Date.now() + 3_600_000),
+          tokenDigest: digestSecret(setupCode),
+        },
+        localPasswordEnabled: false,
+        managedOwner: { providerId: "opensteer-account" },
+        oidcProviders: [{ ...accountProvider(issuerOrigin), allowPrivateNetwork: true }],
+        signupPolicy: "closed",
+      });
+      await identity.initialize();
+      await identity.claimManagedOwner({
+        ...accountLinked("acct_bound_subject", issuerOrigin),
+        claimKey: "k",
+        owner: { displayName: "Pat Owner", email: "pat@example.test", emailVerified: true },
+        receipt: {},
+        setupCode,
+      });
+      const begun = await identity.beginOidcSignIn({
+        headers: new Headers({ origin: publicOrigin }),
+        providerId: "opensteer-account",
+        returnPath: "/",
+      });
+      const authorize = new URL(begun.data.redirectUrl);
+      expectedCodeChallenge = authorize.searchParams.get("code_challenge");
+      const refused = await identity.handleOidcCallback(
+        new Request(
+          `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(authorize.searchParams.get("state") ?? "")}`,
+          {
+            headers: {
+              accept: "text/html",
+              cookie: cookieHeader(begun.headers),
+              "sec-fetch-mode": "navigate",
+            },
+          },
+        ),
+      );
+      expect(refused.status).toBeGreaterThanOrEqual(300);
+      expect(refused.status).toBeLessThan(400);
+      const location = new URL(refused.headers.get("location") ?? "", publicOrigin);
+      expect(location.origin).toBe(publicOrigin);
+      expect(location.pathname).toBe("/auth/error");
+      expect(location.searchParams.get("error")).toBe("another_account");
+
+      // Signing in as its owner asks the Account who is signing in, whatever session it holds.
+      const asOwner = new URL(
+        (
+          await identity.beginOidcSignIn({
+            chooseAccount: true,
+            headers: new Headers({ origin: publicOrigin }),
+            providerId: "opensteer-account",
+            returnPath: "/",
+          })
+        ).data.redirectUrl,
+      );
+      expect(asOwner.searchParams.get("prompt")).toBe("login");
+      expect(asOwner.searchParams.get("max_age")).toBe("0");
+      expect(authorize.searchParams.has("prompt")).toBe(false);
+      expect(
+        refused.headers.getSetCookie().some((cookie) => /opensteer\.session=[^;]/u.test(cookie)),
+      ).toBe(false);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        issuer.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
 
   it("declares a machine owner only for a seeded owner nobody can sign in as", async () => {
     await expect(identityService().configuration()).resolves.toMatchObject({
@@ -721,7 +1178,7 @@ integration("IdentityService", () => {
 
   it("publishes the apex portal origin only when the Deployment declares one", async () => {
     await expect(identityService().configuration()).resolves.toMatchObject({
-      deployment: { kind: "team", name: null },
+      deployment: { kind: "personal", name: null },
       portalOrigin: null,
     });
     await expect(
@@ -823,10 +1280,6 @@ integration("IdentityService", () => {
         proofId: issued.proofId,
       }),
     ).rejects.toMatchObject({ code: "unauthorized" });
-    await expect(identity.completeAccountAdoption(consumed, session)).rejects.toMatchObject({
-      code: "not_found",
-      message: "Account attachment completion is not configured",
-    });
 
     const stale = await identity.issueAccountAdoptionProof(session, account);
     await database
@@ -844,99 +1297,9 @@ integration("IdentityService", () => {
     ).rejects.toMatchObject({ code: "unauthorized" });
   });
 
-  it("atomically binds only a verified Account grant to the existing administrator", async () => {
-    const origin = "http://127.0.0.1:4310";
-    await ensureDeployment({
-      canonicalOrigin: origin,
-      deploymentId: createId("deployment"),
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: {
-        kind: "personal" as const,
-      },
-    });
-    let verifiedGrant: VerifiedAccountAdoptionGrant | undefined;
-    const identity = identityService({
-      accountAdoption: {
-        grantVerifier: {
-          async verify() {
-            if (!verifiedGrant) throw new Error("Missing fixture grant");
-            return verifiedGrant;
-          },
-        },
-        logicalProviderId: "opensteer-account",
-      },
-      signupPolicy: "open",
-    });
-    const signedUp = await identity.signUpPassword(
-      {
-        displayName: "Existing Administrator",
-        email: "existing-local-email@example.com",
-        password: "correct horse battery staple",
-      },
-      new Headers({ origin }),
-    );
-    await database
-      .updateTable("users")
-      .set({ updatedAt: new Date() })
-      .where("id", "=", signedUp.data.session.user.id)
-      .executeTakeFirstOrThrow();
-    const session = await identity.requireSession(
-      new Headers({ cookie: cookieHeader(signedUp.headers), origin }),
-    );
-    const account = {
-      issuer: "https://account.opensteer.example",
-      subject: "acct_00000000-0000-4000-8000-000000000001",
-    };
-    const issued = await identity.issueAccountAdoptionProof(session, account);
-    const consumed = await identity.consumeAccountAdoptionProof({
-      expectedAccount: account,
-      expectedDeployment: issued.deployment,
-      proofCredential: issued.proofCredential,
-      proofId: issued.proofId,
-    });
-    verifiedGrant = {
-      ...consumed,
-      expiresAt: new Date(Date.now() + 5 * 60_000),
-      grantId: `hag_${crypto.randomUUID()}`,
-      issuedAt: new Date(),
-    };
-
-    const attached = await identity.completeAccountAdoption("signed-control-plane-grant", session);
-    expect(attached).toMatchObject({ account, userId: session.user.id });
-    expect(attached.providerId).toMatch(/^oidc\.opensteer-account\./u);
-    await expect(
-      database
-        .selectFrom("authAccounts")
-        .select(["accountId", "providerId", "userId"])
-        .where("providerId", "=", attached.providerId)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      accountId: account.subject,
-      providerId: attached.providerId,
-      userId: session.user.id,
-    });
-    await expect(
-      database
-        .selectFrom("users")
-        .select("email")
-        .where("id", "=", session.user.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ email: "existing-local-email@example.com" });
-    await expect(
-      identity.completeAccountAdoption("replayed-control-plane-grant", session),
-    ).resolves.toEqual(attached);
-    verifiedGrant = {
-      ...verifiedGrant,
-      account: { ...verifiedGrant.account, subject: "acct_00000000-0000-4000-8000-000000000002" },
-    };
-    await expect(
-      identity.completeAccountAdoption("altered-control-plane-grant", session),
-    ).rejects.toMatchObject({ code: "forbidden" });
-  });
-
   it("replaces stale browser session cookies when signing in again", async () => {
     const identity = new IdentityService(database, {
-      deployment: { kind: "team", name: null },
+      deployment: { kind: "personal", name: null },
       localPasswordEnabled: true,
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:4310"),
@@ -1526,12 +1889,71 @@ integration("IdentityService", () => {
     ]);
   });
 
-  it("keeps initial-owner enrollment fixed, rotates only after expiry, and rejects stale config", async () => {
+  it("creates a Home's owner only in the claim's own transaction, and never by sign-up", async () => {
+    const token = "one-admission-one-owner-token-with-entropy";
+    const identity = identityService({
+      initialOwnerEnrollment: {
+        expiresAt: new Date(Date.now() + 3_600_000),
+        tokenDigest: digestSecret(token),
+      },
+    });
+    await identity.initialize();
+    const admitted = await identity.exchangeInitialOwnerEnrollment(token);
+    const headers = () =>
+      new Headers({ cookie: cookieHeader(admitted.headers), origin: "http://127.0.0.1:4310" });
+
+    // The setup admission admits no generic sign-up.
+    await expect(
+      identity.signUpPassword(
+        { email: "side-door@example.test", password: "side-door-password-123" },
+        headers(),
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(database.selectFrom("users").select("id").execute()).resolves.toEqual([]);
+
+    // The proof lapses between admission and claim: nothing at all is created,
+    // where the claim used to sign the person up before checking it.
+    await database
+      .updateTable("ownerEnrollments")
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .execute();
+    await expect(
+      identity.claimInitialOwner(
+        { email: "owner@example.test", password: "owner-password-123" },
+        headers(),
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(database.selectFrom("users").select("id").execute()).resolves.toEqual([]);
+    await expect(database.selectFrom("authSessions").select("id").execute()).resolves.toEqual([]);
+
+    // Two claims race on one admission: one owner, and the admission is spent by them.
+    await database
+      .updateTable("ownerEnrollments")
+      .set({ expiresAt: new Date(Date.now() + 3_600_000) })
+      .execute();
+    const raced = await Promise.allSettled(
+      ["first@example.test", "second@example.test"].map((email) =>
+        identity.claimInitialOwner({ email, password: "owner-password-123" }, headers()),
+      ),
+    );
+    expect(raced.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const users = await database.selectFrom("users").select("id").execute();
+    expect(users).toHaveLength(1);
+    await expect(
+      database.selectFrom("authAdmissions").select("consumedBy").execute(),
+    ).resolves.toEqual([{ consumedBy: users[0]!.id }]);
+    await expect(
+      database.selectFrom("ownerEnrollments").select("consumedBy").execute(),
+    ).resolves.toEqual([{ consumedBy: users[0]!.id }]);
+  });
+
+  it("keeps an operator's setup code fixed across restarts and re-issues it while unclaimed", async () => {
+    const originalToken = "original-owner-token-with-entropy";
     const originalExpiry = new Date(Date.now() + 3_600_000);
     const original = identityService({
       initialOwnerEnrollment: {
         expiresAt: originalExpiry,
-        tokenDigest: digestSecret("original-owner-token-with-entropy"),
+        tokenDigest: digestSecret(originalToken),
       },
     });
     await original.initialize();
@@ -1543,7 +1965,7 @@ integration("IdentityService", () => {
     await identityService({
       initialOwnerEnrollment: {
         expiresAt: new Date(Date.now() + 7_200_000),
-        tokenDigest: digestSecret("original-owner-token-with-entropy"),
+        tokenDigest: digestSecret(originalToken),
       },
     }).initialize();
     const replay = await database
@@ -1553,24 +1975,14 @@ integration("IdentityService", () => {
     expect(replay.expiresAt).toEqual(first.expiresAt);
     expect(replay.tokenHash).toBe(first.tokenHash);
 
-    await expect(
-      identityService({
-        initialOwnerEnrollment: {
-          expiresAt: new Date(Date.now() + 7_200_000),
-          tokenDigest: digestSecret("different-live-owner-token-with-entropy"),
-        },
-      }).initialize(),
-    ).rejects.toThrow("does not match durable Host state");
-
-    await database
-      .updateTable("ownerEnrollments")
-      .set({ expiresAt: new Date(Date.now() - 1_000) })
-      .executeTakeFirstOrThrow();
+    // A browser is mid-claim on the old link when the operator re-issues it.
+    const inFlight = await original.exchangeInitialOwnerEnrollment(originalToken);
     const rotatedToken = "rotated-owner-token-with-enough-entropy";
     const rotatedExpiry = new Date(Date.now() + 3_600_000);
-    await identityService({
+    const rotatedIdentity = identityService({
       initialOwnerEnrollment: { expiresAt: rotatedExpiry, tokenDigest: digestSecret(rotatedToken) },
-    }).initialize();
+    });
+    await rotatedIdentity.initialize();
     const rotated = await database
       .selectFrom("ownerEnrollments")
       .selectAll()
@@ -1585,23 +1997,70 @@ integration("IdentityService", () => {
         .where("action", "=", "instance.initial-owner-enrollment-rotated")
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({ action: "instance.initial-owner-enrollment-rotated" });
-
-    const administratorId = await createUser("Administrator");
-    await database
-      .updateTable("users")
-      .set({ updatedAt: new Date() })
-      .where("id", "=", administratorId)
-      .executeTakeFirstOrThrow();
-    const completedIdentity = identityService({
-      initialOwnerEnrollment: { expiresAt: rotatedExpiry, tokenDigest: digestSecret(rotatedToken) },
-    });
-    await expect(completedIdentity.initialize()).resolves.toBeUndefined();
     await expect(
-      completedIdentity.exchangeInitialOwnerEnrollment(rotatedToken),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-      message: expect.stringContaining("incorrect or expired"),
-    });
+      rotatedIdentity.exchangeInitialOwnerEnrollment(originalToken),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      rotatedIdentity.claimInitialOwner(
+        { email: "late@example.test", password: "old-link-password-123" },
+        new Headers({ cookie: cookieHeader(inFlight.headers), origin: "http://127.0.0.1:4310" }),
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(database.selectFrom("users").select("id").execute()).resolves.toEqual([]);
+
+    const admitted = await rotatedIdentity.exchangeInitialOwnerEnrollment(rotatedToken);
+    const claimed = await rotatedIdentity.claimInitialOwner(
+      { email: "owner@example.test", password: "new-link-password-123" },
+      new Headers({ cookie: cookieHeader(admitted.headers), origin: "http://127.0.0.1:4310" }),
+    );
+    expect(claimed.data.session.user.email).toBe("owner@example.test");
+
+    // Once owned, a code still configured, or a new one, is ignored rather than fatal.
+    for (const token of [rotatedToken, "post-claim-owner-token-with-entropy"]) {
+      const configured = identityService({
+        initialOwnerEnrollment: {
+          expiresAt: new Date(Date.now() + 3_600_000),
+          tokenDigest: digestSecret(token),
+        },
+      });
+      await expect(configured.initialize()).resolves.toBeUndefined();
+      await expect(configured.exchangeInitialOwnerEnrollment(token)).rejects.toMatchObject({
+        code: "forbidden",
+        message: expect.stringContaining("incorrect or expired"),
+      });
+    }
+  });
+
+  it("refuses a different live loopback setup code, and rotates it only after expiry", async () => {
+    const loopback = (token: string, expiresAt: Date) =>
+      identityService({
+        exposure: "loopback",
+        initialOwnerEnrollment: { expiresAt, renewable: true, tokenDigest: digestSecret(token) },
+      });
+    await loopback(
+      "original-loopback-token-with-entropy",
+      new Date(Date.now() + 3_600_000),
+    ).initialize();
+    await expect(
+      loopback(
+        "different-live-loopback-token-with-entropy",
+        new Date(Date.now() + 7_200_000),
+      ).initialize(),
+    ).rejects.toThrow("does not match durable Host state");
+
+    await database
+      .updateTable("ownerEnrollments")
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .executeTakeFirstOrThrow();
+    const rotatedToken = "rotated-loopback-token-with-entropy";
+    const rotatedExpiry = new Date(Date.now() + 3_600_000);
+    await loopback(rotatedToken, rotatedExpiry).initialize();
+    const rotated = await database
+      .selectFrom("ownerEnrollments")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    expect(rotated.expiresAt).toEqual(rotatedExpiry);
+    expect(rotated.tokenHash).toBe(createHash("sha256").update(rotatedToken).digest("hex"));
   });
 
   it("creates and restores one passwordless loopback machine owner", async () => {
@@ -1973,119 +2432,6 @@ integration("IdentityService", () => {
     });
   });
 
-  it("lets several browsers start on a shared invite with one use left, but admits only one", async () => {
-    const deployment = await ensureDeployment({
-      canonicalOrigin: "http://127.0.0.1:4310",
-      deploymentId: createId("deployment"),
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: { kind: "team" },
-    });
-    const access = new TeamAccessStore(database);
-    await access.initialize();
-    const invites = new TeamInvitesStore(access, "http://127.0.0.1:4310");
-    const ownerId = await createUser("Team Owner");
-    await database
-      .insertInto("teamMembers")
-      .values({
-        userId: ownerId,
-        handle: "owner",
-        role: "owner",
-        state: "active",
-        joinedAt: new Date(),
-        changedAt: new Date(),
-        changedBy: null,
-      })
-      .execute();
-    const owner = { kind: "human", userId: ownerId } as const;
-    const team = new TeamIdentityAdmission({
-      access,
-      invites,
-      authority: {
-        canonicalOrigin: "http://127.0.0.1:4310",
-        deploymentId: deployment.id,
-        hostInstanceId: deployment.hostInstanceId,
-        hostKeyFingerprint: HostKeyFingerprintSchema.parse(hostKeyFingerprint),
-      },
-      grantVerifier: {
-        async verify() {
-          throw new Error("No adoption grant in this fixture");
-        },
-      },
-      async installAccountBundle() {
-        throw new Error("No bundle in this fixture");
-      },
-    });
-    const identity = identityService({ team, localPasswordEnabled: false });
-    await identity.initialize();
-    const exchange = (url: string) => {
-      const parsed = new URL(url);
-      return identity.exchangeTeamInvitation(
-        parsed.pathname.split("/").pop()!,
-        parsed.hash.slice(1),
-        new Headers({ origin: "http://127.0.0.1:4310" }),
-      );
-    };
-    const shared = await invites.create(owner, createId("teamInvite"));
-    await database
-      .updateTable("teamInvites")
-      .set({ maxUses: null })
-      .where("id", "=", shared.invite.id)
-      .execute();
-    await expect(exchange(shared.url)).resolves.toBeDefined();
-    await expect(exchange(shared.url)).resolves.toBeDefined();
-    await expect(exchange(shared.url)).resolves.toBeDefined();
-
-    // Capped at five with four spent: several people may open it, the use cap decides who gets in.
-    const capped = await invites.create(owner, createId("teamInvite"));
-    await database
-      .updateTable("teamInvites")
-      .set({ maxUses: 5, usedCount: 4 })
-      .where("id", "=", capped.invite.id)
-      .execute();
-    await expect(exchange(capped.url)).resolves.toBeDefined();
-    await expect(exchange(capped.url)).resolves.toBeDefined();
-    await expect(exchange(capped.url)).resolves.toBeDefined();
-    const providerId = "opensteer-account-fixture";
-    await database
-      .insertInto("accountDirectoryProvider")
-      .values({ singletonKey: "opensteer-account", providerId, issuer: "https://accounts.example" })
-      .execute();
-    const admissions = await database
-      .selectFrom("authAdmissions")
-      .select(["id", "purpose", "subjectSelector", "consumedBy"])
-      .where("subjectSelector", "=", capped.invite.selector)
-      .execute();
-    expect(admissions).toHaveLength(3);
-    const outcomes = await Promise.allSettled(
-      admissions.map(async (admission, index) => {
-        const userId = await createUser(`Invitee ${index}`);
-        await database
-          .insertInto("authAccounts")
-          .values({
-            id: createId("authAccount"),
-            userId,
-            accountId: `invitee-${index}`,
-            providerId,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .execute();
-        return team.admit(userId, { ...admission, purpose: "invitation" });
-      }),
-    );
-    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
-    expect(
-      outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : [])),
-    ).toEqual([
-      expect.objectContaining({ reason: "invite-used-up" }),
-      expect.objectContaining({ reason: "invite-used-up" }),
-    ]);
-
-    const single = await invites.create(owner, createId("teamInvite"));
-    await expect(exchange(single.url)).resolves.toBeDefined();
-    await expect(exchange(single.url)).rejects.toMatchObject({ code: "timeout" });
-  });
-
   it("rotates an unfinished setup admission instead of locking out a valid setup retry", async () => {
     const origin = "http://127.0.0.1:4310";
     const token = "initial-owner-token-with-enough-entropy";
@@ -2100,53 +2446,32 @@ integration("IdentityService", () => {
     const firstExchange = await identity.exchangeInitialOwnerEnrollment(`  ${token}\n`);
     const firstAdmissionCookie = cookieHeader(firstExchange.headers);
 
-    // Invalid credentials are rejected before the admission is reserved.
+    // Invalid credentials are refused before anything is created or spent.
     await expect(
-      identity.signUpPassword(
-        {
-          displayName: "Owner",
-          email: "owner@example.com",
-          password: "short",
-        },
+      identity.claimInitialOwner(
+        { email: "owner@example.com", password: "short" },
         new Headers({ cookie: firstAdmissionCookie, origin }),
       ),
     ).rejects.toMatchObject({ code: "bad_request" });
-    const unreservedAdmission = await database
-      .selectFrom("authAdmissions")
-      .selectAll()
-      .executeTakeFirstOrThrow();
-    expect(unreservedAdmission.reservedEmail).toBeNull();
-
-    // Model an interrupted signup after the admission was reserved but before setup completed.
-    await database
-      .updateTable("authAdmissions")
-      .set({ reservedAt: new Date(), reservedEmail: "owner@example.com" })
-      .where("id", "=", unreservedAdmission.id)
-      .executeTakeFirstOrThrow();
     const firstAdmission = await database
       .selectFrom("authAdmissions")
       .selectAll()
       .executeTakeFirstOrThrow();
-    expect(firstAdmission.reservedEmail).toBe("owner@example.com");
+    expect(firstAdmission.consumedAt).toBeNull();
 
+    // The browser lost its admission: exchanging the code again rotates it.
     const secondExchange = await identity.exchangeInitialOwnerEnrollment(token);
     const secondAdmissionCookie = cookieHeader(secondExchange.headers);
     expect(secondAdmissionCookie).not.toBe(firstAdmissionCookie);
 
     const admissions = await database.selectFrom("authAdmissions").selectAll().execute();
     expect(admissions).toHaveLength(1);
-    expect(admissions[0]).toMatchObject({
-      consumedAt: null,
-      purpose: "setup",
-      reservedAt: null,
-      reservedEmail: null,
-    });
+    expect(admissions[0]).toMatchObject({ consumedAt: null, purpose: "setup" });
     expect(admissions[0]?.id).not.toBe(firstAdmission.id);
 
     await expect(
-      identity.signUpPassword(
+      identity.claimInitialOwner(
         {
-          displayName: "Stale Owner",
           email: "stale-owner@example.com",
           password: "correct horse battery staple",
         },
@@ -2154,30 +2479,17 @@ integration("IdentityService", () => {
       ),
     ).rejects.toMatchObject({ code: "forbidden" });
 
-    const signup = await identity.signUpPassword(
+    const claimed = await identity.claimInitialOwner(
       {
-        displayName: "Owner",
         email: "owner@example.com",
         password: "correct horse battery staple",
       },
       new Headers({ cookie: secondAdmissionCookie, origin }),
     );
-    const completed = await identity.completeInitialOwnerSetup(
-      new Headers({
-        cookie: `${secondAdmissionCookie}; ${cookieHeader(signup.headers)}`,
-        origin,
-      }),
-    );
-
-    expect(completed.userId).toBe(signup.data.session.user.id);
     await expect(identity.configuration()).resolves.toMatchObject({ setupState: "complete" });
-    await expect(
-      database
-        .selectFrom("users")
-        .select("id")
-        .where("id", "=", completed.userId)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ id: completed.userId });
+    await expect(database.selectFrom("users").select("id").execute()).resolves.toEqual([
+      { id: claimed.data.session.user.id },
+    ]);
   });
 });
 
@@ -2321,7 +2633,7 @@ function identityService(
   overrides: Partial<ConstructorParameters<typeof IdentityService>[1]> = {},
 ): IdentityService {
   return new IdentityService(database, {
-    deployment: { kind: "team", name: null },
+    deployment: { kind: "personal", name: null },
     hostKeyFingerprint,
     localPasswordEnabled: true,
     oidcProviders: [],
@@ -2331,6 +2643,18 @@ function identityService(
     signupPolicy: "invite-only",
     ...overrides,
   });
+}
+
+function accountProvider(issuer: string) {
+  return {
+    allowPrivateNetwork: false,
+    clientId: "occ_0192f4a1-1111-4000-8000-000000000001",
+    clientSecret: `ocs_${"s".repeat(43)}`,
+    issuer,
+    label: "Opensteer",
+    providerId: "opensteer-account",
+    trustedOrigins: [],
+  };
 }
 
 function cookieHeader(headers: Headers): string {
@@ -2370,7 +2694,7 @@ async function ensureDeployment(input: {
   canonicalOrigin: string;
   deploymentId: ReturnType<typeof createId<"deployment">>;
   hostInstanceId: ReturnType<typeof createId<"hostInstance">>;
-  deploymentShape: { kind: "personal" | "team" };
+  deploymentShape: { kind: "personal" };
 }) {
   await database
     .insertInto("deployments")

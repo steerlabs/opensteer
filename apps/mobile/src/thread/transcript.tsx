@@ -13,18 +13,19 @@ import {
 } from "@opensteer/client/host";
 import { presentMessageDelivery } from "@opensteer/client/feedback";
 import { useClientConnectionName } from "@opensteer/client/react";
-import { useNavigation } from "@react-navigation/native";
-import { sideMemory } from "../side-memory.js";
-import { useTeamsSnapshot } from "../team/team-context.js";
-import type { TeamSource } from "@opensteer/core";
 import {
   incomingMessageAction,
-  teamDeliveryLabel,
   activityStepHead,
   conversationActivities,
   conversationTurn,
   formatClockTime,
   hasRunOutcome,
+  isRunEngineRetired,
+  isRunTerminationUnproven,
+  runInterruptedMessage,
+  runInterruptedTitle,
+  runOutcomeMessage,
+  runOutcomeTitle,
   silentRunLabel,
   incomingMessagePreview,
   messageAuthorName,
@@ -60,6 +61,7 @@ import {
 import { voiceCallSeed } from "@opensteer/core";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
 import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AsleepActivityLine, asleepToolOf } from "./asleep-activity-line.js";
 import { Pressable, StyleSheet, View } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { CodeLines, Markdown, PlainProse } from "../markdown/markdown.js";
@@ -93,7 +95,7 @@ import {
   type TaskScope,
 } from "./task-line.js";
 import { AppCard } from "./app-card.js";
-import { MessageAttachments } from "./attachment-views.js";
+import { MessageAttachments, TranscriptHostClientContext } from "./attachment-views.js";
 import { Bubble, bubble } from "./bubble.js";
 import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./computer-use-line.js";
 import { EditedMark } from "./edited-mark.js";
@@ -126,7 +128,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
    * and keeps everything else it did in its Activity, opened from that
    * message's menu.
    */
-  readonly deliveryChannelName?: string;
   readonly conversation?: boolean;
   /**
    * In a conversation, the Activity this turn's reply opens: the key from
@@ -164,12 +165,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly voiceThread?: boolean;
 }): ReactNode {
   const { group } = props;
-  const deliveryLine =
-    group.kind === "turn" && !group.turn.continued && group.turn.run?.delivery ? (
-      <AppText role="caption" tone="muted">
-        {teamDeliveryLabel(group.turn.run.delivery, props.deliveryChannelName ?? "channel")}
-      </AppText>
-    ) : null;
   return (
     <View style={{ marginTop: props.spacingTop }}>
       {props.time ? (
@@ -182,7 +177,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
       ) : group.kind === "turn" ? (
         props.conversation === true ? (
           <ConversationTurn
-            deliveryLine={deliveryLine}
             activityKey={props.activityKey ?? null}
             continued={props.continued === true}
             live={props.live ?? true}
@@ -195,7 +189,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           />
         ) : (
           <TurnView
-            deliveryLine={deliveryLine}
             reveal={props.reveal ?? null}
             highlightRequestId={props.highlightRequestId}
             onOpenStep={props.onOpenStep}
@@ -246,7 +239,6 @@ export function transcriptSpacing(previous: TranscriptVoice | null, next: Transc
 
 function TurnView(props: {
   readonly reveal?: string | null;
-  readonly deliveryLine?: ReactNode;
   readonly highlightRequestId: string | null;
   readonly onOpenStep: (entryId: string) => void;
   readonly onToggle: (turnKey: string, open: boolean) => void;
@@ -275,7 +267,6 @@ function TurnView(props: {
         turn={turn}
         live={props.live ?? true}
       />
-      {props.deliveryLine}
       {/* A Run split by a message that joined it shows its pages once, on its latest
           stretch, and only once it is done: while it works, its stops are in the trace. */}
       {turn.continued === true || turnState(turn) !== "settled" ? null : (
@@ -383,7 +374,6 @@ export function replyActivityKeys(groups: readonly TranscriptGroup[]): ReadonlyM
  * reads as what was said.
  */
 function ConversationTurn(props: {
-  readonly deliveryLine?: ReactNode;
   readonly onOpenThread: (threadId: string) => void;
   readonly activityKey: string | null;
   readonly continued: boolean;
@@ -457,7 +447,6 @@ function ConversationTurn(props: {
       ) : view.startHold !== null ? (
         <WorkingIndicator indicator={{ kind: "status", label: view.startHold }} live={props.live} />
       ) : null}
-      {props.deliveryLine}
       {/* Typing alone would not say the reader's steered message is why it began again. */}
       {composing && restarting(turn.run) ? (
         <Animated.View accessibilityLiveRegion="polite" entering={appear}>
@@ -1145,14 +1134,18 @@ function StepsRow(props: {
     (entry) => entry.kind === "request" && entry.requestId === props.highlightRequestId,
   );
   const [open, setOpen] = useState(false);
+  const asleep = asleepToolOf(row.entries);
 
   if (single !== undefined) {
     return (
-      <StepHead
-        head={row.head}
-        highlighted={highlighted}
-        {...(single.kind === "request" ? {} : { onPress: () => props.onOpenStep(single.id) })}
-      />
+      <View>
+        <StepHead
+          head={row.head}
+          highlighted={highlighted}
+          {...(single.kind === "request" ? {} : { onPress: () => props.onOpenStep(single.id) })}
+        />
+        {asleep === null ? null : <AsleepActivityLine tool={asleep} />}
+      </View>
     );
   }
   return (
@@ -1202,6 +1195,7 @@ function StepsRow(props: {
           )}
         </Animated.View>
       ) : null}
+      {asleep === null ? null : <AsleepActivityLine tool={asleep} />}
     </View>
   );
 }
@@ -1580,8 +1574,7 @@ export function Message(props: {
       ) : null}
       {mine ? null : (
         <Attribution
-          // A teammate's ask in the person's own words, which history spells out.
-          action={message.edit?.ownerEdited ? "· edited by you" : incomingMessageAction(message)}
+          action={incomingMessageAction(message)}
           mark={
             author.kind === "agent" ? (
               <ThreadMark threadId={author.threadId} />
@@ -1661,7 +1654,6 @@ export function Message(props: {
           <View style={[styles.bubble, styles.bubbleQueued, styles.bubbleQueuedOther]}>{fold}</View>
         </WaitingHold>
       )}
-      {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
       {message.edit && !props.queued ? <EditedMark messageId={message.id} /> : null}
       {message.delivery ? (
         <View accessibilityRole="alert" style={styles.failure}>
@@ -1949,24 +1941,65 @@ function RunOutcome(props: {
   readonly run: RunEntry;
 }): ReactNode {
   const { run } = props;
+  const client = useContext(TranscriptHostClientContext);
+  const scope = useContext(TaskScopeContext);
+  const [rechecking, setRechecking] = useState(false);
+  const [recheckNote, setRecheckNote] = useState<string | null>(null);
   const footer = restarted(run) ? (
     <AppText role="caption" tone="muted">
       Restarted to include your message
     </AppText>
   ) : null;
   if (run.status === "failed") {
+    const message = runOutcomeMessage(run);
+    const unproven = isRunTerminationUnproven(run);
+    const threadId = scope?.threadId ?? null;
     return (
       <>
         <View accessibilityRole="alert" style={styles.failure}>
           <AppText role="secondaryMedium" tone="danger">
-            {props.conversation === true ? "Opensteer couldn’t finish" : "This run failed"}
+            {runOutcomeTitle(run, { conversation: props.conversation === true, mobile: true })}
           </AppText>
-          {run.error === null ? null : (
+          {message === null ? null : (
             <AppText role="secondary" selectable tone="soft">
-              {run.error.message}
+              {message}
             </AppText>
           )}
-          {run.error?.retryable === true ? (
+          {unproven && client !== null && threadId !== null ? (
+            <View>
+              <Pressable
+                accessibilityRole="button"
+                disabled={rechecking}
+                onPress={() => {
+                  setRechecking(true);
+                  setRecheckNote(null);
+                  void client
+                    .recheckThreadStop(threadId)
+                    .then(({ proven }) => {
+                      setRecheckNote(
+                        proven
+                          ? "Confirmed stopped."
+                          : "Still couldn’t confirm this stopped. Something may still be running on that device.",
+                      );
+                    })
+                    .catch(() => {
+                      setRecheckNote("Couldn’t check right now. Try again in a moment.");
+                    })
+                    .finally(() => setRechecking(false));
+                }}
+              >
+                <AppText role="secondaryMedium" tone="default">
+                  {rechecking ? "Checking…" : "Check again"}
+                </AppText>
+              </Pressable>
+              {recheckNote === null ? null : (
+                <AppText role="caption" tone="muted">
+                  {recheckNote}
+                </AppText>
+              )}
+            </View>
+          ) : null}
+          {run.error?.retryable === true && !unproven ? (
             <AppText role="caption" tone="muted">
               This looks temporary. Sending again may work.
             </AppText>
@@ -1977,10 +2010,34 @@ function RunOutcome(props: {
     );
   }
   if (run.status === "interrupted") {
+    const retired = isRunEngineRetired(run);
+    const message = runInterruptedMessage(run);
+    if (retired && message !== null) {
+      return (
+        <>
+          <View accessibilityRole="summary" style={styles.failure}>
+            <AppText role="secondaryMedium" tone="soft">
+              {runInterruptedTitle(run, {
+                conversation: props.conversation === true,
+                mobile: true,
+              })}
+            </AppText>
+            <AppText role="secondary" selectable tone="soft">
+              {message}
+            </AppText>
+          </View>
+          {footer}
+        </>
+      );
+    }
+    const confirmedLabel = run.stopConfirmedAt
+      ? ` Confirmed stopped at ${formatClockTime(run.stopConfirmedAt)}.`
+      : "";
     return (
       <>
         <AppText role="secondary" tone="muted">
-          {props.conversation === true ? "Stopped." : "This run stopped."}
+          {runInterruptedTitle(run, { conversation: props.conversation === true, mobile: true })}
+          {confirmedLabel}
         </AppText>
         {footer}
       </>
@@ -2173,40 +2230,6 @@ const styles = StyleSheet.create({
   working: { alignItems: "center", flexDirection: "row", gap: space[8], minHeight: touchTarget },
 });
 
-function TeamInputSource({ source }: { readonly source: TeamSource }): ReactNode {
-  const navigation = useNavigation();
-  const team = useTeamsSnapshot().teams.find((row) => row.teamId === source.teamId);
-  const label = (
-    <AppText role="caption" tone="muted">{`#${source.audience.channelName} ↗`}</AppText>
-  );
-  const rootId = source.threadRootId ?? source.messageId;
-  if (!team || team.state === "removed" || !rootId) return label;
-  return (
-    <Pressable
-      accessibilityRole="link"
-      onPress={() => {
-        const state = navigation.getState();
-        const action =
-          state &&
-          sideMemory.enter(state, {
-            name: "TeamThread",
-            params: {
-              teamId: source.teamId,
-              channelId: source.channelId,
-              rootId,
-              ...(source.messageId && source.messageId !== rootId
-                ? { replyId: source.messageId }
-                : {}),
-            },
-          });
-        if (action) navigation.dispatch(action);
-      }}
-    >
-      {label}
-    </Pressable>
-  );
-}
-
 function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
   const scope = useContext(TaskScopeContext);
   const [open, setOpen] = useState(false);
@@ -2253,7 +2276,7 @@ function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
         </Pressable>
       ) : null}
       {stop.line === null || run.compaction.status !== "running" ? null : (
-        <ActionLine line={stop.line} numberOfLines={2} onDismiss={stop.dismiss} />
+        <ActionLine line={stop.line} onDismiss={stop.dismiss} />
       )}
     </View>
   );
@@ -2296,7 +2319,7 @@ function ProviderRetryNotice({ run }: { readonly run: RunEntry }): ReactNode {
         </Pressable>
       ) : null}
       {stop.line === null || !active ? null : (
-        <ActionLine line={stop.line} numberOfLines={2} onDismiss={stop.dismiss} />
+        <ActionLine line={stop.line} onDismiss={stop.dismiss} />
       )}
     </View>
   );

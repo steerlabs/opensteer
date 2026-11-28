@@ -1,8 +1,7 @@
+import { settingsDestinationTarget } from "./settings-home-model.js";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useMobileState } from "../ui/mobile-client-context.js";
-import { useTeamsSnapshot } from "../team/team-context.js";
 import { SettingsHomeForm } from "./settings-home-form.js";
-import type { SettingsHomeTeam } from "./settings-home-model.js";
 import { GeneralSettingsController } from "./settings-general-controller.js";
 import { AccountSettingsController } from "./settings-account-controller.js";
 import { DevicesSettingsController } from "./settings-devices-controller.js";
@@ -21,35 +20,16 @@ import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import type { SettingsPage } from "./settings-form.types.js";
 export function SettingsScreen() {
   const navigation = useNavigation();
-  const { teams } = useTeamsSnapshot();
-  // One row per team the person is in, then a way into another.
-  const group: SettingsHomeTeam = {
-    name: "Teams",
-    rows: [
-      ...teams.map((team) => ({
-        title: team.name,
-        onPress: () => navigation.navigate("TeamSettings", { teamId: team.teamId }),
-      })),
-      { title: "Create or join a team", onPress: () => navigation.navigate("Teams") },
-    ],
-  };
-  return <SettingsHome team={group} />;
-}
-
-function SettingsHome(props: { readonly team: SettingsHomeTeam | null }) {
-  const navigation = useNavigation();
   const { selection } = useMobileState();
   return (
     <SettingsHomeForm
-      team={props.team}
       onOpen={(route) => {
-        if (route === "SettingsAiSharing") {
-          navigation.navigate(route);
-          return;
-        }
-        if (selection.deploymentId)
-          navigation.navigate(route, { deploymentId: selection.deploymentId });
-        else navigation.navigate("DeploymentSwitcher");
+        // With no Home open, the picker says which page it is choosing a Home for.
+        const target = settingsDestinationTarget(route, selection.deploymentId);
+        if (target.name === "DeploymentSwitcher")
+          navigation.navigate("DeploymentSwitcher", target.params);
+        else if (target.name === "SettingsAiSharing") navigation.navigate(target.name);
+        else if (target.params) navigation.navigate(target.name, target.params);
       }}
     />
   );

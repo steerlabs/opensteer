@@ -1,4 +1,5 @@
-import { TabIdSchema, TeamSourceSchema } from "@opensteer/core";
+import { AgentOperationIdSchema, CommandAgentStatusSchema } from "@opensteer/core";
+import { TabIdSchema } from "@opensteer/core";
 import { AppSchema, AppListItemSchema } from "@opensteer/core";
 import { AgentBrowserSessionSummarySchema } from "@opensteer/protocol";
 import { z } from "zod";
@@ -35,12 +36,15 @@ import {
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import {
-  TriggerProgramEventSchema,
+  AutomationSecretNameSchema,
+  MAX_AUTOMATION_SECRETS,
+  TriggerScriptEventSchema,
   TriggerViewSchema,
   TriggerRevisionViewSchema,
   TriggerOccurrenceViewSchema,
   TriggerSummaryViewSchema,
   TriggerWatchActivationViewSchema,
+  TriggerWebhookAddressViewSchema,
 } from "@opensteer/triggers";
 import { AgentLinkSchema } from "./agent-links.js";
 export { AgentLinkSchema } from "./agent-links.js";
@@ -151,7 +155,6 @@ export const ThreadDetailSchema = z.object({
   title: task.title,
   status: task.status,
   purpose: task.purpose,
-  teamOrigin: task.teamOrigin,
   aiAccountId: task.harnessInstanceId,
   modelSelection: task.modelSelection,
   accessMode: task.accessMode,
@@ -204,8 +207,9 @@ export const TaskSchema = z.object({
 export const ThreadMessageOutputSchema = z.object({
   link: AgentLinkSchema.optional(),
   delegationId: AssignmentIdSchema.nullable(),
-  disposition: z.enum(["cancelled", "pending", "steering", "run-queued"]),
-  messageId: MessageIdSchema,
+  disposition: z.enum(["cancelled", "pending", "steering", "run-queued", "skipped"]),
+  messageId: MessageIdSchema.nullable(),
+  reason: z.string().optional(),
   runId: RunSchema.shape.id.nullable(),
 });
 export const ThreadInterruptOutputSchema = z.object({
@@ -240,15 +244,8 @@ export const PersonShowOutputSchema = z.object({
   status: z.enum(["sent-unconfirmed", "no-device-connected", "already-requested"]),
   connectedDevices: z.number().int().nonnegative(),
 });
-const [
-  humanAuthor,
-  agentAuthor,
-  triggerAuthor,
-  watchAuthor,
-  platformAuthor,
-  connectionAuthor,
-  memberAuthor,
-] = MessageAuthorViewSchema.options;
+const [humanAuthor, agentAuthor, triggerAuthor, watchAuthor, platformAuthor, connectionAuthor] =
+  MessageAuthorViewSchema.options;
 /** Authors as tools present them: an agent names its task, an automation or watch its automation. */
 const ToolMessageAuthorSchema = z.discriminatedUnion("kind", [
   humanAuthor,
@@ -257,7 +254,6 @@ const ToolMessageAuthorSchema = z.discriminatedUnion("kind", [
   watchAuthor.omit({ triggerId: true }).extend({ automationId: TriggerIdSchema }),
   platformAuthor,
   connectionAuthor,
-  memberAuthor,
 ]);
 const [deviceAnswerer, agentAnswerer] = RequestAnswererViewSchema.options;
 const ToolRequestAnswererSchema = z.union([
@@ -289,7 +285,8 @@ export const RequestOutputSchema = z.object({
   link: AgentLinkSchema.optional(),
   id: RequestIdSchema,
   kind: RequestKindSchema,
-  status: RequestStatusSchema,
+  // A command Request reads its value-free status, as every agent surface does.
+  status: z.union([RequestStatusSchema, CommandAgentStatusSchema]),
   reason: z.string().nullable().optional(),
   originatingTaskId: ThreadIdSchema.nullable().optional(),
   createdAt: z.string(),
@@ -306,6 +303,21 @@ export const RequestListOutputSchema = z.object({
   window: WindowSchema,
 });
 export const RequestWithdrawOutputSchema = z.object({ request: RequestOutputSchema });
+export const SessionPersonOutputSchema = z.object({
+  taskId: ThreadIdSchema,
+  operationId: AgentOperationIdSchema,
+  requestId: RequestIdSchema.nullable().optional(),
+  status: z.enum(["pending", "completed", "failed", "unknown"]),
+  summary: z.record(z.string(), z.unknown()).nullable().optional(),
+  next: z.string().optional(),
+  answer: z.string().optional(),
+  loginStatus: z.string().optional(),
+  loginRef: z.string().optional(),
+  cardStatus: z.string().optional(),
+  cardRef: z.string().optional(),
+  reason: z.string().optional(),
+});
+
 export const RequestCreationOutputSchema = z.object({
   link: AgentLinkSchema.optional(),
   kind: RequestKindSchema,
@@ -318,7 +330,11 @@ export const BrowserProfileOutputSchema = z.object({
   id: BrowserProfileIdSchema,
   name: z.string(),
   home: z
-    .object({ computerId: RunnerIdSchema, name: z.string(), reachable: z.boolean() })
+    .object({
+      computerId: RunnerIdSchema.optional(),
+      name: z.string().optional(),
+      reachable: z.boolean(),
+    })
     .nullable(),
 });
 export const BrowserProfileListOutputSchema = z.object({
@@ -387,9 +403,9 @@ const AutomationOccurrenceSchema = TriggerOccurrenceViewSchema.omit({
   environmentId: true,
   event: true,
 }).extend({
-  event: z.object(TriggerProgramEventSchema.omit({ trigger: true }).shape).extend({
+  event: z.object(TriggerScriptEventSchema.omit({ trigger: true }).shape).extend({
     automation: z
-      .object(TriggerProgramEventSchema.shape.trigger.omit({ anchorThreadId: true }).shape)
+      .object(TriggerScriptEventSchema.shape.trigger.omit({ anchorThreadId: true }).shape)
       .extend({ taskId: ThreadIdSchema }),
   }),
   automationId: TriggerViewSchema.shape.id,
@@ -451,11 +467,29 @@ export const TriggerOutputSchema = z.object({
     .optional(),
   downstreamRunsTruncated: z.boolean().optional(),
   replayed: z.boolean().optional(),
+  secretNames: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).optional(),
+  webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
 });
 
-export const TriggerWriteOutputSchema = TriggerOutputSchema.extend({
-  webhook: z.object({ url: z.url(), secret: z.string().min(1) }).optional(),
-});
+export const TriggerWriteOutputSchema = z.union([
+  z.object({
+    status: z.enum([
+      "pending",
+      "declined",
+      "withdrawn",
+      "closed",
+      "answered",
+      "person-says-done",
+      "done-by-person",
+    ]),
+    requestId: RequestIdSchema,
+    next: z.string().optional(),
+    outcome: z.unknown().optional(),
+  }),
+  TriggerOutputSchema.extend({
+    webhook: z.object({ scope: z.enum(["public", "local"]), url: z.url() }).optional(),
+  }),
+]);
 
 export { AgentMediaContentSchema, ComputerUseOutputSchema } from "./computer-outputs.js";
 
@@ -472,8 +506,6 @@ export const ThreadItemSchema = z.object({
   textTruncated: z.boolean(),
   nextTextOffset: z.number().int().nonnegative().nullable(),
   places: z.array(PlaceContentPartSchema).max(64).optional(),
-  // The team channel and audience a message came from; keep it beside anything repeated from it.
-  teamSource: TeamSourceSchema.optional(),
   createdAt: z.string(),
 });
 export type ThreadItem = z.infer<typeof ThreadItemSchema>;

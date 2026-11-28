@@ -27,6 +27,7 @@ import {
   withPersonalReadTransaction,
 } from "./personal-transaction.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
+import { assertPersonMayContinue } from "./resource-access.js";
 import {
   lockThreadRow,
   lockCommandIdempotency,
@@ -178,7 +179,7 @@ export async function inputEditEligibility(
   if (
     thread.createdBy !== requestedBy ||
     row.policy !== "queue" ||
-    !["pending", "awaiting-approval"].includes(row.state) ||
+    row.state !== "pending" ||
     row.steerCommandId ||
     message.kind !== "input"
   )
@@ -194,17 +195,6 @@ export async function inputEditEligibility(
       .executeTakeFirst())
   )
     return false;
-  const mirror = row.teamRequestId
-    ? await transaction
-        .selectFrom("personalTeamRequests")
-        .selectAll()
-        .where("localInputId", "=", row.messageId)
-        .where("kind", "=", "ask")
-        .executeTakeFirst()
-    : null;
-  if (mirror?.localDecision === "approve" && !mirror.releasedAt) return false;
-  if (message.author.kind === "team-member")
-    return Boolean(mirror && !mirror.terminalState && mirror.localDecision !== "decline");
   return (
     message.author.kind === "human" &&
     message.author.userId === requestedBy &&
@@ -224,6 +214,7 @@ export interface WaitingInputIdentity {
 async function editable(transaction: Transaction<DatabaseSchema>, input: WaitingInputIdentity) {
   await requirePersonalOwner(transaction, input.requestedBy);
   const thread = await lockInputQueueProjection(transaction, input.threadId);
+  await assertPersonMayContinue(transaction, input.requestedBy, thread.originConnectionId);
   const row = await transaction
     .selectFrom("threadInputs")
     .selectAll()

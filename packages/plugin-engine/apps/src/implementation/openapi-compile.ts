@@ -103,19 +103,12 @@ function serverAddress(server: Server, connectUrl: string | undefined, documentS
         { encoder: (value) => value },
       )
     : server.url;
-  let url: URL | undefined;
-  try {
-    url = new URL(template);
-  } catch {
-    url = undefined;
-  }
-  const relative = new URL(template, "https://relative.invalid");
-  const base =
-    url?.protocol && url.host
-      ? `${url.protocol.replace(/\W/g, "")}://${url.host}${url.pathname}`
-      : (url?.pathname ??
-        (template.startsWith("/") ? relative.pathname : relative.pathname.slice(1)));
-  return absolute(parseUrl(`${base.endsWith("/") ? base.slice(0, -1) : base}/`, connectUrl).href);
+  const url = parseUrl(template, connectUrl);
+  url.username = "";
+  url.password = "";
+  url.search = "";
+  url.hash = "";
+  return absolute(url.href);
 }
 /**
  * Converts one API Schema Object from the document's OpenAPI dialect to Draft 2020-12. `at` is its

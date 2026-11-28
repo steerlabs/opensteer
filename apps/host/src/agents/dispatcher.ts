@@ -1,10 +1,22 @@
 import { runHasBrowserPages } from "./browser-capability.js";
 import { promptCacheExpiresAt } from "@opensteer/core";
-import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
+import {
+  connectionIsWaiting,
+  triggerAnchorStopIsHeld,
+  triggerChatIsWaiting,
+  dispatchNodeStop,
+  grantedContent,
+  NodeStopAuthoritySchema,
+  senderUnlinkedFailure,
+} from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import {
   ModelSelectionSchema,
+  CommandIdSchema,
   OpensteerError,
+  agentGrantAccess,
+  agentGrantToolFamilies,
+  type ContentPart,
   placeInputFailure,
   runnerAgentToolsFailure,
   RequestIdSchema,
@@ -14,7 +26,10 @@ import {
   SequenceSchema,
   ThreadIdSchema,
   type EnvironmentId,
+  type RunnerId,
   type ThreadId,
+  type TriggerOccurrenceId,
+  type RunId,
   type UserId,
 } from "@opensteer/core";
 import type {
@@ -36,6 +51,7 @@ import {
   type RunnerRegistry,
 } from "@opensteer/orchestration";
 import {
+  attemptStopStateCapability,
   CorrelationIdSchema,
   ProtocolErrorSchema,
   HarnessInputSchema,
@@ -55,8 +71,9 @@ import type { PluginPackagesTokenService } from "../local-servers/plugin-package
 import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
-import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
-import { isExecutableTriggerProgram, TRIGGER_PROGRAM_VERSION_REFUSAL } from "@opensteer/triggers";
+import { automationScriptCompatibilityReason } from "../triggers/automation-script-compatibility.js";
+import type { AutomationSecrets } from "../triggers/automation-secrets.js";
+import { TRIGGER_SCRIPT_UPDATE_REASON } from "@opensteer/triggers";
 import type { RunToolTokenService } from "./run-tool-tokens.js";
 import {
   harnessInspectionDefinition,
@@ -85,6 +102,8 @@ const ControlPayloadSchema = z.discriminatedUnion("type", [
       runId: RunIdSchema,
       threadId: ThreadIdSchema,
       type: z.literal("run.interrupt"),
+      expectedBindingGeneration: z.number().int().positive().nullable().optional(),
+      stop: z.object({ id: CommandIdSchema, bootId: z.string() }).optional(),
     })
     .passthrough(),
   z
@@ -121,18 +140,6 @@ const supportedCommandTypes = new Set([
   "run.steer",
   "trigger.execute",
 ]);
-export type TeamRequestContextLoader = (
-  input: {
-    readonly runId: import("@opensteer/core").RunId;
-    readonly requestId: import("@opensteer/core").TeamAgentRequestId;
-  },
-  signal: AbortSignal,
-) => Promise<{
-  readonly instructionsMarkdown: string;
-  readonly asker?: Pick<import("@opensteer/core").TeamAsker, "displayName" | "actor"> | null;
-  readonly source: import("@opensteer/core").TeamSource;
-  readonly instructionsRevision: import("@opensteer/core").Sequence;
-}>;
 export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
   readonly #attachments: Pick<AttachmentStore, "listForRun">;
@@ -159,10 +166,25 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #executionNow: () => number;
   readonly #store: OpensteerStore;
   readonly #catalogs: HarnessCatalogRecorder;
+  readonly #automationSecrets: Pick<AutomationSecrets, "values"> | undefined;
   readonly #triggerControlTokens: TriggerControlTokenService;
   readonly #triggers: TriggerStore;
-  readonly #teamRequestContext: TeamRequestContextLoader;
-  readonly #teamsAvailable: () => Promise<boolean>;
+  readonly #dispatchingTriggers = new Map<
+    TriggerOccurrenceId,
+    { readonly runnerBootId: string; readonly runnerId: RunnerId }
+  >();
+  inFlightTriggerOccurrenceIds(
+    runnerId: RunnerId,
+    runnerBootId: string,
+  ): readonly TriggerOccurrenceId[] {
+    const ids: TriggerOccurrenceId[] = [];
+    for (const [occurrenceId, entry] of this.#dispatchingTriggers) {
+      if (entry.runnerId === runnerId && entry.runnerBootId === runnerBootId) {
+        ids.push(occurrenceId);
+      }
+    }
+    return ids;
+  }
   constructor(options: {
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
@@ -188,12 +210,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly onRunAdmitted?: (threadId: ThreadId) => void;
     readonly store: OpensteerStore;
     readonly catalogs?: HarnessCatalogRecorder;
+    readonly automationSecrets?: Pick<AutomationSecrets, "values">;
     readonly triggerControlTokens: TriggerControlTokenService;
     readonly triggers: TriggerStore;
-    readonly teamRequestContext: TeamRequestContextLoader;
-    /** Whether the owner has a durable local team link. */
-    readonly teamsAvailable?: () => Promise<boolean>;
   }) {
+    this.#automationSecrets = options.automationSecrets;
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
@@ -217,8 +238,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#catalogs = options.catalogs ?? options.store;
     this.#triggerControlTokens = options.triggerControlTokens;
     this.#triggers = options.triggers;
-    this.#teamRequestContext = options.teamRequestContext;
-    this.#teamsAvailable = options.teamsAvailable ?? (async () => false);
   }
   isAvailable(command: PendingCommandRow, dispatchingRuns: number): boolean {
     if (!supportedCommandTypes.has(command.type) || command.environmentId === null) return false;
@@ -228,6 +247,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       const identity = this.#runners.identityForEnvironment(command.environmentId);
       if (identity && !identity.capabilities.includes("execution-plane-v2")) return true;
     }
+    // Work for a computer whose person stopped agents on it waits without
+    // dispatch attempts; its Runner says when they resume.
+    if (
+      (command.type === "run.execute" || command.type === "trigger.execute") &&
+      this.#runners.areAgentsStopped(command.environmentId)
+    )
+      return false;
     if (command.type !== "run.execute") return this.#runners.isAttached(command.environmentId);
     // Attachment can wake dispatch before this connection's first account inspection answers.
     if (this.#runnerRegistrationPending(command.environmentId)) return false;
@@ -239,7 +265,22 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     ) {
       return false;
     }
-    return this.#runners.hasRunCapacity(command.environmentId, dispatchingRuns);
+    if (this.#runners.hasRunCapacity(command.environmentId, dispatchingRuns)) return true;
+    // Its computer's Runner runs as many Runs as it may: the Run waits for one of them to end,
+    // and says so. Decided from the row this pass read: written only when it has no hold, and
+    // marked on that row until the next listing reads it again.
+    if (
+      command.runId &&
+      command.runStartHoldReason === null &&
+      this.#runners.isAttached(command.environmentId)
+    ) {
+      command.runStartHoldReason = "waiting-for-run";
+      void this.#store.holdRunForAnotherRun(command.runId).catch(() => {
+        // Shown on a later pass: a failed write only delays the words.
+        command.runStartHoldReason = null;
+      });
+    }
+    return false;
   }
   async dispatch(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId) {
@@ -255,22 +296,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     if (!command.runId) throw new CommandDispatchError("Run command is missing its run", "failed");
     const context = await this.#store.loadRunDispatchContext(command.id);
-    const teamTurnContext: import("@opensteer/core").TeamTurnContext | null =
-      context.run.replyTarget?.kind === "team-thread"
-        ? {
-            kind: "team",
-            asker: null,
-            ...(await this.#teamRequestContext(
-              {
-                runId: context.run.id,
-                requestId: context.run.replyTarget.requestId,
-              },
-              signal,
-            )),
-          }
-        : context.thread.teamOrigin
-          ? { kind: "private" }
-          : null;
     this.#onRunAdmitted(context.thread.id);
     const assignment = context.run.assignmentId
       ? await this.#store.getAssignment(context.run.assignmentId)
@@ -455,27 +480,84 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
+    // The live connection check precedes every credential this Run is issued.
+    // A native Run of the person is known from the rows just read and needs no other query; a
+    // Run whose lineage and task disagree is never treated as the person's.
+    const { runConnectionId, taskOriginConnectionId } = context.lineage;
+    if (taskOriginConnectionId !== null && runConnectionId !== taskOriginConnectionId)
+      throw new CommandDispatchError("This task's authority no longer matches.", "failed");
+    const authority = await (
+      runConnectionId === null
+        ? Promise.resolve({ agentConnection: null, mode: context.run.accessMode } as const)
+        : this.#store.admitExecution({
+            ownerUserId: command.requestedBy,
+            subject: { kind: "binding", bindingId: `run:${context.run.id}` },
+          })
+    ).catch((error: unknown) => {
+      // A chat that is only paused holds its Run until it is back; only an end fails it. The
+      // read that refused it said which.
+      if (runConnectionId !== null && connectionIsWaiting(error)) throw chatRunHeld();
+      throw new CommandDispatchError(
+        error instanceof OpensteerError ? error.message : "This task's access ended.",
+        "failed",
+      );
+    });
+    const lineageGrant = authority.agentConnection?.grant;
+    const selectedGrant = lineageGrant?.scope === "selected" ? lineageGrant : undefined;
+    const grantFamilies = selectedGrant ? agentGrantToolFamilies(selectedGrant) : null;
+    const runAccessMode = authority.agentConnection ? authority.mode : context.run.accessMode;
+    // A selected lineage reads only the places its grant reaches, in every message it is sent.
+    const scrub = async <Message extends { readonly content: readonly ContentPart[] }>(
+      messages: readonly Message[],
+    ): Promise<Message[]> =>
+      selectedGrant
+        ? Promise.all(
+            messages.map(async (message) => ({
+              ...message,
+              content: (await grantedContent(
+                this.#store.database,
+                selectedGrant,
+                message.content,
+              )) as ContentPart[],
+            })),
+          )
+        : [...messages];
+    const sentHistory = await scrub(context.history);
+    const sentInputs = await scrub(context.inputs);
+    const sentReports = await scrub(context.reports.messages);
+    const sentInitial = initialContext ? await scrub(initialContext.messages) : [];
+    const planAccessMode = authority.agentConnection ? authority.mode : context.thread.accessMode;
     const binding = await this.#store
       .acquireExecutionBinding({
         personalContext: context.personalContext,
+        personLineage: context.lineage.personLineage,
         bindingLeaseExpiresAt: new Date(this.#executionNow() + this.#executionLeaseMs),
         continuationIdentity: catalog.continuationIdentity,
         harnessInstanceId: context.run.harnessInstanceId,
         leaseTokenHash: createHash("sha256").update(randomBytes(32)).digest("base64url"),
+        machineBootId: identity.machineBootId ?? null,
         runnerBootId: identity.bootId,
         runnerId: identity.runnerId,
         runId: context.run.id,
         threadId: context.thread.id,
       })
       .catch(async (error: unknown) => {
-        if (!(error instanceof OpensteerError) || error.reason !== "earlier-boots-not-contained")
-          throw error;
-        await this.#store.failCommand(command.id, error.message, "seed-input", "runner_restarted");
-        return undefined;
+        if (error instanceof OpensteerError && error.reason === "earlier-boots-not-contained") {
+          await this.#store.failCommand(
+            command.id,
+            error.message,
+            "seed-input",
+            "runner_restarted",
+          );
+          return undefined;
+        }
+        if (error instanceof OpensteerError && error.reason === "previous-stop-unconfirmed") {
+          await this.#store.retryCommand(command.id, error);
+          return undefined;
+        }
+        throw error;
       });
     if (!binding) return;
-    const teamsAvailable = await this.#teamsAvailable();
-    const knowledge = context.personalContext && teamsAvailable;
     const toolsToken = this.#runToolTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
@@ -490,7 +572,14 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     if (skillPolicy && !identity.capabilities.includes("settings-plugin-policy-v1")) {
       throw new CommandDispatchError("Update this Runner to enforce skill settings.", "failed");
     }
-    const pinnedPlugins = await this.#pluginVersions(command.requestedBy);
+    const pinnedPlugins = (await this.#pluginVersions(command.requestedBy)).filter(
+      (plugin) =>
+        !selectedGrant ||
+        agentGrantAccess(selectedGrant, {
+          kind: "plugin",
+          target: { kind: "installed", pluginId: plugin.pluginId },
+        }) !== null,
+    );
     const pluginsToken = this.#pluginsTokens.issue({
       pluginDigests: pinnedPlugins.map((plugin) => plugin.digest),
       bindingGeneration: binding.bindingGeneration,
@@ -524,23 +613,28 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const settingsFile = context.personalContext
       ? (await this.#store.getAgentHomeSettings(context.run.requestedBy)).file
       : null;
+    const browserGranted = !grantFamilies || grantFamilies.has("browser");
     const toolsPlan = agentToolsPlanForRun({
       capabilities: {
-        tabs: context.personalContext,
+        tabs: context.personalContext && (browserGranted || grantFamilies!.has("tasks")),
         pages:
-          context.personalContext && runHasBrowserPages(harness.driverKind, context.run.accessMode),
-        computerUse: context.personalContext && identity.modules.agents?.computerTool === 1,
-        apps: context.personalContext,
+          context.personalContext &&
+          browserGranted &&
+          runHasBrowserPages(harness.driverKind, runAccessMode),
+        computerUse:
+          context.personalContext &&
+          identity.modules.agents?.computerTool === 1 &&
+          (!grantFamilies || grantFamilies.has("computer")),
+        apps: context.personalContext && !selectedGrant,
       },
+      ...(lineageGrant ? { grant: lineageGrant } : {}),
       settingsError: settingsFile?.error,
       voiceCall: Boolean(context.voiceCall),
       token: toolsToken,
       url: this.#agentToolsUrl,
       purpose: context.thread.purpose,
-      teamsAvailable,
       personalContext: context.personalContext,
-      knowledge,
-      accessMode: context.thread.accessMode,
+      accessMode: planAccessMode,
     });
     const maintenanceSnapshot = context.run.maintenance
       ? await this.#store.database
@@ -566,10 +660,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
               voiceCall: context.voiceCall,
             }
           : {}),
-        accessMode: context.run.accessMode,
+        accessMode: runAccessMode,
         taskPurpose: context.thread.purpose,
-        teamTurnContext,
         personalContext: context.personalContext,
+        // The person wrote their engine's settings for their own use; work a
+        // connected agent or a chat started or wrote into never runs with them.
+        // Decided where personal context is decided (`runContextLineage`).
+        personLineage: context.lineage.personLineage,
         threadState,
         assignment: assignment
           ? {
@@ -625,7 +722,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         harnessInstanceId: context.run.harnessInstanceId,
         // Binding proves whether a native conversation exists. Unstarted
         // attempts remain in the UI, but are not a conversation to replay.
-        history: binding.providerSessionReference && !initialContext ? [...context.history] : [],
+        history: binding.providerSessionReference && !initialContext ? sentHistory : [],
         historyWindow:
           binding.providerSessionReference && !initialContext
             ? context.historyWindow
@@ -636,7 +733,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
               },
         initialContext: initialContext
           ? {
-              messages: [...initialContext.messages],
+              messages: sentInitial,
               omittedCount: initialContext.omittedCount,
               throughSequence:
                 initialContext.throughSequence === null
@@ -655,10 +752,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       },
       correlationId: CorrelationIdSchema.parse(command.id),
       environmentId: context.run.environmentId,
-      inputs: context.inputs.map((message) =>
+      inputs: sentInputs.map((message) =>
         HarnessInputSchema.parse({
           author: message.author,
-          ...(message.ownerEdited ? { ownerEdited: true } : {}),
           content: message.content,
           createdAt: message.createdAt,
           kind: message.kind,
@@ -674,10 +770,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         }),
       ),
       reports: {
-        messages: context.reports.messages.map((message) =>
+        messages: sentReports.map((message) =>
           HarnessInputSchema.parse({
             author: message.author,
-            ...(message.ownerEdited ? { ownerEdited: true } : {}),
             content: message.content,
             createdAt: message.createdAt,
             kind: message.kind,
@@ -704,7 +799,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         runners: this.#runners,
         serializedCommandBytes: (access) =>
           new TextEncoder().encode(JSON.stringify(runnerCommandFor(access))).byteLength,
-        store: this.#store,
+        // Remote Devices have no selected resource kind, so a selected lineage reaches none.
+        store: selectedGrant ? { listReachableMachines: async () => [] } : this.#store,
       }),
     );
     // The Runner measures the Run's first lease from when it receives the Run,
@@ -728,8 +824,29 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // Recheck it at the send itself, so a revocation that committed meanwhile,
     // a Stop included, cannot launch new work.
     const dispatch = {
-      beforeSend: () =>
-        this.#store.assertActiveGrant({
+      beforeSend: async () => {
+        if (authority.agentConnection) {
+          const connectionId = authority.agentConnection.agentConnectionId;
+          try {
+            await this.#assertPlannedAuthority(context.run, authority);
+            await this.#store.recordConnectionRunHandoff({
+              runId: context.run.id,
+              bindingGeneration: binding.bindingGeneration,
+              connectionId,
+              grantRevision: authority.agentConnection.grantRevision,
+              mode: authority.mode,
+            });
+          } catch (error) {
+            // Paused while the Run was being prepared: held for the chat, as at the first check.
+            if (connectionIsWaiting(error)) throw chatRunHeld();
+            // Its message's sender stopped being "me" since the claim: it ends, and the chat
+            // hears nothing (run-finalization reads this failure).
+            if (error instanceof OpensteerError && error.message === senderUnlinkedFailure)
+              throw new CommandDispatchError(senderUnlinkedFailure, "failed");
+            throw error;
+          }
+        }
+        await this.#store.assertActiveGrant({
           bindingGeneration: binding.bindingGeneration,
           grantId: binding.grantId,
           environmentId: context.run.environmentId,
@@ -738,19 +855,34 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           runnerBootId: identity.bootId,
           runnerId: identity.runnerId,
           threadId: context.thread.id,
-        }),
+        });
+      },
+      ...(authority.agentConnection
+        ? {
+            onNotAdmitted: () =>
+              this.#store.recordRunNotAdmitted(context.run.id, binding.bindingGeneration),
+          }
+        : {}),
       connectionGeneration: identity.connectionGeneration,
     };
-    if (command.authoritySource.kind === "channel-ingress") {
-      await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
-        await this.#runners.dispatch(runnerCommand, signal, {
-          ...dispatch,
-          beforeAck,
-        });
-      });
-    } else {
-      await this.#runners.dispatch(runnerCommand, signal, dispatch);
-    }
+    await this.#runners.dispatch(runnerCommand, signal, dispatch);
+  }
+  async #assertPlannedAuthority(
+    run: { readonly id: RunId; readonly requestedBy: UserId },
+    planned: Awaited<ReturnType<OpensteerStore["admitExecution"]>>,
+  ): Promise<void> {
+    const current = await this.#store.admitExecution({
+      ownerUserId: run.requestedBy,
+      subject: { kind: "binding", bindingId: `run:${run.id}` },
+    });
+    if (
+      current.agentConnection?.grantRevision !== planned.agentConnection?.grantRevision ||
+      current.mode !== planned.mode
+    )
+      throw new CommandDispatchError(
+        "This connected agent's access changed while the Run was being prepared.",
+        "retry",
+      );
   }
   async #dispatchTrigger(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId) {
@@ -758,11 +890,26 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     const identity = this.#runners.identityForEnvironment(command.environmentId);
     if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
-    const initial = await this.#triggers.loadDispatchContext(command.id);
-    const incompatibility = await triggerProgramCompatibilityReason(
+    // An automation of a paused chat or an anchor with an unconfirmed Stop is held, never failed:
+    // only when the one read of its standing refused it for that, before anything is handed to the
+    // Runner. A conflict, a missing row or a lineage without personal context fails as itself.
+    // Once the send has passed, what happens is the Runner's, and an unknown end stays unknown.
+    const heldIfWaiting = async <T>(step: () => Promise<T>): Promise<T> => {
+      try {
+        return await step();
+      } catch (error) {
+        if (triggerChatIsWaiting(error)) throw chatRunHeld();
+        if (triggerAnchorStopIsHeld(error)) throw anchorStopHeld();
+        throw error;
+      }
+    };
+    const initial = await heldIfWaiting(() => this.#triggers.loadDispatchContext(command.id));
+    if (!initial.script) {
+      throw new CommandDispatchError(TRIGGER_SCRIPT_UPDATE_REASON, "failed");
+    }
+    const incompatibility = await automationScriptCompatibilityReason(
       this.#store,
       initial.anchorThread.environmentId,
-      initial.revision.program.toolContractVersion,
     );
     if (incompatibility) throw new CommandDispatchError(incompatibility, "failed");
     const toolsFailure = runnerAgentToolsFailure(identity.capabilities);
@@ -773,75 +920,127 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    const { context, executionGeneration } = await this.#triggers.startExecution({
-      commandId: command.id,
+    this.#dispatchingTriggers.set(initial.occurrence.id, {
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
     });
-    this.#onTriggerChanged();
-    const program = context.revision.program;
-    if (!isExecutableTriggerProgram(program)) {
-      throw new CommandDispatchError(TRIGGER_PROGRAM_VERSION_REFUSAL, "failed");
-    }
-    const capabilityToken = this.#triggerControlTokens.issue({
-      environmentId: context.anchorThread.environmentId,
-      executionGeneration,
-      occurrenceId: context.occurrence.id,
-      requestedBy: context.trigger.createdBy,
-      runnerBootId: identity.bootId,
-      runnerId: identity.runnerId,
-      threadId: context.anchorThread.id,
-      toolContractVersion: program.toolContractVersion,
-    });
-    const hasBrowser = await this.#browser.hasBrowserProfiles(context.trigger.createdBy);
-    const runnerCommand: RunnerCommand = {
-      commandId: command.id,
-      context: {
-        anchorThreadId: context.anchorThread.id,
-        browserCdp: hasBrowser
-          ? {
-              token: capabilityToken,
-              url: this.#browserCdpUrl,
-            }
-          : null,
-        event: context.occurrence.event,
-        executionGeneration,
-        mcp: {
-          token: capabilityToken,
-          url: this.#agentToolsUrl,
-        },
-        occurrenceId: context.occurrence.id,
-        program,
-        revisionId: context.revision.id,
-        triggerId: context.trigger.id,
-      },
-      correlationId: CorrelationIdSchema.parse(command.id),
-      environmentId: context.anchorThread.environmentId,
-      agentHome: context.agentHome,
-      type: "trigger.execute",
-    };
-    // Trigger setup can cross a stop transaction. Make the
-    // running occurrence generation and its execution authority current at the
-    // same boundary where the command leaves the Host.
-    await this.#triggers.assertActiveExecutionBinding({
-      environmentId: context.anchorThread.environmentId,
-      executionGeneration,
-      occurrenceId: context.occurrence.id,
-      requestedBy: context.trigger.createdBy,
-      runnerBootId: identity.bootId,
-      runnerId: identity.runnerId,
-      threadId: context.anchorThread.id,
-    });
-    if (signal.aborted) {
-      throw (
-        signal.reason ??
-        new OpensteerError({
-          code: "internal",
-          message: "Dispatch aborted",
-        })
+    try {
+      const { context, executionGeneration, connectionId } = await heldIfWaiting(() =>
+        this.#triggers.startExecution({
+          commandId: command.id,
+          runnerBootId: identity.bootId,
+          runnerId: identity.runnerId,
+        }),
       );
+      const notAdmitted = connectionId
+        ? () =>
+            this.#triggers.recordOccurrenceNotAdmitted(context.occurrence.id, executionGeneration)
+        : undefined;
+      this.#onTriggerChanged();
+      const script = context.script;
+      if (!script) {
+        await notAdmitted?.();
+        throw new CommandDispatchError(TRIGGER_SCRIPT_UPDATE_REASON, "failed");
+      }
+      const { capabilityToken, hasBrowser, secrets } = await (async () => {
+        try {
+          const capabilityToken = this.#triggerControlTokens.issue({
+            environmentId: context.anchorThread.environmentId,
+            executionGeneration,
+            occurrenceId: context.occurrence.id,
+            requestedBy: context.trigger.createdBy,
+            runnerBootId: identity.bootId,
+            runnerId: identity.runnerId,
+            threadId: context.anchorThread.id,
+          });
+          const [hasBrowser, secrets] = await Promise.all([
+            this.#browser.hasBrowserProfiles(
+              context.trigger.createdBy,
+              `trigger:${context.occurrence.id}`,
+            ),
+            context.encryptedSecrets && this.#automationSecrets
+              ? this.#automationSecrets.values(context.trigger.id, context.encryptedSecrets)
+              : Promise.resolve<Readonly<Record<string, string>>>({}),
+          ]);
+          signal.throwIfAborted();
+          return { capabilityToken, hasBrowser, secrets };
+        } catch (error) {
+          await notAdmitted?.();
+          throw error;
+        }
+      })();
+      const digest = createHash("sha256")
+        .update(`trigger.execute:${command.id}:${executionGeneration}`)
+        .digest("hex");
+      const attemptCommandId = CommandIdSchema.parse(
+        `cmd_${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`,
+      );
+      const runnerCommand: RunnerCommand = {
+        commandId: attemptCommandId,
+        context: {
+          anchorThreadId: context.anchorThread.id,
+          browserCdp: hasBrowser
+            ? {
+                token: capabilityToken,
+                url: this.#browserCdpUrl,
+              }
+            : null,
+          event: context.occurrence.event,
+          executionGeneration,
+          mcp: {
+            token: capabilityToken,
+            url: this.#agentToolsUrl,
+          },
+          occurrenceId: context.occurrence.id,
+          revisionId: context.revision.id,
+          script,
+          ...(Object.keys(secrets).length > 0 ? { secrets: { ...secrets } } : {}),
+          triggerId: context.trigger.id,
+          ...(context.webhookBody
+            ? { webhookBodyBase64: context.webhookBody.toString("base64") }
+            : {}),
+        },
+        correlationId: CorrelationIdSchema.parse(attemptCommandId),
+        environmentId: context.anchorThread.environmentId,
+        agentHome: context.agentHome,
+        type: "trigger.execute",
+      };
+      // Trigger setup can cross a stop transaction. Make the
+      // running occurrence generation and its execution authority current at the
+      // same boundary where the command leaves the Host.
+      await this.#runners.dispatch(runnerCommand, signal, {
+        connectionGeneration: identity.connectionGeneration,
+        beforeAck: () =>
+          this.#triggers.acceptExecution({
+            commandId: command.id,
+            executionGeneration,
+            runnerBootId: identity.bootId,
+            runnerId: identity.runnerId,
+          }),
+        // Held here, the Runner never had it: the registry records it not admitted, which undoes
+        // the running stamp, and the coordinator returns it to pending.
+        beforeSend: async () => {
+          await heldIfWaiting(() =>
+            this.#triggers.assertActiveExecutionBinding({
+              environmentId: context.anchorThread.environmentId,
+              executionGeneration,
+              occurrenceId: context.occurrence.id,
+              rejectHeldAnchor: true,
+              requestedBy: context.trigger.createdBy,
+              runnerBootId: identity.bootId,
+              runnerId: identity.runnerId,
+              threadId: context.anchorThread.id,
+            }),
+          );
+        },
+        // Z4: Stamp frame_sent_at at the point of no return inside RunnerRegistry.dispatch,
+        // after every refusing check (offline, connection replaced, agents stopped, aborted).
+        beforeWireSend: () => this.#store.markCommandFrameSent(command.id),
+        ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
+      });
+    } finally {
+      this.#dispatchingTriggers.delete(initial.occurrence.id);
     }
-    await this.#runners.dispatch(runnerCommand, signal);
   }
   async #dispatchControl(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId)
@@ -896,6 +1095,15 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       case "run.interrupt":
         runnerCommand = {
           ...base,
+          ...(payload.data.stop &&
+          this.#runners
+            .identityForEnvironment(command.environmentId)
+            ?.capabilities.includes(attemptStopStateCapability)
+            ? { stop: payload.data.stop }
+            : {}),
+          ...(payload.data.expectedBindingGeneration
+            ? { bindingGeneration: payload.data.expectedBindingGeneration }
+            : {}),
           runId: payload.data.runId,
           threadId: payload.data.threadId,
           type: "run.interrupt",
@@ -951,7 +1159,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           ...base,
           input: HarnessInputSchema.parse({
             author: steer.message.author,
-            ...(steer.message.ownerEdited ? { ownerEdited: true } : {}),
             content: steer.message.content,
             createdAt: steer.message.createdAt,
             kind: steer.message.kind,
@@ -972,25 +1179,31 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           threadId: steer.threadId,
           type: "run.steer",
         };
-        await this.#dispatchSteer(command, runnerCommand, signal, async () => {
-          if (!steer.message.content.some((part) => part.type !== "text")) return;
-          const harness = await this.#store.getHarnessInstance(steer.run.harnessInstanceId);
-          if (!harness?.enabled || harness.environmentId !== steer.run.environmentId) {
-            throw new CommandDispatchError(
-              "The active AI engine is no longer available.",
-              "failed",
-            );
-          }
-          const failure = this.#runners.attachmentInputFailure({
-            content: steer.message.content,
-            driverKind: harness.driverKind,
-            environmentId: steer.run.environmentId,
-            harnessInstanceId: steer.run.harnessInstanceId,
-            modelSelection: steer.run.modelSelection,
-            steering: true,
-          });
-          if (failure) throw new CommandDispatchError(failure, "failed");
-        });
+        await this.#dispatchSteer(
+          command,
+          runnerCommand,
+          signal,
+          async () => {
+            if (!steer.message.content.some((part) => part.type !== "text")) return;
+            const harness = await this.#store.getHarnessInstance(steer.run.harnessInstanceId);
+            if (!harness?.enabled || harness.environmentId !== steer.run.environmentId) {
+              throw new CommandDispatchError(
+                "The active AI engine is no longer available.",
+                "failed",
+              );
+            }
+            const failure = this.#runners.attachmentInputFailure({
+              content: steer.message.content,
+              driverKind: harness.driverKind,
+              environmentId: steer.run.environmentId,
+              harnessInstanceId: steer.run.harnessInstanceId,
+              modelSelection: steer.run.modelSelection,
+              steering: true,
+            });
+            if (failure) throw new CommandDispatchError(failure, "failed");
+          },
+          steer.reauthorize,
+        );
         return;
       }
     }
@@ -1012,18 +1225,21 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     >,
     signal: AbortSignal,
     validate: () => Promise<void>,
+    reauthorize?: () => Promise<void>,
   ): Promise<void> {
     try {
       await validate();
-      if (command.authoritySource.kind === "channel-ingress") {
-        await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
-          await this.#runners.dispatch(runnerCommand, signal, {
-            beforeAck,
-          });
+      const beforeSend =
+        reauthorize &&
+        (async () => {
+          try {
+            await reauthorize();
+          } catch (error) {
+            if (!(error instanceof OpensteerError) || error.code !== "forbidden") throw error;
+            throw new CommandDispatchError(error.message, "failed");
+          }
         });
-        return;
-      }
-      await this.#runners.dispatch(runnerCommand, signal);
+      await this.#runners.dispatch(runnerCommand, signal, beforeSend ? { beforeSend } : undefined);
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;
       await this.#store.refuseSteer(
@@ -1035,4 +1251,18 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     await this.#store.succeedCommand(command.id);
   }
+}
+
+/** A Run of a paused chat waits for the chat: no failure, no error, no timer; its resume wakes it. */
+function chatRunHeld(): CommandDispatchError {
+  return new CommandDispatchError("Its chat is paused; this waits until it is back.", "held");
+}
+
+/** An automation whose anchor has an unconfirmed Stop stays held until proof clears the hold. */
+function anchorStopHeld(): CommandDispatchError {
+  return new CommandDispatchError(
+    "Stopping could not be confirmed. Automation is held while something from the previous Run may still be running on that device.",
+    "held",
+    { provenNotStarted: true },
+  );
 }

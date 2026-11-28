@@ -1,6 +1,7 @@
 import { createId, type RunnerId } from "@opensteer/core";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import {
+  agentSessionGuardsCapability,
   macOwnerViewVersion,
   mintComputerUseSessionId,
   runnerIntegrationsProtocolVersion,
@@ -26,6 +27,7 @@ import {
   type ComputerAppInvokeOutcome,
   type ComputerUseSendInput,
 } from "./computer-app-hub.js";
+import { releasedRunnerCapabilities } from "./released-runner.test-support.js";
 
 const messages = "apple-messages";
 const contract = "a".repeat(43);
@@ -438,6 +440,52 @@ describe("ComputerAppHub", () => {
     it("still streams a Mac on owner-view version 2", async () => {
       await attachMac(2);
       expect(hub.displayStream(runnerId)).toMatchObject({ mac: true, displayProfile: 1 });
+    });
+
+    it("reads a Mac whose helper has not answered as still connecting, then supported once it does", async () => {
+      const initial = integrationsStream({ runnerId });
+      const stream = {
+        ...initial,
+        identity: {
+          ...initial.identity,
+          modules: {
+            integrations: {
+              platform: "darwin" as const,
+              protocolVersion: runnerIntegrationsProtocolVersion,
+              computerUseVersion: 2 as const,
+              macWindowVideoVersion: 1 as const,
+              displayProfile: 1 as const,
+              ownerViewVersion: macOwnerViewVersion,
+            },
+          },
+        },
+      };
+      const peer = controlPeer();
+      hub.attach(peer, stream);
+      // The first status went out before the helper's handshake.
+      await hub.handleMessage(peer, stream, {
+        ...statusFrame(stream, [ready(messages)]),
+        ownerViewPending: true,
+        displayAvailable: false,
+      });
+      expect(hub.reportsApp(runnerId, messages)).toBe("reported");
+      expect(hub.ownerViewSupported(runnerId)).toBe(false);
+      expect(hub.ownerViewReported(runnerId)).toBe(false);
+      // The helper answers: the same stream, no restart.
+      await hub.handleMessage(peer, stream, {
+        ...statusFrame(stream, [ready(messages)]),
+        ownerViewVersion: macOwnerViewVersion,
+        displayAvailable: true,
+      });
+      expect(hub.ownerViewSupported(runnerId)).toBe(true);
+      expect(hub.ownerViewReported(runnerId)).toBe(true);
+      expect(hub.displayStream(runnerId)).toMatchObject({ mac: true, displayProfile: 1 });
+    });
+
+    it("reads a Mac whose helper answered without the owner-view version as unsupported", async () => {
+      await attachMac(undefined);
+      expect(hub.ownerViewReported(runnerId)).toBe(true);
+      expect(hub.ownerViewSupported(runnerId)).toBe(false);
     });
 
     it.each([undefined, 1, macOwnerViewVersion + 1])(
@@ -1500,4 +1548,73 @@ it("isolates a synchronous assignment send failure from other Runners", async ()
     hub.close();
     drivers.close();
   }
+});
+
+describe("a connected agent's guarded operations", () => {
+  afterEach(() => vi.useRealTimers());
+
+  function attached(capabilities: readonly string[]) {
+    const runnerId = createId("runner");
+    const recorded: { runnerId: RunnerId; connectionGeneration: number }[] = [];
+    const hub = new ComputerAppHub({
+      knownDefinitionIds: () => new Set([messages]),
+      onChanged: () => undefined,
+      recordRunnerOutdated: async (runner) => {
+        recorded.push({ ...runner });
+      },
+    });
+    const peer = controlPeer();
+    const base = integrationsStream({ runnerId });
+    const stream = {
+      ...base,
+      identity: {
+        ...base.identity,
+        capabilities,
+        connectionGeneration: 3,
+        modules: { integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 2 } },
+      },
+    } as RunnerAuxiliaryStream;
+    hub.attach(peer, stream);
+    return { hub, peer, recorded, runnerId, stream };
+  }
+
+  it("refuses them on a released Runner before any frame, records it, and keeps its stream", async () => {
+    vi.useFakeTimers();
+    const { hub, peer, recorded, runnerId, stream } = attached(releasedRunnerCapabilities);
+    await hub.handleMessage(peer, stream, {
+      ...stream.fence,
+      module: "integrations",
+      type: "runner.integrations.status",
+      apps: [],
+      passwordSignIn: 2,
+    });
+    expect(hub.agentSessionGuardsSupported(runnerId)).toBe(false);
+    await expect(
+      hub.refuseOutdatedForAgentSession(runnerId, "fill a saved login for a connected agent"),
+    ).resolves.toBe("Update Opensteer on example-mac to fill a saved login for a connected agent.");
+    expect(recorded).toEqual([{ runnerId, connectionGeneration: 3 }]);
+    expect(peer.sent).toEqual([]);
+    expect(peer.closes).toEqual([]);
+    expect(hub.attached(runnerId)).toBe(true);
+    // Everything else the computer does keeps going over the same stream.
+    const probe = hub.sendPasswordSignIn(runnerId, {
+      type: "signin.probe",
+      site: "https://example.com",
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(peer.sent.map((frame) => frame.type)).toEqual(["host.integrations.password-sign-in"]);
+    hub.detach(peer, "transport-disconnected");
+    await probe.catch(() => undefined);
+    hub.close();
+  });
+
+  it("lets them reach a Runner of this release", () => {
+    const { hub, recorded, runnerId } = attached([
+      ...releasedRunnerCapabilities,
+      agentSessionGuardsCapability,
+    ]);
+    expect(hub.agentSessionGuardsSupported(runnerId)).toBe(true);
+    expect(recorded).toEqual([]);
+    hub.close();
+  });
 });

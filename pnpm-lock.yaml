@@ -66,9 +66,6 @@ catalogs:
     fflate:
       specifier: 0.8.2
       version: 0.8.2
-    google-auth-library:
-      specifier: 11.3.4
-      version: 11.3.4
     jose:
       specifier: 6.2.8
       version: 6.2.8
@@ -131,7 +128,7 @@ overrides:
 
 patchedDependencies:
   '@alchemy.run/cloudflare-runtime@2.0.0-beta.80':
-    hash: 87a375aeb28555699f2a51f6c58a807e230a73193394e39402bd7ceb6034641c
+    hash: bbb5281787d4ed0911280ad816761d50b70d6a56cc8e3ae809f7ebcad7c82583
     path: patches/plugin-engine-@alchemy.run__cloudflare-runtime@2.0.0-beta.80.patch
   '@cfworker/json-schema@4.1.1':
     hash: 1d30613a7216191fa8540fd90e104d5be88e4ac44528ed16072b384856a7beea
@@ -270,6 +267,9 @@ importers:
       '@opensteer/browser-source-wire':
         specifier: workspace:*
         version: link:../../packages/browser-source-wire
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       zod:
         specifier: 'catalog:'
         version: 4.6.7
@@ -681,11 +681,45 @@ importers:
         specifier: 'catalog:'
         version: 4.1.10(@types/node@26.2.0)(esbuild@0.27.7)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1)
 
+  apps/home-provisioner:
+    dependencies:
+      '@opensteer/browser-runtime-core':
+        specifier: workspace:*
+        version: link:../../packages/browser-runtime-core
+      '@opensteer/control-plane-protocol':
+        specifier: workspace:*
+        version: link:../../packages/control-plane-protocol
+      '@opensteer/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@opensteer/deployment-authority':
+        specifier: workspace:*
+        version: link:../../packages/deployment-authority
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.2.0
+      tsup:
+        specifier: 'catalog:'
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.26)(tsx@4.23.11)(typescript@7.0.2)(yaml@2.9.1)
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1)
+
   apps/host:
     dependencies:
       '@alchemy.run/cloudflare-runtime':
         specifier: 2.0.0-beta.80
-        version: 2.0.0-beta.80(patch_hash=87a375aeb28555699f2a51f6c58a807e230a73193394e39402bd7ceb6034641c)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))
+        version: 2.0.0-beta.80(patch_hash=bbb5281787d4ed0911280ad816761d50b70d6a56cc8e3ae809f7ebcad7c82583)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))
       '@distilled.cloud/cloudflare':
         specifier: 1.0.0-rc.13
         version: 1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))
@@ -788,6 +822,9 @@ importers:
       '@opensteer/runner-auth':
         specifier: workspace:*
         version: link:../../packages/runner-auth
+      '@opensteer/runner-client':
+        specifier: workspace:*
+        version: link:../../packages/runner-client
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -909,6 +946,9 @@ importers:
       '@fontsource-variable/inter':
         specifier: ^5.3.0
         version: 5.3.0
+      '@opensteer/control-plane-protocol':
+        specifier: workspace:*
+        version: link:../../packages/control-plane-protocol
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -1115,6 +1155,43 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
+      unicode-segmenter:
+        specifier: 0.17.3
+        version: 0.17.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1)
+      yoga-layout:
+        specifier: 3.2.1
+        version: 3.2.1
+
+  apps/pool-agent:
+    dependencies:
+      '@opensteer/access':
+        specifier: workspace:*
+        version: link:../../packages/access
+      '@opensteer/browser-runtime-core':
+        specifier: workspace:*
+        version: link:../../packages/browser-runtime-core
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.2.0
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      tsup:
+        specifier: 'catalog:'
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.26)(tsx@4.23.11)(typescript@7.0.2)(yaml@2.9.1)
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
       vitest:
         specifier: 'catalog:'
         version: 4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1)
@@ -1248,43 +1325,6 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
-
-  apps/team-provisioner:
-    dependencies:
-      '@google-cloud/storage':
-        specifier: 'catalog:'
-        version: 9.0.0
-      '@opensteer/control-plane-protocol':
-        specifier: workspace:*
-        version: link:../../packages/control-plane-protocol
-      '@opensteer/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      google-auth-library:
-        specifier: 'catalog:'
-        version: 11.3.4
-      pg:
-        specifier: 'catalog:'
-        version: 8.23.0
-      zod:
-        specifier: 'catalog:'
-        version: 4.6.7
-    devDependencies:
-      '@types/node':
-        specifier: 'catalog:'
-        version: 26.2.0
-      '@types/pg':
-        specifier: 'catalog:'
-        version: 8.21.0
-      tsup:
-        specifier: 'catalog:'
-        version: 8.5.1(jiti@2.7.0)(postcss@8.5.26)(tsx@4.23.11)(typescript@7.0.2)(yaml@2.9.1)
-      typescript:
-        specifier: 'catalog:'
-        version: 7.0.2
-      vitest:
-        specifier: 'catalog:'
-        version: 4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1)
 
   apps/web:
     dependencies:
@@ -1549,6 +1589,10 @@ importers:
   packages/apple-dictation: {}
 
   packages/browser-core:
+    dependencies:
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@opensteer/protocol':
         specifier: workspace:*
@@ -2734,7 +2778,7 @@ importers:
     dependencies:
       '@alchemy.run/cloudflare-runtime':
         specifier: 2.0.0-beta.80
-        version: 2.0.0-beta.80(patch_hash=87a375aeb28555699f2a51f6c58a807e230a73193394e39402bd7ceb6034641c)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))
+        version: 2.0.0-beta.80(patch_hash=bbb5281787d4ed0911280ad816761d50b70d6a56cc8e3ae809f7ebcad7c82583)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))
       '@cfworker/json-schema':
         specifier: 4.1.1
         version: 4.1.1(patch_hash=1d30613a7216191fa8540fd90e104d5be88e4ac44528ed16072b384856a7beea)
@@ -11020,6 +11064,9 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
+  yoga-layout@3.2.1:
+    resolution: {integrity: sha512-0LPOt3AxKqMdFBZA3HBAt/t/8vIKq7VaQYbuA8WxCgung+p9TVyKRYdpvCb80HcdTN2NkbIKbhNwKUfm3tQywQ==}
+
   youch-core@0.3.3:
     resolution: {integrity: sha512-ho7XuGjLaJ2hWHoK8yFnsUGy2Y5uDpqSTq1FkHLK4/oqKtyUU1AFbOOxY4IpC9f0fTLjwYbslUz0Po5BpD1wrA==}
 
@@ -11050,7 +11097,7 @@ snapshots:
     dependencies:
       zod: 4.6.7
 
-  '@alchemy.run/cloudflare-runtime@2.0.0-beta.80(patch_hash=87a375aeb28555699f2a51f6c58a807e230a73193394e39402bd7ceb6034641c)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))':
+  '@alchemy.run/cloudflare-runtime@2.0.0-beta.80(patch_hash=bbb5281787d4ed0911280ad816761d50b70d6a56cc8e3ae809f7ebcad7c82583)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))':
     dependencies:
       '@alchemy.run/node-utils': 2.0.0-beta.80
       '@cloudflare/unenv-preset': 2.16.2(unenv@2.0.0-rc.25)(workerd@1.20260918.1)
@@ -20263,6 +20310,8 @@ snapshots:
       pend: 1.2.0
 
   yocto-queue@0.1.0: {}
+
+  yoga-layout@3.2.1: {}
 
   youch-core@0.3.3:
     dependencies:

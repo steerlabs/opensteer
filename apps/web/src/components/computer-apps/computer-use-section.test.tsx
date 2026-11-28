@@ -57,7 +57,7 @@ describe("ComputerUseBlock", () => {
     expect(container.querySelectorAll(".computer-use__grant--done")).toHaveLength(1);
     expect(button(container, "Set up on this Mac")).toBeNull();
     expect(container.textContent).toContain(
-      "Set up from Studio. In the Opensteer desktop app there, open Settings → Computers → Studio.",
+      "Set up from Studio. In the Opensteer desktop app there, open Settings → Devices → Studio.",
     );
   });
 
@@ -349,6 +349,61 @@ describe("ComputerUseBlock", () => {
     expect(document.querySelector(".dialog")).toBeNull();
   });
 
+  it("shows one dialog at a time: the review takes the picker's place, and closing it returns there", async () => {
+    const onChanged = vi.fn(async () => undefined);
+    const { container } = await mount({
+      dispatch: async (command) => ({ type: command.type, request: { id: setupRequestId } }),
+      local: null,
+      onChanged,
+      rpc: {
+        "integration.computer.apps.installed": async () => ({
+          ok: true,
+          data: { apps: [{ identity: preview, running: false }], total: 1 },
+        }),
+      },
+      view: view({}),
+    });
+    await click(button(container, "Add app"));
+    await settle();
+    const search = document.querySelector<HTMLInputElement>(
+      '[aria-label="Search installed apps"]',
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        search,
+        "Prev",
+      );
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    const candidate = document.querySelector<HTMLElement>(".computer-use__list > li")!;
+    await click(button(candidate, "Can see and control"));
+    await settle();
+    // The review alone is open: nothing covers its Allow.
+    const open = () => [...document.querySelectorAll<HTMLElement>(".dialog")];
+    expect(open()).toHaveLength(1);
+    expect(button(open()[0]!, "Allow")).not.toBeNull();
+    // Closed without a decision: back in the picker, as it was.
+    await click(open()[0]!.querySelector<HTMLButtonElement>('[aria-label="Close"]'));
+    await settle();
+    expect(open()).toHaveLength(1);
+    expect(open()[0]!.textContent).toContain(`Add an app on`);
+    expect(
+      document.querySelector<HTMLInputElement>('[aria-label="Search installed apps"]')?.value,
+    ).toBe("Prev");
+    const again = document.querySelector<HTMLElement>(".computer-use__list > li")!;
+    expect(button(again, "Can see and control")?.disabled).toBe(false);
+    expect(again.textContent).not.toContain("Couldn't confirm");
+    expect(onChanged).not.toHaveBeenCalled();
+    // Allowed: the review closes and so does the picker.
+    await click(button(again, "Can see and control"));
+    await settle();
+    expect(open()).toHaveLength(1);
+    await click(button(open()[0]!, "Allow"));
+    expect(document.querySelector(".dialog")).toBeNull();
+    expect(onChanged).toHaveBeenCalledOnce();
+  });
+
   it("leaves the picker retryable when the helper cannot verify the app", async () => {
     const review = deferred<unknown>();
     const { container } = await mount({
@@ -606,7 +661,7 @@ describe("ComputerUseBlock", () => {
     const answer = deferred<unknown>();
     const stop = vi.fn(async () => answer.promise);
     const { container } = await mount({
-      rpc: { "integration.computer.session.stop": stop },
+      dispatch: stop,
       view: view({
         sessions: [session("cus_00000000-0000-4000-8000-000000000001", [notes], "Plan")],
       }),

@@ -1,7 +1,7 @@
 import { DeploymentCatalogSchema, emptyDeploymentCatalog } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
 import { createId } from "@opensteer/core";
-import { knownHostCapabilities } from "@opensteer/deployment-authority";
+import { HostDescriptorSchema, knownHostCapabilities } from "@opensteer/deployment-authority";
 import { DeploymentAccessDeploymentSchema } from "@opensteer/protocol/desktop";
 import { expect, it } from "vitest";
 import { advertisedCapabilities } from "../server.js";
@@ -29,7 +29,7 @@ it("fits a fully enabled Personal Host in the shipped deployment parsers", () =>
   });
   expect(capabilities.length).toBeLessThanOrEqual(32);
   expect(knownHostCapabilities([...capabilities, "task-attachments"])).toEqual(capabilities);
-  DeploymentCatalogSchema.parse({
+  const catalog = {
     ...emptyDeploymentCatalog(),
     revision: 1,
     updatedAt: now,
@@ -49,7 +49,27 @@ it("fits a fully enabled Personal Host in the shipped deployment parsers", () =>
         updatedAt: now,
       },
     ],
-  });
+  } as const;
+  DeploymentCatalogSchema.parse(catalog);
+
+  const oversized = [...capabilities, ...Array<string>(33 - capabilities.length).fill("unknown")];
+  expect(
+    HostDescriptorSchema.parse({
+      kind: "personal",
+      apiVersion: 1,
+      authority,
+      bootstrapMethods: [],
+      capabilities: oversized,
+    }).capabilities,
+  ).toEqual(oversized);
+  expect(knownHostCapabilities(oversized)).toEqual(capabilities);
+  expect(
+    DeploymentCatalogSchema.safeParse({
+      ...catalog,
+      deployments: [{ ...catalog.deployments[0], capabilities: oversized }],
+    }).success,
+  ).toBe(false);
+
   DeploymentAccessDeploymentSchema.parse({
     id,
     access: "owner",

@@ -1,3 +1,8 @@
+import {
+  standardCdpMaxPending,
+  standardCdpMessageMaxBytes,
+  type CdpEvent,
+} from "@opensteer/browser-core";
 import { committedBrowserTabs } from "./test-support/fakes.js";
 import {
   BrowserRuntimeServerMessageSchema,
@@ -27,7 +32,7 @@ import { pageViewport, type EngineClipboardItem, type PageGeometry } from "./bro
 import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { BrowserRuntime } from "./runtime.js";
-import { BrowserRuntimeServer } from "./server.js";
+import { BrowserRuntimeServer, standardCdpPath } from "./server.js";
 import {
   FakeContext,
   FakeLaunchedBrowser,
@@ -40,9 +45,165 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntimeServer", () => {
+  it("waits for a disconnected relay's browser teardown before it confirms the drain", async () => {
+    const teardown = Promise.withResolvers<void>();
+    const close = vi.fn(() => teardown.promise);
+    const bridgeToken = "local-browser-bridge-token-with-entropy";
+    const publicKeyPem = generateKeyPairSync("ed25519")
+      .publicKey.export({ format: "pem", type: "spki" })
+      .toString();
+    const encodedKeys = Buffer.from(JSON.stringify([{ keyId: "host", publicKeyPem }])).toString(
+      "base64url",
+    );
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([new FakePage()]))),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(),
+    });
+    const attach = runtime.attach.bind(runtime);
+    vi.spyOn(runtime, "attach").mockImplementation(async (...args) => {
+      const attachment = await attach(...args);
+      const closeAttachment = attachment.close.bind(attachment);
+      vi.spyOn(attachment, "close").mockImplementation(async (confirmPages) => {
+        await close();
+        await closeAttachment(confirmPages);
+      });
+      return attachment;
+    });
+    const server = new BrowserRuntimeServer({
+      port: 0,
+      runtime,
+      relayBridge: { token: bridgeToken, updateAttachKeys: () => {} },
+    });
+    let socket: WebSocket | undefined;
+    try {
+      const { host, port } = await server.start();
+      socket = new WebSocket(`ws://${host}:${port}/v1/browser`, {
+        headers: {
+          authorization: "Bearer test",
+          "x-opensteer-browser-bridge-token": bridgeToken,
+          "x-opensteer-browser-attach-keys": encodedKeys,
+        },
+      });
+      const attached = Promise.withResolvers<void>();
+      socket.once("error", attached.reject);
+      socket.on("message", (data) => {
+        if (JSON.parse(String(data)).type === "browser.attached") attached.resolve();
+      });
+      await withTimeout(attached.promise, 2_000, {
+        timeoutError: () => new Error("Relay did not attach."),
+      });
+      const disconnected = once(socket, "close");
+      socket.close();
+      await disconnected;
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+
+      const confirmed = vi.fn();
+      const draining = server.drainRunnerAttachments().then(confirmed);
+      await flushMicrotasks();
+      expect(confirmed).not.toHaveBeenCalled();
+      teardown.resolve();
+      await draining;
+      expect(confirmed).toHaveBeenCalledWith(true);
+    } finally {
+      teardown.resolve();
+      socket?.terminate();
+      await server.close();
+    }
+  });
+
+  it.each([
+    { count: 2, bytes: 0, code: 1007, admitted: 1, duplicate: true },
+    { count: standardCdpMaxPending + 1, bytes: 0, code: 1013, admitted: standardCdpMaxPending },
+    { count: 3, bytes: 6 * 1024 * 1024, code: 1013, admitted: 2 },
+    { count: 1, bytes: standardCdpMessageMaxBytes, code: 1009, admitted: 0 },
+    { count: 3, bytes: 6 * 1024 * 1024, code: 1013, admitted: 0, outbound: true },
+  ])(
+    "bounds raw CDP traffic ($count frames, $bytes payload bytes, outbound=$outbound)",
+    async ({ count, bytes, code, admitted, outbound, duplicate }) => {
+      const runtime = new BrowserRuntime({
+        launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([new FakePage()]))),
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(),
+      });
+      const controller = new AbortController();
+      const pending = Promise.withResolvers<unknown>();
+      const send = vi.fn(async ({ method }: { method: string }) =>
+        method === "Browser.getVersion" ? { product: "test" } : pending.promise,
+      );
+      const close = vi.fn(() => {
+        controller.abort();
+        pending.resolve({});
+      });
+      let emit: ((event: CdpEvent) => void) | undefined;
+      vi.spyOn(runtime, "attachStandardCdp").mockResolvedValue({
+        signal: controller.signal,
+        settled: pending.promise.then(() => undefined),
+        send,
+        close,
+        attachedTargetId: () => null,
+        onEvent: (listener) => {
+          emit = listener;
+          return () => {
+            emit = undefined;
+          };
+        },
+      });
+      const server = new BrowserRuntimeServer({ port: 0, runtime });
+      let socket: WebSocket | undefined;
+      try {
+        const { host, port } = await server.start();
+        socket = new WebSocket(`ws://${host}:${port}${standardCdpPath}`, {
+          headers: { authorization: "Bearer test" },
+        });
+        await once(socket, "open");
+        const response = once(socket, "message");
+        socket.send(JSON.stringify({ id: 0, method: "Browser.getVersion" }));
+        expect(JSON.parse(String((await response)[0]))).toEqual({
+          id: 0,
+          result: { product: "test" },
+        });
+        const closed = once(socket, "close");
+        const expression = "x".repeat(bytes);
+        if (outbound) {
+          expect(emit).toBeDefined();
+          for (let sequence = 1; sequence <= count; sequence++)
+            emit?.({ sequence, method: "Runtime.consoleAPICalled", parameters: { expression } });
+        } else {
+          for (let id = 1; id <= count; id++)
+            socket.send(
+              JSON.stringify({
+                id: duplicate ? 1 : id,
+                method: "Runtime.evaluate",
+                params: { expression },
+              }),
+            );
+        }
+        expect((await closed)[0]).toBe(code);
+        expect(send).toHaveBeenCalledTimes(admitted + 1);
+        expect(close).toHaveBeenCalledOnce();
+      } finally {
+        socket?.terminate();
+        await server.close();
+      }
+    },
+  );
+
   it("delivers paste parts queued during attachment before waiting for the paste", async () => {
     const ready = gate({ label: "browser attachment handoff", deadlineMs: 2_000 });
     const page = new FakePage();
+    const sendCdp = page.cdpSession.send.bind(page.cdpSession);
+    vi.spyOn(page.cdpSession, "send").mockImplementation((method, parameters) => {
+      if (
+        method === "Runtime.evaluate" &&
+        typeof parameters?.expression === "string" &&
+        parameters.expression.includes("prepareClipboard")
+      )
+        return Promise.resolve({ result: { value: { ok: true, composing: false } } });
+      return sendCdp(method, parameters);
+    });
     let pasted: readonly EngineClipboardItem[] | null = null;
     const browser = Object.assign(new FakeLaunchedBrowser(new FakeContext([page])), {
       clipboard: {
@@ -88,6 +249,9 @@ describe("BrowserRuntimeServer", () => {
       await ready.entered;
       const surfaceId = committedBrowserTabs(messages).rows.keys().next().value;
       expect(surfaceId).toBeDefined();
+      const editing = messages.findLast((message) => message.type === "browser.editing");
+      expect(editing?.type).toBe("browser.editing");
+      const contextId = editing?.type === "browser.editing" ? editing.context.contextId : "";
       const operationId = randomUUID();
       const result = Promise.withResolvers<unknown>();
       socket.on("message", (raw, binary) => {
@@ -101,6 +265,7 @@ describe("BrowserRuntimeServer", () => {
           type: "clipboard.paste-data",
           surfaceId,
           operationId,
+          contextId,
           items: [{ type: "text/plain", size: 5 }],
         }),
       );

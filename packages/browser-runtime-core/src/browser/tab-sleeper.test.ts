@@ -27,6 +27,42 @@ describe("TabSleeper", () => {
       },
     };
   }
+  it("reports the released ordinary idle sleep byte for byte", async () => {
+    const reports: string[] = [];
+    const f = await fixture({
+      memoryBudgetBytes: 2 * 1024 ** 3,
+      onPass: (pass) => reports.push(JSON.stringify(pass)),
+    });
+    try {
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(f.ledger.stateOf(f.record.id)).toBe("suspended");
+      expect(reports.at(-1)).toBe(
+        '{"livePages":1,"rendererProcesses":0,"rendererResidentBytes":null,"unassignedRendererProcesses":0,"underPressure":0,"attempted":1,"slept":1}',
+      );
+    } finally {
+      await f.close();
+    }
+  });
+  it("keeps a tab a person saw in the last ten minutes awake, as desktop Chrome does, and sleeps it after (TS16)", async () => {
+    const f = await fixture({ memoryBudgetBytes: 2 * 1024 ** 3 });
+    try {
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [f.record.id],
+        pinned: [],
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(9 * 60_000);
+      expect(f.ledger.stateOf(f.record.id)).toBe("live");
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(f.ledger.stateOf(f.record.id)).toBe("suspended");
+    } finally {
+      await f.close();
+    }
+  });
   it("waits for Host state and release, and a Watch pin never makes a tab a person's", async () => {
     const f = await fixture();
     try {
@@ -251,6 +287,45 @@ describe("TabSleeper", () => {
       usage = { ...usage, processes: 2 };
       await vi.advanceTimersByTimeAsync(30_000);
       expect(onPass).toHaveBeenCalledTimes(2);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("samples rendererUsage at most once per rendererSampleMs and handles async sampling off the pass", async () => {
+    const budget = 100 * 1024 ** 2;
+    let calls = 0;
+    const pending = Promise.withResolvers<{ processes: number; bytes: number }>();
+    const f = await fixture({
+      memoryBudgetBytes: budget,
+      rendererUsage: () => {
+        calls++;
+        if (calls === 1) return pending.promise;
+        return Promise.resolve({ processes: 1, bytes: budget / 2 });
+      },
+    });
+    try {
+      const person = await f.ledger.openSurface();
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [person.id],
+        viewed: [],
+        pinned: [],
+      });
+      // First pass kicks off the async sample without blocking.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(1);
+      // Opening/poking again before rendererSampleMs must not trigger another sample.
+      await f.ledger.openSurface();
+      f.sleeper.poke();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(calls).toBe(1);
+
+      // Resolving the async sample over budget triggers shedding without re-sampling early.
+      pending.resolve({ processes: 6, bytes: budget * 2 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(1);
+      expect(f.record.live).toBeNull();
     } finally {
       await f.close();
     }
@@ -518,4 +593,913 @@ describe("TabSleeper", () => {
       }
     },
   );
+
+  it("evaluates the Linux pressure rule as a page opens, sheds other tabs first under pressure, and holds nothing otherwise (C9)", async () => {
+    const limit = 2 * 1024 ** 3;
+    let pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };
+    let readings = 0;
+    const f = await fixture({
+      memoryPressure: () => {
+        readings++;
+        return Promise.resolve(pressure);
+      },
+    });
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 3; i++) ids.push((await f.ledger.openSurface()).id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const suspended = () => ids.filter((id) => f.ledger.stateOf(id) === "suspended").length;
+      expect(suspended()).toBe(0);
+
+      // Below the start threshold: one reading, and the open is not held.
+      const before = readings;
+      let opened = false;
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(true);
+      expect(readings).toBe(before + 1);
+      expect(suspended()).toBe(0);
+
+      // A burst crosses 70% between timer samples: the open reads it at once and waits for the
+      // pass that sleeps other tabs, instead of adding a page first.
+      pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+      // The timer alone has not seen it yet.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(suspended()).toBe(0);
+      opened = false;
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(suspended()).toBeGreaterThan(0);
+      // Released by that pass, it checks again (M4): held while memory is still over the
+      // threshold and the reclaim settles, and goes once a reading is under it.
+      expect(opened).toBe(false);
+      pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(600);
+      expect(opened).toBe(true);
+      pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(600);
+
+      // Under pressure with nothing that may sleep (every page pinned) and nothing reclaiming,
+      // the open is not held, and leaves no waiter behind.
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: ids });
+      await vi.advanceTimersByTimeAsync(600);
+      opened = false;
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(true);
+      expect((f.sleeper as unknown as { passWaiters: unknown[] }).passWaiters).toHaveLength(0);
+
+      // An unreadable reading is neither an effective nor an ineffective reclaim: the count that
+      // decides backoff, and any backoff, stay as they were (Rule C).
+      const internals = f.sleeper as unknown as {
+        ineffectiveReclaims: number;
+        pressureBackoffUntil: number;
+        applyMemoryPressureSample(reading: null, now: number): void;
+      };
+      internals.ineffectiveReclaims = 2;
+      internals.pressureBackoffUntil = Date.now() + 5_000;
+      internals.applyMemoryPressureSample(null, Date.now());
+      expect(internals.ineffectiveReclaims).toBe(2);
+      expect(internals.pressureBackoffUntil).toBeGreaterThan(Date.now());
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("lets an abandoned open leave its turn at once, and the next open still waits for the open before it", async () => {
+    const limit = 2 * 1024 ** 3;
+    const f = await fixture({
+      memoryPressure: () =>
+        Promise.resolve({ usedBytes: Math.round(limit * 0.66), limitBytes: limit }),
+    });
+    try {
+      // Opens are taking turns (memory is being released).
+      (f.sleeper as unknown as { releasing: boolean }).releasing = true;
+      const first = await f.sleeper.beforePageOpen();
+      const abandoned = new AbortController();
+      const second = f.sleeper.beforePageOpen(abandoned.signal);
+      void second.catch(() => undefined);
+      let thirdIn = false;
+      const third = f.sleeper.beforePageOpen().then((done) => {
+        thirdIn = true;
+        return done;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      abandoned.abort();
+      await expect(second).rejects.toThrow(/abandoned/);
+      await vi.advanceTimersByTimeAsync(0);
+      // The first open has not made its page: the third still waits behind it.
+      expect(thirdIn).toBe(false);
+      first();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(thirdIn).toBe(true);
+      (await third)();
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("asks for a pass at once when a page no open of ours made arrives over the threshold with a tab that can sleep, not at the next timer tick (run 10, failure 2)", async () => {
+    const limit = 2 * 1024 ** 3;
+    let pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };
+    let readings = 0;
+    const f = await fixture({
+      memoryPressure: () => {
+        readings++;
+        return Promise.resolve(pressure);
+      },
+    });
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 3; i++) ids.push((await f.ledger.openSurface()).id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const suspended = () => ids.filter((id) => f.ledger.stateOf(id) === "suspended").length;
+      expect(suspended()).toBe(0);
+      // Just after a timer sample, so the next one is most of its interval away.
+      const sampled = readings;
+      while (readings === sampled) await vi.advanceTimersByTimeAsync(10);
+      // Popups grow the browser past the start threshold between samples; the sleeper's last
+      // reading knows it (the open path or a sample read it), but no timer is due yet.
+      pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+      const internals = f.sleeper as unknown as {
+        applyMemoryPressureSample(reading: typeof pressure, now: number): void;
+      };
+      internals.applyMemoryPressureSample(pressure, Date.now());
+      await vi.advanceTimersByTimeAsync(10);
+      expect(suspended()).toBe(0);
+      // A page arrives that no open of ours made: the pass runs now.
+      f.sleeper.notePageArrived();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(suspended()).toBeGreaterThan(0);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("waits for a context's look for the tab helper: no tab of it is probed meanwhile, opens over the threshold wait for it within their bound, and the tab sleeps as soon as it ends (R4)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      const look = Promise.withResolvers<void>();
+      let pending = true;
+      void look.promise.then(() => {
+        pending = false;
+      });
+      // As the launcher's page answers while the look runs.
+      f.page.keepAwake = () => (pending ? "tab-helper" : null);
+      f.sleeper.add("session", {
+        ledger: f.ledger,
+        restoreVersion: 1,
+        blocked: () => null,
+        sleepReady: () => (pending ? look.promise : null),
+      });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(f.ledger.stateOf(f.record.id)).not.toBe("suspended");
+      // Back-to-back opens over the threshold wait while the look is pending.
+      let opened = 0;
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened++;
+        done();
+      });
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened++;
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(opened).toBe(0);
+      look.resolve();
+      // The look's end is a pass at once: the tab sleeps now, not after a penalty of quietMs.
+      await vi.advanceTimersByTimeAsync(600);
+      expect(f.ledger.stateOf(f.record.id)).toBe("suspended");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(opened).toBe(2);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("keeps the mark of a context that became ready under pressure through a pass that ran while a reclaim settled (V6)", async () => {
+    const f = await fixture();
+    try {
+      const sleeper = f.sleeper as unknown as {
+        readyUnderPressure: Set<unknown>;
+        sessions: Map<string, unknown>;
+        reclaimFrom: {
+          settledAt: number;
+          waiting: boolean;
+          pressureUsedBytes: number | null;
+          startedAt: number;
+        } | null;
+        pass(): Promise<void>;
+      };
+      const session = sleeper.sessions.get("session");
+      sleeper.readyUnderPressure.add(session);
+      sleeper.reclaimFrom = {
+        settledAt: Date.now() + 5_000,
+        waiting: false,
+        pressureUsedBytes: null,
+        startedAt: Date.now(),
+      };
+      await sleeper.pass();
+      expect(sleeper.readyUnderPressure.has(session)).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("waits on the look instead of spinning when the only tabs it could take are spared, and its close releases every open (V6)", async () => {
+    const limit = 2 * 1024 ** 3;
+    let reads = 0;
+    const f = await fixture({
+      memoryPressure: () => {
+        reads++;
+        return Promise.resolve({ usedBytes: Math.round(limit * 0.8), limitBytes: limit });
+      },
+    });
+    const otherLedger = new SurfaceLedger(
+      new FakeContext([new FakePage({ url: "https://looking.test/" })]),
+    );
+    await otherLedger.start();
+    await vi.advanceTimersByTimeAsync(0);
+    try {
+      const look = Promise.withResolvers<void>();
+      let pending = true;
+      void look.promise.then(() => {
+        pending = false;
+      });
+      // A context still looking for its helper, with a tab it can spare once the look ends.
+      f.sleeper.add("other", {
+        ledger: otherLedger,
+        restoreVersion: 1,
+        blocked: () => null,
+        sleepReady: () => (pending ? look.promise : null),
+      });
+      f.sleeper.setSessionState("other", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      // The ready context holds only the person's tab: spared while the look runs.
+      f.record.personUsed = true;
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(30_000);
+      const before = reads;
+      void f.sleeper.beforePageOpen().then((done) => done());
+      await vi.advanceTimersByTimeAsync(1_900);
+      // A handful of readings, not a loop of them.
+      expect(reads - before).toBeLessThan(10);
+      await vi.advanceTimersByTimeAsync(1_000);
+      // An open still waiting for its turn is released by the sleeper's close.
+      let held: (() => void) | undefined;
+      void f.sleeper.beforePageOpen().then((done) => (held = done));
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(held).toBeDefined();
+      let released = false;
+      void f.sleeper.beforePageOpen().then(() => (released = true));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(released).toBe(false);
+      f.sleeper.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(released).toBe(true);
+    } finally {
+      await otherLedger.close();
+      await f.close();
+    }
+  });
+
+  it("under pressure sleeps a tab whose page protects it only for the last resort, and never one that captures (V1)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      // The tab's own page refuses an ordinary sleep: notifications granted (last resort).
+      f.page.keepAwake = () => "notifications";
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(30_000);
+      // Nothing else to sleep, memory still over: the last resort takes it.
+      expect(f.ledger.stateOf(f.record.id)).toBe("suspended");
+      // A tab that captures is never taken, last resort or not.
+      const capturing = await f.ledger.openSurface({ origin: "agent", activate: false });
+      Object.assign(f.ledger.binding(capturing.id)!.page, { keepAwake: () => "capturing" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(f.ledger.stateOf(capturing.id)).toBe("live");
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("lets opens over the threshold through one at a time, each once the open before it has made its page (TS13)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      // Nothing can sleep: the opens are paced only by each other.
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [f.record.id],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const admitted: number[] = [];
+      const turns: (() => void)[] = [];
+      for (const index of [0, 1, 2])
+        void f.sleeper.beforePageOpen().then((done) => {
+          admitted.push(index);
+          turns.push(done);
+        });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(admitted).toEqual([0]);
+      turns[0]!();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(admitted).toEqual([0, 1]);
+      turns[1]!();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(admitted).toEqual([0, 1, 2]);
+      // V6 (rule B): the next open never runs beside the one before it, however long that one
+      // takes to make its page; it goes once that page exists.
+      void f.sleeper.beforePageOpen().then((done) => {
+        admitted.push(3);
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(admitted).toEqual([0, 1, 2]);
+      turns[2]!();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(admitted).toEqual([0, 1, 2, 3]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("holds an open only for a look whose context has a tab to spare, and meanwhile a ready context gives up only an agent's leftover (TS13)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    const otherLedger = new SurfaceLedger(
+      new FakeContext([new FakePage({ url: "https://looking.test/" })]),
+    );
+    await otherLedger.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const otherTab = [...otherLedger.policyRecords()][0]!;
+    try {
+      const look = Promise.withResolvers<void>();
+      let pending = true;
+      void look.promise.then(() => {
+        pending = false;
+      });
+      f.sleeper.add("other", {
+        ledger: otherLedger,
+        restoreVersion: 1,
+        blocked: () => null,
+        sleepReady: () => (pending ? look.promise : null),
+      });
+      // The looking context's only tab is pinned: it will shed nothing, so no open waits for it.
+      f.sleeper.setSessionState("other", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [otherTab.id],
+      });
+      // The ready context: its tab is the person's, and pinned for now.
+      f.record.personUsed = true;
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [f.record.id],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      let opened = false;
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(opened).toBe(true);
+      // Now the looking context has a tab to spare once its look ends; the ready context's
+      // person tab, no longer pinned, is not given up meanwhile, but an agent's leftover is.
+      f.sleeper.setSessionState("other", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      const leftover = await f.ledger.openSurface({ origin: "agent", activate: false });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(f.ledger.stateOf(leftover.id)).toBe("suspended");
+      expect(f.ledger.stateOf(f.record.id)).toBe("live");
+      look.resolve();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(otherLedger.stateOf(otherTab.id)).toBe("suspended");
+    } finally {
+      await otherLedger.close();
+      await f.close();
+    }
+  });
+
+  it("sleeps a context that becomes ready under pressure at once, through a backoff after ineffective reclaims, and only that once (TS8)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      const look = Promise.withResolvers<void>();
+      let pending = true;
+      void look.promise.then(() => {
+        pending = false;
+      });
+      f.page.keepAwake = () => (pending ? "tab-helper" : null);
+      f.sleeper.add("session", {
+        ledger: f.ledger,
+        restoreVersion: 1,
+        blocked: () => null,
+        sleepReady: () => (pending ? look.promise : null),
+      });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(3_000);
+      // Earlier reclaims freed nothing: the sleeper's own passes back off for 30 s.
+      (f.sleeper as unknown as { pressureBackoffUntil: number }).pressureBackoffUntil =
+        Date.now() + 30_000;
+      look.resolve();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(f.ledger.stateOf(f.record.id)).toBe("suspended");
+      // The pass took the context's look's end; the backoff holds every later pass again.
+      expect(
+        (f.sleeper as unknown as { readyUnderPressure: Set<unknown> }).readyUnderPressure.size,
+      ).toBe(0);
+      const other = await f.ledger.openSurface();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(f.ledger.stateOf(other.id)).not.toBe("suspended");
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("sleeps a tab bound to a live Run or connected agent's session last: under pressure the unbound idle tab sleeps first, the bound one only when nothing else is left (TS12)", async () => {
+    const limit = 2 * 1024 ** 3;
+    let over = false;
+    let unbound = "" as string;
+    const f = await fixture({
+      // Over the threshold while asked to be; the unbound tab's sleep frees enough to fall below.
+      memoryPressure: () =>
+        Promise.resolve({
+          usedBytes: Math.round(
+            limit * (over && f.ledger.stateOf(unbound as never) !== "suspended" ? 0.8 : 0.5),
+          ),
+          limitBytes: limit,
+        }),
+    });
+    try {
+      unbound = (await f.ledger.openSurface()).id;
+      const bound = f.record.id;
+      // A live session works in `bound`; both tabs are idle for a minute.
+      f.sleeper.setSessionState("session", {
+        runs: 1,
+        personUsed: [],
+        viewed: [],
+        pinned: [],
+        agentTabs: [bound],
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(f.ledger.stateOf(bound)).not.toBe("suspended");
+      expect(f.ledger.stateOf(unbound as never)).not.toBe("suspended");
+      over = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+      // Under pressure the unbound tab sleeps; the bound one does not.
+      expect(f.ledger.stateOf(unbound as never)).toBe("suspended");
+      expect(f.ledger.stateOf(bound)).not.toBe("suspended");
+      // Memory over the threshold again, and nothing unprotected left: then it sleeps.
+      f.sleeper.setSessionState("session", {
+        runs: 1,
+        personUsed: [],
+        viewed: [],
+        pinned: [],
+        agentTabs: [bound],
+      });
+      const internals = f.sleeper as unknown as {
+        applyMemoryPressureSample(reading: unknown, now: number): void;
+      };
+      internals.applyMemoryPressureSample(
+        { usedBytes: limit * 0.8, limitBytes: limit },
+        Date.now(),
+      );
+      unbound = "none";
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(f.ledger.stateOf(bound)).toBe("suspended");
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("holds a burst of 46 opens so the sample never passes the limit: sleeping starts at the threshold and each wait is bounded (K9 corrected)", async () => {
+    const mib = 1024 ** 2;
+    const limit = 2048 * mib;
+    const baseBytes = 600 * mib;
+    const perTab = 45 * mib;
+    const settleMs = 500;
+    // Each open adds a fixed amount; each sleep frees it once its settle time has passed.
+    const suspendedAt = new Map<string, number>();
+    let ledgerRef: SurfaceLedger | undefined;
+    const used = () => {
+      let bytes = baseBytes;
+      const now = Date.now();
+      for (const record of ledgerRef?.policyRecords() ?? []) {
+        if (record.live) bytes += perTab;
+        else {
+          const since = suspendedAt.get(record.id) ?? now;
+          suspendedAt.set(record.id, since);
+          if (now - since < settleMs) bytes += perTab;
+        }
+      }
+      return bytes;
+    };
+    const samples: number[] = [];
+    const f = await fixture({
+      memoryPressure: () => {
+        const usedBytes = used();
+        samples.push(usedBytes / limit);
+        return Promise.resolve({ usedBytes, limitBytes: limit });
+      },
+    });
+    ledgerRef = f.ledger;
+    try {
+      const ids = [f.record.id];
+      const waits: number[] = [];
+      let firstSleepRatio: number | null = null;
+      const burst = (async () => {
+        for (let i = 0; i < 46; i++) {
+          const started = Date.now();
+          (await f.sleeper.beforePageOpen())();
+          waits.push(Date.now() - started);
+          ids.push((await f.ledger.openSurface()).id);
+          f.sleeper.setSessionState("session", {
+            runs: 0,
+            personUsed: ids,
+            viewed: [],
+            pinned: [],
+          });
+          // The highest reading before the first sleep was seen: where sleeping started.
+          if (firstSleepRatio === null && ids.some((id) => f.ledger.stateOf(id) === "suspended"))
+            firstSleepRatio = Math.max(...samples);
+        }
+      })();
+      let done = false;
+      void burst.finally(() => (done = true));
+      for (let step = 0; step < 20_000 && !done; step++) await vi.advanceTimersByTimeAsync(5);
+      await burst;
+      const sorted = [...waits].sort((a, b) => a - b);
+      const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!;
+      process.stdout.write(
+        `${JSON.stringify({
+          event: "k9.burst",
+          peak: Math.max(...samples),
+          firstSleepRatio,
+          waits: { median: at(0.5), p95: at(0.95), max: sorted.at(-1) },
+        })}\n`,
+      );
+      expect(Math.max(...samples)).toBeLessThan(1);
+      expect(firstSleepRatio).not.toBeNull();
+      expect(firstSleepRatio!).toBeGreaterThan(0.7);
+      expect(firstSleepRatio!).toBeLessThan(0.8);
+      expect(sorted.at(-1)!).toBeLessThanOrEqual(2_000 + 250 + 10);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("does not judge a reclaim ineffective while the pages just opened are still growing, and keeps sleeping after a burst while over the threshold (backoff after the Linux run)", async () => {
+    const mib = 1024 ** 2;
+    const limit = 2048 * mib;
+    const baseBytes = 600 * mib;
+    const settleMs = 500;
+    // A heavy page takes 20 MiB as it opens and 25 MiB more over the next 1.5 s while it loads;
+    // a slept page gives all of it back once its settle time has passed.
+    const openedAt = new Map<string, number>();
+    const suspendedAt = new Map<string, number>();
+    let ledgerRef: SurfaceLedger | undefined;
+    const used = () => {
+      let bytes = baseBytes;
+      const now = Date.now();
+      for (const record of ledgerRef?.policyRecords() ?? []) {
+        const age = now - (openedAt.get(record.id) ?? now - 60_000);
+        const pageBytes = 20 * mib + Math.min(1, age / 1_500) * 25 * mib;
+        if (record.live) bytes += pageBytes;
+        else {
+          const since = suspendedAt.get(record.id) ?? now;
+          suspendedAt.set(record.id, since);
+          if (now - since < settleMs) bytes += pageBytes;
+        }
+      }
+      return bytes;
+    };
+    const samples: { at: number; ratio: number }[] = [];
+    const f = await fixture({
+      memoryPressure: () => {
+        const usedBytes = used();
+        samples.push({ at: Date.now(), ratio: usedBytes / limit });
+        return Promise.resolve({ usedBytes, limitBytes: limit });
+      },
+    });
+    ledgerRef = f.ledger;
+    const internals = f.sleeper as unknown as { pressureBackoffUntil: number };
+    try {
+      const ids = [f.record.id];
+      let backedOff = 0;
+      const burst = (async () => {
+        for (let i = 0; i < 46; i++) {
+          (await f.sleeper.beforePageOpen())();
+          const id = (await f.ledger.openSurface()).id;
+          openedAt.set(id, Date.now());
+          ids.push(id);
+          f.sleeper.setSessionState("session", {
+            runs: 0,
+            personUsed: ids,
+            viewed: [],
+            pinned: [],
+          });
+        }
+      })();
+      let done = false;
+      void burst.finally(() => (done = true));
+      for (let step = 0; step < 20_000 && !done; step++) {
+        await vi.advanceTimersByTimeAsync(5);
+        if (internals.pressureBackoffUntil > Date.now()) backedOff++;
+      }
+      await burst;
+      const burstEnded = Date.now();
+      // After the burst nobody opens anything: over the threshold, with tabs that can sleep, the
+      // sleeper goes on until the memory is under the threshold.
+      for (let step = 0; step < 2_000; step++) {
+        await vi.advanceTimersByTimeAsync(5);
+        if (internals.pressureBackoffUntil > Date.now()) backedOff++;
+      }
+      const after = samples.filter((sample) => sample.at > burstEnded + 5_000);
+      process.stdout.write(
+        `${JSON.stringify({
+          event: "k9.burst-growing",
+          peak: Math.max(...samples.map((sample) => sample.ratio)),
+          backedOffSteps: backedOff,
+          tenSecondsAfter: after.at(-1)?.ratio ?? null,
+          asleep: ids.filter((id) => f.ledger.stateOf(id) === "suspended").length,
+        })}\n`,
+      );
+      expect(backedOff).toBe(0);
+      expect(after.at(-1)!.ratio).toBeLessThanOrEqual(0.7);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("releases several opens waiting on one pass one check at a time: each reads again and waits out the settle before it goes (M4)", async () => {
+    const mib = 1024 ** 2;
+    const limit = 2048 * mib;
+    let usedBytes = Math.round(limit * 0.8);
+    const f = await fixture({
+      memoryPressure: () => Promise.resolve({ usedBytes, limitBytes: limit }),
+    });
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 3; i++) ids.push((await f.ledger.openSurface()).id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      const opened: number[] = [];
+      const started = Date.now();
+      for (let i = 0; i < 3; i++)
+        void f.sleeper.beforePageOpen().then((done) => {
+          opened.push(Date.now() - started);
+          done();
+        });
+      // The pass sleeps and releases them; still over the threshold while its reclaim settles,
+      // none goes yet.
+      await vi.advanceTimersByTimeAsync(100);
+      expect(ids.some((id) => f.ledger.stateOf(id) === "suspended")).toBe(true);
+      expect(opened).toEqual([]);
+      // The memory came back: each reads again after the settle and goes.
+      usedBytes = Math.round(limit * 0.62);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(opened).toHaveLength(3);
+      expect(Math.min(...opened)).toBeGreaterThanOrEqual(500);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("holds an open only for an admitted pass that can free something, and counts a reclaim with no sample before it as unmeasured (K9)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    const internals = f.sleeper as unknown as {
+      running: boolean;
+      passWaiters: unknown[];
+      ineffectiveReclaims: number;
+      pressureBackoffUntil: number;
+      reclaimFrom: unknown;
+      applyMemoryPressureSample(reading: typeof pressure, now: number): void;
+    };
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 2; i++) ids.push((await f.ledger.openSurface()).id);
+      // Every page pinned: no pass can free anything for an open, even one already running
+      // (a pass in its retirement arm, or one whose pages are all blocked).
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: ids });
+      internals.running = true;
+      let opened = false;
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(true);
+      expect(internals.passWaiters).toHaveLength(0);
+      internals.running = false;
+
+      // A reclaim that started with no pressure sample before it is unmeasured when its after
+      // sample comes: neither effective nor ineffective, so no count and no backoff.
+      internals.ineffectiveReclaims = 2;
+      internals.pressureBackoffUntil = 0;
+      internals.reclaimFrom = {
+        usage: null,
+        pressureUsedBytes: null,
+        settledAt: Date.now() - 1,
+        waiting: true,
+      };
+      internals.applyMemoryPressureSample(pressure, Date.now());
+      expect(internals.ineffectiveReclaims).toBe(2);
+      expect(internals.pressureBackoffUntil).toBe(0);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("holds no open when scheduling is off, since no pass will run for it (K9)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ scheduling: false, memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 2; i++) ids.push((await f.ledger.openSurface()).id);
+      // Pages that could sleep, but no pass will run to sleep them.
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      let opened = false;
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("under pressure sleeps the least recently used tab not in use, whatever its age, and never one in use", async () => {
+    const limit = 2 * 1024 ** 3;
+    let pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      // Every tab is younger than the quiet period: a burst of opens.
+      const viewedTab = (await f.ledger.openSurface()).id;
+      await vi.advanceTimersByTimeAsync(100);
+      const pinnedTab = (await f.ledger.openSurface()).id;
+      await vi.advanceTimersByTimeAsync(100);
+      const freeTab = (await f.ledger.openSurface()).id;
+      await vi.advanceTimersByTimeAsync(100);
+      const newestTab = (await f.ledger.openSurface()).id;
+      const ids = [f.record.id, viewedTab, pinnedTab, freeTab, newestTab];
+      for (const id of ids) f.ledger.touch(id, true);
+      const state = (pinned: typeof ids, viewed: typeof ids) =>
+        f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed, pinned });
+      // The oldest tab and the two in use (viewed, pinned) are out; the free tab is the least
+      // recently used one that is not in use.
+      state([pinnedTab, f.record.id], [viewedTab]);
+      let opened = false;
+      // Each open's turn ends once its page exists (TS13).
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      const suspended = () => ids.filter((id) => f.ledger.stateOf(id) === "suspended");
+      expect(suspended()).toEqual([freeTab]);
+      // Held through the settle of that sleep (M4); its memory came back, so it goes.
+      expect(opened).toBe(false);
+      pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(600);
+      expect(opened).toBe(true);
+      // Still over the stop threshold, the sleeper goes on with the next one not in use; never
+      // one in use.
+      expect(suspended()).not.toContain(viewedTab);
+      expect(suspended()).not.toContain(pinnedTab);
+      expect(suspended()).not.toContain(f.record.id);
+      pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+
+      // With every tab in use, none sleeps, and once the reclaim settled the open is not held.
+      state([...ids], []);
+      const before = suspended();
+      await vi.advanceTimersByTimeAsync(600);
+      opened = false;
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(true);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(suspended()).toEqual(before);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("uses Linux memoryPressure with 70%/60% hysteresis, falls back to page estimate on null, and respects memoryBudgetBytes override", async () => {
+    const limit = 2 * 1024 ** 3; // 2 GiB
+    let pressure: { usedBytes: number; limitBytes: number } | null = {
+      usedBytes: Math.round(limit * 0.65), // 65% -> below 70% start, must NOT sleep
+      limitBytes: limit,
+    };
+    const f = await fixture({
+      rendererUsage: () => Promise.resolve({ processes: 6, bytes: 300 * 1024 ** 2 }),
+      memoryPressure: () => Promise.resolve(pressure),
+    });
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 5; i++) ids.push((await f.ledger.openSurface()).id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(ids.filter((id) => f.ledger.stateOf(id) === "suspended")).toHaveLength(0);
+
+      // Jump above 70% (75%) -> starts sleeping tabs!
+      pressure = { usedBytes: Math.round(limit * 0.75), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(2_500);
+      const sleptAt75 = ids.filter((id) => f.ledger.stateOf(id) === "suspended").length;
+      expect(sleptAt75).toBeGreaterThan(0);
+
+      // Drop to 65% (inside hysteresis band between 60% and 70%) -> stays releasing!
+      pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(600);
+      const sleptAt65 = ids.filter((id) => f.ledger.stateOf(id) === "suspended").length;
+      expect(sleptAt65).toBeGreaterThanOrEqual(sleptAt75);
+
+      // Drop to 58% (below 60% stop threshold) -> stops sleeping!
+      const extra = await f.ledger.openSurface();
+      ids.push(extra.id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      pressure = { usedBytes: Math.round(limit * 0.58), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(f.ledger.stateOf(extra.id)).toBe("live");
+    } finally {
+      await f.close();
+    }
+
+    // Explicit OPENSTEER_BROWSER_MEMORY_BUDGET_MB override takes precedence over memoryPressure!
+    const fOverride = await fixture({
+      memoryBudgetBytes: 50 * 1024 ** 2,
+      rendererUsage: () => Promise.resolve({ processes: 4, bytes: 200 * 1024 ** 2 }),
+      memoryPressure: () =>
+        Promise.resolve({ usedBytes: Math.round(limit * 0.2), limitBytes: limit }),
+    });
+    try {
+      const p = await fOverride.ledger.openSurface();
+      fOverride.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [fOverride.record.id, p.id],
+        viewed: [],
+        pinned: [],
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      // Even though memoryPressure is 20%, explicit memoryBudgetBytes=50 MiB forces sleeping!
+      expect(
+        [fOverride.record.id, p.id].filter((id) => fOverride.ledger.stateOf(id) === "suspended")
+          .length,
+      ).toBeGreaterThan(0);
+    } finally {
+      await fOverride.close();
+    }
+
+    // When memoryPressure returns null ("not known"), falls back to page estimate against budget!
+    const fFallback = await fixture({
+      memory: () => ({ total: 8 * 1024 ** 3, available: 1 * 1024 ** 3 }), // budget = 2 GiB (20 pages @ 100 MiB)
+      memoryPressure: () => Promise.resolve(null),
+    });
+    try {
+      const ids = [fFallback.record.id];
+      for (let i = 0; i < 22; i++) ids.push((await fFallback.ledger.openSurface()).id);
+      fFallback.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: ids,
+        viewed: [],
+        pinned: [],
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(
+        ids.filter((id) => fFallback.ledger.stateOf(id) === "suspended").length,
+      ).toBeGreaterThan(0);
+    } finally {
+      await fFallback.close();
+    }
+  });
 });

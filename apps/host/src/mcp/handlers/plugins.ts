@@ -1,23 +1,51 @@
-import { pluginCaller } from "../../plugins/plugin-authority.js";
+import { grantHolds, pluginCaller, pluginGrantTarget } from "../../plugins/plugin-authority.js";
+import { parseToolPath } from "@opensteer/plugin-engine-mcp";
 import { pluginTargetBlocked } from "../../plugins/target-blocked.js";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import type { PluginCaller } from "../../plugins/engine-protocol.js";
 import { z } from "zod";
-import { OpensteerError, ToolBlockedError, type Blocked, type UserId } from "@opensteer/core";
+import {
+  agentGrantAccess,
+  AgentOperationIdSchema,
+  agentOperationHoldMs,
+  OpensteerError,
+  type ThreadAccessMode,
+  type ThreadId,
+  requestOperationCallsMaxLength,
+  threadAccessModeAtMost,
+  ToolBlockedError,
+  type Blocked,
+  type UserId,
+} from "@opensteer/core";
 import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import { requireRun } from "../operations.js";
-import type { AgentCaller } from "../agent-caller.js";
+import {
+  callerLineage,
+  callerThread,
+  type AgentCaller,
+  type ConnectionCaller,
+} from "../agent-caller.js";
 import type { PluginService } from "../../plugins/plugin-service.js";
 import type { PluginAuthority } from "../../plugins/plugin-authority.js";
-import type { PluginExecutions } from "../../plugins/plugin-executions.js";
+import { pluginInputNext, type PluginExecutions } from "../../plugins/plugin-executions.js";
 import type { LocalProviders } from "../../plugins/local-providers.js";
-import { operations, type PluginConsent, type PluginInput } from "../../plugins/engine-protocol.js";
+import {
+  operations,
+  PluginServiceError,
+  type PluginConsent,
+  type PluginInput,
+} from "../../plugins/engine-protocol.js";
 import { keysetPage } from "../../plugins/keyset-page.js";
 import { engineInstallReceipt } from "../../plugins/engine-storage.js";
-import { pluginNamespace } from "../../plugins/provider-names.js";
+import { localNamespace, localToolPath, pluginNamespace } from "../../plugins/provider-names.js";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { delay } from "@opensteer/shared/delay";
+import { directResult, requireDirectWork } from "./direct.js";
+import type { AgentSessionService } from "../../agent-sessions/agent-session-service.js";
+import { forgetLent } from "../lent-now.js";
 
 const owner = { caller: "personal", mode: "automatic" } as const;
 
@@ -35,6 +63,7 @@ export class PluginToolHandlers {
     localProviders?: Pick<LocalProviders, "providers">;
     authority: PluginAuthority;
     executions: PluginExecutions;
+    sessions?: () => AgentSessionService;
     store: OpensteerStore;
     settings: PluginAgentStore;
     folder: (
@@ -63,15 +92,50 @@ export class PluginToolHandlers {
    * tools yet; this list is where it appears, blocked with why.
    */
   async list(c: ToolCall<"opensteer_plugin_list">) {
-    const context = this.options.authority.admit(c.caller);
-    const settings = await this.options.settings.settings(c.caller.userId);
+    const caller = c.caller;
+    const context = this.options.authority.admit(caller);
+    const settings = await this.options.settings.settings(caller.userId);
+    // Local providers are listed independently of the installed plugin engine.
+    // It may read the grant itself: it only decides whether to ask the engine for installed
+    // plugins, and names no device and no approval.
+    const listInstalled =
+      caller.kind !== "connection" ||
+      caller.grant.scope === "everything" ||
+      caller.grant.resources.some(
+        (resource) => resource.kind === "plugin" && resource.target.kind === "installed",
+      );
+    const broadDiscovery = c.discoveryInput !== undefined && c.discoveryInput.id === undefined;
+    let pluginsUnavailable =
+      listInstalled && broadDiscovery && this.options.service.state().status === "unavailable";
+    const onEngineUnavailable = (error: unknown) => {
+      if (
+        !broadDiscovery ||
+        !(error instanceof PluginServiceError) ||
+        (error.code !== "unavailable" && error.code !== "interrupted")
+      )
+        throw error;
+      pluginsUnavailable = true;
+      return [];
+    };
     const [plugins, local] = await Promise.all([
-      this.options.service.list({}, context, c.signal),
+      !listInstalled || pluginsUnavailable
+        ? []
+        : this.options.service.list({}, context, c.signal).catch(onEngineUnavailable),
       c.input.pluginId ? [] : (this.options.localProviders?.providers(context) ?? []),
     ]);
-    const access = (id: string) => settings.find((s) => s.pluginId === id)?.access ?? "all";
+    const access = (id: string) => {
+      const configured = settings.find((s) => s.pluginId === id)?.access ?? "all";
+      if (caller.kind !== "connection" || configured === "off") return configured;
+      const granted = agentGrantAccess(caller.grant, {
+        kind: "plugin",
+        target: pluginGrantTarget(id),
+      });
+      return !granted ? "off" : granted === "read" ? "read-only" : configured;
+    };
     const entries = [
-      ...plugins.map((plugin) => ({ kind: "plugin" as const, id: plugin.id })),
+      ...plugins
+        .filter(({ id }) => caller.kind !== "connection" || access(id) !== "off")
+        .map((plugin) => ({ kind: "plugin" as const, id: plugin.id })),
       ...local
         .filter(({ id }) => access(id) !== "off")
         .map((provider) => ({ kind: "local" as const, id: provider.id })),
@@ -86,11 +150,9 @@ export class PluginToolHandlers {
         });
     const pagePlugins = page.items.filter(({ kind }) => kind === "plugin");
     const installed = pagePlugins.length
-      ? await this.options.service.installed(
-          { plugins: pagePlugins.map(({ id }) => id), versions: true },
-          owner,
-          c.signal,
-        )
+      ? await this.options.service
+          .installed({ plugins: pagePlugins.map(({ id }) => id), versions: true }, owner, c.signal)
+          .catch(onEngineUnavailable)
       : [];
     let versionCursor: string | null = null;
     return {
@@ -149,7 +211,8 @@ export class PluginToolHandlers {
                     reason: `${plugin.name} needs account setup.`,
                     requirements: plugin.requirements.accounts,
                     readiness: detail.readiness,
-                    canRequestAccount: c.caller.kind === "run",
+                    canRequestAccount: c.caller.kind === "run" || c.caller.kind === "program",
+                    connection: c.caller.kind === "connection",
                   })
                 : undefined;
             return {
@@ -178,6 +241,7 @@ export class PluginToolHandlers {
           }),
       ),
       cursor: c.input.pluginId ? versionCursor : page.cursor,
+      ...(pluginsUnavailable ? { pluginsUnavailable: true as const } : {}),
     };
   }
   async discoveryResult<
@@ -186,7 +250,20 @@ export class PluginToolHandlers {
         | readonly { app: string; name: string; reason: string; blocked?: Blocked | undefined }[]
         | undefined;
     },
-  >(context: PluginCaller, result: T) {
+  >(context: PluginCaller, found: T) {
+    // Under a connection's grant, what the grant does not hold (`access_required`: a write it
+    // holds for reading only, an app it does not reach) is not there: plugin_call reads it as
+    // absent, and so does every listing.
+    const caller = this.options.authority.caller(context.caller);
+    const result =
+      caller && callerLineage(caller) && "items" in found && Array.isArray(found.items)
+        ? {
+            ...found,
+            items: (found.items as { blocked?: Blocked }[]).filter(
+              ({ blocked }) => blocked?.code !== "access_required",
+            ),
+          }
+        : found;
     const unavailable = result.unavailableApps;
     if (!unavailable?.length) return result;
     const remoteIds = [...new Set(unavailable.filter((e) => !e.blocked).map((e) => e.app))];
@@ -204,13 +281,300 @@ export class PluginToolHandlers {
             id: entry.app,
             name: entry.name,
             reason: entry.reason,
-            canRequestAccount: this.options.authority.caller(context.caller)?.kind === "run",
+            canRequestAccount:
+              this.options.authority.caller(context.caller)?.kind === "run" ||
+              this.options.authority.caller(context.caller)?.kind === "program",
+            connection: this.options.authority.caller(context.caller)?.kind === "connection",
             requirements: detail?.plugin.requirements.accounts ?? {},
             readiness: detail?.readiness ?? {},
           }),
         };
       }),
     };
+  }
+  async #directExecution(
+    caller: ConnectionCaller,
+    call: ToolCall<"plugin_call"> | ToolCall<"plugin_execute"> | ToolCall<"plugin_resume">,
+  ) {
+    const o = this.options;
+    const sessions = requireDirectWork(o.sessions?.());
+    const context = o.authority.admit(caller);
+    const unavailable = () =>
+      new OpensteerError({
+        code: "forbidden",
+        message: "Plugin tool is unavailable to this caller.",
+      });
+    const { taskId, reason } = call.input;
+    const signal = call.signal;
+    // What this connection's grant lets it do in an app: a tool it does not hold reads as absent.
+    // The person's own setting for an app the grant holds is said, as its listing says it
+    // (pluginToolReason).
+    const holds = async (plugin: string, write: boolean) => grantHolds(caller.grant, plugin, write);
+    let target: { plugin: string; name: string; version: string; readOnly: boolean };
+    let tool: "plugin_call" | "plugin_execute" | "plugin_resume";
+    let input: { calls: PluginInput<"call">["calls"] } | { code: string } | { executionId: string };
+    let calls: string;
+    const providers = async () => {
+      const [installed, local] = await Promise.all([
+        o.service.list({}, context, signal),
+        o.localProviders?.providers(context) ?? [],
+      ]);
+      return [
+        ...installed.map((item) => ({ ...item, version: item.activeVersion })),
+        ...local.map((item) => ({ ...item, slug: localNamespace(item.slug, item.id) })),
+      ];
+    };
+    let continuationWrites = false;
+    let continuationMode: ThreadAccessMode | null = null;
+    let continuation:
+      | {
+          taskId: ThreadId;
+          row: Awaited<ReturnType<PluginExecutions["sessionExecution"]>>;
+        }
+      | undefined;
+    const assertCallsLength = (text: string) => {
+      if (text.length > requestOperationCallsMaxLength)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected plugin operation.`,
+        });
+    };
+    const assertPluginPaths = (paths: readonly string[]) => {
+      const namespaces = new Set<string>();
+      for (const path of paths) {
+        const parsed = parseToolPath(path);
+        if (parsed.malformed)
+          throw new OpensteerError({
+            code: "bad_request",
+            message: "Invalid plugin tool path. Pass an exact path from discover.",
+          });
+        if (parsed.namespace !== null) namespaces.add(parsed.namespace);
+      }
+      if (namespaces.size > 1)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Call one plugin per operation.",
+        });
+    };
+    if ("calls" in call.input) {
+      tool = "plugin_call";
+      input = { calls: call.input.calls };
+      calls = canonicalJson(input);
+      assertCallsLength(calls);
+      const paths = (Array.isArray(input.calls) ? input.calls : [input.calls]).map(
+        ({ path }) => path,
+      );
+      assertPluginPaths(paths);
+      // The engine alone reads which tool each path names, with its own parser and escaping; a
+      // tool that is there but blocked comes with its reason.
+      const resolved = await o.service.resolveTools({ paths }, context, signal);
+      // A blocked tool this call's own grant holds (its level, the person's plugin setting, read
+      // against write, for the tool the engine named) says why: never that it does not exist,
+      // and never a Request for what cannot run. One it does not hold, or one the grant does not
+      // reach (`access_required`), reads exactly as absent, as anything outside a grant.
+      for (const entry of resolved)
+        if (
+          entry?.blocked &&
+          entry.blocked.code !== "access_required" &&
+          (await holds(entry.plugin, !entry.readOnly))
+        )
+          throw new ToolBlockedError(entry.blocked);
+      const first = resolved[0];
+      if (
+        !first ||
+        resolved.length !== paths.length ||
+        resolved.some((entry) => !entry || entry.blocked)
+      ) {
+        throw unavailable();
+      }
+      if (
+        resolved.some((entry) => entry?.plugin !== first.plugin || entry.version !== first.version)
+      )
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Call one plugin per operation.",
+        });
+      target = { ...first, readOnly: resolved.every((entry) => entry?.readOnly) };
+    } else if ("code" in call.input) {
+      // A program is not refused before it runs for a blocked tool inside it: its Request, when
+      // the mode asks one, is for running the program, whose calls are known only as it runs. A
+      // blocked tool it calls fails with its own reason, from the same function as plugin_call's,
+      // without reaching the device.
+      tool = "plugin_execute";
+      input = { code: call.input.code };
+      calls = input.code;
+      const namespace = call.input.namespace;
+      if (!namespace)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Supply the one plugin namespace from discover.",
+        });
+      assertCallsLength(calls);
+      const matches = (await providers()).filter((item) => localToolPath(item.slug) === namespace);
+      const provider = matches[0];
+      if (matches.length !== 1 || !provider?.version) throw unavailable();
+      target = {
+        plugin: provider.id,
+        name: provider.name,
+        version: provider.version,
+        readOnly: false,
+      };
+    } else {
+      tool = "plugin_resume";
+      if (!taskId)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Supply the taskId that started this plugin execution.",
+        });
+      input = { executionId: call.input.executionId };
+      calls = canonicalJson(input);
+      assertCallsLength(calls);
+      const row = await o.executions.sessionExecution(caller, input.executionId, taskId);
+      const origin = AgentOperationIdSchema.safeParse(
+        row.caller.slice(row.caller.lastIndexOf(":") + 1),
+      );
+      if (!origin.success) throw unavailable();
+      const receipt = await o.store.database
+        .selectFrom("agentOperations")
+        .select(["targetGeneration", "target", "effect"])
+        .where("id", "=", origin.data)
+        .where("sessionId", "=", row.agentSessionId)
+        .where("state", "=", "completed")
+        .executeTakeFirst();
+      if (!receipt?.targetGeneration || receipt.target.grant.kind !== "plugin") throw unavailable();
+      const originTarget = canonicalJson(receipt.target.grant.target);
+      const provider = (await providers()).find(
+        (item) => canonicalJson(pluginGrantTarget(item.id)) === originTarget,
+      );
+      if (provider?.version !== receipt.targetGeneration) throw unavailable();
+      continuation = { taskId, row };
+      continuationWrites = receipt.effect === "write";
+      continuationMode = row.admittedAccessMode;
+      target = {
+        plugin: provider.id,
+        name: provider.name,
+        version: provider.version,
+        readOnly: true,
+      };
+    }
+    const grant = { kind: "plugin", target: pluginGrantTarget(target.plugin) } as const;
+    if (!(await holds(target.plugin, !target.readOnly || continuationWrites))) throw unavailable();
+    if (continuation) {
+      const { taskId } = continuation;
+      let { row } = continuation;
+      const deadline = Date.now() + agentOperationHoldMs;
+      while ((row.state === "waiting" || row.state === "answered") && row.requestId) {
+        signal?.throwIfAborted();
+        const request = await o.store.requests.get(row.requestId);
+        if (request?.status !== "pending") break;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          const live = await o.store.admitExecution({
+            ownerUserId: caller.userId,
+            subject: { kind: "binding", bindingId: `session:${row.agentSessionId}` },
+          });
+          if (
+            live.agentConnection?.grantRevision !== caller.grantRevision ||
+            (continuationMode && !threadAccessModeAtMost(continuationMode, live.mode))
+          )
+            throw unavailable();
+          return {
+            status: "pending",
+            taskId,
+            executionId: row.id,
+            requestId: row.requestId,
+            next: pluginInputNext(row.id, taskId),
+          };
+        }
+        await delay(Math.min(remaining, 500), signal);
+        row = await o.executions.sessionExecution(caller, row.id, taskId);
+      }
+    }
+    const outcome = await sessions.run({
+      ownerUserId: caller.userId,
+      agentConnectionId: caller.connectionId,
+      taskId,
+      reason,
+      operationKey: call.operationKey,
+      tool,
+      input: call.input,
+      target: { grant, name: target.name.slice(0, 255), device: null },
+      targetGeneration: target.version,
+      effect: target.readOnly ? "read" : "write",
+      calls,
+      execute: async (operation) => {
+        await operation.recheck();
+        // It waited for the person: what is lent is read again, not kept from before the wait, and
+        // an app that is no longer there reads as one that never was (rule 5), before anything runs.
+        if (operation.requestId) {
+          forgetLent(caller);
+          if (
+            !(await providers()).some(
+              (item) => item.id === target.plugin && item.version === target.version,
+            )
+          )
+            throw unavailable();
+        }
+        if (continuationMode && !threadAccessModeAtMost(continuationMode, operation.mode))
+          throw unavailable();
+        if ("executionId" in input)
+          return o.executions.resumeSession(
+            caller,
+            input.executionId,
+            operation.taskId,
+            operation.signal,
+          );
+        return o.authority.scoped(
+          caller,
+          () =>
+            o.executions.execute(
+              caller,
+              "calls" in input ? "call" : "execute",
+              input,
+              operation.signal,
+            ),
+          {
+            operation,
+            plugin: target.plugin,
+            version: target.version,
+            write: !target.readOnly,
+            program: "code" in input,
+          },
+        );
+      },
+      summarize: (result) => ({ executionId: result.executionId, status: result.status }),
+      replay: async (row, authority) => {
+        if (
+          row.grantRevision !== caller.grantRevision ||
+          row.targetGeneration !== target.version ||
+          !threadAccessModeAtMost(row.mode, authority.mode)
+        )
+          throw unavailable();
+        if (continuationMode && !threadAccessModeAtMost(continuationMode, authority.mode))
+          throw unavailable();
+        const id = row.resultSummary?.executionId;
+        if (typeof id !== "string" || !authority.threadId) return undefined;
+        const saved = await o.executions.sessionExecution(caller, id, authority.threadId);
+        return o.executions.terminalResult(caller, saved, signal);
+      },
+    });
+    const result = directResult(outcome);
+    if (outcome.status === "pending")
+      return {
+        ...result,
+        next: `Waiting for the person's approval in Needs you. Call ${tool} again with the same arguments and the returned operationId to wait up to ${agentOperationHoldMs / 1_000} seconds. Avoid polling in a tight loop.`,
+      };
+    if (outcome.status === "completed" && outcome.result) {
+      const { status, executionId } = outcome.result;
+      const { operationId, ...execution } = result;
+      return {
+        ...execution,
+        ...(tool === "plugin_resume" && status === "pending" ? {} : { operationId }),
+        status,
+        ...(status === "pending" ? { next: pluginInputNext(executionId, outcome.taskId) } : {}),
+      };
+    }
+    return result;
   }
   async install(c: ToolCall<"opensteer_plugin_install">) {
     const context = this.options.authority.admit(c.caller);
@@ -287,7 +651,7 @@ export class PluginToolHandlers {
     };
   }
   async #accountRequest(c: ToolCall<"plugin_account_request">) {
-    const caller = requireRun(c.caller);
+    const caller = c.caller.kind === "connection" ? requireRun(c.caller) : c.caller;
     const context = this.options.authority.admit(caller);
     await this.options.authority.assert(context, "account-request", c.input.pluginId);
     const target = {
@@ -320,12 +684,18 @@ export class PluginToolHandlers {
           ).get(`${target.plugin}\u0000${version}`)
         : undefined) ?? "agent";
     await this.options.authority.assert(context, "account-request", target.plugin);
+    const origin =
+      caller.kind === "run"
+        ? ({ originatingRunId: caller.claims.runId } as const)
+        : caller.program.kind === "trigger"
+          ? ({ originatingOccurrenceId: caller.program.occurrenceId } as const)
+          : ({ originatingWatchActivationId: caller.program.activationId } as const);
     const created = await this.options.store.requests.create({
       callId: `plugin-account:${c.operationKey}`,
       kind: "plugin.account",
       mode: "durable",
-      originatingRunId: caller.claims.runId,
-      originatingThreadId: caller.thread.id,
+      ...origin,
+      originatingThreadId: callerThread(caller).id,
       requestedBy: caller.userId,
       requiredActor: "owner",
       payload: { kind: "plugin.account", ...target, consent },
@@ -441,6 +811,17 @@ export class PluginToolHandlers {
           c.signal,
         ),
       opensteer_plugin_resource_update: async (c) => {
+        const change = c.input.change;
+        if (
+          callerLineage(c.caller) &&
+          (change.action === "workflow.start" ||
+            change.action === "schedule.run" ||
+            (change.action === "schedule.configure" && change.enabled))
+        )
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Ask the person to start the workflow or schedule themselves.",
+          });
         await c.checkLive?.();
         const result = await o.service.resourcesUpdate(
           {
@@ -471,9 +852,18 @@ export class PluginToolHandlers {
         const context = o.authority.admit(c.caller);
         return this.discoveryResult(context, await o.service.describe(c.input, context, c.signal));
       },
-      plugin_call: (c) => o.executions.execute(c.caller, "call", c.input, c.signal),
-      plugin_execute: (c) => o.executions.execute(c.caller, "execute", c.input, c.signal),
-      plugin_resume: (c) => o.executions.resume(c.caller, c.input.executionId, c.signal),
+      plugin_call: (c) =>
+        c.caller.kind === "connection"
+          ? this.#directExecution(c.caller, c)
+          : o.executions.execute(c.caller, "call", c.input, c.signal),
+      plugin_execute: (c) =>
+        c.caller.kind === "connection"
+          ? this.#directExecution(c.caller, c)
+          : o.executions.execute(c.caller, "execute", c.input, c.signal),
+      plugin_resume: (c) =>
+        c.caller.kind === "connection"
+          ? this.#directExecution(c.caller, c)
+          : o.executions.resume(c.caller, c.input.executionId, c.signal),
       opensteer_plugin_list: (c) => this.list(c),
       opensteer_plugin_install: (c) => this.install(c),
       opensteer_plugin_export: (c) => this.export(c),

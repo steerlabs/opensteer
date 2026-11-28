@@ -78,18 +78,17 @@ enum SessionWindows {
         "Opensteer Computer Use needs macOS Accessibility to read this app. Turn it on for Opensteer Computer Use in System Settings."
       )
     }
-    let launch: AppLaunch.Result
-    if launching {
-      launch = try await AppLaunch.ensureRunning(
-        app,
-        check: {
-          try check()
-          try budget.check()
-        })
-    } else {
-      launch = AppLaunch.Result(
-        processIdentifier: try AppProcess.verify(app), launched: false, broughtForward: false)
-    }
+    let launch = try await acquireProcess(
+      launching: launching,
+      open: {
+        try await AppLaunch.ensureRunning(
+          app,
+          check: {
+            try check()
+            try budget.check()
+          })
+      },
+      verify: { try AppProcess.verify(app) })
     try await processAcquired(launch.processIdentifier)
     try check()
     try budget.check()
@@ -115,6 +114,14 @@ enum SessionWindows {
       monitor.forget(processIdentifier: launch.processIdentifier)
       throw error
     }
+  }
+
+  static func acquireProcess(
+    launching: Bool, open: () async throws -> AppLaunch.Result, verify: () throws -> pid_t
+  ) async throws -> AppLaunch.Result {
+    if launching { return try await open() }
+    return AppLaunch.Result(
+      processIdentifier: try verify(), launched: false, broughtForward: false)
   }
 
   static func windows(
@@ -258,8 +265,8 @@ enum SessionWindows {
     -> WindowInfo
   {
     if let window {
-      let identity = try WindowIdentities.resolve(window)
-      guard identity.process == app.verified else { throw closed }
+      guard let process = app.verified else { throw closed }
+      let identity = try WindowIdentities.resolve(window, process: process)
       if !app.windows.values.contains(where: { CFEqual($0.element, identity.element) }) {
         let bound = SessionWindow(process: identity.process, element: identity.element, windowID: identity.windowID)
         app.windows[bound.ref] = bound

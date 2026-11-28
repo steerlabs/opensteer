@@ -1,7 +1,14 @@
+import { BrowserPoolGate } from "./browser-pool-gate.js";
+import type { BrowserPoolCoordinator } from "./browser-pool-coordinator.js";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { RunnerIdSchema, type DeviceId } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
-import { BrowserRuntime } from "@opensteer/browser-runtime-core";
+import {
+  BrowserRuntime,
+  BrowserRuntimeError,
+  type BrowserAttachment,
+} from "@opensteer/browser-runtime-core";
 import {
   FakeContext,
   FakePage,
@@ -46,7 +53,11 @@ import {
   BrowserSurfaceIdSchema,
   createBrowserSessionId,
   decodeBrowserFrameEnvelope,
+  RunnerAuxiliaryStreamIdSchema,
+  RunnerBootIdSchema,
   RunnerBrowserModuleSchema,
+  RunnerConnectionIdSchema,
+  RunnerConnectionLeaseIdSchema,
   type BrowserSessionId,
   type HostedBrowserSessionState,
   type PersonFillVersion,
@@ -60,6 +71,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
+import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { installWebSocketLiveness } from "../server/websocket-liveness.js";
 import {
   BrowserLocalProfiles,
@@ -69,6 +81,7 @@ import {
   BrowserService,
   BrowserConsumerOutlet,
   HostedBrowserBroker,
+  loadOwnedBrowserSession,
   type BrowserConsumerPeer,
   type BrowserProfileRecord,
   type BrowserRuntimeTarget,
@@ -77,8 +90,14 @@ import {
   type BrowserSessionRepository,
   type BrowserUsageCredit,
   type BrowserUsePage,
+  type OwnedBrowserSessionRecord,
 } from "./browser-service.js";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
+import { RunnerBrowserHub, type RunnerBrowserPeer } from "./runner-browser-hub.js";
+import {
+  RunnerBrowserRuntimeRouter,
+  type BrowserRuntimeRelayEvent,
+} from "./runner-browser-runtime.js";
 
 const editingEvidenceRoot =
   process.env.OPENSTEER_BROWSER_SERVICE_EVIDENCE_DIR ??
@@ -104,6 +123,7 @@ function runnerTarget(options: {
   readonly rasterDemand?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
+  readonly connectionCommands?: boolean;
   readonly tabRestoreVersion?: boolean;
   readonly environmentIds?: readonly EnvironmentId[];
   readonly label?: string;
@@ -155,6 +175,7 @@ function runnerTarget(options: {
             },
             localProfileStorage: fixtureStorage,
             main: true,
+            ...(options.connectionCommands ? { connectionCommands: true } : {}),
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
@@ -483,7 +504,8 @@ describe("BrowserService", () => {
     runtime.sendServer({
       type: "cdp.error",
       requestId: request.requestId,
-      error: { code: "conflict", message: "Could not create page", retryable: false },
+      // A definite refusal: the runtime made no page.
+      error: { code: "conflict", message: "Could not create page", retryable: false, unsent: true },
     });
     await refused;
     expect((await repository.getBrowserSessionForOwner(opened.session.id, ownerId))?.state).toBe(
@@ -499,7 +521,8 @@ describe("BrowserService", () => {
     runtime.sendServer({
       type: "cdp.error",
       requestId: next.requestId,
-      error: { code: "conflict", message: "Could not create page", retryable: false },
+      // A definite refusal: the runtime made no page.
+      error: { code: "conflict", message: "Could not create page", retryable: false, unsent: true },
     });
     await retried;
     expect(runtime.receivedCommands()).toHaveLength(2);
@@ -1589,162 +1612,6 @@ describe("BrowserService", () => {
     );
   });
 
-  it("replaces baseline copy/cut with one native operation and isolates alternating editing copies", async () => {
-    vi.stubEnv("OPENSTEER_BROWSER_DIAGNOSTICS", "1");
-    const diagnostics = vi.spyOn(console, "info").mockImplementation(() => {});
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      editing: true,
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-    const service = freshService({
-      keys,
-      runtime,
-      editing: true,
-      repository: new MemoryBrowserRepository(ownerId),
-    });
-    const opened = await service.openAgentSession({
-      agentBindingId: "legacy-copy",
-      ownerId,
-
-      fresh: true,
-    });
-    const old = new RecordingPeer("legacy-copy"),
-      modern = new RecordingPeer("editing-copy"),
-      watch = new RecordingPeer("watch-copy");
-    const baseline = await service.attach(ownerId, opened.session.id, old, consumerOptions());
-    const editing = await service.attach(ownerId, opened.session.id, modern, {
-      ...consumerOptions(),
-      editing: 1,
-    });
-    const watching = await service.attach(ownerId, opened.session.id, watch, {
-      ...consumerOptions(),
-      mode: "watch",
-      editing: 1,
-    });
-    const send = (attachment: typeof baseline, message: object) =>
-      attachment.handle(Buffer.from(JSON.stringify(message)), false);
-    await send(baseline, { type: "stream.subscribe", surfaceId: "page-1" });
-    expect(await runtime.nextCommand()).toMatchObject({
-      type: "stream.subscribe",
-      surfaceId: "page-1",
-    });
-    await send(editing, { type: "stream.subscribe", surfaceId: "page-1" });
-    for (const [index, operation] of ["copy", "cut", "copy"].entries()) {
-      const text = `native-${index}`;
-      let command: Record<string, unknown>;
-      if (index === 1) {
-        await send(editing, {
-          type: `clipboard.${operation}`,
-          surfaceId: "page-1",
-          operationId: randomUUID(),
-        });
-        command = await runtime.nextCommand();
-      } else {
-        await send(baseline, {
-          type: "input.key",
-          surfaceId: "page-1",
-          action: "down",
-          code: "KeyC",
-          key: "c",
-          modifiers: ["meta"],
-        });
-        command = await runtime.nextCommand();
-        expect(command.type).toBe("clipboard.copy");
-        await send(baseline, {
-          type: "input.key",
-          surfaceId: "page-1",
-          action: "up",
-          code: "KeyC",
-          key: "c",
-          modifiers: ["meta"],
-        });
-      }
-      await send(baseline, { type: "navigation.reload", surfaceId: "page-1" });
-      expect(await runtime.nextCommand()).toMatchObject({ type: "navigation.reload" });
-      runtime.sendServer({
-        type: "clipboard.result",
-        surfaceId: "page-1",
-        operationId: command.operationId,
-        consumerToken: command.consumerToken,
-        outcome: operation === "cut" ? "cut" : "copied",
-        items: [{ type: "text/plain", size: Buffer.byteLength(text) }],
-      });
-      runtime.sendServer({
-        type: "clipboard.part",
-        consumerToken: command.consumerToken,
-        part: {
-          operationId: command.operationId,
-          index: 0,
-          data: Buffer.from(text).toString("base64"),
-        },
-      });
-      if (index === 1) await waitFor(() => modern.text().some((m) => m.type === "clipboard.part"));
-      else
-        await waitFor(() =>
-          old.text().some((m) => m.type === "clipboard.data" && "text" in m && m.text === text),
-        );
-    }
-    await send(baseline, {
-      type: "input.key",
-      surfaceId: "page-1",
-      action: "down",
-      code: "KeyX",
-      key: "x",
-      modifiers: ["control"],
-    });
-    expect(await runtime.nextCommand()).toMatchObject({ type: "clipboard.cut" });
-    await send(baseline, {
-      type: "input.key",
-      surfaceId: "page-1",
-      action: "up",
-      code: "KeyX",
-      key: "x",
-      modifiers: [],
-    });
-    await send(baseline, {
-      type: "input.key",
-      surfaceId: "page-1",
-      action: "down",
-      code: "KeyA",
-      key: "a",
-      modifiers: [],
-    });
-    expect(await runtime.nextCommand()).toMatchObject({ type: "input.key", key: "a" });
-    await send(baseline, { type: "clipboard.paste", surfaceId: "page-1", text: "a" });
-    expect(await runtime.nextCommand()).toMatchObject({ type: "clipboard.paste", text: "a" });
-    expect(
-      old
-        .text()
-        .filter((m) => m.type === "clipboard.data")
-        .map((m) => ("text" in m ? m.text : undefined)),
-    ).toEqual(["native-0", "native-2"]);
-    expect(old.text().some((m) => ["clipboard.result", "clipboard.part"].includes(m.type))).toBe(
-      false,
-    );
-    expect(modern.text().some((m) => m.type === "clipboard.data")).toBe(false);
-    expect(watch.text().some((m) => m.type.startsWith("clipboard."))).toBe(false);
-    const counters = JSON.stringify(diagnostics.mock.calls);
-    expect(counters).toContain("clipboard.copied");
-    expect(counters).not.toContain("native-0");
-    const evidence = `${editingEvidenceRoot}/legacy-copy`;
-    await mkdir(evidence, { recursive: true });
-    console.info(`Browser service editing evidence: ${evidence}`);
-    await writeFile(
-      `${evidence}/report.json`,
-      JSON.stringify(
-        { passed: true, baseline: old.text(), editing: modern.text(), watch: watch.text() },
-        null,
-        2,
-      ),
-    );
-    baseline.close();
-    editing.close();
-    watching.close();
-    diagnostics.mockRestore();
-  });
-
   it.each([
     [undefined, undefined, [undefined, undefined, undefined]],
     [1, true, [undefined, 1, 1]],
@@ -1837,7 +1704,12 @@ describe("BrowserService", () => {
               false,
             );
           if (mode === "control") {
-            const command = { type: "input.command", surfaceId: "page-1", command: "selectAll" };
+            const command = {
+              type: "input.command",
+              surfaceId: "page-1",
+              command: "selectAll",
+              contextId: crypto.randomUUID(),
+            };
             if (expected) {
               await attachment.handle(Buffer.from(JSON.stringify(command)), false);
               expect(await nextInput()).toMatchObject(command);
@@ -1876,6 +1748,7 @@ describe("BrowserService", () => {
                       type: "clipboard.copy",
                       surfaceId: "page-1",
                       operationId: randomUUID(),
+                      contextId: randomUUID(),
                     }),
                   ),
                   false,
@@ -2260,6 +2133,7 @@ describe("BrowserService", () => {
       surfaceId: "page-1",
       operationId,
       items: [{ type: "text/plain", size: 1 }],
+      contextId: randomUUID(),
     });
     const paste = await runtime.nextCommand();
     await send({ type: "clipboard.part", part: { operationId, index: 0, data: "!" } });
@@ -3497,6 +3371,38 @@ describe("BrowserService", () => {
         }),
     };
   }
+
+  it("records a Run's place on an extension's page as on any page, for the person and their own agents (P3)", async () => {
+    const f = await runPlaceFixture(new ManualClock(0));
+    f.record.mockResolvedValue(true);
+    f.runtime.publishTabs({
+      surfaces: [
+        {
+          id: "page-1",
+          active: true,
+          title: "My Extension Options",
+          url: `chrome-extension://${"a".repeat(32)}/options.html`,
+          geometryRevision: 1,
+        },
+        {
+          id: "page-2",
+          active: false,
+          title: "Web",
+          url: "https://example.com",
+          geometryRevision: 1,
+        },
+      ],
+    });
+    await f.activity("page-1");
+    await f.activity("page-2");
+    await f.drain();
+    // What a connection reads of it is decided where places are read (authorizePlaceSite).
+    expect(f.record.mock.calls.map(([input]) => input.data.tabId)).toEqual(["page-1", "page-2"]);
+    expect(f.record.mock.calls[0]?.[0].data).toMatchObject({
+      title: "My Extension Options",
+      site: null,
+    });
+  });
 
   it("bounds interleaved activity writes and converges usage on the final surface", async () => {
     const clock = new ManualClock(0);
@@ -5693,6 +5599,7 @@ function freshService(options: {
   readonly personFill?: PersonFillVersion | undefined;
   readonly personal?: boolean;
   readonly sharedControl?: boolean;
+  readonly connectionCommands?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
@@ -5743,6 +5650,7 @@ function freshService(options: {
       personFill: options.personFill,
       editing: options.editing,
       clipboard: options.clipboard,
+      connectionCommands: options.connectionCommands === true,
     }),
   });
   cleanups.push(async () => service.close());
@@ -5915,8 +5823,22 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return RunnerIdSchema.parse(deviceId);
   }
 
-  async resolveResourceAccess() {
+  async resolveResourceAccess(): ReturnType<
+    NonNullable<BrowserSessionRepository["resolveResourceAccess"]>
+  > {
     return {
+      execution: {
+        mode: "full-access" as const,
+        actor: "native" as const,
+        agentConnection: null,
+        threadId: null,
+        runId: null,
+        taskMode: null,
+        runMode: null,
+        ownerUserId: createId("user"),
+        subject: { kind: "person" as const },
+      },
+      grantAccess: "read-write" as const,
       access: "read-write" as const,
       runAccess: "read-write" as const,
     };
@@ -6073,8 +5995,8 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         id: createId("request"),
         kind: input.kind,
         mode: input.mode,
-        originatingOccurrenceId: null,
-        originatingRunId: input.originatingRunId,
+        originatingOccurrenceId: input.originatingOccurrenceId ?? null,
+        originatingRunId: input.originatingRunId ?? null,
         originatingThreadId: input.originatingThreadId,
 
         payload: input.payload,
@@ -6377,7 +6299,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return renamed;
   }
 
-  /** The archived row stays, as the database keeps it, so its sessions still name an owner. */
+  /** The archived row stays, as the database keeps it; active-session queries exclude archived profiles. */
   async deleteBrowserProfile(input: {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
@@ -6387,10 +6309,12 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     }
     this.#deletedProfiles.add(input.profileId);
 
+    const sessions = [...this.#sessions.values()].filter(
+      (session) => session.profileId === input.profileId && !terminal(session.state),
+    );
     return {
-      sessionIds: [...this.#sessions.values()]
-        .filter((session) => session.profileId === input.profileId && !terminal(session.state))
-        .map((session) => session.id),
+      sessionIds: sessions.map((session) => session.id),
+      sessions,
     };
   }
 
@@ -6407,10 +6331,13 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return this.#ownsSession(session, ownerId) ? session : null;
   }
 
-  /** Fresh sessions belong to the personal owner. */
+  /** Fresh sessions belong to the personal owner; archived profiles' sessions are excluded as in Postgres. */
   #ownsSession(session: BrowserSessionRecord, ownerId: UserId): boolean {
     if (session.profileId === null) return ownerId === this.#ownerId;
-    return this.#profiles.get(session.profileId)?.ownerId === ownerId;
+    return (
+      this.#profiles.get(session.profileId)?.ownerId === ownerId &&
+      !this.#deletedProfiles.has(session.profileId)
+    );
   }
 
   async listBrowserProfiles(ownerId: UserId): Promise<readonly BrowserProfileRecord[]> {
@@ -6425,6 +6352,13 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
 
   session(sessionId: BrowserSessionId): BrowserSessionRecord | undefined {
     return this.#sessions.get(sessionId);
+  }
+
+  async closeUnpooledBrowserSession(input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+  }) {
+    return this.transitionBrowserSession({ ...input, state: "closed" });
   }
 
   async transitionBrowserSession(input: {
@@ -6475,6 +6409,10 @@ async function startFakeRuntime(
     readonly navigation?: boolean;
     readonly editing?: boolean | 1 | 2 | undefined;
     readonly clipboard?: boolean | undefined;
+    /** The snapshot offers reply budgets and command cancellation, as the shipped runtime does. */
+    readonly cdpReplyBudget?: boolean;
+    /** The snapshot offers scoped script attachments, as the shipped runtime does. */
+    readonly scriptAttachments?: boolean;
   } = {},
 ): Promise<{
   connectionCount(): number;
@@ -6681,6 +6619,10 @@ async function startFakeRuntime(
           ...(claims.personFillVersion ? { personFillVersion: claims.personFillVersion } : {}),
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
           ...(options.targetedStreaming !== false ? { targetedStreamingVersion: 1 } : {}),
+          ...(options.cdpReplyBudget ? { cdpReplyBudget: 1, scriptCancellation: 1 } : {}),
+          ...(options.scriptAttachments
+            ? { cdpReplyBudget: 1, scriptAttachments: 1, scriptCancellation: 1 }
+            : {}),
           ...(options.editing && claims.editingVersion
             ? {
                 editingVersion: claims.editingVersion,
@@ -7532,6 +7474,53 @@ it("keeps workspace descriptors after a runtime retires and closes viewers grace
   expect(peer.closed?.code).toBe(1000);
 });
 
+it("writes an untitled page again when its load ends, so the tab's last title does not stay for good", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      tabRestoreVersion: true,
+    });
+  const initial = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "initial",
+  );
+  await memory.add(initial);
+  vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
+  await service.pageTabs.admitted!(initial);
+  const writes = vi.spyOn(memory.store, "updatePage");
+  const address = "https://example.com/untitled";
+  const written = () =>
+    writes.mock.calls.map(([, , , , descriptor]) => ({
+      title: descriptor.title,
+      loading: descriptor.loading ?? false,
+    }));
+  runtime.publishTabs({
+    surfaces: [{ id: initial.id, active: true, title: "", url: address, loading: true }],
+  });
+  await vi.waitFor(async () => {
+    await service.flushPendingTabDescriptors();
+    expect(written()).toEqual([{ title: "", loading: true }]);
+  });
+  runtime.publishTabs({
+    surfaces: [{ id: initial.id, active: true, title: "", url: address, loading: false }],
+  });
+  await vi.waitFor(async () => {
+    await service.flushPendingTabDescriptors();
+    expect(written(), "the finished load of an untitled page was never written").toEqual([
+      { title: "", loading: true },
+      { title: "", loading: false },
+    ]);
+  });
+});
+
 it.each(["generation admission", "a concurrent durable open"])(
   "retains descriptors received before %s",
   async (race) => {
@@ -7739,7 +7728,7 @@ it("batches additive person-use marks once per runtime connection and replays on
       sharedControl: true,
       connectTimeoutMs: 1000,
       passkeys: false,
-      onState: async () => ({}),
+      onState: async (state: string) => ({ state }),
       onTerminal: () => undefined,
       onTabsChanged: () => undefined,
       onRecordsChanged: () => undefined,
@@ -7994,20 +7983,434 @@ it("admits paged listing and exact resume only inside an agent's own session", a
       .receivedCommands()
       .slice(before)
       .find((m) => m.type === "cdp.command")!;
-    expect(sent.command).toMatchObject({ method, parameters });
+    expect(sent.command).toEqual({
+      method,
+      // TS11: an agent's wake is answered once the page it woke has loaded.
+      parameters: method === "Opensteer.resumeTab" ? { ...parameters, loaded: true } : parameters,
+    });
     runtime.sendServer({ type: "cdp.result", requestId: sent.requestId, result: { ok: true } });
     expect(await result).toEqual({ ok: true });
   };
   await forward("Opensteer.listTabs", { cursor: "42" });
   await forward("Opensteer.resumeTab", { surfaceId: "page-1" });
   expect(await repository.countBrowserSessionAttachments(opened.session.id)).toBe(2);
-  await expect(
-    cdp.request({ method: "Opensteer.resumeTab", parameters: { surfaceId: "other-session-tab" } }),
-  ).rejects.toMatchObject({ code: "not_found" });
+  // A tab this session does not hold is the runtime's to refuse, never this Home's copy of the
+  // tab's state: it reads as not found, the same as one that never existed.
+  const before = runtime.receivedCommands().length;
+  const outside = cdp.request({
+    method: "Opensteer.resumeTab",
+    parameters: { surfaceId: "other-session-tab" },
+  });
+  const asked = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .slice(before)
+      .find((m) => m.type === "cdp.command");
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  runtime.sendServer({
+    type: "cdp.error",
+    requestId: asked.requestId,
+    error: {
+      code: "not_found",
+      message: "The browser tab closed.",
+      retryable: false,
+      unsent: true,
+    },
+  });
+  await expect(outside).rejects.toMatchObject({ code: "not_found" });
   await expect(cdp.request({ method: "Opensteer.openTab", parameters: {} })).rejects.toMatchObject({
     code: "forbidden",
   });
   cdp.close();
+});
+
+it.each(["retained", "lost"] as const)(
+  "reconnects a person's broker without replaying the initial navigation (%s runtime session)",
+  async (outcome) => {
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const runtimeId = "restart-fixture";
+    const initialUrl = "https://example.test/form";
+    eligibleRunners.set(runnerId, "Test computer");
+    const tickets: ReturnType<typeof verifyTicket>[] = [];
+    const makeRuntime = (url?: string) => {
+      const page = new FakePage(url ? { url } : {});
+      let text = "";
+      page.cdpSession.responses.set("Page.navigate", () => {
+        text = "";
+        page.navigate(initialUrl, "Form");
+        return {};
+      });
+      page.cdpSession.responses.set(
+        "Input.insertText",
+        (input: Record<string, unknown> | undefined) => {
+          text += String(input?.text);
+          return {};
+        },
+      );
+      const launcher = new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page])));
+      const runtime = new BrowserRuntime({
+        launcher,
+        runtimeId,
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: {
+          verify: async (ticket) => {
+            const claims = verifyTicket(ticket, keys.publicKey, "host-primary");
+            tickets.push(claims);
+            return claims;
+          },
+        },
+      });
+      return { runtime, launcher, page, text: () => text };
+    };
+    const original = makeRuntime(initialUrl);
+    const replacement = outcome === "lost" ? makeRuntime() : original;
+    const hub = new RunnerBrowserHub();
+    const router = new RunnerBrowserRuntimeRouter({ registry: hub });
+    const repository = new MemoryBrowserRepository(ownerId);
+    const tabs = memoryTabs();
+    const service = new BrowserService({
+      ...nativeProfileOptions(),
+      ...profileStateOptions,
+      connectTimeoutMs: 2_000,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      tabs: tabs.store,
+      tabPlaces: { write: async () => false, notice: () => {} },
+      targetResolver: router,
+    });
+    cleanups.push(async () => {
+      try {
+        await service.close();
+      } finally {
+        router.close();
+        hub.close();
+        await replacement.runtime.shutdown();
+        if (replacement !== original) await original.runtime.shutdown();
+      }
+    });
+
+    const attachRunner = (connectionGeneration: number, runtime: BrowserRuntime) => {
+      const auxiliaryStreamId = RunnerAuxiliaryStreamIdSchema.parse(`rax_${randomUUID()}`);
+      const runnerFence = {
+        bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+        connectionGeneration,
+        connectionId: RunnerConnectionIdSchema.parse(`rcn_${randomUUID()}`),
+        connectionLeaseId: RunnerConnectionLeaseIdSchema.parse(`rls_${randomUUID()}`),
+        runnerId,
+      };
+      const fence = { ...runnerFence, auxiliaryStreamId, module: "browser" as const };
+      let attachment: BrowserAttachment | undefined;
+      const result = Promise.withResolvers<BrowserRuntimeError | null>();
+      const reply = (event: BrowserRuntimeRelayEvent) => hub.handleMessage(peer, event);
+      const peer: RunnerBrowserPeer = {
+        id: auxiliaryStreamId,
+        close: () => {},
+        send: async (message) => {
+          if (message.type === "capability.grant") {
+            const { capabilityGeneration, capabilityLeaseId, runtimeId } = message.lease;
+            await reply({
+              ...fence,
+              requestId: message.requestId,
+              type: "capability.accepted",
+              capability: { capabilityGeneration, capabilityLeaseId, runtimeId },
+            });
+          } else if (message.type === "capability.revoke") {
+            await reply({ ...message, type: "capability.revoked" });
+          } else if (message.type === "browser.attach") {
+            const { capability, channelId, requestId } = message;
+            const sink = new FakeSink();
+            sink.sendServerImplementation = (frame) =>
+              reply({
+                ...fence,
+                capability,
+                channelId,
+                type: "browser.server-message",
+                message: frame,
+              });
+            try {
+              attachment = await runtime.attach(message.attachTicket, sink);
+            } catch (error) {
+              if (!(error instanceof BrowserRuntimeError)) throw error;
+              result.resolve(error);
+              await reply({
+                ...fence,
+                requestId,
+                channelId,
+                type: "browser.command-error",
+                error: error.toProtocolError(),
+              });
+              return;
+            }
+            await reply({
+              ...fence,
+              requestId,
+              capability,
+              channelId,
+              type: "browser.attached",
+              ...(attachment.initialPage ? { initialPage: attachment.initialPage } : {}),
+            });
+            result.resolve(null);
+          } else if (message.type === "browser.client-message") {
+            await attachment?.handle(JSON.stringify(message.message));
+          } else if (message.type === "browser.close") {
+            await attachment?.close();
+            await reply({ ...message, type: "browser.closed", code: 1000, reason: "" });
+          }
+        },
+      };
+      hub.attach(peer, {
+        auxiliaryStreamId,
+        fence,
+        identity: {
+          ...runnerFence,
+          fence: runnerFence,
+          allowedModules: ["browser"],
+          capabilities: [],
+          name: "Test computer",
+          environmentIds: [],
+          personalRemoteAccessGeneration: null,
+          runnerKind: "local",
+          runtimeVersion: "test",
+          modules: { browser: { runtimeId, wireVersion: 2, actorClaim: 1, tabRestoreVersion: 1 } },
+        },
+        streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      return {
+        result: result.promise,
+        restart: async () => {
+          await attachment!.close(true, true);
+          hub.detach(peer, "device-restarting");
+        },
+      };
+    };
+
+    const first = attachRunner(1, original.runtime);
+    const { session } = await service.start({ fresh: true, initialUrl, ownerId });
+    expect(await first.result).toBeNull();
+    expect(tickets[0]).toMatchObject({
+      actor: "person",
+      initialNavigation: { url: initialUrl },
+      tabRestoreVersion: 1,
+    });
+    expect(tickets[0]!.reattach).toBeUndefined();
+    const [tab] = await service.savedPages(ownerId, session.id);
+    expect(tab).toMatchObject({ url: initialUrl });
+    const navigations = () =>
+      original.page.cdpSession.sent.filter((command) => command.method === "Page.navigate");
+    await vi.waitFor(() => expect(navigations()).toHaveLength(1));
+    await original.page.cdpSession.send("Input.insertText", { text: "unfinished draft" });
+    const document = original.page.loaderId;
+
+    await first.restart();
+    if (outcome === "lost") await original.runtime.shutdown();
+    const reconnected = await attachRunner(2, replacement.runtime).result;
+    expect(tickets[1]).toMatchObject({ reattach: true, sessionId: session.id });
+    expect(tickets[1]!.nonce).not.toBe(tickets[0]!.nonce);
+    if (outcome === "lost") {
+      expect(reconnected).toMatchObject({ code: "not_found" });
+      expect(replacement.runtime.health().sessionCount).toBe(0);
+      expect(replacement.launcher.launchCount).toBe(0);
+      expect(replacement.page.cdpSession.sent).toEqual([]);
+      await vi.waitFor(() => expect(service.pageInventory(session.id)).toBeUndefined());
+      expect(repository.session(session.id)?.state).toBe("failed");
+    } else {
+      expect(reconnected).toBeNull();
+      expect(original.runtime.health().sessionCount).toBe(1);
+      expect(original.launcher.launchCount).toBe(1);
+      expect(original.page.isClosed()).toBe(false);
+      expect(navigations()).toHaveLength(1);
+      expect(original.page.loaderId).toBe(document);
+      expect(original.text()).toBe("unfinished draft");
+    }
+    expect(await service.savedPages(ownerId, session.id)).toMatchObject([
+      { id: tab!.id, url: initialUrl },
+    ]);
+  },
+);
+
+it("holds a viewer attaching during a Runner restart until the replacement reattaches, and marks reconnect races retryable", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const ownerId = createId("user");
+  const runnerId = createId("runner");
+  const runtimeId = "restart-viewer-fixture";
+  const initialUrl = "https://example.test/form";
+  eligibleRunners.set(runnerId, "Test computer");
+  const page = new FakePage({ url: initialUrl });
+  const runtime = new BrowserRuntime({
+    launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page]))),
+    runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: {
+      verify: async (ticket) => verifyTicket(ticket, keys.publicKey, "host-primary"),
+    },
+  });
+  const hub = new RunnerBrowserHub();
+  const router = new RunnerBrowserRuntimeRouter({ registry: hub });
+  const repository = new MemoryBrowserRepository(ownerId);
+  const tabs = memoryTabs();
+  const service = new BrowserService({
+    ...nativeProfileOptions(),
+    ...profileStateOptions,
+    connectTimeoutMs: 400,
+    repository,
+    signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+    tabs: tabs.store,
+    tabPlaces: { write: async () => false, notice: () => {} },
+    targetResolver: router,
+  });
+  cleanups.push(async () => {
+    try {
+      await service.close();
+    } finally {
+      router.close();
+      hub.close();
+      await runtime.shutdown();
+    }
+  });
+
+  const attachRunner = (connectionGeneration: number) => {
+    const auxiliaryStreamId = RunnerAuxiliaryStreamIdSchema.parse(`rax_${randomUUID()}`);
+    const runnerFence = {
+      bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+      connectionGeneration,
+      connectionId: RunnerConnectionIdSchema.parse(`rcn_${randomUUID()}`),
+      connectionLeaseId: RunnerConnectionLeaseIdSchema.parse(`rls_${randomUUID()}`),
+      runnerId,
+    };
+    const fence = { ...runnerFence, auxiliaryStreamId, module: "browser" as const };
+    let attachment: BrowserAttachment | undefined;
+    const result = Promise.withResolvers<BrowserRuntimeError | null>();
+    const reply = (event: BrowserRuntimeRelayEvent) => hub.handleMessage(peer, event);
+    const peer: RunnerBrowserPeer = {
+      id: auxiliaryStreamId,
+      close: () => {},
+      send: async (message) => {
+        if (message.type === "capability.grant") {
+          const { capabilityGeneration, capabilityLeaseId, runtimeId } = message.lease;
+          await reply({
+            ...fence,
+            requestId: message.requestId,
+            type: "capability.accepted",
+            capability: { capabilityGeneration, capabilityLeaseId, runtimeId },
+          });
+        } else if (message.type === "capability.revoke") {
+          await reply({ ...message, type: "capability.revoked" });
+        } else if (message.type === "browser.attach") {
+          const { capability, channelId, requestId } = message;
+          const sink = new FakeSink();
+          sink.sendServerImplementation = (frame) =>
+            reply({
+              ...fence,
+              capability,
+              channelId,
+              type: "browser.server-message",
+              message: frame,
+            });
+          try {
+            attachment = await runtime.attach(message.attachTicket, sink);
+          } catch (error) {
+            if (!(error instanceof BrowserRuntimeError)) throw error;
+            result.resolve(error);
+            await reply({
+              ...fence,
+              requestId,
+              channelId,
+              type: "browser.command-error",
+              error: error.toProtocolError(),
+            });
+            return;
+          }
+          await reply({
+            ...fence,
+            requestId,
+            capability,
+            channelId,
+            type: "browser.attached",
+            ...(attachment.initialPage ? { initialPage: attachment.initialPage } : {}),
+          });
+          result.resolve(null);
+        } else if (message.type === "browser.client-message") {
+          await attachment?.handle(JSON.stringify(message.message));
+        } else if (message.type === "browser.close") {
+          await attachment?.close();
+          await reply({ ...message, type: "browser.closed", code: 1000, reason: "" });
+        }
+      },
+    };
+    hub.attach(peer, {
+      auxiliaryStreamId,
+      fence,
+      identity: {
+        ...runnerFence,
+        fence: runnerFence,
+        allowedModules: ["browser"],
+        capabilities: [],
+        name: "Test computer",
+        environmentIds: [],
+        personalRemoteAccessGeneration: null,
+        runnerKind: "local",
+        runtimeVersion: "test",
+        modules: { browser: { runtimeId, wireVersion: 2, actorClaim: 1, tabRestoreVersion: 1 } },
+      },
+      streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    return {
+      result: result.promise,
+      restart: async () => {
+        await attachment!.close(true, true);
+        hub.detach(peer, "device-restarting");
+      },
+    };
+  };
+
+  const first = attachRunner(1);
+  const { session } = await service.start({ fresh: true, initialUrl, ownerId });
+  expect(await first.result).toBeNull();
+  const [tab] = await service.savedPages(ownerId, session.id);
+  expect(tab).toBeDefined();
+
+  // Start a Runner restart and wait until the broker has entered reconnect state.
+  await first.restart();
+  await vi.waitFor(() => expect(service.pageInventory(session.id)?.ready).toBe(false));
+
+  // A viewer connecting mid-restart waits for the replacement instead of failing with conflict.
+  const waitingPeer = new RecordingPeer("viewer-mid-restart");
+  let settled = false;
+  const waitingAttach = service
+    .attach(ownerId, session.id, waitingPeer, { ...consumerOptions(), mode: "watch" })
+    .finally(() => {
+      settled = true;
+    });
+  for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+  expect(settled).toBe(false);
+
+  const second = attachRunner(2);
+  expect(await second.result).toBeNull();
+  const attached = await waitingAttach;
+  expect(
+    waitingPeer.textFrames.some((frame) => JSON.parse(frame).type === "browser.snapshot"),
+  ).toBe(true);
+
+  // If another Runner restart starts while an attached viewer sends a command, the rejection is retryable.
+  await second.restart();
+  await vi.waitFor(() => expect(service.pageInventory(session.id)?.ready).toBe(false));
+  await expect(
+    attached.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: tab!.id })),
+      false,
+    ),
+  ).rejects.toMatchObject({ code: "conflict", retryable: true });
+  attached.close();
+
+  // If the Runner does not return before connectTimeoutMs, a waiting viewer gets a retryable error.
+  const timedOutPeer = new RecordingPeer("viewer-reconnect-timeout");
+  await expect(
+    service.attach(ownerId, session.id, timedOutPeer, { ...consumerOptions(), mode: "watch" }),
+  ).rejects.toMatchObject({ code: "runner_offline", retryable: true });
 });
 
 it("lets the runtime sleep an unviewed leftover only after its Run's durable hold ends", async () => {
@@ -8147,6 +8550,77 @@ it("retains the requesting tab's pin after its actor ends and keeps unknown Host
   cdp.close();
 });
 
+it("tells the runtime which tabs a live agent works in, so they are slept last, and forgets them when the agent leaves (TS12)", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    targetedStreaming: true,
+  });
+  const ownerId = createId("user"),
+    runId = createId("run"),
+    threadId = createId("thread");
+  const repository = new MemoryBrowserRepository(ownerId);
+  vi.spyOn(repository as BrowserSessionRepository, "resolvePlaceActors").mockImplementation(
+    async () => [
+      {
+        agentBindingId: `run:${runId}`,
+        ownerId,
+        runId,
+        threadId,
+        generation: 1,
+        lineageThreadIds: [threadId],
+      },
+    ],
+  );
+  const service = freshService({ keys, runtime, repository, surfaceState: true });
+  const authority = { ownerId, agentBindingId: `run:${runId}` };
+  const { session } = await service.openAgentSession({ ...authority, fresh: true });
+  const cdp = await service.attachCdpForAgent(
+    { ...authority, sessionId: session.id },
+    () => undefined,
+  );
+  const attached = await cdp.dispatch({
+    method: "Target.attachToTarget",
+    parameters: { targetId: "target-1", flatten: true },
+  });
+  await vi.waitFor(() =>
+    expect(runtime.receivedCommands().findLast((m) => m.type === "cdp.command")).toBeDefined(),
+  );
+  const command = runtime.receivedCommands().findLast((m) => m.type === "cdp.command")!;
+  runtime.sendServer({
+    type: "cdp.result",
+    requestId: command.requestId,
+    result: { surfaceId: "page-1", sessionId: "attached" },
+  });
+  await attached.result;
+  runtime.publishTabs({
+    surfaces: ["page-1", "page-2"].map((id, index) => ({
+      id,
+      active: index === 0,
+      state: "live",
+      title: id,
+      url: "https://example.com",
+      geometryRevision: 1,
+    })),
+  });
+  const last = () => runtime.receivedCommands().findLast((m) => m.type === "session.state");
+  // The tab it attached to is bound at once; a tab it then works in joins it.
+  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 1, agentTabs: ["page-1"] }));
+  runtime.sendServer({
+    type: "browser.activity",
+    actorToken: command.actorToken,
+    surfaceId: "page-2",
+    seq: 1,
+    geometryRevision: 1,
+    pointer: null,
+  });
+  await vi.waitFor(() =>
+    expect(last()).toMatchObject({ runs: 1, agentTabs: ["page-1", "page-2"] }),
+  );
+  await service.detachAgentSessionsForBinding(authority.agentBindingId);
+  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 0 }));
+  expect(last()).not.toHaveProperty("agentTabs");
+});
+
 it("publishes a passkey offer as a pin until the ceremony is cancelled", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
@@ -8240,6 +8714,503 @@ it("person activation resumes the exact suspended workspace tab in its existing 
   expect(await activated).toEqual({ kind: "page", sessionId, surfaceId: row.id });
 });
 
+it("person activation asks the runtime to wake the tab even while this Home still has it live, so a sleep a moment before the ask never leaves the tab unopened (TS10)", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "sleep",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!,
+    sessionId = row.pageBinding!.sessionId;
+  runtime.publishTabs({
+    surfaces: [{ id: row.id, state: "live", active: true, title: "Awake here" }],
+  });
+  await vi.waitFor(() => expect(service.tabStateOf(sessionId, row.id)).toBe("live"));
+  // The runtime has just put it to sleep; its update has not reached this Home.
+  const activated = service.pageTabs.activate(ownerId, row, "activate");
+  let command = await runtime.nextCommand();
+  while (command.type !== "cdp.command") command = await runtime.nextCommand();
+  expect(command.command).toEqual({
+    method: "Opensteer.resumeTab",
+    parameters: { surfaceId: row.id },
+  });
+  runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+  expect(await activated).toEqual({ kind: "page", sessionId, surfaceId: row.id });
+});
+
+it("ends an agent's bind at once when its operation ends while the tab wakes, and cancels the runtime's wait (V3)", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "bind-wake",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!;
+  runtime.publishTabs({
+    surfaces: [{ id: row.id, state: "suspended", active: true, title: "Sleeping" }],
+  });
+  await vi.waitFor(() =>
+    expect(service.tabStateOf(row.pageBinding!.sessionId, row.id)).toBe("suspended"),
+  );
+  const stop = new AbortController();
+  const binding = service.pageTabs.bindBrowserScript!(
+    {
+      authority: { ownerId, agentBindingId: "run:bind-wake" },
+      threadId: createId("thread"),
+      signal: stop.signal,
+    } as never,
+    row,
+  );
+  void binding.catch(() => undefined);
+  const resume = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .findLast(
+        (m) =>
+          m.type === "cdp.command" &&
+          (m.command as { method?: string }).method === "Opensteer.resumeTab",
+      );
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  // The runtime is still waking the tab and waiting for its page; the agent's task stops.
+  const stopped = performance.now();
+  stop.abort(new Error("The task was stopped."));
+  await expect(binding).rejects.toThrow();
+  expect(performance.now() - stopped).toBeLessThan(1_000);
+  await vi.waitFor(() =>
+    expect(
+      runtime
+        .receivedCommands()
+        .some(
+          (m) =>
+            m.type === "cdp.command" &&
+            (m.command as { method?: string; parameters?: { requestId?: string } }).method ===
+              "Opensteer.cancelScriptCommand" &&
+            (m.command as { parameters?: { requestId?: string } }).parameters?.requestId ===
+              resume.requestId,
+        ),
+    ).toBe(true),
+  );
+});
+
+it("tells an agent's bind that its tab was reopened at its address, when the runtime says so (V4)", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "bind-reopened",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!;
+  runtime.publishTabs({
+    surfaces: [{ id: row.id, state: "suspended", active: true, title: "Sleeping" }],
+  });
+  await vi.waitFor(() =>
+    expect(service.tabStateOf(row.pageBinding!.sessionId, row.id)).toBe("suspended"),
+  );
+  const binding = service.pageTabs.bindBrowserScript!(
+    {
+      authority: { ownerId, agentBindingId: "run:bind-reopened" },
+      threadId: createId("thread"),
+      signal: new AbortController().signal,
+    } as never,
+    row,
+  );
+  const resume = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .findLast(
+        (m) =>
+          m.type === "cdp.command" &&
+          (m.command as { method?: string }).method === "Opensteer.resumeTab",
+      );
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  runtime.sendServer({
+    type: "cdp.result",
+    requestId: resume.requestId,
+    result: {
+      surfaceId: row.id,
+      targetId: "target-1",
+      documentId: "document-1",
+      dialog: null,
+      userActivity: null,
+      pageResize: null,
+      reloaded: true,
+      reopened: true,
+    },
+  });
+  await expect(binding).resolves.toMatchObject({ reloaded: true, reopened: true });
+});
+
+/*
+ * Z1: this Home's copy of a tab's state is a picture of the past and decides nothing on the
+ * runtime. (A) a woken tab whose load did not finish in the first try is announced live, and the
+ * retry must still be asked of the runtime, which waits for that load; (B) a tab that slept on
+ * the runtime before this Home heard of it is still live here, and the bind must still wake it.
+ * In both the Home holds "live"; the old bind skipped the runtime and handed the tab over as it was.
+ */
+it.each([
+  ["a retry after the wake's load did not finish in time", true],
+  ["a tab that slept on the runtime before this Home heard", true],
+] as const)(
+  "asks the runtime on every bind, whatever this Home last heard of the tab: %s (Z1)",
+  async (_case, runtimeWoke) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        surfaceState: true,
+        tabRestoreVersion: true,
+      });
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      "bind-cached-live",
+    );
+    await memory.add(descriptor);
+    const row = memory.rows.get(descriptor.id)!;
+    runtime.publishTabs({
+      surfaces: [{ id: row.id, state: "live", active: true, title: "Awake here" }],
+    });
+    await vi.waitFor(() =>
+      expect(service.tabStateOf(row.pageBinding!.sessionId, row.id)).toBe("live"),
+    );
+    const binding = service.pageTabs.bindBrowserScript!(
+      {
+        authority: { ownerId, agentBindingId: "run:bind-cached-live" },
+        threadId: createId("thread"),
+        signal: new AbortController().signal,
+      } as never,
+      row,
+    );
+    void binding.catch(() => undefined);
+    const resume = await vi.waitFor(
+      () => {
+        const sent = runtime
+          .receivedCommands()
+          .findLast(
+            (m) =>
+              m.type === "cdp.command" &&
+              (m.command as { method?: string }).method === "Opensteer.resumeTab",
+          );
+        expect(sent).toBeDefined();
+        return sent!;
+      },
+      { timeout: 2_000 },
+    );
+    expect((resume.command as { parameters?: unknown }).parameters).toEqual({
+      surfaceId: row.id,
+      loaded: true,
+    });
+    // The runtime says it woke the tab (or that its wake's load is what this retry waited for).
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: resume.requestId,
+      result: {
+        surfaceId: row.id,
+        targetId: "target-1",
+        documentId: "document-1",
+        dialog: null,
+        userActivity: null,
+        pageResize: null,
+        reloaded: runtimeWoke,
+      },
+    });
+    await expect(binding).resolves.toMatchObject({ reloaded: true });
+  },
+);
+
+it.each([
+  ["confirmed", { outcome: "tab-closed" }, { code: "not_found" }],
+  ["not confirmed", { outcome: "unexpected" }, { code: "conflict", reason: "outcome-unknown" }],
+] as const)(
+  "a tab closed while activation reopens it closes its new page once, and says so only when %s",
+  async (_case, answer, refusal) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        surfaceState: true,
+        tabRestoreVersion: true,
+        onError: () => {},
+      });
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      "sleep",
+    );
+    await memory.add(descriptor);
+    const row = memory.rows.get(descriptor.id)!;
+    // Its browser ended while it slept: activation starts a session of its own for it.
+    row.pageBinding = { ...row.pageBinding!, sessionId: createBrowserSessionId() };
+    row.url = "https://example.test/f1";
+    // The person closes the tab once the restore has read it, while its page is starting.
+    const get = memory.store.get.bind(memory.store);
+    let reads = 0;
+    (memory.store as { get: typeof get }).get = async (owner, id, closed) => {
+      const current = await get(owner, id, closed);
+      if (id === row.id && ++reads === 1) row.closedAt = new Date();
+      return current;
+    };
+    const activation = service.pageTabs.activate!(ownerId, row, "activate");
+    void activation.catch(() => undefined);
+    const sent = (method: string) =>
+      runtime.receivedCommands().filter((message) => {
+        const command = message.command as
+          { method?: string; parameters?: { surfaceId?: string } } | undefined;
+        return (
+          message.type === "cdp.command" &&
+          command?.method === method &&
+          command.parameters?.surfaceId === row.id
+        );
+      });
+    // The page that started for it is fenced and closed, in one attempt the refusal waits for.
+    await vi.waitFor(() => expect(sent(browserHostMethods.fenceTab)).toHaveLength(1));
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: sent(browserHostMethods.fenceTab)[0]!.requestId,
+      result: {},
+    });
+    await vi.waitFor(() => expect(sent(browserHostMethods.closeTab)).toHaveLength(1));
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: sent(browserHostMethods.closeTab)[0]!.requestId,
+      result: answer,
+    });
+    await expect(activation).rejects.toMatchObject(refusal);
+    expect(sent(browserHostMethods.closeTab)).toHaveLength(1);
+  },
+);
+
+it("a reopening whose last read fails for another reason keeps the open tab and its new page", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "sleep",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!;
+  // Its browser ended while it slept: activation starts a session of its own for it.
+  const dead = createBrowserSessionId();
+  row.pageBinding = { ...row.pageBinding!, sessionId: dead };
+  row.url = "https://example.test/f1";
+  // The read after the page started fails, as a lost database connection does; the tab is open.
+  const failure = new Error("Connection terminated unexpectedly");
+  const get = memory.store.get.bind(memory.store);
+  let reads = 0;
+  (memory.store as { get: typeof get }).get = async (owner, id, closed) => {
+    // The fourth read of this tab is the reopening's own, after its page started.
+    if (id === row.id && ++reads === 4) throw failure;
+    return get(owner, id, closed);
+  };
+  await expect(service.pageTabs.activate!(ownerId, row, "activate")).rejects.toBe(failure);
+  const started = row.pageBinding!.sessionId;
+  expect(started).not.toBe(dead);
+  expect(row.closedAt).toBeNull();
+  // The page is there, and the next activation finds it in the same session.
+  runtime.publishTabs({
+    surfaces: [
+      {
+        id: row.id,
+        state: "live",
+        active: true,
+        title: "Restored",
+        url: "https://example.test/f1",
+      },
+    ],
+  });
+  await vi.waitFor(() => expect(service.tabStateOf(started, row.id)).toBe("live"));
+  const again = service.pageTabs.activate!(ownerId, row, "again");
+  // TS10: activation always asks a runtime that sleeps tabs to wake the tab; it is awake.
+  const resume = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .findLast(
+        (m) =>
+          m.type === "cdp.command" &&
+          (m.command as { method?: string }).method === browserHostMethods.resumeTab,
+      );
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  runtime.sendServer({ type: "cdp.result", requestId: resume.requestId, result: {} });
+  expect(await again).toMatchObject({
+    kind: "page",
+    sessionId: started,
+    surfaceId: row.id,
+  });
+  // A queued close would have refused that activation as still closing; nothing was sent for it.
+  const sentFor = (method: string) =>
+    runtime.receivedCommands().some((message) => {
+      const command = message.command as
+        { method?: string; parameters?: { surfaceId?: string } } | undefined;
+      return (
+        message.type === "cdp.command" &&
+        command?.method === method &&
+        command.parameters?.surfaceId === row.id
+      );
+    });
+  expect(sentFor(browserHostMethods.fenceTab)).toBe(false);
+  expect(sentFor(browserHostMethods.closeTab)).toBe(false);
+});
+
+/*
+ * A7: an agent's command answered by an error. One the runtime says came before the command
+ * reached the page (`unsent`) is a refusal, and so is an answer that arrived over its limit (the
+ * command ran: it fails with the answer's size); one that does not say may have come after its
+ * effect, and its outcome is unknown: never failed, never retried by the Home.
+ */
+const answerOverLimit =
+  "The page ran the command, but its answer is 1.1 MiB, over the 1020 KiB limit for one answer, so it exceeds the bounded agent transport and was dropped.";
+it.each([
+  ["after", undefined],
+  ["before", true],
+  ["with an answer over its limit after", undefined],
+] as const)(
+  "tells an agent's command apart by whether its error came %s it reached the page (A7)",
+  async (when, unsent) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        surfaceState: true,
+        tabRestoreVersion: true,
+      });
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      `bind-${when.length}`,
+    );
+    await memory.add(descriptor);
+    const row = memory.rows.get(descriptor.id)!;
+    const binding = service.pageTabs.bindBrowserScript!(
+      {
+        authority: { ownerId, agentBindingId: `run:bind-${when.length}` },
+        threadId: createId("thread"),
+        signal: new AbortController().signal,
+      } as never,
+      row,
+    );
+    void binding.catch(() => undefined);
+    const resume = await vi.waitFor(() => {
+      const sent = runtime
+        .receivedCommands()
+        .findLast(
+          (m) =>
+            m.type === "cdp.command" &&
+            (m.command as { method?: string }).method === "Opensteer.resumeTab",
+        );
+      expect(sent).toBeDefined();
+      return sent!;
+    });
+    expect(resume.replyBudget).toBeDefined();
+    runtime.sendServer({
+      type: "cdp.error",
+      requestId: resume.requestId,
+      error:
+        unsent === true
+          ? {
+              code: "conflict",
+              message: "This tab is awake, but its page is still loading. Try again shortly.",
+              retryable: true,
+              unsent: true,
+            }
+          : when === "after"
+            ? // The page went away mid-command: whether it ran is not known.
+              { code: "internal", message: "Target closed.", retryable: false }
+            : {
+                code: "bad_message",
+                message: answerOverLimit,
+                reason: "browser-reply-limit",
+                retryable: false,
+              },
+    });
+    if (when !== "after") {
+      const refused = await binding.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(refused).toBeInstanceOf(OpensteerError);
+      expect(refused).not.toBeInstanceOf(OperationOutcomeUnknown);
+      if (unsent !== true)
+        expect(refused).toMatchObject({ reason: "browser-reply-limit", message: answerOverLimit });
+    } else await expect(binding).rejects.toBeInstanceOf(OperationOutcomeUnknown);
+  },
+);
+
 function memoryTabs() {
   const rows = new Map<string, TabRecord>();
   const add = async (write: TabWrite) => {
@@ -8289,6 +9260,24 @@ function memoryTabs() {
       descriptor: object,
     ) => {
       Object.assign(rows.get(id) ?? {}, descriptor);
+    },
+    bindPage: async (
+      _owner: UserId,
+      id: string,
+      generation: number,
+      previous: unknown,
+      binding: TabRecord["pageBinding"],
+    ) => {
+      const row = rows.get(id);
+      if (
+        !row ||
+        row.closedAt ||
+        row.generation !== generation ||
+        JSON.stringify(row.pageBinding) !== JSON.stringify(previous)
+      )
+        return null;
+      row.pageBinding = binding;
+      return { ...row };
     },
     close,
   } as unknown as TabStore;
@@ -8397,3 +9386,4153 @@ it.each(["register", "inventory", "revoke", "offline", "expire", "close"] as con
     }
   },
 );
+
+/** A connected agent's selected grant, as the Home resolves it for any binding of its lineage. */
+class SelectedGrantRepository extends MemoryBrowserRepository {
+  granted: readonly BrowserProfileId[] = [];
+  /** The execution's effective mode as the resolver reports it now. */
+  mode: import("@opensteer/core").ThreadAccessMode = "full-access";
+  /** `everything`: one connection per binding, so each binding is its own lineage. */
+  scope: "selected" | "everything" = "selected";
+  override async resolveResourceAccess(
+    input?: Parameters<NonNullable<BrowserSessionRepository["resolveResourceAccess"]>>[0],
+  ): ReturnType<NonNullable<BrowserSessionRepository["resolveResourceAccess"]>> {
+    const base = await super.resolveResourceAccess();
+    if (this.scope === "everything")
+      return {
+        ...base,
+        execution: {
+          ...base.execution,
+          actor: "agent" as const,
+          mode: this.mode,
+          agentConnection: {
+            agentConnectionId: `mcn_${input?.agentBindingId ?? "none"}`,
+            grantRevision: 1,
+            consentVersion: 2,
+            accessMode: "full-access" as const,
+            grant: { scope: "everything" as const },
+          },
+        },
+      };
+    return {
+      ...base,
+      execution: {
+        ...base.execution,
+        actor: "agent" as const,
+        mode: this.mode,
+        agentConnection: {
+          agentConnectionId: "mcn_selected",
+          grantRevision: 2,
+          consentVersion: 2,
+          accessMode: "full-access" as const,
+          grant: {
+            scope: "selected" as const,
+            tasks: true,
+            resources: this.granted.map((profileId) => ({
+              kind: "browser-profile" as const,
+              profileId,
+              access: "read-write" as const,
+            })),
+          },
+        },
+      },
+    };
+  }
+}
+
+describe("a connected agent's selected grant admits the exact profile before any browser starts", () => {
+  async function setup() {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const withdrawn = await repository.createBrowserProfile({ ownerId, name: "Withdrawn" });
+    // The grant kept one profile and withdrew the other.
+    repository.granted = [kept.id];
+    const create = vi.spyOn(repository, "createBrowserSession"),
+      bind = vi.spyOn(repository, "bindBrowserTabOpen");
+    const service = freshService({ keys, runtime, repository });
+    const nothingStarted = () => {
+      expect(create).not.toHaveBeenCalled();
+      expect(bind).not.toHaveBeenCalled();
+      expect(runtime.connectionCount()).toBe(0);
+    };
+    return { ownerId, kept, withdrawn, service, runtime, create, nothingStarted, repository };
+  }
+  const refusal = { code: "forbidden", message: expect.stringContaining("connected agent") };
+
+  it("refuses direct browser connections to a runtime without page lineage", async () => {
+    const { ownerId, kept, service } = await setup();
+    const authority = { ownerId, agentBindingId: "session:selected", threadId: createId("thread") };
+    const opened = await service.openAgentSession({ ...authority, profileId: kept.id });
+    await expect(
+      service.issueStandardCdpTicket({
+        authority,
+        browserSessionId: opened.session.id,
+        mode: "whole-context",
+      }),
+    ).rejects.toThrow(
+      "This device needs a newer version of Opensteer for a direct browser connection. You can still use browser_use.",
+    );
+  });
+
+  it("answers like a missing target when the direct browser admission loses its profile", async () => {
+    const { ownerId, kept, withdrawn, service, repository } = await setup();
+    const threadId = createId("thread");
+    const authority = { ownerId, agentBindingId: "session:selected", threadId };
+    const opened = await service.openAgentSession({ ...authority, profileId: kept.id });
+    repository.granted = [withdrawn.id];
+    const missingSession = createBrowserSessionId();
+    const mcp = new OpensteerMcpService({
+      publicUrl: new URL("http://localhost"),
+      callers: {
+        authenticate: async () => ({
+          kind: "connection",
+          key: "connection:selected",
+          userId: ownerId,
+          connectionId: "selected",
+          accessMode: "full-access",
+          grant: {
+            scope: "selected",
+            tasks: false,
+            resources: [{ kind: "browser-profile", profileId: kept.id, access: "read-write" }],
+          },
+          grantRevision: 1,
+        }),
+      },
+      store: {
+        readTask: async () => null,
+        threadOrigins: async () => new Map(),
+        requests: { get: async () => null },
+      },
+      handlers: {
+        browser_connect: ({ input, operationKey }) =>
+          service.openTab(
+            ownerId,
+            {
+              type: "browser.tab.open",
+              sessionId: input.profileId === kept.id ? opened.session.id : missingSession,
+              idempotencyKey: operationKey,
+            },
+            authority,
+          ),
+      },
+    });
+    try {
+      const call = (profileId: BrowserProfileId) =>
+        mcp.callToolResult(
+          "selected",
+          "browser_connect",
+          { profileId },
+          { operationKey: profileId },
+        );
+      const missing = await call(createId("browserProfile"));
+      expect(missing).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "not_found" } },
+      });
+      expect(await call(kept.id)).toEqual(missing);
+    } finally {
+      await mcp.close();
+    }
+  });
+
+  it.each([
+    ["the withdrawn profile", "withdrawn"],
+    ["Guest", "guest"],
+  ] as const)("tab_open of %s starts, restores and opens nothing", async (_name, which) => {
+    const { ownerId, withdrawn, service, nothingStarted } = await setup();
+    await expect(
+      service.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `selected-${which}`,
+          identity:
+            which === "guest" ? { kind: "guest" } : { kind: "profile", profileId: withdrawn.id },
+        },
+        { ownerId, agentBindingId: "run:selected-open", threadId: createId("thread") },
+      ),
+    ).rejects.toMatchObject(
+      which === "withdrawn"
+        ? { code: "not_found", message: "Browser profile not found." }
+        : refusal,
+    );
+    nothingStarted();
+  });
+
+  it.each([
+    ["an agent Run, the withdrawn profile", "run:selected-session", "withdrawn"],
+    ["an agent Run, Guest", "run:selected-session", "guest"],
+    ["an automation occurrence (its CDP opens Guest)", "trigger:selected-occurrence", "guest"],
+    ["a Watch activation (its CDP opens Guest)", "watch:selected-activation", "guest"],
+  ] as const)(
+    "a session for %s is refused before any browser starts",
+    async (_name, binding, which) => {
+      const { ownerId, withdrawn, service, nothingStarted } = await setup();
+      await expect(
+        service.openAgentSession({
+          agentBindingId: binding,
+          ownerId,
+          ...(which === "guest" ? { fresh: true as const } : { profileId: withdrawn.id }),
+        }),
+      ).rejects.toMatchObject(refusal);
+      nothingStarted();
+      expect(await service.listAgentSessions({ agentBindingId: binding, ownerId })).toEqual([]);
+    },
+  );
+
+  it.each([
+    ["its last browser record", false],
+    ["no browser record left", true],
+  ] as const)(
+    "binding a Guest page restores nothing for a selected grant, with %s",
+    async (_name, recordGone) => {
+      const keys = generateKeyPairSync("ed25519"),
+        runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+        ownerId = createId("user"),
+        repository = new SelectedGrantRepository(ownerId),
+        memory = memoryTabs();
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      repository.granted = [kept.id];
+      const service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        tabRestoreVersion: true,
+      });
+      const descriptor = await service.pageTabs.open(
+        { kind: "person", ownerId },
+        { kind: "page", guest: true, url: "https://example.com/" },
+        "guest-restore",
+      );
+      await memory.add(descriptor);
+      await service.stop(ownerId, descriptor.pageBinding!.sessionId);
+      const create = vi.spyOn(repository, "createBrowserSession");
+      const connections = runtime.connectionCount();
+      if (recordGone) {
+        const lookup = repository.getBrowserSessionForOwner.bind(repository);
+        vi.spyOn(repository, "getBrowserSessionForOwner").mockImplementation(async (id, owner) =>
+          id === descriptor.pageBinding!.sessionId ? null : lookup(id, owner),
+        );
+      }
+      const claims = {
+        requestedBy: ownerId,
+        runId: createId("run"),
+        threadId: createId("thread"),
+      } as unknown as import("../agents/run-tool-tokens.js").RunToolScope;
+      await expect(service.bindPage(claims, memory.rows.get(descriptor.id)!)).rejects.toMatchObject(
+        refusal,
+      );
+      expect(create).not.toHaveBeenCalled();
+      expect(runtime.connectionCount()).toBe(connections);
+    },
+  );
+
+  it("still opens the profile the grant keeps", async () => {
+    const { ownerId, kept, service, runtime, create } = await setup();
+    const opened = await service.openAgentSession({
+      agentBindingId: "run:selected-kept",
+      ownerId,
+      profileId: kept.id,
+    });
+    expect(opened.wasExisting).toBe(false);
+    expect(create).toHaveBeenCalledOnce();
+    expect(runtime.connectionCount()).toBe(1);
+  });
+
+  it.each(["a lowered mode", "a withdrawn profile"] as const)(
+    "refuses a write after %s at the attach and at each command, and forwards nothing",
+    async (change) => {
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+        targetedStreaming: true,
+      });
+      const ownerId = createId("user");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      repository.granted = [kept.id];
+      const service = freshService({ keys, runtime, repository });
+      const authority = { agentBindingId: "run:selected-write", ownerId };
+      const opened = await service.openAgentSession({ ...authority, profileId: kept.id });
+      const cdp = await service.attachCdpForAgent(
+        { ...authority, sessionId: opened.session.id },
+        () => undefined,
+      );
+      const forwarded: string[] = [];
+      const send = WebSocket.prototype.send;
+      vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (this: WebSocket, ...args) {
+        const [data] = args;
+        if (typeof data === "string" && JSON.parse(data).type === "cdp.command")
+          forwarded.push(data);
+        return Reflect.apply(send, this, args);
+      });
+      // Changed after the attach was admitted and before the command is enqueued.
+      if (change === "a lowered mode") repository.mode = "approval-required";
+      else repository.granted = [];
+      await expect(
+        cdp.dispatch({ method: "Runtime.evaluate", params: { expression: "1" } } as never),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await expect(
+        service.attachCdpForAgent({ ...authority, sessionId: opened.session.id }, () => undefined),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(forwarded).toEqual([]);
+    },
+  );
+
+  it.each(["openAgentSession", "tab_open"] as const)(
+    "stops the browser %s started when the profile is withdrawn while it starts",
+    async (path) => {
+      const { ownerId, kept, withdrawn, service, create, repository } = await setup();
+      // Withdrawn after the start check admitted it, before the browser came up; another
+      // profile stays granted, so only a check of this exact profile refuses it.
+      create.mockImplementationOnce(async (input) => {
+        const created = await MemoryBrowserRepository.prototype.createBrowserSession.call(
+          repository,
+          input,
+        );
+        repository.granted = [withdrawn.id];
+        return created;
+      });
+      const agent = { ownerId, agentBindingId: "run:selected-start", threadId: createId("thread") };
+      await expect(
+        path === "openAgentSession"
+          ? service.openAgentSession({ ...agent, profileId: kept.id })
+          : service.openTab(
+              ownerId,
+              {
+                type: "browser.tab.open",
+                idempotencyKey: "withdrawn-while-starting",
+                identity: { kind: "profile", profileId: kept.id },
+              },
+              agent,
+            ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(create).toHaveBeenCalledOnce();
+      const sessionId = create.mock.calls[0]![0].id;
+      // The browser it started is stopped, not left running for nobody.
+      expect((await repository.getBrowserSessionForOwner(sessionId, ownerId))?.state).toMatch(
+        /^(closed|failed)$/,
+      );
+    },
+  );
+
+  it("refuses Guest opens before either connected lineage starts a browser", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    repository.scope = "everything";
+    const create = vi.spyOn(repository, "createBrowserSession");
+    const service = freshService({ keys, runtime, repository });
+    for (const lineage of ["first", "second"]) {
+      await expect(
+        service.openTab(
+          ownerId,
+          {
+            type: "browser.tab.open",
+            idempotencyKey: `guest-${lineage}`,
+            identity: { kind: "guest" },
+          },
+          { ownerId, agentBindingId: `run:guest-${lineage}`, threadId: createId("thread") },
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+    }
+    repository.scope = "selected";
+    await expect(
+      service.openTab(
+        ownerId,
+        { type: "browser.tab.open", idempotencyKey: "guest-selected", identity: { kind: "guest" } },
+        { ownerId, agentBindingId: "run:guest-selected", threadId: createId("thread") },
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe("work under a connection's authority never uses the clipboard or changes a browser permission", () => {
+  const sentence =
+    "The clipboard is not available to a connected agent. Use Input.insertText to enter text.";
+  const permissionSentence = "Browser permissions cannot be changed by a connected agent.";
+  const clipboardGrantSentence =
+    "Clipboard permissions cannot be granted to a page. Paste with a key chord, or use Input.insertText to enter text.";
+  const permissionChanges = [
+    ["Browser.grantPermissions", { permissions: ["audioCapture"] }],
+    ["Browser.grantPermissions", { permissions: ["videoCapture"] }],
+    ["Browser.grantPermissions", { permissions: ["geolocation"] }],
+    ["Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }],
+    ["Browser.setPermission", { permission: { name: "camera" }, setting: "granted" }],
+    ["Browser.resetPermissions", {}],
+  ] as const;
+  const cmdV = {
+    type: "rawKeyDown",
+    modifiers: 4,
+    key: "v",
+    code: "KeyV",
+    windowsVirtualKeyCode: 86,
+  };
+  async function attached(
+    repository: MemoryBrowserRepository,
+    ownerId: UserId,
+    agentBindingId: string,
+    connectionCommands = false,
+  ) {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository, connectionCommands });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId, ownerId };
+    // A connected agent works only in a saved profile, never in Guest.
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+    /** Sends one command and answers it as the browser, returning what reached the runtime. */
+    const forwarded = async (method: string, parameters: Record<string, unknown>) => {
+      const request = cdp.request({ method, parameters, sessionId: "cdp-page-1" });
+      const command = await runtime.nextCommand();
+      runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+      await request;
+      return command.command;
+    };
+    return { cdp, runtime, forwarded };
+  }
+
+  it("refuses a lineage Run's paste, copy, cut and permission changes before anything leaves the Home", async () => {
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    repository.scope = "everything";
+    const { cdp, runtime } = await attached(repository, ownerId, "run:lineage");
+    const refused = [
+      ["Input.dispatchKeyEvent", cmdV],
+      ["Input.dispatchKeyEvent", { ...cmdV, commands: ["paste"] }],
+      ["Input.dispatchKeyEvent", { ...cmdV, key: "c", code: "KeyC", windowsVirtualKeyCode: 67 }],
+      ["Input.dispatchKeyEvent", { ...cmdV, modifiers: 2, key: "x", code: "KeyX" }],
+      [
+        "Target.sendMessageToTarget",
+        {
+          sessionId: "child",
+          message: JSON.stringify({ id: 1, method: "Input.dispatchKeyEvent", params: cmdV }),
+        },
+      ],
+      ...permissionChanges,
+      [
+        "Target.sendMessageToTarget",
+        {
+          sessionId: "child",
+          message: JSON.stringify({
+            id: 2,
+            method: "Browser.grantPermissions",
+            params: { permissions: ["audioCapture"] },
+          }),
+        },
+      ],
+    ] as const;
+    const expected = (method: string, index: number) =>
+      method === "Input.dispatchKeyEvent" || index === 4 ? sentence : permissionSentence;
+    const settled = refused.map(([method, parameters]) =>
+      cdp.request({ method, parameters, sessionId: "cdp-page-1" }).then(
+        () => "answered",
+        (error: unknown) => error,
+      ),
+    );
+    // Nothing of them reached the runtime: the first command it sees is the one sent after them.
+    const next = cdp.request({
+      method: "Input.dispatchKeyEvent",
+      parameters: { type: "rawKeyDown", modifiers: 4, code: "KeyA" },
+      sessionId: "cdp-page-1",
+    });
+    const first = await runtime.nextCommand();
+    expect(first.command, "the first command to reach the runtime").toMatchObject({
+      method: "Input.dispatchKeyEvent",
+      parameters: { code: "KeyA" },
+    });
+    runtime.sendServer({ type: "cdp.result", requestId: first.requestId, result: {} });
+    await next;
+    for (const [index, outcome] of (await Promise.all(settled)).entries())
+      expect(outcome, refused[index]![0]).toMatchObject({
+        code: "forbidden",
+        message: expected(refused[index]![0], index),
+      });
+  });
+
+  it("forwards the person's own Run's paste and permissions as before, but no clipboard grant", async () => {
+    const ownerId = createId("user");
+    const { cdp, runtime, forwarded } = await attached(
+      new MemoryBrowserRepository(ownerId),
+      ownerId,
+      "run:own",
+    );
+    await expect(forwarded("Input.dispatchKeyEvent", cmdV)).resolves.toEqual({
+      method: "Input.dispatchKeyEvent",
+      parameters: cmdV,
+      sessionId: "cdp-page-1",
+    });
+    for (const [method, parameters] of permissionChanges.filter(
+      ([, parameters]) => !JSON.stringify(parameters).includes("clipboard"),
+    ))
+      await expect(forwarded(method, parameters), method).resolves.toMatchObject({ method });
+    // A clipboard grant would outlast the Run and serve a connected agent's page script.
+    const grants = [
+      { permissions: ["clipboardReadWrite"] },
+      { permissions: ["geolocation", "clipboardSanitizedWrite"] },
+    ].map((parameters) =>
+      cdp.request({ method: "Browser.grantPermissions", parameters }).then(
+        () => "answered",
+        (error: unknown) => error,
+      ),
+    );
+    const next = cdp.request({
+      method: "Input.dispatchKeyEvent",
+      parameters: { type: "rawKeyDown", code: "KeyA" },
+    });
+    const first = await runtime.nextCommand();
+    expect(first.command, "the first command to reach the runtime").toMatchObject({
+      parameters: { code: "KeyA" },
+    });
+    runtime.sendServer({ type: "cdp.result", requestId: first.requestId, result: {} });
+    await next;
+    for (const outcome of await Promise.all(grants))
+      expect(outcome).toMatchObject({ code: "forbidden", message: clipboardGrantSentence });
+  });
+
+  const outsideList = [
+    ["Tracing.start", {}, undefined],
+    ["SystemInfo.getProcessInfo", {}, undefined],
+    ["Storage.getCookies", {}, undefined],
+    ["Storage.clearDataForOrigin", { origin: "https://a.test", storageTypes: "all" }, "cdp-page-1"],
+    ["ServiceWorker.unregister", { scopeURL: "https://a.test/" }, "cdp-page-1"],
+    ["Page.crash", {}, "cdp-page-1"],
+    ["Page.close", {}, "cdp-page-1"],
+    ["Network.getAllCookies", {}, "cdp-page-1"],
+    [
+      "Target.sendMessageToTarget",
+      {
+        sessionId: "child",
+        message: JSON.stringify({ id: 1, method: "Storage.clearDataForOrigin", params: {} }),
+      },
+      "cdp-page-1",
+    ],
+    [
+      "Target.sendMessageToTarget",
+      {
+        sessionId: "child",
+        message: JSON.stringify({
+          id: 1,
+          method: "Target.setAutoAttach",
+          params: { autoAttach: true, waitForDebuggerOnStart: true },
+        }),
+      },
+      "cdp-page-1",
+    ],
+  ] as const;
+
+  for (const binding of ["run:lineage", "trigger:lineage", "watch:lineage"])
+    it(`refuses a connection's ${binding.split(":")[0]} every method outside the standard lists before anything leaves the Home`, async () => {
+      const ownerId = createId("user");
+      const repository = new SelectedGrantRepository(ownerId);
+      repository.scope = "everything";
+      const { cdp, runtime } = await attached(repository, ownerId, binding);
+      const settled = outsideList.map(([method, parameters, sessionId]) =>
+        cdp.request({ method, parameters, ...(sessionId ? { sessionId } : {}) }).then(
+          () => "answered",
+          (error: unknown) => error,
+        ),
+      );
+      // Listed methods go out, and a page auto-attach goes out limited.
+      const next = [
+        cdp.request({ method: "Browser.getVersion" }),
+        cdp.request({
+          method: "Target.setAutoAttach",
+          parameters: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+          sessionId: "cdp-page-1",
+        }),
+      ];
+      const seen = [];
+      for (let index = 0; index < 2; index++) {
+        const command = await runtime.nextCommand();
+        seen.push(command.command);
+        runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+      }
+      expect(seen, "the first commands to reach the runtime").toEqual([
+        { method: "Browser.getVersion" },
+        {
+          method: "Target.setAutoAttach",
+          parameters: {
+            autoAttach: true,
+            waitForDebuggerOnStart: false,
+            flatten: true,
+            filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+          },
+          sessionId: "cdp-page-1",
+        },
+      ]);
+      await Promise.all(next);
+      for (const [index, outcome] of (await Promise.all(settled)).entries()) {
+        const [method] = outsideList[index]!;
+        expect(outcome, `${method} ${index}`).toMatchObject({
+          code: "forbidden",
+          message:
+            index === outsideList.length - 1
+              ? "A connected agent sends Target.setAutoAttach to the page itself, not inside Target.sendMessageToTarget."
+              : // The exact sentence every door gives for a command outside the list.
+                `${index === outsideList.length - 2 ? "Storage.clearDataForOrigin" : method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`,
+        });
+      }
+    });
+
+  it("forwards the person's own Run every method as before", async () => {
+    const ownerId = createId("user");
+    const { forwarded } = await attached(new MemoryBrowserRepository(ownerId), ownerId, "run:own");
+    for (const [method, parameters] of outsideList)
+      await expect(forwarded(method, parameters), method).resolves.toMatchObject({
+        method,
+        parameters,
+      });
+    await expect(
+      forwarded("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true }),
+    ).resolves.toMatchObject({ parameters: { autoAttach: true, waitForDebuggerOnStart: true } });
+  });
+
+  const malformedNested = {
+    array: ['{"id":1,"method":"Page.crash","params":{}}'],
+    object: { id: 1, method: "Page.crash", params: {} },
+    unparsable: '{"id":1,"method":',
+    "non-string method": '{"id":1,"method":["Page.crash"]}',
+  } as const;
+
+  for (const [who, binding] of [
+    ["a connection's Run", "run:lineage"],
+    ["the person's own Run", "run:own"],
+  ] as const)
+    it(`refuses ${who} a nested message that is not a JSON string of one command, before anything leaves the Home`, async () => {
+      const ownerId = createId("user");
+      const repository =
+        binding === "run:own"
+          ? new MemoryBrowserRepository(ownerId)
+          : Object.assign(new SelectedGrantRepository(ownerId), { scope: "everything" as const });
+      const { cdp, runtime } = await attached(repository, ownerId, binding);
+      const settled = Object.values(malformedNested).map((message) =>
+        cdp
+          .request({
+            method: "Target.sendMessageToTarget",
+            parameters: { sessionId: "child", message },
+            sessionId: "cdp-page-1",
+          })
+          .then(
+            () => "answered",
+            (error: unknown) => error,
+          ),
+      );
+      const next = cdp.request({ method: "Browser.getVersion" });
+      const first = await runtime.nextCommand();
+      expect(first.command, "the first command to reach the runtime").toEqual({
+        method: "Browser.getVersion",
+      });
+      runtime.sendServer({ type: "cdp.result", requestId: first.requestId, result: {} });
+      await next;
+      for (const [index, outcome] of (await Promise.all(settled)).entries())
+        expect(outcome, Object.keys(malformedNested)[index]).toMatchObject({
+          code: "forbidden",
+          message: "Invalid nested CDP message.",
+        });
+    });
+
+  it("tells a runtime that holds the rules itself which commands are a connection's", async () => {
+    const send = async (binding: string, connectionCommands: boolean) => {
+      const ownerId = createId("user");
+      const repository =
+        binding === "run:own"
+          ? new MemoryBrowserRepository(ownerId)
+          : Object.assign(new SelectedGrantRepository(ownerId), { scope: "everything" as const });
+      const { cdp, runtime } = await attached(repository, ownerId, binding, connectionCommands);
+      const request = cdp.request({ method: "Browser.getVersion" });
+      const command = await runtime.nextCommand();
+      runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+      await request;
+      return command.connection;
+    };
+    expect(await send("run:lineage", true)).toBe(true);
+    expect(await send("session:direct", true)).toBe(true);
+    // The person's own work, and any runtime that does not say it holds them, are sent nothing new.
+    expect(await send("run:own", true)).toBeUndefined();
+    expect(await send("run:lineage", false)).toBeUndefined();
+  });
+
+  it("checks authority, session ownership, and device access once per dispatched CDP command", async () => {
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    repository.scope = "everything";
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const requireAgentAccess = vi.fn(async () => undefined);
+    const service = freshService({ keys, runtime, repository, requireAgentAccess });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: "session:direct", ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+    const resolveAccess = vi.spyOn(repository, "resolveResourceAccess");
+    const getSession = vi.spyOn(repository, "getBrowserSessionForOwner");
+    requireAgentAccess.mockClear();
+
+    const request = cdp.request({ method: "Browser.getVersion" });
+    const command = await runtime.nextCommand();
+    runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+    await request;
+
+    expect(resolveAccess).toHaveBeenCalledTimes(1);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(requireAgentAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a CDP command when the session profile is deleted during resolveResourceAccess", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+
+    let profileDeleted = false;
+    const origGetSession = repository.getBrowserSessionForOwner.bind(repository);
+    vi.spyOn(repository, "getBrowserSessionForOwner").mockImplementation(async (id, owner) =>
+      profileDeleted ? null : origGetSession(id, owner),
+    );
+    const origResolve = repository.resolveResourceAccess.bind(repository);
+    vi.spyOn(repository, "resolveResourceAccess").mockImplementation(async (...args) => {
+      const result = await origResolve(...args);
+      profileDeleted = true;
+      return result;
+    });
+
+    const forwardedBefore = runtime.receivedCommands().length;
+    await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toThrow();
+    expect(runtime.receivedCommands()).toHaveLength(forwardedBefore);
+  });
+
+  it("brands owned session records via loadOwnedBrowserSession and exposes no unchecked boolean on admitAgentBrowser", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+
+    const owned = await loadOwnedBrowserSession(repository, opened.session.id, ownerId);
+    expect(owned?.id).toBe(opened.session.id);
+    const acceptOwned = (record: OwnedBrowserSessionRecord) => record.id;
+    expect(acceptOwned(owned!)).toBe(opened.session.id);
+    const unbranded = (await repository.listBrowserSessions(ownerId))[0]!;
+    // @ts-expect-error An unverified BrowserSessionRecord cannot be treated as an OwnedBrowserSessionRecord.
+    acceptOwned(unbranded);
+    void (() =>
+      service.admitAgentBrowser(
+        authority,
+        "read-write",
+        [unbranded],
+        repository,
+        false,
+        undefined,
+        undefined,
+        // @ts-expect-error Public admitAgentBrowser accepts no unchecked ownedRecordsVerified boolean.
+        true,
+      ));
+  });
+
+  it.each(["session", "run"] as const)(
+    "refuses a second CDP command when grant, device switch, or profile changes between commands (%s binding)",
+    async (bindingKind) => {
+      const startSession = async (
+        requireAgentAccess: (runnerId: RunnerId) => Promise<void> = async () => undefined,
+      ) => {
+        const ownerId = createId("user");
+        const repository = new SelectedGrantRepository(ownerId);
+        const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+        const other = await repository.createBrowserProfile({ ownerId, name: "Other" });
+        repository.granted = [profile.id];
+        const keys = generateKeyPairSync("ed25519");
+        const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+        const service = freshService({ keys, runtime, repository, requireAgentAccess });
+        cleanups.push(async () => service.close());
+        const authority = {
+          agentBindingId: bindingKind === "session" ? "session:selected" : `run:${createId("run")}`,
+          ownerId,
+        };
+        const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+        const cdp = await service.attachCdpForAgent(
+          { ...authority, sessionId: opened.session.id },
+          () => undefined,
+        );
+        const first = cdp.request({ method: "Browser.getVersion" });
+        const cmd = await runtime.nextCommand();
+        runtime.sendServer({ type: "cdp.result", requestId: cmd.requestId, result: {} });
+        await first;
+        return { ownerId, repository, profile, other, runtime, service, authority, opened, cdp };
+      };
+
+      // 1. Grant narrowed between two commands on the same session.
+      {
+        const { repository, other, runtime, cdp } = await startSession();
+        const before = runtime.receivedCommands().length;
+        repository.granted = [other.id];
+        await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toMatchObject(
+          bindingKind === "session"
+            ? { code: "not_found", message: "Tab not found." }
+            : { code: "forbidden" },
+        );
+        expect(runtime.receivedCommands()).toHaveLength(before);
+      }
+
+      // 2. Device switch turned off between two commands on the same session.
+      {
+        let deviceOff = false;
+        const machineId = DeviceIdSchema.parse(createId("device"));
+        const { runtime, cdp } = await startSession(async () => {
+          if (deviceOff) throw new DeviceAccessRefusal("device-access-off", machineId, "browser");
+        });
+        const before = runtime.receivedCommands().length;
+        deviceOff = true;
+        await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toMatchObject({
+          code: "forbidden",
+          reason: "device-access-off",
+        });
+        expect(runtime.receivedCommands()).toHaveLength(before);
+      }
+
+      // 3. Profile removed between two commands on the same session.
+      {
+        const { repository, runtime, cdp } = await startSession();
+        const before = runtime.receivedCommands().length;
+        vi.spyOn(repository, "getBrowserSessionForOwner").mockResolvedValue(null);
+        await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toThrow();
+        expect(runtime.receivedCommands()).toHaveLength(before);
+      }
+    },
+  );
+
+  it("refuses an ended Run's late CDP command when device access is off", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    let deviceOff = false;
+    const machineId = DeviceIdSchema.parse(createId("device"));
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      requireAgentAccess: async () => {
+        if (deviceOff) throw new DeviceAccessRefusal("device-access-off", machineId, "browser");
+      },
+    });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+    await service.detachAgentSessionsForBinding(authority.agentBindingId);
+    const before = runtime.receivedCommands().length;
+    deviceOff = true;
+    await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toMatchObject({
+      code: "forbidden",
+      reason: "device-access-off",
+    });
+    expect(runtime.receivedCommands()).toHaveLength(before);
+  });
+
+  it("answers not_found before device-offline on issueStandardCdpTicket for a tab outside a selected grant", async () => {
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const hidden = await repository.createBrowserProfile({ ownerId, name: "Hidden" });
+    repository.granted = [kept.id, hidden.id];
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    let offline = false;
+    const machineId = DeviceIdSchema.parse(createId("device"));
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      requireAgentAccess: async () => {
+        if (offline)
+          throw new DeviceAccessRefusal("device-offline", machineId, "browser", "Work Mac");
+      },
+    });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: "session:selected", ownerId, threadId: createId("thread") };
+    const opened = await service.openAgentSession({ ...authority, profileId: hidden.id });
+    repository.granted = [kept.id];
+    offline = true;
+
+    await expect(
+      service.issueStandardCdpTicket({
+        authority,
+        browserSessionId: opened.session.id,
+        mode: "whole-context",
+      }),
+    ).rejects.toMatchObject({
+      code: "not_found",
+      message: "Tab not found.",
+    });
+  });
+
+  it("skips duplicate agent use writes for consecutive holds by the same binding and writes again when another actor intervenes", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Shared" });
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+    const bindingA = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const bindingB = { agentBindingId: `run:${createId("run")}`, ownerId };
+
+    const opened = await service.openAgentSession({ ...bindingA, profileId: profile.id });
+    const countAfterOpen = recordUse.mock.calls.length;
+    expect(countAfterOpen).toBe(1);
+
+    const cdpA = await service.attachCdpForAgent(
+      { ...bindingA, sessionId: opened.session.id },
+      () => undefined,
+    );
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen);
+
+    const reopened = await service.openAgentSession({
+      ...bindingA,
+      sessionId: opened.session.id,
+    });
+    expect(reopened.session.id).toBe(opened.session.id);
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen);
+
+    const cdpB = await service.attachCdpForAgent(
+      { ...bindingB, sessionId: opened.session.id },
+      () => undefined,
+    );
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen + 1);
+
+    await service.openAgentSession({ ...bindingA, sessionId: opened.session.id });
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen + 2);
+
+    cdpA.close();
+    cdpB.close();
+  });
+
+  it("refuses bindPage and openAgentTab when the Run's mode is lowered while #holdForAgent awaits attachBrowserSession", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const memory = memoryTabs();
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const keptTwo = await repository.createBrowserProfile({ ownerId, name: "Kept Two" });
+    repository.granted = [kept.id, keptTwo.id];
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      tabRestoreVersion: true,
+    });
+    cleanups.push(async () => service.close());
+
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", profileId: kept.id, url: "https://example.com/" },
+      "mode-lower-bind",
+    );
+    await memory.add(descriptor);
+
+    // 1. bindPage: lower mode during #holdForAgent's attachBrowserSession await.
+    const enteredBind = Promise.withResolvers<void>();
+    const releaseBind = Promise.withResolvers<void>();
+    const originalAttach = repository.attachBrowserSession.bind(repository);
+    vi.spyOn(repository, "attachBrowserSession").mockImplementationOnce(async (input) => {
+      enteredBind.resolve();
+      await releaseBind.promise;
+      return originalAttach(input);
+    });
+    const claims = {
+      requestedBy: ownerId,
+      runId: createId("run"),
+      threadId: createId("thread"),
+    } as unknown as import("../agents/run-tool-tokens.js").RunToolScope;
+    const binding = service.bindPage(claims, memory.rows.get(descriptor.id)!);
+    await enteredBind.promise;
+    repository.mode = "approval-required";
+    releaseBind.resolve();
+    await expect(binding).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This task has read-only browser access and cannot drive or change tabs.",
+    });
+
+    // 2. openAgentTab: lower mode during #holdForAgent's attachBrowserSession await.
+    repository.mode = "full-access";
+    const enteredOpen = Promise.withResolvers<void>();
+    const releaseOpen = Promise.withResolvers<void>();
+    vi.spyOn(repository, "attachBrowserSession").mockImplementationOnce(async (input) => {
+      enteredOpen.resolve();
+      await releaseOpen.promise;
+      return originalAttach(input);
+    });
+    const opening = service.openAgentTab(
+      {
+        ownerId,
+        agentBindingId: `run:${createId("run")}`,
+        threadId: createId("thread"),
+      },
+      {
+        identity: { kind: "profile", profile: keptTwo.id },
+        operationKey: "mode-lower-open-agent-tab",
+      },
+    );
+    await enteredOpen.promise;
+    repository.mode = "approval-required";
+    releaseOpen.resolve();
+    await expect(opening).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This task has read-only browser access and cannot drive or change tabs.",
+    });
+  });
+
+  it("refuses bindPage when the Run's mode is lowered while pageTabs.admitted awaits", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const memory = memoryTabs();
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    repository.granted = [kept.id];
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      tabRestoreVersion: true,
+    });
+    cleanups.push(async () => service.close());
+
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", profileId: kept.id, url: "https://example.com/" },
+      "mode-lower-admitted",
+    );
+    await memory.add(descriptor);
+
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const originalAdmitted = service.pageTabs.admitted!;
+    vi.spyOn(service.pageTabs, "admitted").mockImplementationOnce(async (write) => {
+      entered.resolve();
+      await release.promise;
+      return originalAdmitted(write);
+    });
+    const claims = {
+      requestedBy: ownerId,
+      runId: createId("run"),
+      threadId: createId("thread"),
+    } as unknown as import("../agents/run-tool-tokens.js").RunToolScope;
+
+    const binding = service.bindPage(claims, memory.rows.get(descriptor.id)!);
+    await entered.promise;
+    repository.mode = "approval-required";
+    release.resolve();
+    await expect(binding).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This task has read-only browser access and cannot drive or change tabs.",
+    });
+    expect(recordUse.mock.calls.filter(([input]) => input.tabId !== null)).toEqual([]);
+  });
+
+  it("records usage again when the same Run revisits an earlier session after holding another session", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profileOne = await repository.createBrowserProfile({ ownerId, name: "First" });
+    const profileTwo = await repository.createBrowserProfile({ ownerId, name: "Second" });
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+    const runBinding = { agentBindingId: `run:${createId("run")}`, ownerId };
+
+    const first = await service.openAgentSession({ ...runBinding, profileId: profileOne.id });
+    const second = await service.openAgentSession({ ...runBinding, profileId: profileTwo.id });
+    await service.openAgentSession({ ...runBinding, sessionId: first.session.id });
+
+    expect(recordUse.mock.calls.map(([input]) => input.sessionId)).toEqual([
+      first.session.id,
+      second.session.id,
+      first.session.id,
+    ]);
+  });
+
+  it("records usage again when a Run re-holds a session after a per-command use in another session", async () => {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const backing: BrowserSessionRepository = repository;
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profileOne = await repository.createBrowserProfile({ ownerId, name: "First" });
+    const profileTwo = await repository.createBrowserProfile({ ownerId, name: "Second" });
+    const runBinding = { agentBindingId: `run:${runId}`, ownerId };
+    vi.spyOn(backing, "resolvePlaceActors").mockResolvedValue([
+      {
+        agentBindingId: runBinding.agentBindingId,
+        ownerId,
+        runId,
+        threadId,
+        generation: 1,
+        lineageThreadIds: [threadId],
+      },
+    ]);
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+
+    const first = await service.openAgentSession({ ...runBinding, profileId: profileOne.id });
+    const cdpFirst = await service.attachCdpForAgent(
+      { ...runBinding, sessionId: first.session.id },
+      () => undefined,
+    );
+    const second = await service.openAgentSession({ ...runBinding, profileId: profileTwo.id });
+
+    runtime.publishTabs({
+      surfaces: [
+        {
+          id: "page-1",
+          active: true,
+          title: "First",
+          url: "https://first.example/",
+          geometryRevision: 1,
+        },
+      ],
+    });
+    const attachRequest = cdpFirst.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "page-1", flatten: true },
+    });
+    const forwarded = await runtime.nextCommand();
+    expect(forwarded).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Target.attachToTarget" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forwarded.requestId,
+      result: { sessionId: "cdp-page-1", surfaceId: "page-1" },
+    });
+    await attachRequest;
+    await vi.waitFor(() =>
+      expect(recordUse.mock.calls.map(([input]) => input.sessionId)).toEqual([
+        first.session.id,
+        second.session.id,
+        first.session.id,
+      ]),
+    );
+
+    await service.openAgentSession({ ...runBinding, sessionId: second.session.id });
+    expect(recordUse.mock.calls.map(([input]) => input.sessionId)).toEqual([
+      first.session.id,
+      second.session.id,
+      first.session.id,
+      second.session.id,
+    ]);
+    cdpFirst.close();
+  });
+
+  it("gates Extensions.loadUnpacked and Extensions.uninstall on Rule 1 Full access standing (2b)", async () => {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Extensions Profile" });
+    const runBinding = { agentBindingId: `run:${runId}`, ownerId };
+
+    let standing: {
+      actor: "native" | "agent";
+      mode: "full-access" | "auto" | "approval-required";
+      agentConnection: {
+        agentConnectionId: string;
+        grant: { scope: "everything" };
+        grantRevision: number;
+        consentVersion: number;
+        accessMode: "full-access";
+        bridgeSenders: null;
+      } | null;
+    } = { actor: "native", mode: "full-access", agentConnection: null };
+
+    repository.resolveResourceAccess = async () => ({
+      access: "read-write",
+      runAccess: "read-write",
+      grantAccess: "read-write",
+      execution: {
+        ownerUserId: ownerId,
+        subject: { kind: "binding", bindingId: runBinding.agentBindingId },
+        actor: standing.actor,
+        threadId,
+        runId,
+        agentConnection: standing.agentConnection,
+        taskMode: standing.mode,
+        runMode: standing.mode,
+        mode: standing.mode,
+      },
+    });
+
+    const opened = await service.openAgentSession({ ...runBinding, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...runBinding, sessionId: opened.session.id },
+      () => undefined,
+    );
+
+    // Full access native Run on person's own lineage: carries manageExtensions: true for mutations.
+    const loadReq = cdp.request({
+      method: "Extensions.loadUnpacked",
+      parameters: { path: "/tmp/ext" },
+    });
+    const loadForward = await runtime.nextCommand();
+    expect(loadForward).toMatchObject({
+      type: "cdp.command",
+      manageExtensions: true,
+      command: { method: "Extensions.loadUnpacked", parameters: { path: "/tmp/ext" } },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: loadForward.requestId,
+      result: { id: "a".repeat(32) },
+    });
+    expect(await loadReq).toEqual({ id: "a".repeat(32) });
+
+    // Non-mutating Extensions.getExtensions does NOT set manageExtensions.
+    const listReq = cdp.request({ method: "Extensions.getExtensions" });
+    const listForward = await runtime.nextCommand();
+    expect(listForward).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Extensions.getExtensions" },
+    });
+    expect("manageExtensions" in listForward && listForward.manageExtensions).toBeFalsy();
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: listForward.requestId,
+      result: { extensions: [] },
+    });
+    expect(await listReq).toEqual({ extensions: [] });
+
+    // Auto mode Run: refused at Host before reaching the runtime.
+    standing = { actor: "native", mode: "auto", agentConnection: null };
+    await expect(
+      cdp.request({ method: "Extensions.loadUnpacked", parameters: { path: "/tmp/ext" } }),
+    ).rejects.toThrow(/Full access/u);
+    await expect(
+      cdp.request({ method: "Extensions.uninstall", parameters: { id: "a".repeat(32) } }),
+    ).rejects.toThrow(/Full access/u);
+
+    // Run under a connected agent's lineage (even at full-access): refused with Rule 5 neutral message.
+    const connectedRunId = createId("run");
+    const connectedBinding = { agentBindingId: `run:${connectedRunId}`, ownerId };
+    standing = {
+      actor: "agent",
+      mode: "full-access",
+      agentConnection: {
+        agentConnectionId: `acn_${randomUUID()}`,
+        grant: { scope: "everything" },
+        grantRevision: 1,
+        consentVersion: 1,
+        accessMode: "full-access",
+        bridgeSenders: null,
+      },
+    };
+    const connectedOpened = await service.openAgentSession({
+      ...connectedBinding,
+      profileId: profile.id,
+    });
+    const connectedCdp = await service.attachCdpForAgent(
+      { ...connectedBinding, sessionId: connectedOpened.session.id },
+      () => undefined,
+    );
+    await expect(
+      connectedCdp.request({ method: "Extensions.loadUnpacked", parameters: { path: "/tmp/ext" } }),
+    ).rejects.toThrow(/Extensions\.loadUnpacked is not available to a connected agent/u);
+    await expect(connectedCdp.request({ method: "Extensions.getExtensions" })).rejects.toThrow(
+      /Extensions\.getExtensions is not available to a connected agent/u,
+    );
+
+    // S-c & S4: root-state Target.* events naming chrome-extension: targets AND subsequent no-URL
+    // Target.targetDestroyed / Target.detachedFromTarget events for those hidden IDs never reach a
+    // connectionWork subscriber.
+    const rootEvents: unknown[] = [];
+    const connectedRoot = await service.attachCdpForAgent(
+      { ...connectedBinding, sessionId: connectedOpened.session.id },
+      (event) => rootEvents.push(event),
+    );
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetCreated",
+        parameters: {
+          targetInfo: {
+            targetId: "ext-target",
+            type: "service_worker",
+            url: `chrome-extension://${"a".repeat(32)}/worker.js`,
+          },
+        },
+        sequence: 1,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { sessionId: "ext-sess", targetId: "ext-target" },
+        sequence: 2,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "ext-target" },
+        sequence: 3,
+      },
+    });
+    // S-c: an extension target created BEFORE this subscription started also has its no-URL
+    // destroy/detach events dropped because only targets shown with a non-extension URL pass.
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "preexisting-ext-target" },
+        sequence: 4,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetCreated",
+        parameters: {
+          targetInfo: { targetId: "web-target", type: "page", url: "https://example.test/" },
+        },
+        sequence: 5,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "web-target" },
+        sequence: 6,
+      },
+    });
+    await vi.waitFor(() => expect(rootEvents).toHaveLength(2));
+    expect(JSON.stringify(rootEvents)).not.toContain("chrome-extension:");
+    expect(JSON.stringify(rootEvents)).not.toContain("ext-target");
+    expect(JSON.stringify(rootEvents)).not.toContain("preexisting-ext-target");
+    expect(JSON.stringify(rootEvents)).toContain("web-target");
+
+    // F1: manual attach to an already-admitted web page without prior Target.targetCreated must
+    // still receive its Target.detachedFromTarget and Target.targetDestroyed terminal events.
+    const request = connectedRoot.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "already-admitted-web-page", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    expect(forward).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Target.attachToTarget" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_manual" },
+    });
+    await expect(request).resolves.toEqual({ sessionId: "cdp_manual" });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "already-admitted-web-page", sessionId: "cdp_manual" },
+        sequence: 7,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(rootEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { targetId: "already-admitted-web-page", sessionId: "cdp_manual" },
+        }),
+      ),
+    );
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "already-admitted-web-page" },
+        sequence: 8,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(rootEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.targetDestroyed",
+          parameters: { targetId: "already-admitted-web-page" },
+        }),
+      ),
+    );
+
+    // F1 race: Target.detachedFromTarget arriving BEFORE the Target.attachToTarget reply settles
+    // is still delivered once the attach succeeds, while an unseen extension detach during a
+    // failed attach is never leaked.
+    const earlyAttach = connectedRoot.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "early-detach-page", flatten: true },
+    });
+    const earlyForward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "early-detach-page", sessionId: "cdp_early" },
+        sequence: 9,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "unseen-ext-during-race", sessionId: "ext_other_sess" },
+        sequence: 10,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: earlyForward.requestId,
+      result: { sessionId: "cdp_early" },
+    });
+    await expect(earlyAttach).resolves.toEqual({ sessionId: "cdp_early" });
+    await vi.waitFor(() =>
+      expect(rootEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { targetId: "early-detach-page", sessionId: "cdp_early" },
+        }),
+      ),
+    );
+    expect(JSON.stringify(rootEvents)).not.toContain("unseen-ext-during-race");
+    expect(JSON.stringify(rootEvents)).not.toContain("ext_other_sess");
+
+    // A rejected attach for an unseen extension target must not leak its terminal events either.
+    const rejectedAttach = connectedRoot.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "unseen-ext-refused", flatten: true },
+    });
+    const rejectedForward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "unseen-ext-refused" },
+        sequence: 11,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.error",
+      requestId: rejectedForward.requestId,
+      error: {
+        code: "not_found",
+        message: "CDP target is not available here.",
+        retryable: false,
+        unsent: true,
+      },
+    });
+    await expect(rejectedAttach).rejects.toThrow(/CDP target is not available here/u);
+    expect(JSON.stringify(rootEvents)).not.toContain("unseen-ext-refused");
+
+    connectedRoot.close();
+    connectedCdp.close();
+    cdp.close();
+  });
+
+  it("delivers scoped script-attachment terminal events without prior discovery (F1)", async () => {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      scriptAttachments: true,
+    });
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      connectionCommands: true,
+      surfaceState: true,
+    });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Script F1 Profile" });
+    const connectedBinding = { agentBindingId: `run:${runId}`, ownerId };
+    repository.resolveResourceAccess = async () => ({
+      access: "read-write",
+      runAccess: "read-write",
+      grantAccess: "read-write",
+      execution: {
+        ownerUserId: ownerId,
+        subject: { kind: "binding", bindingId: connectedBinding.agentBindingId },
+        actor: "agent",
+        threadId,
+        runId,
+        agentConnection: {
+          agentConnectionId: `acn_${randomUUID()}`,
+          grant: { scope: "everything" },
+          grantRevision: 1,
+          consentVersion: 1,
+          accessMode: "full-access",
+          bridgeSenders: null,
+        },
+        taskMode: "full-access",
+        runMode: "full-access",
+        mode: "full-access",
+      },
+    });
+    const opened = await service.openAgentSession({ ...connectedBinding, profileId: profile.id });
+    const scriptEvents: unknown[] = [];
+    const scriptTabId = BrowserSurfaceIdSchema.parse("tab_f1");
+    const connectedScript = await service.attachCdpForAgent(
+      {
+        ...connectedBinding,
+        sessionId: opened.session.id,
+        scriptTabId,
+      },
+      (event) => scriptEvents.push(event),
+    );
+    const nextCdpCommand = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    const scriptResumeDispatch = connectedScript.dispatch(
+      {
+        method: browserHostMethods.resumeTab,
+        parameters: { surfaceId: scriptTabId },
+      },
+      {
+        maxBytes: 65_536,
+        maxDepth: 16,
+        maxEntries: 64,
+        eventBudget: { maxBytes: 65_536, maxDepth: 16, maxEntries: 64 },
+      },
+    );
+    const scriptResumeForward = await nextCdpCommand();
+    const scriptAttachmentId = scriptResumeForward.scriptAttachmentId;
+    expect(scriptAttachmentId).toEqual(expect.any(String));
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: scriptResumeForward.requestId,
+      result: { targetId: "script-root-target" },
+    });
+    await expect((await scriptResumeDispatch).result).resolves.toEqual({
+      targetId: "script-root-target",
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        scriptAttachmentId,
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "script-root-target" },
+        sequence: 1,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        scriptAttachmentId,
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "script-root-target", sessionId: "cdp_script_session" },
+        sequence: 2,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(scriptEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.targetDestroyed",
+          parameters: { targetId: "script-root-target" },
+        }),
+      );
+      expect(scriptEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { targetId: "script-root-target", sessionId: "cdp_script_session" },
+        }),
+      );
+    });
+    connectedScript.close();
+  });
+
+  async function connectedRootAttachment(name: string, surfaceState = false) {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository, surfaceState });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name });
+    const binding = { agentBindingId: `run:${runId}`, ownerId };
+    // One of your own agents (no connection leads it) when false.
+    let asConnection = true;
+    repository.resolveResourceAccess = async () => ({
+      access: "read-write",
+      runAccess: "read-write",
+      grantAccess: "read-write",
+      execution: {
+        ownerUserId: ownerId,
+        subject: { kind: "binding", bindingId: binding.agentBindingId },
+        actor: asConnection ? "agent" : "native",
+        threadId,
+        runId,
+        agentConnection: asConnection
+          ? {
+              agentConnectionId: `acn_${randomUUID()}`,
+              grant: { scope: "everything" },
+              grantRevision: 1,
+              consentVersion: 1,
+              accessMode: "full-access",
+              bridgeSenders: null,
+            }
+          : null,
+        taskMode: "full-access",
+        runMode: "full-access",
+        mode: "full-access",
+      },
+    });
+    const opened = await service.openAgentSession({ ...binding, profileId: profile.id });
+    const attach = async (connection = true) => {
+      asConnection = connection;
+      const events: {
+        method: string;
+        parameters: Record<string, unknown>;
+        sessionId?: string;
+      }[] = [];
+      const attached = await service
+        .attachCdpForAgent({ ...binding, sessionId: opened.session.id }, (event) =>
+          events.push(event as (typeof events)[number]),
+        )
+        .finally(() => {
+          asConnection = true;
+        });
+      return { attached, events };
+    };
+    return { runtime, attach };
+  }
+
+  it("keeps a subscriber's own early detach however many other targets end during its attach (S1)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("S1 Profile");
+    const { attached, events } = await attach();
+    const request = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { sessionId: "cdp_own", targetId: "own-tab" },
+        sequence: 1,
+      },
+    });
+    for (let index = 0; index < 64; index += 1) {
+      runtime.sendServer({
+        type: "cdp.event",
+        event: {
+          method: "Target.targetDestroyed",
+          parameters: { targetId: `other-${index}` },
+          sequence: 2 + index,
+        },
+      });
+      runtime.sendServer({
+        type: "cdp.event",
+        event: {
+          method: "Target.detachedFromTarget",
+          parameters: { sessionId: `cdp_other_${index}`, targetId: `other-${index}` },
+          sequence: 100 + index,
+        },
+      });
+    }
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_own" },
+    });
+    await expect(request).resolves.toEqual({ sessionId: "cdp_own" });
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { sessionId: "cdp_own", targetId: "own-tab" },
+        }),
+      ),
+    );
+    expect(JSON.stringify(events)).not.toContain("other-");
+    attached.close();
+  });
+
+  it("replays a created or resumed tab's own early end, and churn never pushes out an attach's (G3)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("G3 Profile", true);
+    const { attached, events } = await attach();
+    let sequence = 1;
+    const send = (method: string, parameters: Record<string, unknown>) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters, sequence: sequence++ },
+      });
+    const nextCdp = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    // A create, a resume and a named attach all pending at once.
+    const create = attached.request({
+      method: "Target.createTarget",
+      parameters: { url: "https://new.test/" },
+    });
+    const createForward = await nextCdp();
+    const resume = attached.request({
+      method: browserHostMethods.resumeTab,
+      parameters: { surfaceId: BrowserSurfaceIdSchema.parse("tab_g3") },
+    });
+    const resumeForward = await nextCdp();
+    const attach_ = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "named-tab", flatten: true },
+    });
+    const attachForward = await nextCdp();
+    send("Target.targetCrashed", { targetId: "created-tab", status: "crashed", errorCode: 1 });
+    send("Target.targetDestroyed", { targetId: "created-tab" });
+    send("Target.targetDestroyed", { targetId: "resumed-tab" });
+    send("Target.detachedFromTarget", { sessionId: "cdp_named", targetId: "named-tab" });
+    for (let index = 0; index < 200; index += 1) {
+      send("Target.targetDestroyed", { targetId: `other-${index}` });
+      send("Target.detachedFromTarget", {
+        sessionId: `cdp_other_${index}`,
+        targetId: `other-${index}`,
+      });
+    }
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: createForward.requestId,
+      result: { targetId: "created-tab" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: resumeForward.requestId,
+      result: { targetId: "resumed-tab" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: attachForward.requestId,
+      result: { sessionId: "cdp_named" },
+    });
+    await Promise.all([create, resume, attach_]);
+    await vi.waitFor(() => expect(events).toHaveLength(4));
+    expect(events.map(({ method, parameters }) => [method, parameters.targetId])).toEqual([
+      ["Target.targetCrashed", "created-tab"],
+      ["Target.targetDestroyed", "created-tab"],
+      ["Target.targetDestroyed", "resumed-tab"],
+      ["Target.detachedFromTarget", "named-tab"],
+    ]);
+    // Nothing pending: an unknown target's end is dropped, not kept.
+    send("Target.targetDestroyed", { targetId: "late-unknown" });
+    send("Target.targetDestroyed", { targetId: "created-tab" });
+    send("Page.marker", {});
+    await vi.waitFor(() => expect(events.at(-1)?.method).toBe("Page.marker"));
+    expect(events).toHaveLength(5);
+    attached.close();
+  });
+
+  /*
+   * Generated sequences on one shared root: two connected subscribers and one of your own agents
+   * on one Browser Session. Random attaches, creates and resumes answered or refused in any order;
+   * their own detaches, destroys and crashes before and after the reply; their own tabs going web
+   * -> extension -> web; auto-attached children; page events and nested replies on their
+   * sessions; web tabs announced at the root; a close in mid-flight; and foreign churn (extension
+   * pages, service workers and their sessions, other targets' ends, target-less detaches,
+   * browser-level events). After every step a connected subscriber may receive no id of the
+   * other's sessions or unannounced targets, of an extension's targets or sessions, and no
+   * extension address; at the end each of its own events arrived exactly as often as it happened
+   * (none while its tab was on an extension page: E1), none of a refused command's, none after
+   * its close. Your own agent's subscriber hears every event the runtime sent, as before. Bounds:
+   * churn stays below 4,096 terminal events inside any one create's or resume's wait (the bound
+   * test pins what happens above it).
+   */
+  it("keeps both invariants for generated sequences on a shared root", async () => {
+    const prng = (seed: number) => {
+      let a = seed >>> 0;
+      return () => {
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+      };
+    };
+    const { runtime, attach } = await connectedRootAttachment("Generated Profile", true);
+    const nextCdp = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    const failures: string[] = [];
+    const extensionUrl = (id: number) => `chrome-extension://${"e".repeat(32)}/p-${id}.html`;
+    for (let seed = 1; seed <= 30 && failures.length === 0; seed += 1) {
+      const random = prng(seed);
+      const pick = <T>(values: readonly T[]): T | undefined =>
+        values[Math.floor(random() * values.length)];
+      const trace: string[] = [];
+      let serial = 0;
+      let sequence = 1;
+      let marker = 0;
+      let sent = 0;
+      const subscribers = await Promise.all(
+        ["s1", "s2"].map(async (name) => {
+          const attached = await attach();
+          return {
+            name,
+            ...attached,
+            open: true,
+            checked: 0,
+            own: new Set<string>(),
+            expected: new Map<string, number>(),
+            pending: [] as {
+              kind: "attach" | "create" | "resume";
+              requestId: string;
+              target: string;
+              session?: string;
+              result: Promise<unknown>;
+            }[],
+            sessions: [] as { id: string; target: string; ended: boolean }[],
+            targets: [] as { id: string; destroyed: boolean; hidden: boolean }[],
+          };
+        }),
+      );
+      const yours = await attach(false);
+      type Subscriber = (typeof subscribers)[number];
+      // Terminal events sent for a pending command's ids, delivered only if it succeeds.
+      const early = new Map<Subscriber["pending"][number], string[]>();
+      const send = (method: string, parameters: Record<string, unknown>, sessionId?: string) => {
+        sent += 1;
+        trace.push(`runtime ${method} ${sessionId ?? ""} ${JSON.stringify(parameters)}`);
+        runtime.sendServer({
+          type: "cdp.event",
+          event: { method, parameters, sequence: sequence++, ...(sessionId ? { sessionId } : {}) },
+        });
+      };
+      const bump = (sub: Subscriber, key: string) => {
+        if (sub.open) sub.expected.set(key, (sub.expected.get(key) ?? 0) + 1);
+      };
+      const hiddenTarget = (sub: Subscriber, id: string) =>
+        sub.targets.some((t) => t.id === id && t.hidden);
+      const terminal = (
+        sub: Subscriber,
+        key: string,
+        method: string,
+        parameters: Record<string, unknown>,
+        pending?: Subscriber["pending"][number],
+      ) => {
+        if (pending) early.set(pending, [...(early.get(pending) ?? []), key]);
+        else if (!hiddenTarget(sub, String(parameters.targetId))) bump(sub, key);
+        send(method, parameters);
+      };
+      let churn = 0;
+      const announced = new Set<string>();
+      const steps: ((sub: Subscriber) => Promise<void> | void)[] = [
+        async (sub) => {
+          if (!sub.open) return;
+          const kind = pick(["attach", "create", "resume"] as const)!;
+          const id = ++serial;
+          const target = `tgt-${sub.name}-${id}`;
+          const command =
+            kind === "attach"
+              ? { method: "Target.attachToTarget", parameters: { targetId: target, flatten: true } }
+              : kind === "create"
+                ? { method: "Target.createTarget", parameters: { url: `https://new-${id}.test/` } }
+                : {
+                    method: browserHostMethods.resumeTab,
+                    parameters: {
+                      surfaceId: BrowserSurfaceIdSchema.parse(`tab_${sub.name}_${id}`),
+                    },
+                  };
+          const result = sub.attached.request(command).then(
+            (value) => value,
+            (error: unknown) => ({ refused: String(error) }),
+          );
+          const forward = await nextCdp();
+          trace.push(`${sub.name} ${kind} ${target}`);
+          sub.pending.push({
+            kind,
+            requestId: String(forward.requestId),
+            target,
+            ...(kind === "attach" ? { session: `cdp_${sub.name}_${id}` } : {}),
+            result,
+          });
+        },
+        async (sub) => {
+          const pending = pick(sub.pending);
+          if (!pending) return;
+          sub.pending.splice(sub.pending.indexOf(pending), 1);
+          const refused = random() < 0.2;
+          trace.push(
+            `${sub.name} reply ${pending.kind} ${pending.target} ${refused ? "refused" : "ok"}`,
+          );
+          runtime.sendServer(
+            refused
+              ? {
+                  type: "cdp.error",
+                  requestId: pending.requestId,
+                  error: {
+                    code: "not_found",
+                    message: "Not here.",
+                    retryable: false,
+                    unsent: true,
+                  },
+                }
+              : {
+                  type: "cdp.result",
+                  requestId: pending.requestId,
+                  result:
+                    pending.kind === "attach"
+                      ? { sessionId: pending.session }
+                      : { targetId: pending.target },
+                },
+          );
+          await pending.result;
+          if (refused) return;
+          for (const key of early.get(pending) ?? []) bump(sub, key);
+          sub.own.add(pending.target);
+          if (!sub.targets.some((t) => t.id === pending.target))
+            sub.targets.push({
+              id: pending.target,
+              destroyed: (early.get(pending) ?? []).includes(`destroy:${pending.target}`),
+              hidden: false,
+            });
+          if (pending.session) {
+            sub.own.add(pending.session);
+            sub.sessions.push({
+              id: pending.session,
+              target: pending.target,
+              ended: (early.get(pending) ?? []).includes(`detach:${pending.session}`),
+            });
+          }
+        },
+        // Its own terminal event, before or after the reply.
+        (sub) => {
+          const before = random() < 0.5 && sub.pending.length > 0;
+          if (before) {
+            const pending = pick(sub.pending)!;
+            if ((early.get(pending) ?? []).length) return;
+            if (pending.session && random() < 0.5)
+              terminal(
+                sub,
+                `detach:${pending.session}`,
+                "Target.detachedFromTarget",
+                { sessionId: pending.session, targetId: pending.target },
+                pending,
+              );
+            else if (random() < 0.5)
+              terminal(
+                sub,
+                `crash:${pending.target}`,
+                "Target.targetCrashed",
+                { targetId: pending.target, status: "crashed", errorCode: 1 },
+                pending,
+              );
+            else
+              terminal(
+                sub,
+                `destroy:${pending.target}`,
+                "Target.targetDestroyed",
+                { targetId: pending.target },
+                pending,
+              );
+            return;
+          }
+          const session = pick(sub.sessions.filter((s) => !s.ended));
+          const target = pick(sub.targets.filter((t) => !t.destroyed));
+          if (session && random() < 0.5) {
+            session.ended = true;
+            terminal(sub, `detach:${session.id}`, "Target.detachedFromTarget", {
+              sessionId: session.id,
+              targetId: session.target,
+            });
+          } else if (target && random() < 0.4) {
+            terminal(sub, `crash:${target.id}`, "Target.targetCrashed", {
+              targetId: target.id,
+              status: "crashed",
+              errorCode: 1,
+            });
+          } else if (target) {
+            terminal(sub, `destroy:${target.id}`, "Target.targetDestroyed", {
+              targetId: target.id,
+            });
+            target.destroyed = true;
+          }
+        },
+        // Its own tab goes to an extension page, or back to the web.
+        (sub) => {
+          const target = pick(sub.targets.filter((t) => !t.destroyed));
+          if (!target) return;
+          target.hidden = !target.hidden;
+          // Announced at the root: on a shared root every subscriber may know a web tab.
+          if (!target.hidden) announced.add(target.id);
+          send("Target.targetInfoChanged", {
+            targetInfo: {
+              targetId: target.id,
+              type: "page",
+              url: target.hidden ? extensionUrl(++serial) : `https://back-${++serial}.test/`,
+            },
+          });
+        },
+        // An auto-attached child of one of its sessions, and later its end.
+        (sub) => {
+          const parent = pick(sub.sessions.filter((s) => !s.ended));
+          if (!parent || hiddenTarget(sub, parent.target)) return;
+          const id = ++serial;
+          const child = {
+            id: `cdp_${sub.name}_child_${id}`,
+            target: `tgt-${sub.name}-frame-${id}`,
+          };
+          send(
+            "Target.attachedToTarget",
+            {
+              sessionId: child.id,
+              targetInfo: {
+                targetId: child.target,
+                type: "iframe",
+                url: `https://frame-${id}.test/`,
+              },
+              waitingForDebugger: false,
+            },
+            parent.id,
+          );
+          sub.own.add(child.id);
+          sub.own.add(child.target);
+          sub.sessions.push({ ...child, ended: false });
+          if (random() < 0.5) {
+            sub.sessions.at(-1)!.ended = true;
+            bump(sub, `detach:${child.id}`);
+            send(
+              "Target.detachedFromTarget",
+              { sessionId: child.id, targetId: child.target },
+              parent.id,
+            );
+          }
+        },
+        // A page event on one of its sessions, and a nested reply to it: its own, the other's not.
+        (sub) => {
+          const session = pick(sub.sessions.filter((s) => !s.ended));
+          if (!session) return;
+          bump(sub, `page:${session.id}`);
+          send("Page.loadEventFired", { timestamp: ++serial }, session.id);
+          bump(sub, `nested:${session.id}`);
+          send("Target.receivedMessageFromTarget", {
+            sessionId: session.id,
+            message: JSON.stringify({ id: serial, result: {} }),
+          });
+        },
+        // A web tab of the session announced at the root: every subscriber may know it. Its
+        // opener, parent and their frames may be anything: a subscriber's own tab (on the web or
+        // on an extension page), another's, an extension's target, a tab announced before.
+        () => {
+          const id = ++serial;
+          const pool = [
+            ...subscribers.flatMap((sub) => sub.targets.map((t) => t.id)),
+            ...announced,
+            `tgt-ext-${serial - 1}`,
+          ];
+          const related = () => (random() < 0.7 ? pick(pool) : undefined);
+          const [openerId, openerFrameId, parentId, parentFrameId] = [
+            related(),
+            related(),
+            related(),
+            related(),
+          ];
+          send("Target.targetCreated", {
+            targetInfo: {
+              targetId: `tgt-web-${id}`,
+              type: "page",
+              url: `https://web-${id}.test/`,
+              ...(openerId ? { openerId, canAccessOpener: true } : {}),
+              ...(openerFrameId ? { openerFrameId } : {}),
+              ...(parentId ? { parentId } : {}),
+              ...(parentFrameId ? { parentFrameId } : {}),
+            },
+          });
+          if (random() < 0.5) send("Target.targetDestroyed", { targetId: `tgt-web-${id}` });
+        },
+        // Its own session detaches while its tab sits on an extension page: not told (E1).
+        (sub) => {
+          const session = pick(sub.sessions.filter((s) => !s.ended && hiddenTarget(sub, s.target)));
+          if (!session) return;
+          session.ended = true;
+          terminal(sub, `detach:${session.id}`, "Target.detachedFromTarget", {
+            sessionId: session.id,
+            targetId: session.target,
+          });
+        },
+        // A close in mid-flight: from now on it hears nothing.
+        (sub) => {
+          if (!sub.open || random() < 0.7) return;
+          trace.push(`${sub.name} close`);
+          sub.open = false;
+          sub.attached.close();
+        },
+        // Foreign churn: extension targets and pages, their sessions and ends, other ids' ends.
+        () => {
+          const count = Math.floor(random() * (churn > 2_000 ? 10 : 200));
+          churn += count;
+          for (let index = 0; index < count; index += 1) {
+            const id = ++serial;
+            const ext = extensionUrl(id);
+            switch (index % 7) {
+              case 0:
+                send("Target.targetCreated", {
+                  targetInfo: { targetId: `tgt-ext-${id}`, type: "page", url: ext },
+                });
+                break;
+              case 1:
+                send("Target.attachedToTarget", {
+                  sessionId: `cdp_ext_${id}`,
+                  targetInfo: { targetId: `tgt-ext-${id}`, type: "service_worker", url: ext },
+                  waitingForDebugger: false,
+                });
+                break;
+              case 2:
+                send("Target.detachedFromTarget", {
+                  sessionId: `cdp_churn_${id}`,
+                  targetId: `tgt-churn-${id}`,
+                });
+                break;
+              case 3:
+                send("Target.targetDestroyed", { targetId: `tgt-churn-${id}` });
+                break;
+              case 4:
+                send("Browser.downloadWillBegin", {
+                  frameId: `tgt-ext-${id}`,
+                  guid: `g-${id}`,
+                  url: ext,
+                  suggestedFilename: "f.txt",
+                });
+                break;
+              case 5:
+                send("Target.detachedFromTarget", { sessionId: `cdp_churn_${id}` });
+                break;
+              default:
+                send("Target.targetCrashed", {
+                  targetId: `tgt-churn-${id}`,
+                  status: "crashed",
+                  errorCode: 1,
+                });
+            }
+          }
+        },
+      ];
+      // Every message before a marker has been handled once every subscriber hears the marker.
+      const settle = async () => {
+        const n = ++marker;
+        send("Page.marker", { n });
+        await vi.waitFor(
+          () => {
+            for (const sub of [...subscribers.filter((x) => x.open), yours])
+              expect(
+                sub.events.some((e) => e.method === "Page.marker" && e.parameters.n === n),
+              ).toBe(true);
+          },
+          { interval: 2 },
+        );
+      };
+      const check = (step: string) => {
+        for (const sub of subscribers) {
+          const other = subscribers.find((x) => x !== sub)!;
+          const fresh = JSON.stringify(sub.events.slice(sub.checked));
+          sub.checked = sub.events.length;
+          const leaked =
+            (fresh.includes("chrome-extension:") && "an extension's address") ||
+            [/"tgt-ext-\d+"/u, /"cdp_ext_\d+"/u, /"tgt-churn-\d+"/u, /"cdp_churn_\d+"/u]
+              .map((pattern) => fresh.match(pattern)?.[0])
+              .find(Boolean) ||
+            [...other.own, ...other.pending.flatMap((p) => [p.target, p.session ?? ""])]
+              .filter((id) => id && !announced.has(id))
+              .find((id) => fresh.includes(`"${id}"`)) ||
+            sub.targets
+              .filter((t) => t.hidden)
+              .map((t) => t.id)
+              .find((id) => fresh.includes(`"${id}"`));
+          if (leaked)
+            failures.push(
+              `seed ${seed} at ${step}: ${sub.name} received ${leaked}\n${trace.join("\n")}`,
+            );
+          if (!sub.open && fresh !== "[]")
+            failures.push(
+              `seed ${seed} at ${step}: ${sub.name} heard after its close\n${trace.join("\n")}`,
+            );
+        }
+        // Your own agent's subscriber: every event the runtime sent, nothing taken.
+        if (yours.events.length !== sent)
+          failures.push(
+            `seed ${seed} at ${step}: your own agent heard ${yours.events.length} of ${sent}\n${trace.join("\n")}`,
+          );
+      };
+      try {
+        for (let step = 0; step < 30 && failures.length === 0; step += 1) {
+          await pick(steps)!(pick(subscribers)!);
+          await settle();
+          check(`step ${step}`);
+        }
+        // The end: every pending command is answered.
+        for (const sub of subscribers)
+          while (sub.pending.length) {
+            const pending = sub.pending.shift()!;
+            runtime.sendServer({
+              type: "cdp.result",
+              requestId: pending.requestId,
+              result:
+                pending.kind === "attach"
+                  ? { sessionId: pending.session }
+                  : { targetId: pending.target },
+            });
+            await pending.result;
+            for (const key of early.get(pending) ?? []) bump(sub, key);
+          }
+        await settle();
+        check("end");
+        for (const sub of subscribers) {
+          const counted = new Map<string, number>();
+          for (const event of sub.events) {
+            const p = event.parameters as { targetId?: unknown; sessionId?: unknown };
+            const key =
+              event.method === "Target.targetCrashed"
+                ? `crash:${String(p.targetId)}`
+                : event.method === "Target.targetDestroyed"
+                  ? `destroy:${String(p.targetId)}`
+                  : event.method === "Target.detachedFromTarget"
+                    ? `detach:${String(p.sessionId)}`
+                    : event.method === "Page.loadEventFired"
+                      ? `page:${String(event.sessionId)}`
+                      : event.method === "Target.receivedMessageFromTarget"
+                        ? `nested:${String(p.sessionId)}`
+                        : undefined;
+            // Announced tabs are every subscriber's to hear: only its own are counted.
+            const id = key?.slice(key.indexOf(":") + 1);
+            if (key && id && !key.includes("tgt-web-") && (sub.own.has(id) || !announced.has(id)))
+              counted.set(key, (counted.get(key) ?? 0) + 1);
+          }
+          for (const key of new Set([...counted.keys(), ...sub.expected.keys()]))
+            if ((counted.get(key) ?? 0) !== (sub.expected.get(key) ?? 0))
+              failures.push(
+                `seed ${seed}: ${sub.name} expected ${sub.expected.get(key) ?? 0} of ${key}, received ${counted.get(key) ?? 0}\n${trace.join("\n")}`,
+              );
+        }
+      } finally {
+        for (const sub of subscribers) if (sub.open) sub.attached.close();
+        yours.attached.close();
+      }
+    }
+    expect(failures.slice(0, 1)).toEqual([]);
+  });
+
+  it("keeps a created tab's own early end below 4,096 other ends in its wait, and only there (bound)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("Bound Profile");
+    const nextCdp = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    let sequence = 1;
+    for (const [others, kept] of [
+      [4_095, true],
+      [4_096, false],
+    ] as const) {
+      const { attached, events } = await attach();
+      const create = attached.request({
+        method: "Target.createTarget",
+        parameters: { url: "https://bound.test/" },
+      });
+      const forward = await nextCdp();
+      const own = `bound-tab-${others}`;
+      const send = (targetId: string) =>
+        runtime.sendServer({
+          type: "cdp.event",
+          event: {
+            method: "Target.targetDestroyed",
+            parameters: { targetId },
+            sequence: sequence++,
+          },
+        });
+      send(own);
+      for (let index = 0; index < others; index += 1) send(`bound-other-${others}-${index}`);
+      runtime.sendServer({
+        type: "cdp.result",
+        requestId: forward.requestId,
+        result: { targetId: own },
+      });
+      await create;
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method: "Page.boundMarker", parameters: { others }, sequence: sequence++ },
+      });
+      await vi.waitFor(() =>
+        expect(events.some((e) => e.method === "Page.boundMarker")).toBe(true),
+      );
+      expect(
+        events
+          .filter((e) => e.method === "Target.targetDestroyed")
+          .map((e) => e.parameters.targetId),
+      ).toEqual(kept ? [own] : []);
+      attached.close();
+    }
+  });
+
+  it("delivers nothing to a connection's shared-root attachment after its Disconnect or its binding's end", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Disconnect Profile" });
+    let agentConnectionId = `acn_${randomUUID()}`;
+    const connected = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const ownAgent = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const threadId = createId("thread");
+    let isConnected = true;
+    repository.resolveResourceAccess = async () => {
+      return {
+        access: "read-write",
+        runAccess: "read-write",
+        grantAccess: "read-write",
+        execution: {
+          ownerUserId: ownerId,
+          subject: {
+            kind: "binding",
+            bindingId: isConnected ? connected.agentBindingId : ownAgent.agentBindingId,
+          },
+          actor: isConnected ? "agent" : "native",
+          threadId,
+          runId: createId("run"),
+          agentConnection: isConnected
+            ? {
+                agentConnectionId,
+                grant: { scope: "everything" },
+                grantRevision: 1,
+                consentVersion: 1,
+                accessMode: "full-access",
+                bridgeSenders: null,
+              }
+            : null,
+          taskMode: "full-access",
+          runMode: "full-access",
+          mode: "full-access",
+        },
+      };
+    };
+    const opened = await service.openAgentSession({ ...connected, profileId: profile.id });
+    const attach = async (binding: typeof connected) => {
+      isConnected = binding === connected;
+      const events: { method: string }[] = [];
+      let closed = false;
+      const attached = await service.attachCdpForAgent(
+        { ...binding, sessionId: opened.session.id },
+        (event) => events.push(event),
+        () => {
+          closed = true;
+        },
+      );
+      return { attached, events, closed: () => closed };
+    };
+    let sequence = 1;
+    const send = (method: string) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters: {}, sequence: sequence++ },
+      });
+    for (const end of ["disconnect", "binding-ended"] as const) {
+      // A disconnected connection admits nothing more: each case its own connection.
+      agentConnectionId = `acn_${randomUUID()}`;
+      const theirs = await attach(connected);
+      const mine = await attach(ownAgent);
+      send("Page.before");
+      await vi.waitFor(() => expect(theirs.events.at(-1)?.method).toBe("Page.before"));
+      if (end === "disconnect")
+        service.closeStandardCdpForConnection(
+          agentConnectionId,
+          "Agent connection authority ended.",
+        );
+      else await service.detachAgentSessionsForBinding(connected.agentBindingId);
+      send("Page.after");
+      // Your own agent's attachment, on the same shared root, still hears it: so it has arrived.
+      await vi.waitFor(() => expect(mine.events.at(-1)?.method).toBe("Page.after"));
+      expect(
+        theirs.events.map(({ method }) => method),
+        end,
+      ).not.toContain("Page.after");
+      if (end === "disconnect") expect(theirs.closed(), end).toBe(true);
+      theirs.attached.close();
+      mine.attached.close();
+      if (end === "binding-ended") break;
+    }
+  });
+
+  it("keeps target-less foreign detaches out of an attach's buffer, and hides a tab that went to an extension page (shared root)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("Shared Root Profile");
+    const { attached, events } = await attach();
+    let sequence = 1;
+    const send = (method: string, parameters: Record<string, unknown>, sessionId?: string) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters, sequence: sequence++, ...(sessionId ? { sessionId } : {}) },
+      });
+    const settle = async (n: number) => {
+      send("Page.marker", { n });
+      await vi.waitFor(() =>
+        expect(events.some((e) => e.method === "Page.marker" && e.parameters.n === n)).toBe(true),
+      );
+    };
+    // 1. An attach's own early detach survives any number of target-less foreign detaches.
+    const request = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    send("Target.detachedFromTarget", { sessionId: "cdp_own", targetId: "own-tab" });
+    for (let index = 0; index < 100; index += 1)
+      send("Target.detachedFromTarget", { sessionId: `cdp_foreign_${index}` });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_own" },
+    });
+    await request;
+    await settle(1);
+    expect(events.filter((e) => e.method === "Target.detachedFromTarget")).toEqual([
+      expect.objectContaining({ parameters: { sessionId: "cdp_own", targetId: "own-tab" } }),
+    ]);
+    // 2. Its own tab goes to an extension page: its id is named no more (its end included), and a
+    // page it opens is told without its opener; back on the web, it is told again.
+    const second = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab-2", flatten: true },
+    });
+    const secondForward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: secondForward.requestId,
+      result: { sessionId: "cdp_own_2" },
+    });
+    await second;
+    const before = events.length;
+    const extension = `chrome-extension://${"a".repeat(32)}/options.html`;
+    send("Target.targetInfoChanged", {
+      targetInfo: { targetId: "own-tab-2", type: "page", url: extension },
+    });
+    send("Target.targetCreated", {
+      targetInfo: {
+        targetId: "popup",
+        type: "page",
+        url: "https://popup.test/",
+        openerId: "own-tab-2",
+        openerFrameId: "own-tab-2",
+        canAccessOpener: true,
+      },
+    });
+    send("Target.targetCrashed", { targetId: "own-tab-2", status: "crashed", errorCode: 1 });
+    await settle(2);
+    const hidden = JSON.stringify(events.slice(before));
+    expect(hidden).not.toContain("own-tab-2");
+    expect(hidden).not.toContain("chrome-extension:");
+    expect(events.find((e) => e.parameters.targetInfo)?.parameters).toBeDefined();
+    expect(
+      events.slice(before).find((e) => e.method === "Target.targetCreated")?.parameters.targetInfo,
+    ).toEqual({
+      targetId: "popup",
+      type: "page",
+      url: "https://popup.test/",
+      canAccessOpener: false,
+    });
+    send("Target.targetInfoChanged", {
+      targetInfo: { targetId: "own-tab-2", type: "page", url: "https://back.test/" },
+    });
+    send("Target.targetDestroyed", { targetId: "own-tab-2" });
+    await settle(3);
+    expect(
+      events
+        .slice(before)
+        .filter((e) => JSON.stringify(e).includes("own-tab-2"))
+        .map((e) => e.method),
+    ).toEqual(["Target.targetInfoChanged", "Target.targetDestroyed"]);
+    attached.close();
+  });
+
+  it("delivers nothing to a connection's work after its connection or binding ends, on every path (P1)", async () => {
+    // Every delivery function of a connection's shared-root subscription, against both ends.
+    const paths = [
+      "live event",
+      "buffered early detach",
+      "attach registering after the end",
+    ] as const;
+    const ends = ["connection ended", "binding ended"] as const;
+    for (const path of paths)
+      for (const end of ends) {
+        const ownerId = createId("user");
+        const repository = new MemoryBrowserRepository(ownerId);
+        const keys = generateKeyPairSync("ed25519");
+        const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+        const service = freshService({ keys, runtime, repository });
+        cleanups.push(async () => service.close());
+        const profile = await repository.createBrowserProfile({ ownerId, name: `${path} ${end}` });
+        const agentConnectionId = `acn_${randomUUID()}`;
+        const binding = { agentBindingId: `run:${createId("run")}`, ownerId };
+        const yourOwn = { agentBindingId: `run:${createId("run")}`, ownerId };
+        let asConnection = true;
+        repository.resolveResourceAccess = async () => ({
+          access: "read-write",
+          runAccess: "read-write",
+          grantAccess: "read-write",
+          execution: {
+            ownerUserId: ownerId,
+            subject: {
+              kind: "binding",
+              bindingId: asConnection ? binding.agentBindingId : yourOwn.agentBindingId,
+            },
+            actor: asConnection ? "agent" : "native",
+            threadId: createId("thread"),
+            runId: createId("run"),
+            agentConnection: asConnection
+              ? {
+                  agentConnectionId,
+                  grant: { scope: "everything" },
+                  grantRevision: 1,
+                  consentVersion: 1,
+                  accessMode: "full-access",
+                  bridgeSenders: null,
+                }
+              : null,
+            taskMode: "full-access",
+            runMode: "full-access",
+            mode: "full-access",
+          },
+        });
+        const opened = await service.openAgentSession({ ...binding, profileId: profile.id });
+        // One of your own agents on the same session: it hears every event, so it says when one
+        // has arrived.
+        asConnection = false;
+        const heard: string[] = [];
+        const observer = await service.attachCdpForAgent(
+          { ...yourOwn, sessionId: opened.session.id },
+          (event) => heard.push(event.method),
+        );
+        asConnection = true;
+        const arrived = (method: string) => vi.waitFor(() => expect(heard).toContain(method));
+        const events: string[] = [];
+        let closed = false;
+        const endIt = async () => {
+          if (end === "connection ended")
+            service.closeStandardCdpForConnection(
+              agentConnectionId,
+              "Agent connection authority ended.",
+            );
+          else await service.detachAgentSessionsForBinding(binding.agentBindingId);
+        };
+        let sequence = 1;
+        const send = (method: string, parameters: Record<string, unknown> = {}) =>
+          runtime.sendServer({
+            type: "cdp.event",
+            event: { method, parameters, sequence: sequence++ },
+          });
+        const attach = () =>
+          service.attachCdpForAgent(
+            { ...binding, sessionId: opened.session.id },
+            (event) => events.push(event.method),
+            () => {
+              closed = true;
+            },
+          );
+        if (path === "attach registering after the end") {
+          // The attach is admitted, then held inside #holdForAgent while the end happens.
+          const gate = Promise.withResolvers<void>();
+          const hold = repository.attachBrowserSession.bind(repository);
+          const held = vi
+            .spyOn(repository, "attachBrowserSession")
+            .mockImplementation(async (...args) => {
+              await gate.promise;
+              return hold(...args);
+            });
+          const attaching = attach().then(
+            (attached) => ({ attached }),
+            (error: unknown) => ({ error }),
+          );
+          await vi.waitFor(() => expect(held).toHaveBeenCalled());
+          await endIt();
+          gate.resolve();
+          const outcome = await attaching;
+          held.mockRestore();
+          send("Page.afterTheEnd");
+          await arrived("Page.afterTheEnd");
+          // It registers after the end: it fails closed, and nothing reaches it.
+          expect("error" in outcome, `${path} / ${end}`).toBe(true);
+        } else {
+          const attached = await attach();
+          if (path === "live event") {
+            await endIt();
+            send("Page.afterTheEnd");
+            await arrived("Page.afterTheEnd");
+          } else {
+            const request = attached.request({
+              method: "Target.attachToTarget",
+              parameters: { targetId: "own-tab", flatten: true },
+            });
+            const forward = await runtime.nextCommand();
+            send("Target.detachedFromTarget", { sessionId: "cdp_own", targetId: "own-tab" });
+            // It has reached the Host (and the connection's buffer) before the end.
+            await arrived("Target.detachedFromTarget");
+            // A binding's end is recorded at once; its sessions detach after a store write, which
+            // is held here so the attach's reply lands in between (when the buffer is flushed).
+            const gate = Promise.withResolvers<void>();
+            const detach = repository.detachBrowserSessionAttachments.bind(repository);
+            const held = vi
+              .spyOn(repository, "detachBrowserSessionAttachments")
+              .mockImplementation(async (...args) => {
+                await gate.promise;
+                return detach(...args);
+              });
+            const ending = endIt();
+            runtime.sendServer({
+              type: "cdp.result",
+              requestId: forward.requestId,
+              result: { sessionId: "cdp_own" },
+            });
+            await request.catch(() => undefined);
+            gate.resolve();
+            await ending;
+            held.mockRestore();
+          }
+          attached.close();
+        }
+        observer.close();
+        // The same session, attached by one of your own agents' work, hears what was sent after.
+        expect(events, `${path} / ${end}`).not.toContain("Page.afterTheEnd");
+        expect(events, `${path} / ${end}`).not.toContain("Target.detachedFromTarget");
+        if (end === "connection ended" && path !== "attach registering after the end")
+          expect(closed, `${path} / ${end}`).toBe(true);
+      }
+  });
+
+  it("keeps a tab that went to an extension page untold past the hidden set's bound (P8)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("Hidden Bound Profile");
+    const { attached, events } = await attach();
+    let sequence = 1;
+    const send = (method: string, parameters: Record<string, unknown>) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters, sequence: sequence++ },
+      });
+    const request = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_own" },
+    });
+    await request;
+    const extension = (n: number) => `chrome-extension://${"a".repeat(32)}/p-${n}.html`;
+    send("Target.targetInfoChanged", {
+      targetInfo: { targetId: "own-tab", type: "page", url: extension(0) },
+    });
+    // 4,096 other targets go to extension pages too: the hidden set no longer holds own-tab.
+    for (let index = 1; index <= 4_096; index += 1)
+      send("Target.targetInfoChanged", {
+        targetInfo: { targetId: `other-${index}`, type: "page", url: extension(index) },
+      });
+    send("Target.targetDestroyed", { targetId: "own-tab" });
+    send("Page.marker", {});
+    await vi.waitFor(() => expect(events.at(-1)?.method).toBe("Page.marker"), { timeout: 10_000 });
+    expect(events.filter((e) => e.method === "Target.targetDestroyed")).toEqual([]);
+    attached.close();
+  });
+
+  it("keeps a subscriber's own child however many children a neighbour opens on the shared root (S2)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("S2 Profile");
+    const own = await attach();
+    const neighbour = await attach();
+    const attachPage = async (
+      attached: Awaited<ReturnType<typeof attach>>["attached"],
+      targetId: string,
+      sessionId: string,
+    ) => {
+      const request = attached.request({
+        method: "Target.attachToTarget",
+        parameters: { targetId, flatten: true },
+      });
+      const forward = await runtime.nextCommand();
+      runtime.sendServer({
+        type: "cdp.result",
+        requestId: forward.requestId,
+        result: { sessionId },
+      });
+      await expect(request).resolves.toEqual({ sessionId });
+    };
+    await attachPage(own.attached, "own-tab", "cdp_own");
+    await attachPage(neighbour.attached, "neighbour-tab", "cdp_neighbour");
+    let sequence = 1;
+    const childAttached = (envelope: string, sessionId: string, targetId: string) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: {
+          method: "Target.attachedToTarget",
+          sessionId: envelope,
+          parameters: {
+            sessionId,
+            targetInfo: { targetId, type: "iframe", url: "https://frame.test/" },
+            waitingForDebugger: false,
+          },
+          sequence: sequence++,
+        },
+      });
+    childAttached("cdp_own", "cdp_own_child", "own-frame");
+    for (let index = 0; index < 4_200; index += 1)
+      childAttached("cdp_neighbour", `cdp_neighbour_child_${index}`, `neighbour-frame-${index}`);
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        sessionId: "cdp_own",
+        parameters: { sessionId: "cdp_own_child", targetId: "own-frame" },
+        sequence: sequence++,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(own.events).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { sessionId: "cdp_own_child", targetId: "own-frame" },
+        }),
+      ),
+    );
+    own.attached.close();
+    neighbour.attached.close();
+  });
+
+  it("never deadlocks when attachCdpForAgent or agent start races #holdForAgent on the same profile (PH1)", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Shared Profile" });
+
+    let pauseNextAccess = false;
+    let enteredAccess = Promise.withResolvers<void>();
+    let releaseAccess = Promise.withResolvers<void>();
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      requireAgentAccess: async () => {
+        if (pauseNextAccess) {
+          pauseNextAccess = false;
+          enteredAccess.resolve();
+          await releaseAccess.promise;
+        }
+      },
+    });
+    const person = await service.start({ ownerId, profileId: profile.id });
+
+    // Sequence 1: attachCdpForAgent (Call A) pauses inside admission while openAgentSession (Call B)
+    // reaches #holdForAgent on the same profile P. Both must acquire profile lane before runner lane.
+    pauseNextAccess = true;
+    const callA = service.attachCdpForAgent(
+      { ownerId, sessionId: person.session.id, agentBindingId: "ph1-binding-a" },
+      () => undefined,
+    );
+    await withTimeout(enteredAccess.promise, 1000, {
+      timeoutError: () => new Error("Call A never reached admission"),
+    });
+    const callB = service.openAgentSession({
+      ownerId,
+      sessionId: person.session.id,
+      agentBindingId: "ph1-binding-b",
+    });
+    // Let Call B advance through its pre-hold checks and contend on the lanes.
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    releaseAccess.resolve();
+    const [attachmentA, sessionB] = await withTimeout(Promise.all([callA, callB]), 1500, {
+      timeoutError: () =>
+        new Error("PH1 deadlock: attachCdpForAgent and #holdForAgent inverted lanes"),
+    });
+    expect(sessionB.session.id).toBe(person.session.id);
+    attachmentA.close();
+
+    // Sequence 2: an agent browser start on profile P pauses inside admission while #holdForAgent
+    // runs for an existing session on profile P. Both must complete without deadlock.
+    enteredAccess = Promise.withResolvers<void>();
+    releaseAccess = Promise.withResolvers<void>();
+    pauseNextAccess = true;
+    const startingC = service.openAgentSession({
+      ownerId,
+      profileId: profile.id,
+      agentBindingId: "ph1-binding-c",
+    });
+    await withTimeout(enteredAccess.promise, 1000, {
+      timeoutError: () => new Error("Agent start never reached admission"),
+    });
+    const holdingD = service.openAgentSession({
+      ownerId,
+      sessionId: person.session.id,
+      agentBindingId: "ph1-binding-d",
+    });
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    releaseAccess.resolve();
+    const [resC, resD] = await withTimeout(
+      Promise.all([startingC.catch((e: unknown) => e), holdingD]),
+      1500,
+      {
+        timeoutError: () => new Error("PH1 deadlock: agent start and #holdForAgent inverted lanes"),
+      },
+    );
+    expect(resD.session.id).toBe(person.session.id);
+    expect(resC).toBeDefined();
+
+    // Dynamic lock-order check: acquiring a profile lane from inside withRunnerAdmission throws immediately.
+    const personRecord = (await repository.getBrowserSessionForOwner(person.session.id, ownerId))!;
+    await expect(
+      service.withRunnerAdmission(personRecord.runnerId, () =>
+        service.openAgentSession({
+          ownerId,
+          sessionId: person.session.id,
+          agentBindingId: "ph1-binding-nested",
+        }),
+      ),
+    ).rejects.toThrow("BrowserService lock-order violation");
+  });
+
+  it("refuses to treat an undefined or stateless onState result as confirmed ready (PH5)", async () => {
+    const sent: Array<{ type: string }> = [];
+    const socket = Object.assign(new EventEmitter(), {
+      readyState: 1,
+      send: (data: string, _options: unknown, callback: (error?: Error) => void) => {
+        sent.push(JSON.parse(data));
+        callback();
+      },
+      close: () => socket.emit("close", 1000, Buffer.from("closed")),
+    });
+    const sessionId = createBrowserSessionId();
+    let onStateCalled = 0;
+    const broker = new HostedBrowserBroker({
+      socket,
+      sessionId,
+      groupId: sessionId,
+      readSessionState: async () => ({ runs: 0, pinned: [] }),
+      personUse: { tabs: new Set(), persist: async () => undefined },
+      savedTabIds: [],
+      profileId: null,
+      surfaceState: 1,
+      sharedControl: true,
+      connectTimeoutMs: 1000,
+      passkeys: false,
+      onState: async () => {
+        onStateCalled++;
+        return {};
+      },
+      onTerminal: () => undefined,
+      onTabsChanged: () => undefined,
+      onRecordsChanged: () => undefined,
+      onPageChanged: () => undefined,
+    } as unknown as ConstructorParameters<typeof HostedBrowserBroker>[0]);
+    cleanups.push(async () => {
+      socket.emit("close", 1000, Buffer.from("closed"));
+    });
+    const emit = (message: unknown) =>
+      socket.emit("message", Buffer.from(JSON.stringify(message)), false);
+    const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
+    emit({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      dialog: null,
+      surfaceState: 1,
+      targetedStreamingVersion: 1,
+    });
+    const rows = new Map([
+      [
+        tabId,
+        BrowserTabRecordSchema.parse({
+          id: tabId,
+          order: 0,
+          title: "Tab",
+          url: "about:blank",
+          state: "live",
+          icon: null,
+          openerId: null,
+          documentId: "doc",
+          geometryRevision: 1,
+          loading: false,
+          navigationFailed: false,
+          canGoBack: false,
+          canGoForward: false,
+          sizedByAgent: false,
+        }),
+      ],
+    ]);
+    const publisher = new KeyedStreamPublisher({
+      ids: () => rows.keys(),
+      read: (id) => rows.get(BrowserSurfaceIdSchema.parse(id)),
+      meta: () => ({ activeId: tabId, inventoryRevision: 1 }),
+      targetBytes: 64 * 1024,
+      envelopeBytes: 256,
+    });
+    for (let stream = publisher.next(); stream; stream = publisher.next()) {
+      emit({ type: "browser.tabs", stream });
+      publisher.settled(stream, true);
+    }
+    let resolved = false;
+    void broker.ready().then(
+      () => {
+        resolved = true;
+      },
+      () => undefined,
+    );
+    await vi.waitFor(() => expect(onStateCalled).toBe(1), { timeout: 1000 });
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    expect(resolved).toBe(false);
+    expect(sent.filter((message) => message.type === "session.state")).toEqual([]);
+  });
+});
+
+describe("a pooled broker whose channel closes", () => {
+  it("is not live from the moment its channel closes, before it finishes", async () => {
+    // The pool's loss scan keeps a session lost only while its broker is not live: a dead
+    // broker still read live until it finished, so a scan in between opened the gate on a
+    // session with no channel, and a tab call there found no page (two-tests-that-race).
+    const socket = Object.assign(new EventEmitter(), {
+      readyState: 1,
+      send: (_data: string, _options: unknown, callback: (error?: Error) => void) => callback(),
+      close: () => socket.emit("close", 1000, Buffer.from("closed")),
+    });
+    const sessionId = createBrowserSessionId();
+    const liveAtLoss: boolean[] = [];
+    let broker!: HostedBrowserBroker;
+    broker = new HostedBrowserBroker({
+      socket,
+      sessionId,
+      groupId: sessionId,
+      adoptedFromPool: true,
+      poolAdmission: {
+        runnerId: RunnerIdSchema.parse(`rnr_${randomUUID()}`),
+        now: () => ({ release: () => undefined }),
+        wait: async () => ({ release: () => undefined }),
+        retiring: () => false,
+        refusesWrite: () => false,
+      },
+      onChannelLost: () => liveAtLoss.push(broker.live),
+      readSessionState: async () => ({ runs: 0, pinned: [] }),
+      personUse: { tabs: new Set(), persist: async () => undefined },
+      savedTabIds: [],
+      profileId: null,
+      surfaceState: 1,
+      sharedControl: true,
+      connectTimeoutMs: 1000,
+      passkeys: false,
+      onState: async (state: string) => ({ state }),
+      onTerminal: () => undefined,
+      onTabsChanged: () => undefined,
+      onRecordsChanged: () => undefined,
+      onPageChanged: () => undefined,
+    } as unknown as ConstructorParameters<typeof HostedBrowserBroker>[0]);
+    socket.emit(
+      "message",
+      Buffer.from(
+        JSON.stringify({
+          type: "browser.snapshot",
+          sessionId,
+          access: "read-write",
+          state: "ready",
+          dialog: null,
+          surfaceState: 1,
+          targetedStreamingVersion: 1,
+        }),
+      ),
+      false,
+    );
+    const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
+    const rows = new Map([
+      [
+        tabId,
+        BrowserTabRecordSchema.parse({
+          id: tabId,
+          order: 0,
+          title: "Tab",
+          url: "about:blank",
+          state: "live",
+          icon: null,
+          openerId: null,
+          documentId: "doc",
+          geometryRevision: 1,
+          loading: false,
+          navigationFailed: false,
+          canGoBack: false,
+          canGoForward: false,
+          sizedByAgent: false,
+        }),
+      ],
+    ]);
+    const publisher = new KeyedStreamPublisher({
+      ids: () => rows.keys(),
+      read: (id) => rows.get(BrowserSurfaceIdSchema.parse(id)),
+      meta: () => ({ activeId: tabId, inventoryRevision: 1 }),
+      targetBytes: 64 * 1024,
+      envelopeBytes: 256,
+    });
+    for (let stream = publisher.next(); stream; stream = publisher.next()) {
+      socket.emit("message", Buffer.from(JSON.stringify({ type: "browser.tabs", stream })), false);
+      publisher.settled(stream, true);
+    }
+    await broker.ready();
+    expect(broker.live).toBe(true);
+    socket.emit("close", 1011, Buffer.from("runner restarting"));
+    expect(broker.live).toBe(false);
+    await vi.waitFor(() => expect(liveAtLoss).toEqual([false]));
+  });
+});
+
+describe("pooled identity open authority precheck and outage refusal words (pool-wake review)", () => {
+  const makePooledSetup = async (options?: {
+    readonly gateOpen?: boolean;
+    readonly requireAgentAccess?: (runnerId: RunnerId) => Promise<void>;
+    readonly unavailableReason?: () => string | undefined;
+    readonly unanswered?: boolean;
+    readonly refused?: string;
+    readonly onReserve?: () => void;
+    readonly onEnsureRelay?: () => Promise<void>;
+  }) => {
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const withdrawn = await repository.createBrowserProfile({ ownerId, name: "Withdrawn" });
+    repository.granted = [kept.id];
+    const gate = new BrowserPoolGate();
+    if (options?.gateOpen) gate.set({ recovered: true, away: null });
+    else gate.set({ recovered: true, away: "parked" });
+    let reserveCalls = 0;
+    const realReserve = gate.reserve.bind(gate);
+    gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+      reserveCalls++;
+      options?.onReserve?.();
+      return realReserve(...args);
+    }) as typeof gate.reserve;
+    let ensureRelayCalls = 0;
+    const coordinator = {
+      runtimeId: "browser-main",
+      gate,
+      get unanswered() {
+        return options?.unanswered ?? false;
+      },
+      report: () =>
+        options?.refused
+          ? { phase: "failed" as const, since: new Date(), refused: options.refused }
+          : options?.unanswered
+            ? { phase: "waking" as const, since: new Date() }
+            : undefined,
+      setAdopter: () => undefined,
+      recover: async () => undefined,
+      retire: async () => undefined,
+      close: () => undefined,
+      ensureRelayAttached: async () => {
+        ensureRelayCalls++;
+        await options?.onEnsureRelay?.();
+      },
+    } as unknown as BrowserPoolCoordinator;
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+      personal: true,
+      pooledOnly: true,
+      requireAgentAccess: options?.requireAgentAccess ?? (async () => undefined),
+      targetResolver: {
+        resolve: () => undefined,
+        placements: () => [],
+      },
+      onSessionsChanged: () => undefined,
+      onError: () => undefined,
+    });
+    if (options?.unavailableReason) service.setPooledUnavailableReason(options.unavailableReason);
+    const originalList = repository.listEligibleBrowserRunners.bind(repository);
+    repository.listEligibleBrowserRunners = async () => [
+      ...(await originalList()),
+      {
+        id: runnerId,
+        kind: "main",
+        name: "Cloud Computer",
+        allowedModules: ["browser"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      },
+    ];
+    await service.adoptPool(runnerId, coordinator, {
+      label: "Cloud Computer",
+      environmentIds: [],
+    });
+    cleanups.push(() => service.close());
+    return {
+      ownerId,
+      runnerId,
+      repository,
+      kept,
+      withdrawn,
+      gate,
+      service,
+      getReserveCalls: () => reserveCalls,
+      getEnsureRelayCalls: () => ensureRelayCalls,
+    };
+  };
+
+  it("checks exact agent profile grant and device switch before taking any hold or dialing a running pool with detached relay", async () => {
+    let deviceBrowserAllowed = true;
+    const setup = await makePooledSetup({
+      gateOpen: true,
+      requireAgentAccess: async (id) => {
+        if (!deviceBrowserAllowed)
+          throw new DeviceAccessRefusal("device-access-off", DeviceIdSchema.parse(id), "browser");
+      },
+    });
+    const agent = {
+      ownerId: setup.ownerId,
+      agentBindingId: "session:selected",
+      threadId: createId("thread"),
+    };
+
+    // Narrowed grant before entry: profile outside grant gets not_found with 0 reservations and 0 relay dials.
+    await expect(
+      setup.service.openTab(
+        setup.ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `narrowed-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.withdrawn.id },
+          url: "https://example.test/denied",
+        },
+        agent,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(setup.getReserveCalls()).toBe(0);
+    expect(setup.getEnsureRelayCalls()).toBe(0);
+    expect(setup.gate.held).toBe(0);
+
+    // Narrowed grant AFTER entry check (while listing eligible runners), with gate admitting and
+    // relay detached: must still get not_found with 0 reservations and 0 relay dials, never an
+    // availability refusal.
+    const baseList = setup.repository.listEligibleBrowserRunners.bind(setup.repository);
+    let narrowOnNextList = true;
+    setup.repository.listEligibleBrowserRunners = async () => {
+      if (narrowOnNextList) {
+        narrowOnNextList = false;
+        setup.repository.granted = [];
+      }
+      return baseList();
+    };
+    await expect(
+      setup.service.openTab(
+        setup.ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `narrowed-mid-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/denied-mid",
+        },
+        agent,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(setup.getReserveCalls()).toBe(0);
+    expect(setup.getEnsureRelayCalls()).toBe(0);
+    expect(setup.gate.held).toBe(0);
+
+    // Device browser switch off: granted profile must get device-access-off with 0 reservations and 0 relay dials.
+    setup.repository.granted = [setup.kept.id];
+    deviceBrowserAllowed = false;
+    await expect(
+      setup.service.openTab(
+        setup.ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `device-off-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/device-off",
+        },
+        agent,
+      ),
+    ).rejects.toMatchObject({ code: "forbidden", reason: "device-access-off" });
+    expect(setup.getReserveCalls()).toBe(0);
+    expect(setup.getEnsureRelayCalls()).toBe(0);
+    expect(setup.gate.held).toBe(0);
+  });
+
+  it("runs the exact grant read last before reserving so narrowing during the device read takes zero reservations or dials", async () => {
+    let setup!: Awaited<ReturnType<typeof makePooledSetup>>;
+    setup = await makePooledSetup({
+      gateOpen: true,
+      requireAgentAccess: async () => {
+        // Narrow the grant while the device-access read is in flight.
+        setup.repository.granted = [];
+      },
+    });
+    const agent = {
+      ownerId: setup.ownerId,
+      agentBindingId: "session:selected",
+      threadId: createId("thread"),
+    };
+    await expect(
+      setup.service.openTab(
+        setup.ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `narrow-during-device-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/narrow-during-device",
+        },
+        agent,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(setup.getReserveCalls()).toBe(0);
+    expect(setup.getEnsureRelayCalls()).toBe(0);
+    expect(setup.gate.held).toBe(0);
+  });
+
+  it("refuses immediately instead of waiting on a pending pooled relay when Browser access is off before or during wait", async () => {
+    vi.useFakeTimers();
+    try {
+      let deviceBrowserAllowed = false;
+      let waitCalls = 0;
+      let waitEntered!: () => void;
+      const enteredWait = new Promise<void>((resolve) => {
+        waitEntered = resolve;
+      });
+      let waitSignalAborted = false;
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      repository.granted = [kept.id];
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null });
+      let reserveCalls = 0;
+      const realReserve = gate.reserve.bind(gate);
+      gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+        reserveCalls++;
+        return realReserve(...args);
+      }) as typeof gate.reserve;
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        report: () => undefined,
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        requireAgentAccess: async (id) => {
+          if (!deviceBrowserAllowed)
+            throw new DeviceAccessRefusal("device-access-off", DeviceIdSchema.parse(id), "browser");
+        },
+        targetResolver: {
+          resolve: () => undefined,
+          placements: () => [],
+          pendingAdmission: (id) => id === runnerId,
+          waitForTarget: (_id, signal) => {
+            waitCalls++;
+            waitEntered();
+            return new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  waitSignalAborted = true;
+                  reject(signal.reason);
+                },
+                { once: true },
+              );
+            });
+          },
+        },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+      const agent = {
+        ownerId,
+        agentBindingId: "session:selected",
+        threadId: createId("thread"),
+      };
+
+      // Switch off BEFORE pending-admission wait: immediate refusal, zero waitForTarget or reserve calls.
+      await expect(
+        service.openTab(
+          ownerId,
+          {
+            type: "browser.tab.open",
+            idempotencyKey: `pending-off-before-${randomUUID()}`,
+            identity: { kind: "profile", profileId: kept.id },
+            placement: { kind: "runner", runnerId },
+            url: "https://example.test/pending-off-before",
+          },
+          agent,
+        ),
+      ).rejects.toMatchObject({ code: "forbidden", reason: "device-access-off" });
+      expect(waitCalls).toBe(0);
+      expect(reserveCalls).toBe(0);
+
+      // Switch turned off DURING pending-admission wait: aborts waitForTarget and refuses immediately.
+      deviceBrowserAllowed = true;
+      const opening = service.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `pending-off-during-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          placement: { kind: "runner", runnerId },
+          url: "https://example.test/pending-off-during",
+        },
+        agent,
+      );
+      await withTimeout(enteredWait, 5_000, {
+        timeoutError: () => new Error("waitForTarget was not entered"),
+      });
+      deviceBrowserAllowed = false;
+      await service.withRunnerAdmission(runnerId, () => service.disableAgentAccess(runnerId));
+      await expect(opening).rejects.toMatchObject({
+        code: "forbidden",
+        reason: "device-access-off",
+      });
+      expect(waitCalls).toBe(1);
+      expect(waitSignalAborted).toBe(true);
+      expect(reserveCalls).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("carries the pool's unreachable reason (not generic timeout) when an ordinary 18s person open gets no answer, while keeping the placement offered", async () => {
+    vi.useFakeTimers();
+    try {
+      const setup = await makePooledSetup({
+        gateOpen: false,
+        unanswered: true,
+        unavailableReason: () =>
+          "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+      });
+      // Placement stays offered so asking is the retry.
+      expect(setup.service.resourcePlacements()).toMatchObject([
+        { runnerId: setup.runnerId, available: true },
+      ]);
+      const opening = setup.service.openTab(setup.ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `unreachable-18s-${randomUUID()}`,
+        identity: { kind: "profile", profileId: setup.kept.id },
+        url: "https://example.test/unreachable",
+      });
+      const settled = opening.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(18_000);
+      expect(await settled).toMatchObject({
+        error: {
+          code: "conflict",
+          reason: "browser-pool-unreachable",
+          message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+        },
+      });
+      // Placement still stays offered for a retry.
+      expect(setup.service.resourcePlacements()).toMatchObject([
+        { runnerId: setup.runnerId, available: true },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends a waiting person open at once with the pool's start-refusal reason when the controller answers no, and retries on the next open", async () => {
+    vi.useFakeTimers();
+    try {
+      let refused: string | undefined;
+      let demandCount = 0;
+      const setup = await makePooledSetup({
+        gateOpen: false,
+        unavailableReason: () =>
+          refused
+            ? "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept."
+            : "Setting up your browser… This can take a few minutes.",
+      });
+      // Wire the coordinator's refusal into the mock report() too.
+      const pool = setup.service.resourcePlacements();
+      expect(pool).toMatchObject([{ runnerId: setup.runnerId, available: true }]);
+      setup.gate.onChange = () => {
+        demandCount++;
+        if (demandCount === 1) {
+          refused = "egress-proxy-down";
+          setup.gate.noteAttemptRefused("egress-proxy-down", true);
+        } else {
+          refused = undefined;
+          setup.gate.set({ recovered: true, away: null });
+        }
+      };
+
+      // Ordinary person open (18s deadline): must end immediately on refusal without advancing timers.
+      const firstOpen = setup.service.openTab(setup.ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `refused-now-${randomUUID()}`,
+        identity: { kind: "profile", profileId: setup.kept.id },
+        url: "https://example.test/refused",
+      });
+      await expect(firstOpen).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-refused",
+        message:
+          "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+      });
+      // Placement stays offered so asking is the retry.
+      expect(setup.service.resourcePlacements()).toMatchObject([
+        { runnerId: setup.runnerId, available: true },
+      ]);
+      // Next open creates fresh demand, wakes the gate, and reaches target resolution (0 holds leaked).
+      await expect(
+        setup.service.openTab(setup.ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `retry-after-refusal-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/retry",
+        }),
+      ).rejects.toMatchObject({ reason: "browser-pool-disconnected" });
+      expect(demandCount).toBe(2);
+      expect(setup.gate.held).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases and re-waits in the identity-open loop when a running gate closes to reconnecting before a target is ready", async () => {
+    let transitionOnce = true;
+    let targetReady = false;
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null });
+    let reserveCalls = 0;
+    const realReserve = gate.reserve.bind(gate);
+    gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+      reserveCalls++;
+      return realReserve(...args);
+    }) as typeof gate.reserve;
+    const coordinator = {
+      runtimeId: "browser-main",
+      gate,
+      unanswered: false,
+      report: () => undefined,
+      identity: () => ({
+        runnerId,
+        runtimeId: "browser-main",
+        slotId: "bps_test",
+        term: 1,
+        instanceId: "guest-1",
+        epoch: 1,
+      }),
+      fence: () => ({ slot: "bps_test", term: 1, instance: "guest-1", epoch: 1 }),
+      setAdopter: () => undefined,
+      recover: async () => undefined,
+      retire: async () => undefined,
+      close: () => undefined,
+      ensureRelayAttached: async () => {
+        if (transitionOnce) {
+          transitionOnce = false;
+          // Simulates a running gate closing to reconnecting as pendingChannelLoss lands.
+          gate.set({ recovered: true, away: "reconnecting" });
+          setTimeout(() => {
+            targetReady = true;
+            gate.set({ recovered: true, away: null });
+          }, 10);
+        }
+      },
+    } as unknown as BrowserPoolCoordinator;
+    const bindSpy = vi.spyOn(repository, "bindBrowserTabOpen");
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+      personal: true,
+      pooledOnly: true,
+      onSessionsChanged: () => undefined,
+      onError: () => undefined,
+      targetResolver: {
+        resolve: () =>
+          targetReady
+            ? ({
+                runnerId,
+                runtimeId: "browser-main",
+                openSocket: async () => {
+                  throw new OpensteerError({ code: "conflict", message: "reached-connect" });
+                },
+              } as unknown as import("./browser-service.js").BrowserRuntimeTarget)
+            : undefined,
+        placements: () => [],
+      },
+    });
+    const originalList = repository.listEligibleBrowserRunners.bind(repository);
+    repository.listEligibleBrowserRunners = async () => [
+      ...(await originalList()),
+      {
+        id: runnerId,
+        kind: "main",
+        name: "Cloud Computer",
+        allowedModules: ["browser"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      },
+    ];
+    await service.adoptPool(runnerId, coordinator, { label: "Cloud Computer", environmentIds: [] });
+    cleanups.push(() => service.close());
+
+    // The open enters with gate open (reserve #1), transitions to reconnecting, releases & continues,
+    // waits for reconnect (reserve #2), and enters session start with zero leaked holds afterwards.
+    await expect(
+      service.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `reconnect-continue-${randomUUID()}`,
+        identity: { kind: "profile", profileId: kept.id },
+        url: "https://example.test/reconnected",
+      }),
+    ).rejects.toMatchObject({ reason: "browser-tab-open-failed" });
+    expect(bindSpy).toHaveBeenCalledTimes(1);
+    expect(reserveCalls).toBe(2);
+    expect(gate.held).toBe(0);
+  });
+
+  it("cancels an agent's post-reservation pending-relay wait and releases its gate hold when Browser access is turned off", async () => {
+    vi.useFakeTimers();
+    try {
+      let deviceBrowserAllowed = true;
+      let pending = false;
+      let waitEntered!: () => void;
+      const enteredWait = new Promise<void>((resolve) => {
+        waitEntered = resolve;
+      });
+      let waitSignalAborted = false;
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      repository.granted = [kept.id];
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null });
+      const realReserve = gate.reserve.bind(gate);
+      gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+        // Relay becomes pending right after reservation is granted (after initial selection check).
+        pending = true;
+        return realReserve(...args);
+      }) as typeof gate.reserve;
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        report: () => undefined,
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        requireAgentAccess: async (id) => {
+          if (!deviceBrowserAllowed)
+            throw new DeviceAccessRefusal("device-access-off", DeviceIdSchema.parse(id), "browser");
+        },
+        targetResolver: {
+          resolve: () => undefined,
+          placements: () => [],
+          pendingAdmission: (id) => pending && id === runnerId,
+          waitForTarget: (_id, signal) => {
+            waitEntered();
+            return new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  waitSignalAborted = true;
+                  reject(signal.reason);
+                },
+                { once: true },
+              );
+            });
+          },
+        },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+      const agent = {
+        ownerId,
+        agentBindingId: "session:selected",
+        threadId: createId("thread"),
+      };
+
+      const opening = service.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `post-reserve-off-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          placement: { kind: "runner", runnerId },
+          url: "https://example.test/post-reserve-off",
+        },
+        agent,
+      );
+      await withTimeout(enteredWait, 5_000, {
+        timeoutError: () => new Error("post-reservation waitForTarget was not entered"),
+      });
+      expect(gate.held).toBe(1);
+      deviceBrowserAllowed = false;
+      await service.withRunnerAdmission(runnerId, () => service.disableAgentAccess(runnerId));
+      await expect(opening).rejects.toMatchObject({
+        code: "forbidden",
+        reason: "device-access-off",
+      });
+      expect(waitSignalAborted).toBe(true);
+      expect(gate.held).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("runs the exact grant read last before reserving on existing-page bind and restore so narrowing during device or ownership reads takes zero reservations", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    repository.granted = [kept.id];
+    const memory = memoryTabs();
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null });
+    let reserveCalls = 0;
+    const realReserve = gate.reserve.bind(gate);
+    gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+      reserveCalls++;
+      return realReserve(...args);
+    }) as typeof gate.reserve;
+    const coordinator = {
+      runtimeId: "browser-main",
+      gate,
+      unanswered: false,
+      report: () => undefined,
+      setAdopter: () => undefined,
+      recover: async () => undefined,
+      retire: async () => undefined,
+      close: () => undefined,
+      ensureRelayAttached: async () => undefined,
+    } as unknown as BrowserPoolCoordinator;
+    let narrowOnDeviceRead = false;
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      tabs: memory.store,
+      tabPlaces: { write: async () => false, notice: () => {} },
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+      personal: true,
+      pooledOnly: true,
+      requireAgentAccess: async () => {
+        if (narrowOnDeviceRead) {
+          narrowOnDeviceRead = false;
+          repository.granted = [];
+        }
+      },
+      targetResolver: {
+        resolve: () => undefined,
+        placements: () => [],
+      },
+      onSessionsChanged: () => undefined,
+      onError: () => undefined,
+    });
+    const originalList = repository.listEligibleBrowserRunners.bind(repository);
+    repository.listEligibleBrowserRunners = async () => [
+      ...(await originalList()),
+      {
+        id: runnerId,
+        kind: "main",
+        name: "Cloud Computer",
+        allowedModules: ["browser"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      },
+    ];
+    await service.adoptPool(runnerId, coordinator, { label: "Cloud Computer", environmentIds: [] });
+    cleanups.push(() => service.close());
+
+    // 1) Existing-page bind: narrowing grant during the device-access read before reservation takes 0 holds.
+    const existingSession = await repository.createBrowserSession({
+      id: createBrowserSessionId(),
+      placementKey: `runner:${runnerId}`,
+      runnerId,
+      runtimeId: "browser-main",
+      profileId: kept.id,
+      origin: "person",
+      opener: { kind: "person", userId: ownerId },
+    });
+    const surfaceId = createId("tab");
+    const existingRow = {
+      id: surfaceId,
+      ownerId,
+      kind: "page" as const,
+      generation: 1,
+      computerId: runnerId,
+      profileId: kept.id,
+      url: "https://example.test/existing",
+      title: "Existing",
+      state: "open" as const,
+      pageBinding: {
+        sessionId: existingSession.id,
+        surfaceId,
+        lineageId: existingSession.id,
+      },
+    };
+    memory.rows.set(surfaceId, existingRow as never);
+    narrowOnDeviceRead = true;
+    await expect(
+      service.pageTabs.bindBrowserScript!(
+        {
+          authority: { ownerId, agentBindingId: "session:selected" },
+          threadId: createId("thread"),
+        } as never,
+        existingRow as never,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(reserveCalls).toBe(0);
+    expect(gate.held).toBe(0);
+
+    // 2) Restore path (ended session -> #restoreWorkspacePage -> #admitStart): narrowing during device read takes 0 holds.
+    repository.granted = [kept.id];
+    await repository.transitionBrowserSession({
+      sessionId: existingSession.id,
+      from: ["starting", "ready"],
+      state: "closed",
+    });
+    narrowOnDeviceRead = true;
+    await expect(
+      service.pageTabs.bindBrowserScript!(
+        {
+          authority: { ownerId, agentBindingId: "session:selected" },
+          threadId: createId("thread"),
+        } as never,
+        existingRow as never,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(reserveCalls).toBe(0);
+    expect(gate.held).toBe(0);
+  });
+
+  it("omits the tabs-and-sign-ins-kept promise when a refusal did not prove saved state was kept", async () => {
+    vi.useFakeTimers();
+    try {
+      const setup = await makePooledSetup({ gateOpen: false });
+      setup.gate.onChange = () => {
+        setup.gate.noteAttemptRefused("resume-refused", false);
+      };
+      await expect(
+        setup.service.openTab(setup.ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `refused-no-saved-state-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/refused-fresh",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-start-refused",
+        message: "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports unreachable instead of a stale refusal when a new open times out while retrying a refused wake", async () => {
+    vi.useFakeTimers();
+    try {
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: "parked" });
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        retryingRefused: true,
+        report: () => ({
+          phase: "failed" as const,
+          since: new Date(),
+          refused: "egress-required",
+          savedStateKept: true,
+        }),
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        targetResolver: { resolve: () => undefined, placements: () => [] },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+
+      const opening = service.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `retry-timeout-${randomUUID()}`,
+        identity: { kind: "profile", profileId: kept.id },
+        url: "https://example.test/retry-timeout",
+      });
+      const settled = opening.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(18_000);
+      expect(await settled).toMatchObject({
+        error: {
+          code: "conflict",
+          reason: "browser-pool-unreachable",
+          message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["fenced", "slot-deleted"] as const)(
+    "reports a definitively ended (%s) pool target as setting up instead of an outage",
+    async (overReason) => {
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null, hold: "over" });
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        over: overReason,
+        report: () => ({
+          phase: "failed" as const,
+          since: new Date(),
+          refused: overReason,
+          savedStateKept: false,
+        }),
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        targetResolver: { resolve: () => undefined, placements: () => [] },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+
+      // Both default-placement open and explicit-placement open report setting up, not an outage.
+      await expect(
+        service.openTab(ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `over-${overReason}-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          url: "https://example.test/over",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-setting-up",
+        message: "Setting up your browser… This can take a few minutes.",
+      });
+      await expect(
+        service.openTab(ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `over-explicit-${overReason}-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          placement: { kind: "runner", runnerId },
+          url: "https://example.test/over-explicit",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-setting-up",
+        message: "Setting up your browser… This can take a few minutes.",
+      });
+    },
+  );
+
+  it("answers with the refusal words at once when selecting a sleeping tab or restoring an ended tab", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const repository = new SelectedGrantRepository(ownerId);
+    const memory = memoryTabs();
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Default" });
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: "parked", hold: null });
+    let lastRefusal:
+      | { readonly refused: string; readonly savedStateKept: boolean; readonly since: Date }
+      | undefined;
+    const coordinator = {
+      runtimeId: "browser-main",
+      gate,
+      unanswered: false,
+      over: undefined,
+      report: () => (lastRefusal ? { phase: "failed" as const, ...lastRefusal } : undefined),
+      setAdopter: () => undefined,
+      recover: async () => undefined,
+      retire: async () => undefined,
+      close: () => undefined,
+      ensureRelayAttached: async () => undefined,
+    } as unknown as BrowserPoolCoordinator;
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      tabs: memory.store,
+      tabPlaces: { write: async () => false, notice: () => {} },
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+      personal: true,
+      pooledOnly: true,
+      targetResolver: { resolve: () => undefined, placements: () => [] },
+      onSessionsChanged: () => undefined,
+      onError: () => undefined,
+    });
+    const originalList = repository.listEligibleBrowserRunners.bind(repository);
+    repository.listEligibleBrowserRunners = async () => [
+      ...(await originalList()),
+      {
+        id: runnerId,
+        kind: "main",
+        name: "Cloud Computer",
+        allowedModules: ["browser"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      },
+    ];
+    await service.adoptPool(runnerId, coordinator, {
+      label: "Cloud Computer",
+      environmentIds: [],
+    });
+    cleanups.push(() => service.close());
+
+    const liveSessionId = createBrowserSessionId();
+    await repository.createBrowserSession({
+      id: liveSessionId,
+      opener: { kind: "person", userId: ownerId },
+      placementKey: `runner:${runnerId}`,
+      runnerId,
+      origin: "person",
+      profileId: profile.id,
+      runtimeId: "browser-main",
+    });
+    await repository.transitionBrowserSession({ sessionId: liveSessionId, state: "ready" });
+
+    const liveTabId = BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`);
+    const liveRow = {
+      id: liveTabId,
+      ownerId,
+      kind: "page",
+      generation: 1,
+      computerId: runnerId,
+      profileId: profile.id,
+      title: "Sleeping",
+      url: "https://example.test/sleeping",
+      pageBinding: { sessionId: liveSessionId, surfaceId: liveTabId },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      closedAt: null,
+    } as unknown as TabRecord;
+    memory.rows.set(liveTabId, liveRow);
+
+    // 1. Selecting an existing sleeping tab refuses at once with savedStateKept wording.
+    const startedActivate = Date.now();
+    const activating = service.pageTabs.activate(ownerId, liveRow, "activate-refused");
+    await vi.waitFor(() => expect(gate.demand).toBe(true));
+    lastRefusal = {
+      refused: "profile-disk-missing",
+      savedStateKept: true,
+      since: new Date(),
+    };
+    gate.noteAttemptRefused("profile-disk-missing", true);
+    await expect(activating).rejects.toMatchObject({
+      reason: "browser-pool-refused",
+      message:
+        "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+    });
+    expect(Date.now() - startedActivate).toBeLessThan(2_000);
+
+    // 2. Restoring a tab whose session ended refuses at once without promising saved state kept.
+    const endedTabId = BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`);
+    const endedRow = {
+      ...liveRow,
+      id: endedTabId,
+      profileId: null,
+      pageBinding: { sessionId: createBrowserSessionId(), surfaceId: endedTabId },
+    } as unknown as TabRecord;
+    memory.rows.set(endedTabId, endedRow);
+    const startedRestore = Date.now();
+    const restoring = service.pageTabs.activate(ownerId, endedRow, "restore-refused");
+    void restoring.catch(() => undefined);
+    await vi.waitFor(() => expect(gate.demand).toBe(true));
+    lastRefusal = {
+      refused: "resume-failed",
+      savedStateKept: false,
+      since: new Date(),
+    };
+    gate.noteAttemptRefused("resume-failed", false);
+    await expect(restoring).rejects.toMatchObject({
+      reason: "browser-pool-start-refused",
+      message: "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+    });
+    expect(Date.now() - startedRestore).toBeLessThan(2_000);
+  });
+});

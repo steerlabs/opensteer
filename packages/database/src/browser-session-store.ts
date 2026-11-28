@@ -1,3 +1,11 @@
+import { outsideName } from "@opensteer/shared/outsideName";
+import { requireNoBrowserStandardCdpLease } from "./browser-standard-cdp-lease.js";
+import {
+  BrowserPoolAdmissionClosed,
+  bindBrowserPoolSession,
+  requireBrowserPoolAdmission,
+  type BrowserPoolTargetIdentity,
+} from "./browser-pool-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { itemView } from "./personal-sync-store.js";
@@ -8,13 +16,17 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
+import { removeProfileTabs } from "./tab-store.js";
 import { eventDataSchemas, type EventData } from "@opensteer/core";
 import { storableText } from "./storable-json.js";
 import {
+  AgentSessionIdSchema,
   type BrowserProfileId,
   BrowserProfileIdSchema,
+  type TabId,
   type ContentPart,
   OpensteerError,
+  raisedBeforeEffect,
   type RunId,
   RunIdSchema,
   type RunnerId,
@@ -42,7 +54,7 @@ import {
   browserUsageTabsPerRun,
 } from "@opensteer/protocol";
 import { type ExpressionBuilder, type Kysely, type Transaction, sql } from "kysely";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { lockBrowserHistory } from "./browser-history-store.js";
 import {
@@ -69,6 +81,8 @@ export interface BrowserProfileRecord {
   readonly id: BrowserProfileId;
   readonly name: string;
   readonly ownerId: UserId;
+  /** `engine-sign-in`: where an AI engine signs in; no connected agent's grant may name it. */
+  readonly purpose?: "person" | "engine-sign-in";
 }
 
 export interface BrowserSessionRecord {
@@ -82,6 +96,8 @@ export interface BrowserSessionRecord {
   readonly profileId: BrowserProfileId | null;
   readonly runtimeId: string;
   readonly state: HostedBrowserSessionState;
+  /** W15: Stop never got its replaced browser's word; kept closing honestly (Rule 4). */
+  readonly closeUnconfirmed?: true;
   readonly updatedAt: Date;
 }
 
@@ -122,6 +138,7 @@ export async function insertBrowserProfileOnLockedHome(
     readonly name: string;
     readonly ownerId: UserId;
     readonly homeRunnerId: RunnerId | null;
+    readonly purpose?: "person" | "engine-sign-in";
   },
 ): Promise<BrowserProfileRecord> {
   await assertPersonalOwner(transaction, input.ownerId);
@@ -158,11 +175,12 @@ export async function insertBrowserProfileOnLockedHome(
       .values({
         archivedAt: null,
         id: createId("browserProfile"),
-        name: input.name,
+        name: outsideName(input.name, 120) || "Browser profile",
         ownerId: input.ownerId,
         homeRunnerId: input.homeRunnerId,
+        purpose: input.purpose ?? "person",
       })
-      .returning(["id", "name", "ownerId", "homeRunnerId"])
+      .returning(["id", "name", "ownerId", "homeRunnerId", "purpose"])
       .executeTakeFirstOrThrow(databaseOperationOptions());
   });
 }
@@ -170,12 +188,37 @@ export async function insertBrowserProfileOnLockedHome(
 export async function createBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: {
+    /** An agent's: admitted again here, and recorded as its command, in this transaction. */
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly idempotencyKey: string;
     readonly homeRunnerId?: RunnerId | null;
     readonly name: string;
     readonly ownerId: UserId;
+    readonly purpose?: "person" | "engine-sign-in";
   },
 ): Promise<BrowserProfileRecord> {
+  const { administration } = input;
+  if (administration)
+    return commitPersonalMutation(database, async (transaction) => {
+      try {
+        return await administrationCommand(transaction, administration, async () => {
+          const homeRunnerId =
+            input.homeRunnerId === null
+              ? null
+              : await lockBrowserHomeRunner(transaction, input.ownerId, input.homeRunnerId);
+          return insertBrowserProfileOnLockedHome(transaction, {
+            name: input.name,
+            ownerId: input.ownerId,
+            homeRunnerId,
+            ...(input.purpose ? { purpose: input.purpose } : {}),
+          });
+        });
+      } catch (error) {
+        // Raised inside the transaction, before it commits (an agent no longer admitted, a full
+        // Home): it rolls back, and the Runners are told only after a commit. Nothing happened.
+        throw error instanceof Error ? raisedBeforeEffect(error) : error;
+      }
+    });
   return commitPersonalMutation(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.ownerId, input.idempotencyKey);
     const command = await findCommandByIdempotency(
@@ -199,7 +242,7 @@ export async function createBrowserProfile(
         throw idempotencyConflict(input.idempotencyKey);
       const profile = await transaction
         .selectFrom("browserProfiles")
-        .select(["id", "name", "ownerId", "homeRunnerId"])
+        .select(["id", "name", "ownerId", "homeRunnerId", "purpose"])
         .where("id", "=", recorded.data.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
@@ -252,7 +295,7 @@ export async function getBrowserProfile(
   await assertPersonalOwner(database, ownerId);
   const row = await database
     .selectFrom("browserProfiles")
-    .select(["id", "name", "ownerId", "homeRunnerId"])
+    .select(["id", "name", "ownerId", "homeRunnerId", "purpose"])
     .where("id", "=", profileId)
     .where("ownerId", "=", ownerId)
     .where("archivedAt", "is", null)
@@ -267,7 +310,7 @@ export async function listBrowserProfiles(
   await assertPersonalOwner(database, ownerId);
   return database
     .selectFrom("browserProfiles")
-    .select(["id", "name", "ownerId", "homeRunnerId"])
+    .select(["id", "name", "ownerId", "homeRunnerId", "purpose"])
     .where("ownerId", "=", ownerId)
     .where("archivedAt", "is", null)
     .orderBy("createdAt", "asc")
@@ -290,11 +333,11 @@ export async function renameBrowserProfile(
       await assertPersonalOwner(transaction, input.ownerId);
       const row = await transaction
         .updateTable("browserProfiles")
-        .set({ name: input.name, updatedAt: new Date() })
+        .set({ name: outsideName(input.name, 120) || "Browser profile", updatedAt: new Date() })
         .where("id", "=", input.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
-        .returning(["id", "name", "ownerId", "homeRunnerId"])
+        .returning(["id", "name", "ownerId", "homeRunnerId", "purpose"])
         .executeTakeFirst(databaseOperationOptions());
       if (!row)
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
@@ -322,6 +365,47 @@ export async function deleteBrowserProfile(
   });
 }
 
+/**
+ * Marks live pooled sessions of `profileId` as `closing` inside the profile-deletion
+ * transaction so Stop intent cannot be lost across a crash before Stop runs (never `closed`
+ * without evidence, rule 3). Locks `browser_sessions` (rank 123) before `tab_layouts` (125)
+ * and `browser_profiles` (159).
+ */
+export async function markPooledProfileSessionsClosing(
+  transaction: Transaction<DatabaseSchema>,
+  profileId: BrowserProfileId,
+): Promise<void> {
+  const candidates = await transaction
+    .selectFrom("browserSessions")
+    .select("id")
+    .where("profileId", "=", profileId)
+    .where("state", "in", ["starting", "ready"])
+    .where(
+      sql<boolean>`(
+        exists (
+          select 1 from browser_pool_sessions own where own.session_id = browser_sessions.id
+        ) or exists (
+          select 1 from browser_pool_slots slot where slot.runner_id = browser_sessions.runner_id
+        )
+      )`,
+    )
+    .orderBy("id", "asc")
+    .forNoKeyUpdate()
+    .execute(databaseOperationOptions());
+  if (!candidates.length) return;
+  const now = new Date();
+  await transaction
+    .updateTable("browserSessions")
+    .set({ state: "closing", updatedAt: now })
+    .where(
+      "id",
+      "in",
+      candidates.map(({ id }) => id),
+    )
+    .where("state", "in", ["starting", "ready"])
+    .execute(databaseOperationOptions());
+}
+
 export async function deleteBrowserProfileInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -329,6 +413,10 @@ export async function deleteBrowserProfileInTransaction(
     readonly profileId: BrowserProfileId;
     readonly deletionId?: string;
     readonly binding?: LocalProfileBinding;
+    /** Pre-retired tab IDs when the caller already ran `removeProfileTabs` earlier in this transaction. */
+    readonly retiredTabIds?: readonly TabId[];
+    /** True when the caller already ran `markPooledProfileSessionsClosing` earlier in this transaction. */
+    readonly pooledSessionsMarkedClosing?: boolean;
   },
 ): Promise<NativeProfileDeletionResult> {
   await assertPersonalOwner(transaction, input.ownerId);
@@ -345,6 +433,33 @@ export async function deleteBrowserProfileInTransaction(
   if (!owned) {
     throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
   }
+  // Persist Stop intent for pooled sessions before locking tab_layouts (125) and browser_profiles
+  // (159): lock order is browser_sessions (123) -> tab_layouts (125) -> personal_tabs (126) ->
+  // browser_profiles (159). Rows stay `closing` until the pool confirms their end with evidence.
+  if (!input.pooledSessionsMarkedClosing)
+    await markPooledProfileSessionsClosing(transaction, input.profileId);
+  const live = await transaction
+    .selectFrom("browserSessions")
+    .select([
+      "createdAt",
+      "runnerId",
+      "id",
+      "origin",
+      "opener",
+      "placementKey",
+      "profileId",
+      "runtimeId",
+      "state",
+      "updatedAt",
+    ])
+    .where("profileId", "=", input.profileId)
+    .where("state", "not in", ["closed", "failed"])
+    .orderBy("id")
+    .execute(databaseOperationOptions());
+  // Retire the profile's tabs and emptied groups before locking browser_profiles (lock order:
+  // tab_layouts 124 -> personal_tabs 125 -> browser_profiles 158).
+  const retiredTabIds =
+    input.retiredTabIds ?? (await removeProfileTabs(transaction, input.ownerId, input.profileId));
   const now = new Date();
   await transaction
     .updateTable("browserProfiles")
@@ -364,13 +479,6 @@ export async function deleteBrowserProfileInTransaction(
     .deleteFrom("browserHistoryIcons")
     .where("profileId", "=", input.profileId)
     .execute(databaseOperationOptions());
-  const live = await transaction
-    .selectFrom("browserSessions")
-    .select("id")
-    .where("profileId", "=", input.profileId)
-    .where("state", "not in", ["closed", "failed"])
-    .orderBy("id")
-    .execute(databaseOperationOptions());
   const storage = profileStorage(owned);
   const binding = input.binding ?? (storage.kind === "unbound" ? undefined : storage.binding);
   const deletion = binding
@@ -384,7 +492,12 @@ export async function deleteBrowserProfileInTransaction(
       mutation.bumpResource("browser-placement");
       mutation.bumpResource("browser-availability");
     }
-    return { sessionIds: live.map((session) => session.id), ...(deletion ? { deletion } : {}) };
+    return {
+      sessionIds: live.map((session) => session.id),
+      sessions: live,
+      retiredTabIds,
+      ...(deletion ? { deletion } : {}),
+    };
   });
 }
 
@@ -400,12 +513,27 @@ export async function createBrowserSession(
     readonly origin: "agent" | "trigger" | "person";
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
+    readonly pooled?: true;
+    /** The Home is a pooled computer's (W11): an unpooled create is refused on its runner. */
+    readonly onPooledComputer?: true;
+    /** The runner served by this Home's pool (W11): an unpooled create on it is refused before any SQL. */
+    readonly pooledRunner?: RunnerId;
   },
 ): Promise<BrowserSessionRecord> {
+  if (!input.pooled && input.pooledRunner !== undefined && input.pooledRunner === input.runnerId) {
+    throw new BrowserPoolAdmissionClosed("The pooled browser is between states. Try again.");
+  }
   const profileId = input.profileId;
   return commitPersonalMutation(database, async (transaction, mutation) => {
+    const pool = input.pooled
+      ? await requireBrowserPoolAdmission(transaction, input.runnerId)
+      : undefined;
+
     await assertPersonalOwner(transaction, input.ownerId);
-    if (profileId !== null) await lockBrowserProfile(transaction, profileId);
+    if (profileId !== null) {
+      await lockBrowserProfile(transaction, profileId);
+      await requireNoBrowserStandardCdpLease(transaction, profileId);
+    }
     const runner = await transaction
       .selectFrom("runners")
       .select(["revokedAt", "ownerKind", "ownerUserId", "kind"])
@@ -455,7 +583,31 @@ export async function createBrowserSession(
       }
     }
     mutation.bumpResource("browser-placement");
-    return transaction
+    if (!pool && input.onPooledComputer) {
+      // On a pooled computer a session is created bound or not at all (W11): the statement that
+      // writes an unpooled row is the one that refuses it on a runner the pool knows (its slot,
+      // or any session bound to it). A Home that is not pooled writes as it always did.
+      const inserted = await sql<BrowserSessionRecord>`
+        insert into browser_sessions (
+          tab_group_id, closed_at, runner_id, id, origin, opener, placement_key, profile_id,
+          runtime_id, state
+        )
+        select ${input.tabGroupId ?? input.id}, null, ${input.runnerId}, ${input.id},
+          ${input.origin}, ${input.opener ? JSON.stringify(input.opener) : null}::jsonb,
+          ${input.placementKey}, ${input.profileId}, ${input.runtimeId}, 'starting'
+        where not exists (select 1 from browser_pool_slots where runner_id = ${input.runnerId})
+          and not exists (
+            select 1 from browser_pool_sessions where runner_id = ${input.runnerId}
+          )
+        returning created_at, runner_id, id, origin, opener, placement_key, profile_id,
+          runtime_id, state, updated_at
+      `.execute(transaction);
+      const row = inserted.rows[0];
+      if (!row)
+        throw new BrowserPoolAdmissionClosed("The pooled browser is between states. Try again.");
+      return row;
+    }
+    const created = await transaction
       .insertInto("browserSessions")
       .values({
         tabGroupId: input.tabGroupId ?? input.id,
@@ -482,6 +634,15 @@ export async function createBrowserSession(
         "updatedAt",
       ])
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    // A pooled session belongs to the target it was admitted under (W1), from its first write.
+    if (pool)
+      await bindBrowserPoolSession(transaction, {
+        sessionId: input.id,
+        runnerId: input.runnerId,
+        slotId: pool.slotId,
+        term: pool.term,
+      });
+    return created;
   });
 }
 
@@ -571,7 +732,11 @@ export async function readBrowserSessionCut(
             .where("ownerId", "=", ownerId)
             .where("kind", "=", "page")
             .where("closedAt", "is not", null)
-            .where(sql<string>`page_binding->>'sessionId'`, "=", sessionId)
+            // A close lets go of the page (its binding is cleared in the close's commit): a
+            // closed row among this session's surfaces is that tab's, whatever binding it kept.
+            .where(
+              sql<boolean>`(page_binding is null or page_binding->>'sessionId' = ${sessionId})`,
+            )
             .execute(databaseOperationOptions())
         : [],
       transaction
@@ -798,6 +963,18 @@ export async function listActiveBrowserSessionsForAgentBinding(
     .execute(databaseOperationOptions());
 }
 
+export async function listBrowserSessionAttachmentBindings(
+  database: Kysely<DatabaseSchema>,
+  sessionId: BrowserSessionId,
+): Promise<readonly string[]> {
+  const rows = await database
+    .selectFrom("browserSessionAttachments")
+    .select("agentBindingId")
+    .where("sessionId", "=", sessionId)
+    .execute(databaseOperationOptions());
+  return rows.map(({ agentBindingId }) => agentBindingId);
+}
+
 export async function listAttachedRunIdsForBrowserSessions(
   database: Kysely<DatabaseSchema>,
   sessionIds: readonly BrowserSessionId[],
@@ -936,9 +1113,24 @@ export async function attachBrowserSession(
     readonly agentBindingId: string;
     readonly ownerId: UserId;
     readonly sessionId: BrowserSessionId;
+    readonly pool?: BrowserPoolTargetIdentity;
   },
 ): Promise<boolean> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
+    if (input.pool) await requireBrowserPoolAdmission(transaction, input.pool.runnerId, input.pool);
+    const session = await getBrowserSessionForOwner(transaction, input.sessionId, input.ownerId);
+    if (
+      input.pool &&
+      (session?.state !== "ready" ||
+        session.runnerId !== input.pool.runnerId ||
+        session.runtimeId !== input.pool.runtimeId)
+    )
+      throw new BrowserPoolAdmissionClosed();
+    if (!session) return false;
+    if (session?.profileId) {
+      await lockBrowserProfile(transaction, session.profileId);
+      await requireNoBrowserStandardCdpLease(transaction, session.profileId, input.agentBindingId);
+    }
     if (input.agentBindingId.startsWith("run:")) {
       const runId = bindingRunId(input.agentBindingId);
       const run = runId
@@ -1217,7 +1409,7 @@ async function upsertBrowserSessionUseRow(
   id: string,
   input: BrowserSessionUseWrite,
 ): Promise<boolean> {
-  const pageTitle = input.page ? input.page.title.slice(0, 256) : null;
+  const pageTitle = input.page ? outsideName(input.page.title, 256) : null;
   const pageSite = input.page ? input.page.site.slice(0, 2048) : null;
   const row = await database
     .insertInto("browserSessionUses")
@@ -1313,7 +1505,7 @@ export async function recordIncludedBrowserPages(
   const pages = input.content.flatMap((part) => (part.type === "browser-page" ? [part] : []));
   if (pages.length === 0) return [];
   const threadId = await personBrowserThread(transaction, input);
-  if (!threadId) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+  if (!threadId) throw new OpensteerError({ code: "not_found", message: "Task not found" });
   for (const page of pages) {
     if (await getBrowserSessionForOwner(transaction, page.sessionId, input.ownerId)) continue;
     throw new OpensteerError({
@@ -1458,10 +1650,35 @@ export async function getBrowserSessionForOwner(
 export async function listBrowserSessions(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
+  options?: { readonly pooled?: boolean },
 ): Promise<readonly BrowserSessionRecord[]> {
-  return database
+  if (!options?.pooled) {
+    return database
+      .selectFrom("browserSessions")
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.createdAt",
+        "browserSessions.runnerId",
+        "browserSessions.id",
+        "browserSessions.origin",
+        "browserSessions.opener",
+        "browserSessions.placementKey",
+        "browserSessions.profileId",
+        "browserSessions.runtimeId",
+        "browserSessions.state",
+        "browserSessions.updatedAt",
+      ])
+      .where((expression) => ownedBrowserSession(expression, ownerId))
+      .orderBy(
+        sql<number>`case when ${sql.ref("browserSessions.state")} in ('starting', 'ready', 'closing') then 0 else 1 end`,
+      )
+      .orderBy("browserSessions.createdAt", "desc")
+      .execute(databaseOperationOptions());
+  }
+  const rows = await database
     .selectFrom("browserSessions")
     .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+    .leftJoin("browserPoolSessions", "browserPoolSessions.sessionId", "browserSessions.id")
     .select([
       "browserSessions.createdAt",
       "browserSessions.runnerId",
@@ -1473,13 +1690,40 @@ export async function listBrowserSessions(
       "browserSessions.runtimeId",
       "browserSessions.state",
       "browserSessions.updatedAt",
+      sql<boolean>`(
+        ${sql.ref("browserSessions.state")} = 'closing'
+        and ${sql.ref("browserPoolSessions.sessionId")} is not null
+        and not exists (
+          select 1 from browser_pool_slots slot
+          where slot.runner_id = ${sql.ref("browserPoolSessions.runnerId")}
+            and slot.slot_id = ${sql.ref("browserPoolSessions.slotId")}
+            and slot.term = ${sql.ref("browserPoolSessions.term")}
+        )
+      )`.as("closeUnconfirmed"),
     ])
     .where((expression) => ownedBrowserSession(expression, ownerId))
+    .where("browserPoolSessions.dismissedAt", "is", null)
     .orderBy(
-      sql<number>`case when ${sql.ref("browserSessions.state")} in ('starting', 'ready', 'closing') then 0 else 1 end`,
+      sql<number>`case
+        when ${sql.ref("browserSessions.state")} in ('starting', 'ready') then 0
+        when ${sql.ref("browserSessions.state")} = 'closing'
+          and (
+            ${sql.ref("browserPoolSessions.sessionId")} is null
+            or exists (
+              select 1 from browser_pool_slots slot
+              where slot.runner_id = ${sql.ref("browserPoolSessions.runnerId")}
+                and slot.slot_id = ${sql.ref("browserPoolSessions.slotId")}
+                and slot.term = ${sql.ref("browserPoolSessions.term")}
+            )
+          ) then 0
+        else 1
+      end`,
     )
     .orderBy("browserSessions.createdAt", "desc")
     .execute(databaseOperationOptions());
+  return rows.map(({ closeUnconfirmed, ...row }) =>
+    closeUnconfirmed ? { ...row, closeUnconfirmed: true as const } : row,
+  );
 }
 
 /**
@@ -1768,6 +2012,7 @@ export async function listActiveBrowserSessionsForAgent(
 export async function failActiveBrowserSessions(
   database: Kysely<DatabaseSchema>,
   placementKey?: string,
+  pooledRunner?: RunnerId,
 ): Promise<{
   readonly failed: number;
 }> {
@@ -1777,16 +2022,50 @@ export async function failActiveBrowserSessions(
   }
   let sessionIds: BrowserSessionId[] = [];
   return commitPersonalMutation(database, async (transaction, mutation) => {
-    sessionIds = (
-      await transaction
-        .selectFrom("browserSessions")
-        .select("id")
-        .where("state", "in", ["starting", "ready", "closing"])
-        .$if(placementKey !== undefined, (query) => query.where("placementKey", "=", placementKey!))
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
-        .execute(databaseOperationOptions())
-    ).map(({ id }) => id);
+    const locked = await transaction
+      .selectFrom("browserSessions")
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.id",
+        "browserSessions.profileId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
+      .where("browserSessions.state", "in", ["starting", "ready", "closing"])
+      .$if(placementKey !== undefined, (query) =>
+        query.where("browserSessions.placementKey", "=", placementKey!),
+      )
+      .$if(pooledRunner !== undefined, (query) =>
+        query.where(sql<boolean>`
+          not (
+            -- A pooled session a Stop left closing ends only with evidence about its own target
+            -- (W14): known by its own binding, whether or not a slot row exists today (mid-swap,
+            -- after a release). A restart decides no outcome for it.
+            browser_sessions.state = 'closing'
+            and exists (
+              select 1 from browser_pool_sessions own where own.session_id = browser_sessions.id
+            )
+          )
+          and not exists (
+            -- A pooled guest outlives the Home: its ready sessions are the pool's to reattach
+            -- or end with their note, whatever the slot's phase, and a closing one ends only
+            -- with the runtime's answer.
+            select 1 from browser_pool_slots slot
+            where slot.runner_id = ${pooledRunner!}
+              and slot.runner_id = browser_sessions.runner_id
+              and slot.runtime_id = browser_sessions.runtime_id
+              and (
+                browser_sessions.state = 'closing'
+                or (browser_sessions.origin in ('person', 'agent')
+                  and browser_sessions.state = 'ready')
+              )
+          )
+        `),
+      )
+      .orderBy("browserSessions.id", "asc")
+      .forNoKeyUpdate("browserSessions")
+      .execute(databaseOperationOptions());
+    sessionIds = locked.map(({ id }) => id);
+    const lockedById = new Map(locked.map((row) => [row.id, row]));
     if (sessionIds.length === 0) return { failed: 0 };
     let transactionalUpdate = transaction
       .updateTable("browserSessions")
@@ -1802,41 +2081,135 @@ export async function failActiveBrowserSessions(
     }
     const failed = await transactionalUpdate.returning("id").execute(databaseOperationOptions());
     if (failed.length > 0) {
+      const failedIds = failed.map((session) => session.id);
+      if (pooledRunner !== undefined) {
+        // Any pooled session that already served an open tab gets its loss note if a restart
+        // sweep ever fails it (for example mid-swap when no slot row exists, X6).
+        const pooledFailed = await transaction
+          .selectFrom("browserPoolSessions")
+          .select("sessionId")
+          .where("sessionId", "in", failedIds)
+          .execute(databaseOperationOptions());
+        if (pooledFailed.length > 0) {
+          const owner = await transaction
+            .selectFrom("personalSettings")
+            .select("ownerId")
+            .executeTakeFirst(databaseOperationOptions());
+          if (owner?.ownerId) {
+            const tabs = await transaction
+              .selectFrom("personalTabs")
+              .select(["id", sql<BrowserSessionId>`page_binding->>'sessionId'`.as("sessionId")])
+              .where(
+                sql<string>`page_binding->>'sessionId'`,
+                "in",
+                pooledFailed.map(({ sessionId }) => sessionId),
+              )
+              .where("closedAt", "is", null)
+              .orderBy("id")
+              .execute(databaseOperationOptions());
+            if (tabs.length > 0) {
+              const noteId = randomUUID();
+              await transaction
+                .insertInto("browserPoolDocumentLosses")
+                .values(
+                  tabs.map((tab) => ({
+                    intentId: noteId,
+                    runnerId: pooledRunner,
+                    ownerId: owner.ownerId as UserId,
+                    sessionId: tab.sessionId,
+                    surfaceId: BrowserSurfaceIdSchema.parse(tab.id),
+                    documentId: null,
+                    reason: "home-restart",
+                    typed: null,
+                  })),
+                )
+                .onConflict((conflict) => conflict.columns(["intentId", "surfaceId"]).doNothing())
+                .execute(databaseOperationOptions());
+            }
+          }
+        }
+      }
       await transaction
         .deleteFrom("browserSessionAttachments")
-        .where(
-          "sessionId",
-          "in",
-          failed.map((session) => session.id),
-        )
+        .where("sessionId", "in", failedIds)
         .execute(databaseOperationOptions());
     }
     if (failed.length) {
       mutation.bumpResource("browser-placement");
       mutation.bumpResource("browser-availability");
-      mutation.bumpResource("tab");
+      const notifyTabs = failed.some(({ id }) => {
+        const row = lockedById.get(id);
+        return !row || row.profileId === null || row.profileArchivedAt === null;
+      });
+      if (notifyTabs) mutation.bumpResource("tab");
     }
     return { failed: failed.length };
   });
 }
 
+/**
+ * A session's state, other than `closed` (W5): a pooled session is closed only by the pool's
+ * writer, with evidence about its own target (`closeBrowserPoolSessions`), and any other by
+ * `closeUnpooledBrowserSession`, which refuses a pooled one in its own statement.
+ */
 export async function transitionBrowserSession(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+    readonly state: Exclude<HostedBrowserSessionState, "closed">;
+  },
+): Promise<{
+  readonly session: BrowserSessionRecord;
+  readonly profileArchived: boolean;
+}> {
+  return writeBrowserSessionState(database, input, false);
+}
+
+/**
+ * Closes a session that is not pooled. The update itself checks that the session belongs to no
+ * pool target and that its runner has no pooled slot, so no caller closes a pooled session here,
+ * whatever it believes (W1, W5). A pooled session is refused (`conflict`).
+ */
+export async function closeUnpooledBrowserSession(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+  },
+): Promise<{
+  readonly session: BrowserSessionRecord;
+  readonly profileArchived: boolean;
+}> {
+  return writeBrowserSessionState(database, { ...input, state: "closed" }, true);
+}
+
+async function writeBrowserSessionState(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
     readonly state: HostedBrowserSessionState;
   },
+  unpooledOnly: boolean,
 ): Promise<{
   readonly session: BrowserSessionRecord;
+  readonly profileArchived: boolean;
 }> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
-    await transaction
+    const locked = await transaction
       .selectFrom("browserSessions")
-      .select("id")
-      .where("id", "=", input.sessionId)
-      .forNoKeyUpdate()
-      .execute(databaseOperationOptions());
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.id",
+        "browserSessions.profileId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
+      .where("browserSessions.id", "=", input.sessionId)
+      .forNoKeyUpdate("browserSessions")
+      .executeTakeFirst(databaseOperationOptions());
+    const profileArchived =
+      locked !== undefined && locked.profileId !== null && locked.profileArchivedAt !== null;
 
     const now = new Date();
     let update = transaction
@@ -1850,6 +2223,30 @@ export async function transitionBrowserSession(
       .where("state", "not in", ["closed", "failed"])
       .where("state", "!=", input.state);
     if (input.from) update = update.where("state", "in", [...input.from]);
+    if (input.state === "failed")
+      // A pooled session a Stop left `closing` ends only with evidence about its own target
+      // (W1, W14): no generic failure transition may take it out of teardown.
+      update = update.where(
+        sql<boolean>`not (
+          browser_sessions.state = 'closing'
+          and (
+            exists (
+              select 1 from browser_pool_sessions own where own.session_id = browser_sessions.id
+            )
+            or exists (
+              select 1 from browser_pool_slots slot where slot.runner_id = browser_sessions.runner_id
+            )
+          )
+        )`,
+      );
+    if (unpooledOnly)
+      update = update.where(
+        sql<boolean>`not exists (
+          select 1 from browser_pool_sessions own where own.session_id = browser_sessions.id
+        ) and not exists (
+          select 1 from browser_pool_slots slot where slot.runner_id = browser_sessions.runner_id
+        )`,
+      );
     const row = await update
       .returning([
         "createdAt",
@@ -1882,8 +2279,8 @@ export async function transitionBrowserSession(
       }
       mutation.bumpResource("browser-placement");
       mutation.bumpResource("browser-availability");
-      mutation.bumpResource("tab");
-      return { session: row };
+      if (!profileArchived) mutation.bumpResource("tab");
+      return { session: row, profileArchived };
     }
     const existing = await transaction
       .selectFrom("browserSessions")
@@ -1905,10 +2302,10 @@ export async function transitionBrowserSession(
       throw new OpensteerError({ code: "not_found", message: "Browser session not found" });
     }
     if (existing.state === "closed" || existing.state === "failed") {
-      return { session: existing };
+      return { session: existing, profileArchived };
     }
     if (existing.state === input.state) {
-      return { session: existing };
+      return { session: existing, profileArchived };
     }
     throw new OpensteerError({
       code: "conflict",
@@ -1938,18 +2335,28 @@ export async function bindBrowserTabOpen(
     readonly binding: BrowserTabOpenBinding;
     readonly identityKey: string | null;
     readonly runnerId: RunnerId;
+    readonly pooled?: true;
   },
 ): Promise<void> {
-  await database
-    .insertInto("browserTabOpens")
-    .values({
-      ownerId: input.binding.callerUserId,
-      idempotencyKey: input.binding.idempotencyKey,
-      binding: input.binding,
-      identityKey: input.identityKey,
-      runnerId: input.runnerId,
-    })
-    .execute(databaseOperationOptions());
+  const insert = (target: Kysely<DatabaseSchema>) =>
+    target
+      .insertInto("browserTabOpens")
+      .values({
+        ownerId: input.binding.callerUserId,
+        idempotencyKey: input.binding.idempotencyKey,
+        binding: input.binding,
+        identityKey: input.identityKey,
+        runnerId: input.runnerId,
+      })
+      .execute(databaseOperationOptions());
+  if (input.pooled)
+    return commitPersonalMutation(database, async (tx) => {
+      await requireBrowserPoolAdmission(tx, input.runnerId);
+      // Pending pooled opens can still have an uncertain outcome. Keep that
+      // evidence for park recovery instead of pruning it in the admission write.
+      await insert(tx);
+    });
+  await insert(database);
   // Keep the guaranteed replay window and one successful placement preference per identity.
   await sql`
     with remembered as (
@@ -2007,6 +2414,19 @@ export async function browserSessionOpenerForBinding(
 ): Promise<BrowserSessionOpenerRecord | null> {
   // Trigger provenance is recorded at its authenticated call site, never inferred from current occupants.
   if (agentBindingId.startsWith("trigger:")) return { kind: "automation" };
+  if (agentBindingId.startsWith("session:")) {
+    const session = AgentSessionIdSchema.safeParse(agentBindingId.slice("session:".length));
+    if (!session.success) return null;
+    // A connected agent's session opens for the one task it works on.
+    const row = await database
+      .selectFrom("agentSessions")
+      .select("threadId")
+      .where("id", "=", session.data)
+      .where("userId", "=", ownerId)
+      .where("status", "=", "active")
+      .executeTakeFirst(databaseOperationOptions());
+    return row ? { kind: "task", threadId: row.threadId } : null;
+  }
   const runId = bindingRunId(agentBindingId);
   if (!runId) return null;
   const actors = await resolvePlaceActors(database, {
@@ -2048,7 +2468,7 @@ export function recordRunTabPlace(
 ): Promise<boolean> {
   const place = eventDataSchemas["place.entered"].parse({
     ...input.data,
-    title: utf8Prefix(storableText(input.data.title), 1024),
+    title: utf8Prefix(outsideName(storableText(input.data.title), 1024), 1024),
   });
   return commitPersonalMutation(database, async (tx, mutation) => {
     const owner = await tx

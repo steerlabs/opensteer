@@ -1,4 +1,9 @@
-import { OpensteerError, type ThreadAccessMode, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  type AgentGrant,
+  type ThreadAccessMode,
+  type UserId,
+} from "@opensteer/core";
 import type { AgentConnectionStore } from "@opensteer/database";
 import { createHash } from "node:crypto";
 
@@ -10,6 +15,10 @@ export interface AuthenticatedConnection {
   readonly connectionId: string;
   readonly userId: UserId;
   readonly accessMode: ThreadAccessMode;
+  readonly grant: AgentGrant;
+  readonly grantRevision: number;
+  readonly consentVersion: number;
+  readonly expiresAt: number;
 }
 
 /** No session cache: an MCP session ID never substitutes for a live bearer check. */
@@ -22,11 +31,21 @@ export class ConnectionAuthenticator {
   async authenticate(bearer: string, resource?: string): Promise<AuthenticatedConnection> {
     if (!/^ost_mcp_[A-Za-z0-9_-]{43}$/.test(bearer)) throw invalidConnection();
     const connection = await this.store.authenticate(credentialHash(bearer), resource);
-    if (!connection) throw invalidConnection();
+    // Only an MCP connection signs in, and every one of them expires.
+    if (!connection?.expiresAt) throw invalidConnection();
+    // The store always reads these from the row; a connection without them is refused, never
+    // read as everything.
+    const { grant, grantRevision, consentVersion } = connection;
+    if (!grant || grantRevision === undefined || consentVersion === undefined)
+      throw invalidConnection();
     return {
       connectionId: connection.id,
       userId: connection.userId,
       accessMode: connection.accessMode,
+      grant,
+      grantRevision,
+      consentVersion,
+      expiresAt: Date.parse(connection.expiresAt),
     };
   }
 }

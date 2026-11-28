@@ -12,7 +12,6 @@ import {
   HostDescriptorSchema,
   PersonalHostAccessRouteEnvelopeSchema,
   hostKeyFingerprint,
-  isPersonalHost,
   isSameHost,
   sameDiscoveryDocument,
   hostApiCompatibility,
@@ -45,7 +44,6 @@ export const maxDeploymentCatalogBytes = 1 * 1_024 * 1_024;
 export const maxHostDiscoveryDocumentBytes = 64 * 1_024;
 
 const maxDeployments = 100;
-const pendingAccountDeploymentMs = 10 * 60_000;
 const defaultDiscoveryTimeoutMs = 10_000;
 const maximumDiscoveryTimeoutMs = 30_000;
 const boundedName = z
@@ -716,8 +714,6 @@ export class DeploymentCatalogStore {
   readonly #privateFiles: PrivateFilesystem;
   readonly #mutations = new MutationQueue();
   readonly #listeners = new Set<() => void>();
-  /** Joined teams Account's directory does not list yet, until when they stay anyway. */
-  readonly #pendingAccount = new Map<DeploymentId, number>();
 
   constructor(options: DeploymentCatalogStoreOptions) {
     this.#filePath = options.filePath;
@@ -747,6 +743,7 @@ export class DeploymentCatalogStore {
         cause: error,
       });
     }
+    decoded = withoutRetiredDeployments(decoded);
     // Upgrade compatible shapes without changing any signed authority bytes.
     if (!isCurrentStoredCatalogVersion(decoded)) {
       if (
@@ -802,27 +799,6 @@ export class DeploymentCatalogStore {
         updatedAt: now,
       };
     });
-  }
-
-  /**
-   * Shows a team this Account just joined before Account's directory lists it: membership is
-   * published to Account asynchronously. The entry is Account-sourced, so the directory takes it
-   * over once it lists the team; until then reconciliation keeps it for `lifetimeMs`.
-   */
-  async addPendingAccountDeployment(
-    deployment: DeploymentConnectionInput,
-    lifetimeMs = pendingAccountDeploymentMs,
-  ): Promise<DeploymentCatalog> {
-    if (deployment.source.kind !== "account")
-      throw new Error("A pending Account Deployment requires an Account source.");
-    const deploymentId = deployment.authority.document.deploymentId;
-    this.#pendingAccount.set(deploymentId, this.#now().getTime() + lifetimeMs);
-    try {
-      return await this.upsert(deployment);
-    } catch (error) {
-      this.#pendingAccount.delete(deploymentId);
-      throw error;
-    }
   }
 
   /** Commit a newly verified local authority and make it active in one durable write. */
@@ -993,8 +969,7 @@ export class DeploymentCatalogStore {
         if (localManifest?.deploymentId === storedId) return true;
         if (!sameConnectionSource(stored.source, source)) return false;
         const directory = directoryById.get(storedId);
-        if (directory) this.#pendingAccount.delete(storedId);
-        else return (this.#pendingAccount.get(storedId) ?? 0) > this.#now().getTime();
+        if (!directory) return false;
         return Boolean(
           directory &&
           directory.lifecycle === "active" &&
@@ -1346,12 +1321,6 @@ function addConnectionRouteIssues(
     }
     return;
   }
-  if (!isPersonalHost(deployment.authority.document) || deployment.kind !== "personal") {
-    addIssue({
-      message: "Routed reachability belongs only to a Personal Host",
-      path: ["reachability"],
-    });
-  }
   if (deployment.personalAccessRoute) {
     const route = deployment.personalAccessRoute;
     try {
@@ -1390,4 +1359,59 @@ function addConnectionRouteIssues(
       path: ["personalAccessRoute"],
     });
   }
+}
+
+/**
+ * Whether a saved catalog row or an Account directory row is visibly not a personal Home: a
+ * team server a previous release saved or listed. Its display kind, or the kind its signed
+ * document states, says something other than personal; a row that states neither is judged
+ * by the exact parsers that follow.
+ */
+export function isVisiblyNotPersonal(row: unknown): boolean {
+  if (typeof row !== "object" || row === null) return false;
+  type Signed = { readonly document?: { readonly deploymentShape?: { readonly kind?: unknown } } };
+  const record = row as {
+    readonly kind?: unknown;
+    readonly authority?: Signed;
+    readonly authorityEnvelope?: Signed;
+  };
+  const shapes = [
+    record.authority?.document?.deploymentShape?.kind,
+    record.authorityEnvelope?.document?.deploymentShape?.kind,
+  ];
+  return (
+    (record.kind !== undefined && record.kind !== "personal") ||
+    shapes.some((shape) => shape !== undefined && shape !== "personal")
+  );
+}
+
+/**
+ * A catalog saved by a release that also served team servers may hold one; such
+ * a row is left out, its selection moves to the first Home left, and the rest of
+ * the catalog reads as before. The next write keeps the catalog without it.
+ */
+function withoutRetiredDeployments(decoded: unknown): unknown {
+  if (typeof decoded !== "object" || decoded === null || !("deployments" in decoded))
+    return decoded;
+  const { deployments } = decoded;
+  if (!Array.isArray(deployments)) return decoded;
+  const kept = deployments.filter((row) => !isVisiblyNotPersonal(row));
+  if (kept.length === deployments.length) return decoded;
+  const selected = "selectedDeploymentId" in decoded ? decoded.selectedDeploymentId : null;
+  const stillSelected = kept.some(
+    (row) =>
+      typeof row === "object" &&
+      row !== null &&
+      (row as { authority?: { document?: { deploymentId?: unknown } } }).authority?.document
+        ?.deploymentId === selected,
+  );
+  // A catalog that still holds a Deployment selects one: the first left, as a fresh one would.
+  const first = kept[0] as { authority?: { document?: { deploymentId?: unknown } } } | undefined;
+  return {
+    ...decoded,
+    deployments: kept,
+    ...(stillSelected
+      ? {}
+      : { selectedDeploymentId: first?.authority?.document?.deploymentId ?? null }),
+  };
 }

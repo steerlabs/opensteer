@@ -1,5 +1,10 @@
 import { supervisedExitCode } from "@opensteer/shared/processControl";
-import { safeMessage } from "@opensteer/shared/safeMessage";
+import {
+  engineDiagnosticSecrets,
+  networkCredentialSecrets,
+  redactNetworkCredentials,
+  safeMessage,
+} from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { delay } from "@opensteer/shared/delay";
@@ -77,6 +82,7 @@ export class CodexStdioClient {
   readonly #spawned: Promise<void>;
   readonly #stderr: ByteTail;
   readonly #stderrSecrets: readonly string[];
+  readonly #networkSecrets: readonly string[];
   readonly #stdoutTask: Promise<void>;
   readonly #stderrTask: Promise<void>;
   #closing = false;
@@ -95,10 +101,7 @@ export class CodexStdioClient {
     this.#onRequestTimeout = options.onRequestTimeout;
     this.#redactions = options.redactions;
     this.#stderr = new ByteTail(options.config.maxStderrBytes);
-    this.#stderrSecrets = Object.entries(options.environment)
-      .filter(([name, value]) => credentialNamePattern.test(name) && value.length >= 4)
-      .map(([, value]) => value)
-      .sort((left, right) => right.length - left.length);
+    this.#stderrSecrets = engineDiagnosticSecrets(options.environment, 4);
     const launch = {
       args: [
         ...options.launch.arguments,
@@ -110,10 +113,11 @@ export class CodexStdioClient {
       environment: options.environment,
       executable: options.launch.executable,
     };
-    // The wrapper runs last so the Runner's sandbox sees the complete command:
-    // every provider flag, the working directory, and the environment it must
-    // carry into the sandbox are already in place.
+    // The wrapper runs last so the Runner's containment sees the complete
+    // command: every provider flag, the working directory, and the environment
+    // are already in place.
     const wrapped = options.wrapProcessLaunch ? options.wrapProcessLaunch(launch) : launch;
+    this.#networkSecrets = networkCredentialSecrets(wrapped.environment);
     this.#process = spawnSupervised({
       executable: wrapped.executable,
       args: wrapped.args,
@@ -189,7 +193,11 @@ export class CodexStdioClient {
   }
 
   stderrText(): string {
-    return this.#stderr.toBuffer().toString("utf8").trim();
+    return this.redactDiagnostic(this.#stderr.toBuffer().toString("utf8")).trim();
+  }
+
+  redactDiagnostic(message: string): string {
+    return redactNetworkCredentials(message, this.#networkSecrets);
   }
 
   async request(
@@ -342,7 +350,7 @@ export class CodexStdioClient {
     this.#pending.delete(key);
     if (pending.timeout) clearTimeout(pending.timeout);
     if ("error" in message && message.error !== undefined) {
-      pending.reject(rpcError(pending.method, message.error));
+      pending.reject(rpcError(pending.method, message.error, this.#networkSecrets));
       return;
     }
     pending.resolve(message.result);
@@ -417,7 +425,11 @@ export class CodexStdioClient {
   #stderrDiagnostic(): string {
     let stderr = this.stderrText();
     if (!stderr) return "";
-    const secrets = [...this.#stderrSecrets, ...(this.#redactions?.() ?? [])]
+    const secrets = [
+      ...this.#stderrSecrets,
+      ...this.#networkSecrets,
+      ...(this.#redactions?.() ?? []),
+    ]
       .filter((secret) => secret.length >= 4)
       .sort((left, right) => right.length - left.length);
     for (const secret of secrets) {
@@ -434,9 +446,6 @@ export class CodexStdioClient {
     return bounded.toBuffer().toString("utf8").trim();
   }
 }
-
-const credentialNamePattern =
-  /(?:API_KEY|ACCESS_KEY|AUTHORIZATION|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/iu;
 
 const stderrSafeMessageOptions = {
   fallback: "Codex app-server stderr was unavailable",
@@ -540,14 +549,14 @@ function stripCarriageReturn(line: Buffer): Buffer {
   return line.at(-1) === 0x0d ? line.subarray(0, -1) : line;
 }
 
-function rpcError(method: string, value: unknown): OpensteerError {
+function rpcError(method: string, value: unknown, secrets: readonly string[]): OpensteerError {
   const object = requireObject(value, `Codex app-server ${method} error`);
   const message = typeof object.message === "string" ? object.message : "Unknown JSON-RPC error";
   const code = typeof object.code === "number" ? object.code : undefined;
   return new OpensteerError({
     code: code === -32001 ? "timeout" : "harness_error",
     details: { method, rpcCode: code, rpcData: object.data },
-    message: `Codex app-server ${method} failed: ${message}`,
+    message: `Codex app-server ${method} failed: ${redactNetworkCredentials(message, secrets)}`,
     retryable: code === -32001,
   });
 }

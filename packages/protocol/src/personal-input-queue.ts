@@ -1,12 +1,9 @@
 import {
   ArtifactContentPartSchema,
-  DeploymentIdSchema,
   MessageAuthorViewSchema,
   MessageIdSchema,
   MessageEditViewSchema,
   RunIdSchema,
-  TeamAgentRequestIdSchema,
-  TeamAudienceViewSchema,
   ThreadIdSchema,
   ThreadInputViewSchema,
   utf8ByteLength,
@@ -31,13 +28,6 @@ export const WaitingInputViewSchema = z.object({
     state: ThreadInputViewSchema.shape.state,
     queueRank: PersonalRevisionSchema,
   }),
-  ask: z
-    .object({
-      teamId: DeploymentIdSchema,
-      requestId: TeamAgentRequestIdSchema,
-      audience: TeamAudienceViewSchema,
-    })
-    .nullable(),
   canEdit: z.boolean(),
   canCancel: z.boolean(),
   canMove: z.boolean(),

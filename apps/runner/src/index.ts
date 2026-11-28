@@ -7,8 +7,9 @@ export * from "@opensteer/runner-client";
 export * from "./runtime/logger.js";
 export * from "./main.js";
 export * from "./folders/agent-home.js";
+export * from "./folders/home-files.js";
 export * from "./runtime/native-fs-helper.js";
-export * from "./agent/program-executor.js";
+export * from "./agent/script-executor.js";
 export * from "./runtime/runtime.js";
 export * from "./attachments/attachment-cache.js";
 export { RunFiles } from "./attachments/run-files.js";
@@ -19,6 +20,7 @@ export * from "./shell/machine-access-setup.js";
 export * from "./shell/shell-host-key.js";
 export * from "./shell/shell-module-handler.js";
 export * from "./computer-apps/module-handler.js";
+export { OrderedInputLane, inputBytes, releaseOnly } from "./computer-apps/ordered-input-lane.js";
 export * from "./computer-apps/provider.js";
 export * from "./computer-apps/helper-app-provider.js";
 export { ComputerUseBridgeError } from "./computer-apps/computer-use-bridge-client.js";
@@ -26,4 +28,16 @@ export * from "./computer-apps/prepare.js";
 export * from "./computer-apps/phone-screen-driver.js";
 export * from "./messaging/prepare.js";
 export * from "./computer-apps/local-mcp-servers.js";
-export { ExecutionContainment, executionScopeVariable } from "./runtime/execution-containment.js";
+export {
+  confirmRunnerShutdown,
+  ExecutionContainment,
+  executionScopeVariable,
+  RunnerShutdownProofSchema,
+  type RunnerShutdownProof,
+} from "./runtime/execution-containment.js";
+
+export {
+  DesktopRunnerReadySchema,
+  holdDesktopRunnerIdle,
+  type DesktopRunnerReady,
+} from "./runtime/desktop-control.js";

@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   ClosedPositionSchema,
   ComputerAppIdentitySchema,
@@ -12,6 +13,7 @@ import {
   tabsMaxPerMutation,
   tabsMaxPerOwner,
   type AppId,
+  type BrowserProfileId,
   type BrowserSessionId,
   type ClosedPosition,
   type PageBinding,
@@ -97,6 +99,10 @@ const restoreUrl = z
       return false;
     }
   });
+/** Whether a page's address is one a tab row keeps (`about:blank`, or HTTP(S) without credentials). */
+export function storablePageUrl(value: string): boolean {
+  return restoreUrl.safeParse(value).success;
+}
 function failure(code: "not_found" | "conflict" | "bad_request", message: string): never {
   throw new OpensteerError({ code, message });
 }
@@ -563,7 +569,8 @@ export class TabStore {
           ownerId: input.ownerId,
           kind: input.kind,
           computerId: input.computerId,
-          title: input.title.slice(0, 1024),
+          title:
+            input.kind === "page" ? outsideName(input.title, 1024) : input.title.slice(0, 1024),
           openedBy: sql<TabOpenedBy>`${JSON.stringify(input.openedBy)}::jsonb`,
           url: input.url ?? null,
           profileId: input.profileId ?? null,
@@ -616,18 +623,7 @@ export class TabStore {
         const open = rows.filter(
           (row) => !row.closedAt && tabIds.includes(row.id) && (!canClose || canClose(row)),
         );
-        for (const row of open)
-          await tx
-            .updateTable("personalTabs")
-            .set({
-              closedAt: new Date(),
-              updatedAt: new Date(),
-              generation: row.generation + 1,
-              closedPosition: sql`${JSON.stringify(position(layout, row.id))}::jsonb`,
-            })
-            .where("id", "=", row.id)
-            .execute(databaseOperationOptions());
-        removeIds(layout, new Set(open.map((row) => row.id)));
+        await this.#closeRows(tx, open, layout);
         return open.map((row) => row.id);
       },
       tabIds,
@@ -808,6 +804,61 @@ export class TabStore {
       },
     );
   }
+  /**
+   * Closing a group, decided once here: the members the group has now close, and the group goes
+   * once it has none left. A member that may not close keeps the group, with the members that
+   * remain. A group already empty is removed. A single tab's close keeps its group (Undo needs it).
+   */
+  closeGroup(
+    ownerId: UserId,
+    groupId: TabGroupId,
+    key: string,
+    authorize?: TabAuthorization,
+    canClose?: (row: TabRecord) => boolean,
+    /**
+     * The members the person was shown. The group closes only if it holds exactly these now: a
+     * tab that left it or one that joined it since means it changed, and nothing closes. The card
+     * said "close this group and its tabs"; that is what happens, or nothing.
+     */
+    only?: readonly TabId[],
+  ): Promise<TabMutation> {
+    return this.#mutate(
+      ownerId,
+      key,
+      "tab.group.close",
+      { groupId, ...(only ? { tabIds: [...only] } : {}) },
+      authorize,
+      async (tx, { rows, layout }) => {
+        const item = layout.items.find(
+          (item) => item.kind === "group" && item.group.groupId === groupId,
+        );
+        if (item?.kind !== "group") failure("not_found", "Tab group not found.");
+        const members = new Set(item.group.tabIds);
+        if (
+          only &&
+          (only.length !== members.size ||
+            new Set(only).size !== members.size ||
+            only.some((tabId) => !members.has(tabId)))
+        )
+          failure("conflict", "This group changed since you read it. Look at it again.");
+        const shown = only ? new Set(only) : members;
+        const open = rows.filter(
+          (row) =>
+            !row.closedAt &&
+            members.has(row.id) &&
+            shown.has(row.id) &&
+            (!canClose || canClose(row)),
+        );
+        await this.#closeRows(tx, open, layout);
+        const remaining = layout.items.find(
+          (item) => item.kind === "group" && item.group.groupId === groupId,
+        );
+        if (remaining?.kind === "group" && remaining.group.tabIds.length === 0)
+          layout.items = layout.items.filter((item) => item !== remaining);
+        return open.map((row) => row.id);
+      },
+    );
+  }
   deleteGroup(ownerId: UserId, groupId: TabGroupId, key: string, authorize?: TabAuthorization) {
     return this.#mutate(
       ownerId,
@@ -830,32 +881,74 @@ export class TabStore {
       },
     );
   }
-  async #latest(tx: TabTransaction, binding: PageBinding) {
+  /** Marks the rows closed where the layout holds them, then takes them out of it. */
+  async #closeRows(tx: TabTransaction, open: readonly TabRecord[], layout: TabLayout) {
+    for (const row of open)
+      await tx
+        .updateTable("personalTabs")
+        .set({
+          closedAt: new Date(),
+          updatedAt: new Date(),
+          generation: row.generation + 1,
+          closedPosition: sql`${JSON.stringify(position(layout, row.id))}::jsonb`,
+          // The closed tab lets go of its page in its own commit: no reopen, restore or bind ever
+          // finds that page again, before or after a restart, awake or parked. A page no open row
+          // binds is ended wherever the Home learns a session's pages.
+          pageBinding: null,
+        })
+        .where("id", "=", row.id)
+        .execute(databaseOperationOptions());
+    removeIds(layout, new Set(open.map((row) => row.id)));
+  }
+  async #latest(tx: TabTransaction, binding: PageBinding, ownerId: UserId) {
     const latest = await tx
       .selectFrom("browserSessions")
-      .select(["id", "origin", "opener", "state"])
-      .where("tabGroupId", "=", binding.lineageId)
-      .orderBy("createdAt", "desc")
-      .orderBy("id", "desc")
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.id",
+        "browserSessions.origin",
+        "browserSessions.opener",
+        "browserSessions.state",
+        "browserSessions.profileId",
+        "browserProfiles.ownerId as profileOwnerId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
+      .where("browserSessions.tabGroupId", "=", binding.lineageId)
+      .orderBy("browserSessions.createdAt", "desc")
+      .orderBy("browserSessions.id", "desc")
       .executeTakeFirst(databaseOperationOptions());
     return latest?.id === binding.sessionId &&
       latest.origin !== "trigger" &&
-      latest.opener?.kind !== "automation"
+      latest.opener?.kind !== "automation" &&
+      (latest.profileId === null ||
+        (latest.profileOwnerId === ownerId && latest.profileArchivedAt === null))
       ? latest
       : null;
   }
   async #session(tx: TabTransaction, binding: PageBinding, ownerId: UserId) {
     const session = await tx
       .selectFrom("browserSessions")
-      .select(["id", "origin", "opener", "state", "runnerId"])
-      .where("id", "=", binding.sessionId)
-      .where("tabGroupId", "=", binding.lineageId)
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.id",
+        "browserSessions.origin",
+        "browserSessions.opener",
+        "browserSessions.state",
+        "browserSessions.runnerId",
+        "browserSessions.profileId",
+        "browserProfiles.ownerId as profileOwnerId",
+        "browserProfiles.archivedAt as profileArchivedAt",
+      ])
+      .where("browserSessions.id", "=", binding.sessionId)
+      .where("browserSessions.tabGroupId", "=", binding.lineageId)
       .executeTakeFirst(databaseOperationOptions());
     if (
       !session ||
       session.origin === "trigger" ||
       session.opener?.kind === "automation" ||
-      ["closed", "failed"].includes(session.state)
+      ["closed", "failed"].includes(session.state) ||
+      (session.profileId !== null &&
+        (session.profileOwnerId !== ownerId || session.profileArchivedAt !== null))
     )
       return null;
     const viewer = await tx
@@ -873,11 +966,11 @@ export class TabStore {
     generation: number,
     previous: PageBinding | null,
     binding: PageBinding,
-  ): Promise<boolean> {
+  ): Promise<TabRecord | null> {
     PageBindingSchema.parse(binding);
     return commitPersonalMutation(this.database, async (tx, mutation) => {
       await this.#lock(tx, ownerId, [], [tabId]);
-      if (!(await this.#latest(tx, binding))) return false;
+      if (!(await this.#latest(tx, binding, ownerId))) return null;
       const row = await this.get(ownerId, tabId, false, tx);
       if (
         !row ||
@@ -886,7 +979,7 @@ export class TabStore {
         canonicalJson(row.pageBinding) !== canonicalJson(previous) ||
         tabId !== binding.surfaceId
       )
-        return false;
+        return null;
       await tx
         .updateTable("personalTabs")
         .set({ pageBinding: sql`${JSON.stringify(binding)}::jsonb`, updatedAt: new Date() })
@@ -894,7 +987,8 @@ export class TabStore {
         .execute(databaseOperationOptions());
       mutation.bumpResource("tab");
       mutation.changeTabs([tabId]);
-      return true;
+      // The row as this bind left it: the witness anything later acting on this binding checks.
+      return await this.get(ownerId, tabId, false, tx);
     });
   }
   async updatePage(
@@ -902,12 +996,13 @@ export class TabStore {
     tabId: TabId,
     generation: number,
     binding: PageBinding,
-    descriptor: { title: string; url: string; favicon?: string | null },
+    descriptor: { title: string; url: string; favicon?: string | null; loading?: boolean },
     restoring = false,
   ): Promise<boolean> {
     PageBindingSchema.parse(binding);
     restoreUrl.parse(descriptor.url);
     if (descriptor.favicon) BrowserFaviconSchema.parse(descriptor.favicon);
+    const named = outsideName(descriptor.title, 1024);
     return commitPersonalMutation(this.database, async (tx, mutation) => {
       await this.#lock(tx, ownerId, [], [tabId]);
       if (!(await this.#session(tx, binding, ownerId))) return false;
@@ -920,16 +1015,16 @@ export class TabStore {
         return false;
       if (restoring && descriptor.url === "about:blank" && row.url !== "about:blank") return false;
       const favicon = descriptor.favicon ?? (descriptor.url === row.url ? row.favicon : null);
-      if (
-        row.title === descriptor.title.slice(0, 1024) &&
-        row.url === descriptor.url &&
-        row.favicon === favicon
-      )
+      // A tab keeps the title last seen at its address while a new document there loads with
+      // none yet (a reload, a restore); once it has loaded, its own title stands, empty or not.
+      const title =
+        named === "" && descriptor.loading && descriptor.url === row.url ? row.title : named;
+      if (row.title === title && row.url === descriptor.url && row.favicon === favicon)
         return false;
       await tx
         .updateTable("personalTabs")
         .set({
-          title: descriptor.title.slice(0, 1024),
+          title,
           url: descriptor.url,
           favicon,
           iconRef: favicon ? tabIconRef(binding.lineageId, favicon) : null,
@@ -970,4 +1065,79 @@ export class TabStore {
       return owned.map((row) => row.id);
     });
   }
+}
+
+/**
+ * Retires every tab belonging to `profileId` for `ownerId` inside the profile-deletion
+ * transaction, stripping them from `tab_layouts` and dropping any tab group that becomes empty as
+ * a result (preserving non-empty mixed groups and unrelated groups).
+ */
+export async function removeProfileTabs(
+  tx: TabTransaction,
+  ownerId: UserId,
+  profileId: BrowserProfileId,
+): Promise<TabId[]> {
+  return commitPersonalMutation(tx, async (tx, mutation) => {
+    const matched = await tx
+      .selectFrom("personalTabs")
+      .select("id")
+      .where("ownerId", "=", ownerId)
+      .where("profileId", "=", profileId)
+      .orderBy("id")
+      .execute(databaseOperationOptions());
+    if (!matched.length) return [];
+    const ids = matched.map((row) => row.id);
+    const removedSet = new Set(ids);
+    const stored = await tx
+      .selectFrom("tabLayouts")
+      .selectAll()
+      .where("ownerId", "=", ownerId)
+      .forNoKeyUpdate()
+      .executeTakeFirst(databaseOperationOptions());
+    await tx
+      .selectFrom("personalTabs")
+      .select("id")
+      .where("ownerId", "=", ownerId)
+      .where((eb) => eb.or([eb("closedAt", "is", null), eb("id", "in", ids)]))
+      .orderBy("id")
+      // FOR UPDATE: The profile's tabs are deleted below; lock keys in deterministic order.
+      .forUpdate()
+      .execute(databaseOperationOptions());
+    await tx
+      .deleteFrom("personalTabs")
+      .where("ownerId", "=", ownerId)
+      .where("id", "in", ids)
+      .execute(databaseOperationOptions());
+    if (stored) {
+      const layout = TabLayoutSchema.parse({
+        revision: Number(stored.revision),
+        items: stored.items,
+      });
+      const before = JSON.stringify(layout.items);
+      layout.items = layout.items.flatMap<TabLayout["items"][number]>((item) => {
+        if (item.kind === "tab") return removedSet.has(item.tabId) ? [] : [item];
+        if (!item.group.tabIds.some((id) => removedSet.has(id))) return [item];
+        const remaining = item.group.tabIds.filter((id) => !removedSet.has(id));
+        return remaining.length
+          ? [{ kind: "group" as const, group: { ...item.group, tabIds: remaining } }]
+          : [];
+      });
+      if (JSON.stringify(layout.items) !== before) {
+        layout.revision++;
+        TabLayoutSchema.parse(layout);
+        await tx
+          .updateTable("tabLayouts")
+          .set({
+            revision: layout.revision,
+            items: sql`${JSON.stringify(layout.items)}::jsonb`,
+          })
+          .where("ownerId", "=", ownerId)
+          .execute(databaseOperationOptions());
+        mutation.bumpResource("tab-layout");
+      }
+    }
+    mutation.bumpResource("tab");
+    mutation.changeTabs(ids);
+    return ids;
+  });
 }

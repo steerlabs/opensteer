@@ -13,7 +13,12 @@ const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) =>
  * may also use Vitest and Node builtins.
  */
 const boundaries: readonly { readonly root: string; readonly allowed: RegExp }[] = [
-  { root: "apps/browser-extension/src", allowed: /^(?:zod|@opensteer\/browser-source-wire\/.+)$/u },
+  // The one test for an address of this Home (rule 1's page rule) is shared by every browser; it
+  // imports nothing, so it cannot carry the monorepo into the extension (asserted below).
+  {
+    root: "apps/browser-extension/src",
+    allowed: /^(?:zod|@opensteer\/browser-source-wire\/.+|@opensteer\/shared\/homeAddress)$/u,
+  },
   { root: "packages/browser-source-wire/src", allowed: /^(?:zod|tldts|@noble\/curves\/.+)$/u },
 ];
 
@@ -31,6 +36,14 @@ describe.each(boundaries)("$root", ({ root, allowed }) => {
     );
     expect(violations).toEqual([]);
   });
+});
+
+it("keeps the shared address-of-this-Home test free of imports, as the extension bundles it", () => {
+  expect(
+    specifiersOf(
+      readFileSync(path.join(repositoryRoot, "packages/shared/src/homeAddress.ts"), "utf8"),
+    ),
+  ).toEqual([]);
 });
 
 it("sees value, type, re-export, side-effect and dynamic imports", () => {

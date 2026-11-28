@@ -13,6 +13,7 @@ import {
 const shellConnectStatuses: Readonly<Record<ShellConnectErrorCode, number>> = {
   "device-access-off": 403,
   "device-offline": 409,
+  "device-stopped": 409,
   module_unavailable: 409,
   reach_denied: 403,
   run_invalid: 401,

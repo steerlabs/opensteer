@@ -43,13 +43,22 @@ const codexAppServerIdleMs = 5 * 60_000;
 export interface CodexThreadOwner {
   /** A notification or server request on a conversation this owner claimed. Never throws. */
   receive(message: CodexMethodMessage): void;
-  /** The process is gone or retired: nothing it owed will arrive. */
-  serverFailed(error: OpensteerError): void;
+  /**
+   * The process is gone or retired: nothing it owed will arrive. `interrupted`
+   * when a stop ended it; `engineRetired` when another session's stop forced
+   * this shared server to retire, cutting this owner's Run short.
+   */
+  serverFailed(
+    error: OpensteerError,
+    options?: { readonly interrupted?: boolean; readonly engineRetired?: boolean },
+  ): void;
   /**
    * Codex did not answer a request about one of this owner's conversations in
    * time. Whether it acted on it is unknown, so the owner cannot go on.
    */
   requestTimedOut(error: OpensteerError): void;
+  /** True once a stop is under way for this owner. */
+  readonly stopping?: boolean;
 }
 
 export interface CodexAppServerOptions {
@@ -58,6 +67,8 @@ export interface CodexAppServerOptions {
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
   readonly features: CodexFeatureBoundary;
+  /** `named` when the process runs Codex's own configuration and `features` holds only Opensteer's overrides. */
+  readonly featureScope?: "every" | "named";
   readonly launch: CodexLaunch;
   readonly log?: HarnessLog;
   /** Called once, when the process can serve nothing more. */
@@ -90,6 +101,8 @@ export class CodexAppServer {
   readonly dedicated: boolean;
   /** The feature boundary the process was started with; every conversation repeats it. */
   readonly features: CodexFeatureBoundary;
+  /** Whether the process runs Codex's own configuration (`named`) or none of the person's. */
+  readonly featureScope: "every" | "named";
   readonly #after: { readonly message: CodexMethodMessage; readonly owner: CodexThreadOwner }[] =
     [];
   readonly #attached = new Set<CodexThreadOwner>();
@@ -125,6 +138,7 @@ export class CodexAppServer {
     this.client = client;
     this.dedicated = options.dedicated === true;
     this.features = options.features;
+    this.featureScope = options.featureScope ?? "every";
     this.#lifetime = lifetime;
     this.#log = options.log;
     this.#onEnded = options.onEnded;
@@ -149,12 +163,15 @@ export class CodexAppServer {
       onMethodMessage: (message, bytes) => {
         if (server) server.#route(message, bytes);
       },
-      onRequestTimeout: (_method, params, error) => {
+      onRequestTimeout: (method, params, error) => {
         if (!server) return;
-        // A process that keeps no time takes no new session; the one waiting ends.
-        server.recycle();
         const threadId = isRecord(params) ? optionalString(params.threadId) : undefined;
         const owner = threadId ? server.#owners.get(threadId) : undefined;
+        // Once a stop is under way or the conversation already closed, an
+        // unanswered turn/interrupt decides nothing: the unload's own evidence decides.
+        if (method === "turn/interrupt" && (!owner || owner.stopping)) return;
+        // A process that keeps no time takes no new session; the one waiting ends.
+        server.recycle();
         owner?.requestTimedOut(error);
       },
       redactions: () => (server ? [...server.#redactions] : []),
@@ -184,7 +201,12 @@ export class CodexAppServer {
         requireString(initialize.userAgent, "initialize result.userAgent"),
       );
       await client.notify("initialized", {});
-      await assertCodexFeatureBoundary(client, options.features, options.config.startupTimeoutMs);
+      await assertCodexFeatureBoundary(
+        client,
+        options.features,
+        options.config.startupTimeoutMs,
+        options.featureScope ?? "every",
+      );
       // A start whose session gave up still ends unless another session comes.
       if (!server.dedicated) server.#idleUnlessAttached();
       return server;
@@ -201,6 +223,11 @@ export class CodexAppServer {
 
   get failure(): OpensteerError | undefined {
     return this.#failure;
+  }
+
+  /** Whether the process is ending or gone; `close()` settles once it has exited. */
+  get ended(): boolean {
+    return this.#ended;
   }
 
   /**
@@ -335,8 +362,14 @@ export class CodexAppServer {
    * Ends the process now and every session on it: something one of them ran
    * could not be proven stopped any other way.
    */
-  async retire(error: OpensteerError): Promise<void> {
-    this.#fail(error);
+  async retire(
+    error: OpensteerError,
+    options?: {
+      readonly othersInterrupted?: boolean;
+      readonly initiator?: CodexThreadOwner;
+    },
+  ): Promise<void> {
+    this.#fail(error, options);
     await this.close();
   }
 
@@ -360,18 +393,31 @@ export class CodexAppServer {
     this.#onEnded?.(this);
   }
 
-  #fail(error: OpensteerError): void {
+  #fail(
+    error: OpensteerError,
+    options?: {
+      readonly othersInterrupted?: boolean;
+      readonly initiator?: CodexThreadOwner;
+    },
+  ): void {
     if (this.#failure) return;
     this.#failure = error;
     this.#log?.("warn", "codex.app-server.failed", {
-      detail: error.message,
+      detail: this.client.redactDiagnostic(error.message),
       sessions: this.#attached.size,
     });
     const owners = [...this.#attached];
     this.#end();
+    const interrupted = options?.othersInterrupted === true;
     for (const owner of owners) {
       try {
-        owner.serverFailed(error);
+        const engineRetired = interrupted && owner !== options?.initiator;
+        owner.serverFailed(
+          error,
+          interrupted
+            ? { interrupted: true, ...(engineRetired ? { engineRetired: true } : {}) }
+            : undefined,
+        );
       } catch {
         // One session's teardown cannot keep the others from hearing.
       }
@@ -477,7 +523,7 @@ export class CodexAppServer {
       owner.receive(message);
     } catch (error) {
       this.#log?.("warn", "codex.app-server.frame-failed", {
-        detail: error instanceof Error ? error.message : "unknown",
+        detail: this.client.redactDiagnostic(error instanceof Error ? error.message : "unknown"),
         method: message.method,
       });
     }

@@ -1,3 +1,16 @@
+import type {
+  AgentDirectoryEntryTable,
+  AgentDirectoryStateTable,
+} from "../agent-directory/tables.js";
+import type {
+  CloudComputerCheckoutTable,
+  CloudComputerBackupTargetTable,
+  CloudComputerBackupNamespaceTable,
+  CloudComputerEgressEndpointTable,
+  CloudComputerStripeEventTable,
+  CloudComputerTable,
+} from "../cloud-computers/tables.js";
+import type { BrowserPoolHostTable, BrowserPoolSlotTable } from "../cloud-computers/pool-tables.js";
 import type { NotificationPreviewEnvelope } from "@opensteer/core";
 import type { DeploymentLifecycle } from "@opensteer/core";
 import type {
@@ -10,7 +23,6 @@ import type {
   NotificationDevicePlatform,
   ProjectionGeneration,
   AccountNotificationKind,
-  TeamNotificationTarget,
 } from "@opensteer/control-plane-protocol";
 import type {
   DeploymentId,
@@ -19,11 +31,6 @@ import type {
   NotificationId,
   ThreadId,
 } from "@opensteer/core";
-import type {
-  HostedTeamId,
-  HostedTeamPhase,
-  HostedTeamState,
-} from "@opensteer/control-plane-protocol/hosted-teams";
 import type { ColumnType, Generated, Selectable } from "kysely";
 
 export type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -51,6 +58,8 @@ export interface UserTable {
   updatedAt: Timestamp;
   /** The deletion attempt holding this Account's fence; see `beginAccountDeletion`. */
   deletionAttemptId: string | null;
+  /** Set only when the synthetic purchase's sign-in made this Account; see app-review-sign-in. */
+  syntheticAt: Generated<Date | null>;
   deletionFencedUntil: NullableTimestamp;
   /** Bumped by every name change; see `AccountProfiles`. */
   nameRevision: ColumnType<string, never, string>;
@@ -477,11 +486,6 @@ export interface NotificationPublicationTable {
   deploymentId: DeploymentId;
   notificationId: NotificationId;
   threadId: ThreadId | null;
-  teamTarget: ColumnType<
-    TeamNotificationTarget | null,
-    TeamNotificationTarget | null | undefined,
-    TeamNotificationTarget | null
-  >;
   kind: AccountNotificationKind;
   deliveries: Generated<number>;
   receivedAt: Timestamp;
@@ -498,11 +502,6 @@ export interface NotificationDeliveryTable {
   deviceId: string;
   deploymentId: DeploymentId;
   threadId: ThreadId | null;
-  teamTarget: ColumnType<
-    TeamNotificationTarget | null,
-    TeamNotificationTarget | null | undefined,
-    TeamNotificationTarget | null
-  >;
   requestId: string | null;
   messageId: string | null;
   kind: AccountNotificationKind;
@@ -517,41 +516,18 @@ export interface NotificationDeliveryTable {
   completedAt: NullableTimestamp;
 }
 
-export interface HostedTeamTable {
-  id: HostedTeamId;
-  slug: string;
-  creatorAccountId: ControlPlaneAccountId | null;
-  state: HostedTeamState;
-  setupTokenDigest: string | null;
-  setupGeneration: number;
-  phase: HostedTeamPhase;
-  hostImage: string | null;
-  observedSetupGeneration: Generated<number>;
-  statusMessage: string | null;
-  statusReportedAt: NullableTimestamp;
-  suspendedReason: string | null;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-  deletedAt: NullableTimestamp;
-  name: string | null;
-  createRequestId: string | null;
-  stage: Generated<HostedTeamStoredStage>;
-  stageMessage: string | null;
-  /** The plaintext first-owner setup token, sealed to this team and generation. */
-  sealedSetupToken: string | null;
-  deploymentId: DeploymentId | null;
-  bootstrapReceipt: JsonValue | null;
-  /** Bumped by each bootstrap claim, so a slower earlier attempt can never write. */
-  bootstrapAttempt: Generated<number>;
-  bootstrapNextAt: NullableTimestamp;
-  bootstrapLeaseUntil: NullableTimestamp;
-  configuringSince: NullableTimestamp;
-}
-
-export type HostedTeamStoredStage = "reserving" | "starting" | "configuring" | "ready" | "failed";
-
 export interface ControlPlaneDatabaseSchema {
-  hostedTeams: HostedTeamTable;
+  agentDirectoryState: AgentDirectoryStateTable;
+  agentDirectoryEntries: AgentDirectoryEntryTable;
+  cloudComputers: CloudComputerTable;
+  browserPoolHosts: BrowserPoolHostTable;
+  browserPoolSlots: BrowserPoolSlotTable;
+  cloudComputerBackupTargets: CloudComputerBackupTargetTable;
+  cloudComputerBackupNamespaces: CloudComputerBackupNamespaceTable;
+  cloudComputerCheckouts: CloudComputerCheckoutTable;
+  cloudComputerHealth: import("../cloud-computers/tables.js").CloudComputerHealthTable;
+  cloudComputerEgressEndpoints: CloudComputerEgressEndpointTable;
+  cloudComputerStripeEvents: CloudComputerStripeEventTable;
   cloudDeploymentOperations: CloudDeploymentOperationTable;
   users: UserTable;
   authAccounts: AuthAccountTable;

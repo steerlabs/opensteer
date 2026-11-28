@@ -81,7 +81,7 @@ export function AnsweredQuestionView({
       {question.detail ? (
         <RequestDetail
           excerpt={question.truncated === true}
-          markdown
+          markdown={question.detailFormat !== "plain"}
           more={cut}
           onOpenChange={onOpenChange}
           open={open}

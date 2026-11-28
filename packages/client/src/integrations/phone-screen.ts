@@ -53,6 +53,20 @@ export function phoneScreenStatus(machine: MachineSummary): PhoneScreenStatus | 
         tone: "offline",
         needsSetup: false,
       };
+    case "driver-stopped":
+      return {
+        label: `Stopped on ${mac.name}`,
+        fix: `Screen control comes back when they are resumed on ${mac.name}.`,
+        tone: "waiting",
+        needsSetup: false,
+      };
+    case "driver-asleep":
+      return {
+        label: `Asleep on ${mac.name}`,
+        fix: `Screen control comes back when ${mac.name} wakes.`,
+        tone: "waiting",
+        needsSetup: false,
+      };
     case "not-connected":
       return {
         label: "Not plugged in or not on the same Wi‑Fi",

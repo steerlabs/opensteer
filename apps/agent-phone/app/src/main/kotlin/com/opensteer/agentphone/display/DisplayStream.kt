@@ -562,6 +562,8 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
                     }
                     result = result.copy(clipboard = null)
                 }
+                // P2 (Rule 2 dependency): a batch stops at its first refusal so compensating moves
+                // and replacement paste/edit events never apply after a refused selection removal.
                 if (result.outcome != "dispatched") break
             }
             if (!clipboardReported && message.events.any { it is DisplayInput.Copy || it is DisplayInput.Cut } && result.outcome != "dispatched") result = result.copy(clipboard = OwnerEditing.Clipboard("refused"))

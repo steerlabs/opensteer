@@ -21,6 +21,13 @@ const runId = () => {
   started.push(id);
   return id;
 };
+// The length of a sleep argument whose request is one UTF-16 unit over the bridge limit.
+const sleepArgument = {
+  over:
+    computerReplLimits.bridgeBytes +
+    1 -
+    JSON.stringify({ operation: "sleep", target: null, args: { ms: "" } }).length,
+};
 const output = (result: Awaited<ReturnType<ComputerReplService["execute"]>>) =>
   result.content
     .filter((block) => block.type === "text")
@@ -43,6 +50,199 @@ function setup(invoke?: ConstructorParameters<typeof ComputerReplService>[0]["in
   };
 }
 describe("computer REPL worker boundary", () => {
+  it.each([
+    [undefined, "It changed nothing. It is safe to try again."],
+    [false, "It changed nothing. It is safe to try again."],
+    [true, "1 action completed. The last was release."],
+  ])("reports the connected computer deadline after release %s", async (released, detail) => {
+    const entered = Promise.withResolvers<void>();
+    const schedule = vi.fn((_callback: () => void) => () => undefined);
+    const waiting = new ComputerReplService({
+      invoke: async ({ operation }) => ({
+        value: operation === "phones" ? [{ id: "phone", name: "Phone" }] : { released: !!released },
+      }),
+      clock: { now: Date.now, schedule },
+      wait: async (_ms, signal) => {
+        entered.resolve();
+        return new Promise<void>((_, reject) =>
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        );
+      },
+    });
+    try {
+      const running = waiting.execute(
+        {
+          runId: "deadline",
+          generation: 1,
+          reportUnknownEffects: true,
+          connectedAgent: true,
+          tracksScriptSends: true,
+        },
+        released === undefined
+          ? "await sleep(100000)"
+          : 'await (await phone("phone")).release(); await sleep(100000)',
+      );
+      await entered.promise;
+      schedule.mock.calls[0]![0]();
+      expect(await running).toMatchObject({
+        structuredContent: {
+          error: {
+            code: "deadline",
+            message: `Computer code reached its 100 second deadline. ${detail}`,
+          },
+        },
+      });
+    } finally {
+      await waiting.close();
+    }
+  });
+  it.each([true, false])(
+    "accounts for an iPhone observe that can take a hold (answered: %s)",
+    async (answered) => {
+      const entered = Promise.withResolvers<void>();
+      const held = Promise.withResolvers<void>();
+      const schedule = vi.fn((_callback: () => void) => () => undefined);
+      const repl = new ComputerReplService({
+        clock: { now: Date.now, schedule },
+        wait: async (_ms, signal) => {
+          entered.resolve();
+          return new Promise<void>((_, reject) =>
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
+          );
+        },
+        invoke: async ({ operation, markSubmitted }) => {
+          if (operation === "apps") return { value: [] };
+          if (operation === "phones") return { value: [{ id: "phone", name: "iPhone" }] };
+          if (operation === "bind") return { value: {} };
+          markSubmitted!();
+          if (!answered) {
+            entered.resolve();
+            await held.promise;
+          }
+          return { value: { observation: {} } };
+        },
+      });
+      try {
+        const running = repl.execute(
+          {
+            runId: "iphone-hold",
+            generation: 1,
+            reportUnknownEffects: true,
+            connectedAgent: true,
+            tracksScriptSends: true,
+            readOnly: true,
+          },
+          "await (await target).observe(); await sleep(100000)",
+        );
+        await entered.promise;
+        schedule.mock.calls[0]![0]();
+        expect(await running).toMatchObject({
+          structuredContent: {
+            error: answered
+              ? {
+                  code: "deadline",
+                  message:
+                    "Computer code reached its 100 second deadline. 1 action completed. The last was observe.",
+                  next: "Check the current state before trying again.",
+                }
+              : {
+                  code: "outcome-unknown",
+                  method: "observe",
+                  message:
+                    "Computer code reached its 100 second deadline. A dispatched action may already have happened; observe before deciding what to do next.",
+                },
+          },
+        });
+      } finally {
+        held.resolve();
+        await repl.close();
+      }
+    },
+  );
+  it("keeps a connected agent's prints on both sides of a caught lost device reply", async () => {
+    const window = {
+      ref: "w",
+      windowId: "win_00000000-0000-4000-8000-000000000007",
+      title: "Doc",
+    };
+    const context = { runId: runId(), generation: 1, reportUnknownEffects: true as const };
+    const result = await service.execute(
+      context,
+      `const w = await (await target).window();
+       await w.observe();
+       print("before click");
+       try { await w.click(1); } catch {}
+       print("observed again", (await w.observe()).tree);`,
+      undefined,
+      async ({ operation }) => {
+        if (operation === "apps")
+          return { value: [{ id: "notes", name: "Notes", computer: "Mac" }] };
+        if (operation === "bind") return { value: { window } };
+        if (operation === "observe")
+          return {
+            value: { observation: { snapshot: "s", window, tree: "[1] Save", screenshot: null } },
+          };
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "outcome-unknown",
+          message: "The device disconnected before it acknowledged the click.",
+        });
+      },
+    );
+    expect(result.structuredContent).toMatchObject({
+      error: { code: "outcome-unknown", method: "click" },
+    });
+    expect(output(result)).toBe(
+      "before click\nobserved again [1] Save\nclick: outcome-unknown: The device disconnected before it acknowledged the click.",
+    );
+  });
+
+  it("gives a connection help and the bound app or phone without acquiring it by name", async () => {
+    for (const app of [true, false]) {
+      const invoke = vi.fn<ConstructorParameters<typeof ComputerReplService>[0]["invoke"]>(
+        async ({ operation, target: id }) => {
+          if (operation === "apps")
+            return { value: app ? [{ id: "selected", name: "App", computer: "Mac" }] : [] };
+          if (operation === "phones")
+            return { value: [{ id: "selected", name: "Phone", computerId: "phone" }] };
+          expect(id).toBe("selected");
+          return { value: { tabId: "bound" } };
+        },
+      );
+      const context = { runId: runId(), generation: 1, reportUnknownEffects: true as const };
+      const help = output(await service.execute(context, "help()", undefined, invoke));
+      expect(help).toMatch(/await target.*Window:.*Phone:.*installedApps/su);
+      // A scroll's amount is said with its unit and its range.
+      expect(help).toContain(
+        "scroll's amount is how many steps it scrolls (three lines each in a Mac app, one swipe each on a phone), a whole number from 1 to 20.",
+      );
+      expect(invoke).not.toHaveBeenCalled();
+      const refusal = await service.execute(context, 'await tab("another tab")', undefined, invoke);
+      expect(output(refusal)).toContain(
+        "Use target for the shared app or phone (app() or phone()). See help().",
+      );
+      expect(refusal.isError).toBe(true);
+      expect(invoke).not.toHaveBeenCalled();
+      expect(
+        output(
+          await service.execute(
+            context,
+            "const t = await target; return [t.id, typeof tab];",
+            undefined,
+            invoke,
+          ),
+        ),
+      ).toBe('["selected","function"]');
+      expect(invoke.mock.calls.map(([request]) => request.operation)).toEqual(
+        app ? ["apps"] : ["apps", "phones", "bind"],
+      );
+    }
+    const { run } = setup();
+    expect(output(await run("return [typeof target, typeof help, typeof tab]"))).toBe(
+      '["undefined","undefined","function"]',
+    );
+  });
+
   it("persists only within one Run attempt and prints returned JSON", async () => {
     const { service, context, run } = setup();
     expect(output(await run('globalThis.n = 3; print("before"); return {n};'))).toBe(
@@ -86,6 +286,27 @@ describe("computer REPL worker boundary", () => {
       isError: true,
       structuredContent: { error: { code: "device-access-off", machineId, capability: "apps" } },
     });
+  });
+  it("words the apps switch for who runs the script: a connected agent, or a program that may ask", async () => {
+    const machineId = DeviceIdSchema.parse(createId("runner"));
+    const invoke = async () => {
+      throw new DeviceAccessRefusal("device-access-off", machineId, "apps", "Studio Mac");
+    };
+    const run = (context: Parameters<typeof service.execute>[0]) =>
+      service.execute(context, "await apps()", undefined, invoke);
+    // The person's own automation program also reports unknown effects; it holds the request tool.
+    const program = await run({ runId: runId(), generation: 1, reportUnknownEffects: true });
+    expect(output(program)).toContain("Use computer_access_request if needed.");
+    const agent = await run({
+      runId: runId(),
+      generation: 1,
+      reportUnknownEffects: true,
+      connectedAgent: true,
+    });
+    expect(output(agent)).toContain(
+      "Apps access is off on Studio Mac. The person can turn it on in Opensteer.",
+    );
+    expect(output(agent)).not.toContain("computer_access_request");
   });
   it("has no Node, network, filesystem or ambient timer capabilities", async () => {
     const { run } = setup();
@@ -502,5 +723,118 @@ describe("computer REPL worker boundary", () => {
   it("requires bounded JSON at the bridge", async () => {
     const { run } = setup(async () => ({ value: "x".repeat(1048577) }));
     expect((await run("await apps()")).isError).toBe(true);
+  });
+  it.each([
+    [
+      "arguments",
+      "JSON.stringify = () => hostile; await sleep(1)",
+      "failed: Computer arguments exceed 1 MiB.",
+    ],
+    [
+      "printed text",
+      "Array.prototype.join = () => hostile; print('a')",
+      "output-limit: Computer output exceeded its byte limit.",
+    ],
+    [
+      "a returned value",
+      "JSON.stringify = () => hostile; return 1",
+      "output-limit: Computer output exceeded its byte limit.",
+    ],
+  ])(
+    "refuses %s that are not a string without running the guest's toString",
+    async (_place, code, refusal) => {
+      const { run } = setup();
+      // Coercing this would run guest code that builds a string until a limit stops it.
+      const hostile =
+        'const hostile = { toString() { let text = ""; for (;;) text += "x".repeat(1024); } };';
+      expect(output(await run(`${hostile} ${code}`))).toBe(refusal);
+    },
+  );
+  it("reads a thrown value's fields as strings the guest cut to their bounds", async () => {
+    const { run } = setup();
+    const result = await run(`throw {
+      code: "busy", next: "Try again.", message: "é".repeat(100_000),
+      performed: [1, ...Array.from({ length: 300 }, (_, i) => "step " + i)],
+    }`);
+    expect(result.structuredContent).toEqual({
+      error: {
+        code: "busy",
+        next: "Try again.",
+        message: "é".repeat(4096),
+        performed: Array.from({ length: 160 }, (_, i) => `step ${i}`),
+      },
+    });
+  });
+  it("refuses oversized arguments by their length, before the Host copies them", async () => {
+    const { run } = setup();
+    // Built before an await: the slice that calls sleep spends only the guest
+    // library's serialization of an argument one unit over the limit.
+    expect(
+      output(await run(`const big = "x".repeat(${sleepArgument.over}); await 0; await sleep(big)`)),
+    ).toBe("failed: Computer arguments exceed 1 MiB.");
+  });
+  describe("on a slow worker", () => {
+    // Its CPU counts four times, as on a machine four times slower. A hosted
+    // runner at least 2.8 times slower than a Mac ran out of slice before this
+    // refusal: on the Mac the old case's slice took 36 ms, 14 of them the test's own
+    // "x".repeat of 4 MiB, 21 the guest library's JSON.stringify of it, 0.06 the
+    // Host's length check. Its Host also spends two slices' CPU parsing a large
+    // argument, which is the Host's work and never the guest's slice.
+    let worker: Worker;
+    const messages: Record<string, unknown>[] = [];
+    const execute = (context: string, code: string) =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        const listen = (message: Record<string, unknown>) => {
+          if (message.context !== context) return;
+          messages.push(message);
+          if (message.type === "request")
+            worker.postMessage({
+              type: "reply",
+              context,
+              callId: context,
+              id: message.id,
+              value: null,
+            });
+          if (message.type === "done") {
+            worker.off("message", listen);
+            resolve(message);
+          }
+        };
+        worker.on("message", listen);
+        worker.once("error", reject);
+        worker.postMessage({ type: "execute", context, callId: context, code });
+      });
+    beforeAll(async () => {
+      worker = new Worker(new URL("./computer-repl-worker.ts", import.meta.url), {
+        execArgv: [
+          "--import",
+          "tsx",
+          "--import",
+          new URL("./computer-repl-worker.test-support.ts", import.meta.url).href,
+        ],
+        workerData: { slowed: { cpuScale: 4, hostParseMs: 2 * computerReplLimits.sliceMs } },
+      });
+      await execute("slow-warm", "return 1");
+    });
+    afterAll(() => worker.terminate());
+    it("refuses an oversized argument by its length and admits one at the limit", async () => {
+      messages.length = 0;
+      const refused = await execute(
+        "slow-over",
+        `const big = "x".repeat(${sleepArgument.over}); await 0; await sleep(big)`,
+      );
+      expect(refused.error).toMatchObject({ message: "Computer arguments exceed 1 MiB." });
+      expect(messages.some((m) => m.type === "request")).toBe(false);
+      // Its Host copy and parse are the Host's work, not the guest's slice.
+      const admitted = await execute(
+        "slow-limit",
+        `const big = "x".repeat(${sleepArgument.over - 1}); await 0; await sleep(big)`,
+      );
+      expect(admitted.error).toBeUndefined();
+      const request = messages.find((m) => m.type === "request")?.request as {
+        args: { ms: string };
+      };
+      expect(request.args.ms).toHaveLength(sleepArgument.over - 1);
+    });
   });
 });

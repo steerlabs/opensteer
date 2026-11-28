@@ -10,10 +10,10 @@ import {
 } from "@opensteer/browser-source-wire/frozen";
 import {
   BrowserSourcePairChallengeResultSchema,
-  BrowserSourcePairInputSchema,
+  BrowserSourcePairV6InputSchema,
   BrowserSourcePairResultSchema,
-  browserSourceWireCurrent,
 } from "@opensteer/browser-source-wire/frames";
+import { extensionWire, liveTabsOnly } from "./variant.js";
 import { readHostJson } from "./json.js";
 import { z } from "zod";
 import type { ConnectProblemCode } from "./messages.js";
@@ -41,7 +41,7 @@ const hostJson = { maximumBytes: 16_384 } as const;
 export function websocketUrl(origin: string): string {
   const url = new URL("/internal/v1/browser-sources/connect", origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("wire", String(browserSourceWireCurrent));
+  url.searchParams.set("wire", String(extensionWire));
   return url.href;
 }
 
@@ -165,13 +165,14 @@ export async function requestPairing(input: {
   version?: number;
 }): Promise<z.infer<typeof BrowserSourcePairResultSchema>> {
   const { destination } = input;
-  const body = BrowserSourcePairInputSchema.parse({
+  const body = BrowserSourcePairV6InputSchema.parse({
     code: input.code,
     name: input.name,
     origin: destination.origin,
     replaces: input.replaces,
     routeGeneration: destination.route?.document.route.generation ?? null,
-    version: input.version ?? browserSourceWireCurrent,
+    version: input.version ?? extensionWire,
+    ...(liveTabsOnly ? { capability: "live-tabs" } : {}),
   });
   let response: Response;
   try {
@@ -198,7 +199,8 @@ export async function requestPairing(input: {
     if (
       error.success &&
       error.data.error.reason === "unsupported-version" &&
-      input.version === undefined
+      input.version === undefined &&
+      !liveTabsOnly
     ) {
       return await requestPairing({ ...input, version: 4 });
     }

@@ -1,6 +1,6 @@
 # Chrome extensions
 
-A saved browser profile on a computer keeps Chrome extensions, as Chrome does: the person installs them from the Chrome Web Store, and you can build and load your own. Guest keeps none, and phone browsers run none.
+A saved browser profile on a computer keeps Chrome extensions, as Chrome does: the person installs them from the Chrome Web Store, and in a Full access task you can build and load your own. Guest keeps none, and phone browsers run none.
 
 To build one, write an ordinary Manifest V3 folder (`manifest.json`, a service worker, content scripts, a popup) on the computer that hosts the profile, then load it from any handle in that profile:
 

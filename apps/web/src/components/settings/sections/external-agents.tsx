@@ -1,19 +1,27 @@
-import { useRef, useState } from "react";
-import { Link } from "react-router";
+import { useActiveConnectedAgentSessions } from "@opensteer/client/react";
+import { useEffect, useRef, useState } from "react";
+import { Link, Route, Routes, useParams } from "react-router";
 import {
+  agentSentence,
+  agentText,
+  agentWords,
   arrivedConnection,
-  connectionDetail,
+  chatScreenHost,
+  connectedAgentNamePart,
+  connectedAgentsView,
   externalAgentAddresses,
   externalAgentGuides,
-  externalAgentsLead,
   externalAgentsReach,
   guideAddress,
+  type ConnectedAgentRow,
+  type ConnectedAgentNow,
   type ExternalAgentGuide,
   type ExternalAgentsReach,
   type HostClient,
 } from "@opensteer/client/host";
 import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import type { AgentConnection } from "@opensteer/protocol";
+import { ReadGate } from "../../read-gate.js";
 import { useShell } from "../../app-shell.js";
 import { CopyBlock } from "../../copy-block.js";
 import { Dialog } from "../../dialog.js";
@@ -24,8 +32,12 @@ import {
   SettingsError,
   SettingsGroup,
   SettingsRow,
+  SettingsUnreadable,
   type SettingsView,
 } from "../primitives.js";
+import { SentenceText } from "../../../ui/address-text.js";
+import { AgentMark } from "../agent-mark.js";
+import { ConnectedAgentPage } from "./connected-agent-page.js";
 
 const remoteAccessPath = "/settings/account";
 const notReading = { status: null, error: null } as const;
@@ -37,8 +49,34 @@ export function ExternalAgentsSection({
   readonly client: HostClient;
   readonly view: SettingsView;
 }) {
+  return (
+    <Routes>
+      <Route index element={<ConnectedAgentsList client={client} view={view} />} />
+      <Route path=":connectionId" element={<ConnectedAgentRoute client={client} />} />
+    </Routes>
+  );
+}
+
+function ConnectedAgentRoute({ client }: { readonly client: HostClient }) {
+  const { connectionId } = useParams();
+  return <ConnectedAgentPage client={client} connectionId={connectionId ?? ""} />;
+}
+
+function ConnectedAgentsList({
+  client,
+  view,
+}: {
+  readonly client: HostClient;
+  readonly view: SettingsView;
+}) {
   const shell = useShell();
   const agents = useConnectedAgents(client);
+  const chatHost = chatScreenHost(client);
+  const { view: active } = useActiveConnectedAgentSessions(chatHost);
+  const work = new Map<string, ConnectedAgentNow["state"]>();
+  for (const entry of active.agents) {
+    if (!work.has(entry.connectionId)) work.set(entry.connectionId, entry.state);
+  }
   const identity = shell.snapshot.identityConfig;
   const personal = identity?.exposure === "loopback";
   const remote = usePersonalRemoteAccess(personal ? client : null);
@@ -49,100 +87,93 @@ export function ExternalAgentsSection({
       ? externalAgentAddresses({ identity, remoteAccess: null }).thisComputer
       : null;
   const [guide, setGuide] = useState<ExternalAgentGuide | null>(null);
-  const connections = agents.connections ?? [];
+  const names = { profiles: shell.snapshot.browserProfiles };
+  const list = connectedAgentsView(agents.connections ?? [], names, agents.revoked);
   // Setup takes its baseline from the loaded list, so it waits for the first read.
+  // A list read before whose refresh failed changes nothing until it is read again (`ReadGate`):
+  // no setup starts against it, and one open closes.
+  const readFailed = agents.readFailed && agents.connections !== null;
+  useEffect(() => {
+    if (readFailed) setGuide(null);
+  }, [readFailed]);
   const available = (entry: ExternalAgentGuide) =>
     agents.connections !== null &&
-    (reach.kind === "ready" || (entry.providerId === null && thisComputer !== null));
+    !readFailed &&
+    (reach.kind === "ready" || (entry.reach === "any" && thisComputer !== null));
   return (
     <>
-      <SectionHeader title="External agents" lead={externalAgentsLead} />
+      <SectionHeader title={agentWords("agents.settings.label")} lead={agentWords("agents.lead")} />
       {agents.connections === null && agents.error ? (
-        <div className="card">
-          <SettingsRow
-            title="Your agents couldn’t be loaded"
-            detail={agents.error}
-            action={
-              <button
-                className="btn btn--small"
-                onClick={() => void agents.refresh?.()}
-                type="button"
-              >
-                Try again
-              </button>
-            }
-          />
-        </div>
+        <SettingsUnreadable label="your connected agents" onRetry={() => void agents.refresh?.()} />
       ) : null}
-      {connections.length > 0 ? (
-        <SettingsGroup heading="Connected" headingId="external-agents-connected">
-          {connections.map((connection) => (
+      <ReadGate
+        failed={readFailed}
+        message={agentWords("agent.readFailed")}
+        onRetry={() => void agents.refresh?.()}
+      >
+        {list.connected.length > 0 ? (
+          <AgentRows
+            heading={list.disconnected.length > 0 ? agentWords("agents.section.connected") : null}
+            id="connected-agents-active"
+            rows={list.connected}
+            work={work}
+          />
+        ) : null}
+        {list.disconnected.length > 0 ? (
+          <AgentRows
+            heading={agentWords("agents.section.disconnected")}
+            id="connected-agents-ended"
+            rows={list.disconnected}
+          />
+        ) : null}
+        <SettingsGroup
+          heading={agentWords("agents.section.add")}
+          headingId="external-agents-add"
+          note={
+            reach.kind === "ready" && reach.personal
+              ? agentWords("agents.reachNote", { home: view.name })
+              : null
+          }
+        >
+          {reach.kind === "needs-remote" ? (
             <SettingsRow
-              key={connection.id}
-              title={connection.label}
-              detail={connectionDetail(connection)}
+              title={agentWords("remoteAccess.turnOnFirst.title")}
+              detail={agentWords("remoteAccess.turnOnFirst.detail")}
+              action={
+                <Link className="btn btn--small btn--primary" to={remoteAccessPath}>
+                  {agentWords("remoteAccess.turnOnFirst.action")}
+                </Link>
+              }
+            />
+          ) : null}
+          {externalAgentGuides.map((entry) => (
+            <SettingsRow
+              key={entry.id}
+              title={
+                <>
+                  {entry.providerId ? <ProviderLogo providerId={entry.providerId} /> : null}
+                  {entry.name}
+                </>
+              }
+              detail={entry.summary}
               action={
                 <button
-                  aria-label={`Remove ${connection.label}`}
+                  aria-label={`Add ${entry.name}`}
                   className="btn btn--small"
-                  disabled={agents.pending !== null}
-                  onClick={() => void agents.revoke?.(connection.id)}
+                  disabled={!available(entry)}
+                  onClick={() => setGuide(entry)}
                   type="button"
                 >
-                  {agents.pending === connection.id ? "Removing…" : "Remove"}
+                  Add
                 </button>
               }
             />
           ))}
         </SettingsGroup>
-      ) : null}
-      <SettingsGroup
-        heading="Add an agent"
-        headingId="external-agents-add"
-        note={
-          reach.kind === "ready" && reach.personal
-            ? "Agents reach Opensteer from anywhere while this computer is on and awake."
-            : null
-        }
-      >
-        {reach.kind === "needs-remote" ? (
-          <SettingsRow
-            title="Turn on Use from anywhere first"
-            detail="These agents run in the cloud and reach Opensteer through it."
-            action={
-              <Link className="btn btn--small btn--primary" to={remoteAccessPath}>
-                Turn on
-              </Link>
-            }
-          />
-        ) : null}
-        {externalAgentGuides.map((entry) => (
-          <SettingsRow
-            key={entry.id}
-            title={
-              <>
-                {entry.providerId ? <ProviderLogo providerId={entry.providerId} /> : null}
-                {entry.name}
-              </>
-            }
-            detail={entry.summary}
-            action={
-              <button
-                aria-label={`Add ${entry.name}`}
-                className="btn btn--small"
-                disabled={!available(entry)}
-                onClick={() => setGuide(entry)}
-                type="button"
-              >
-                Add
-              </button>
-            }
-          />
-        ))}
-      </SettingsGroup>
+      </ReadGate>
       <SettingsError
         message={
-          (agents.connections === null ? null : agents.error) ??
+          (agents.connections === null || readFailed ? null : agents.error) ??
           (reach.kind === "unavailable" ? reach.detail : null)
         }
       />
@@ -152,10 +183,70 @@ export function ExternalAgentsSection({
           guide={guide}
           onClose={() => setGuide(null)}
           reach={reach}
-          thisComputer={guide.providerId === null ? thisComputer : null}
+          thisComputer={guide.reach === "any" ? thisComputer : null}
         />
       ) : null}
     </>
+  );
+}
+
+function AgentRows({
+  heading,
+  id,
+  rows,
+  work,
+}: {
+  readonly heading: string | null;
+  readonly id: string;
+  readonly rows: readonly ConnectedAgentRow[];
+  readonly work?: ReadonlyMap<string, ConnectedAgentNow["state"]>;
+}) {
+  return (
+    <section aria-labelledby={heading ? id : undefined} className="settings-group">
+      {heading ? (
+        <h2 className="settings-group__title" id={id}>
+          {heading}
+        </h2>
+      ) : null}
+      <ul className="card connected-agents__list">
+        {rows.map((row) => {
+          const state = work?.get(row.id);
+          return (
+            <li key={row.id}>
+              <Link className="card__row connected-agents__row" to={row.id}>
+                <AgentMark identity={row.identity} />
+                <span className="card__row-body">
+                  <span className="card__row-title">
+                    <span>
+                      <SentenceText
+                        parts={[
+                          connectedAgentNamePart({
+                            name: row.identity.label,
+                            who: row.identity.who,
+                          }),
+                        ]}
+                        quoteNames={!row.connection.bridge}
+                      />
+                    </span>
+                  </span>
+                  <span className={`card__row-detail connected-agents__line--${row.tone}`}>
+                    <SentenceText parts={row.lineParts} />
+                  </span>
+                </span>
+                {state ? (
+                  <span
+                    className={`chip chip--${state === "needs-you" ? "warn" : "ok"} connected-agents__work`}
+                  >
+                    {state === "needs-you" ? agentWords("agent.status.needsYou") : "Working"}
+                  </span>
+                ) : null}
+                <Icon className="connected-agents__chevron" name="chevron-right" />
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -225,12 +316,17 @@ function ExternalAgentSetup({
               ) : null}
             </li>
             <li>{guide.step}</li>
-            <li>Approve the request in Opensteer when {guide.name} asks.</li>
+            <li>{agentText("agents.add.step3", { name: guide.name })}</li>
           </ol>
           <p className="external-agent-setup__status" role="status">
             {connected ? (
               <>
-                <Icon name="check-circle" /> {connected.label} is connected.
+                <Icon name="check-circle" />{" "}
+                <SentenceText
+                  parts={agentSentence("agents.add.connected", {
+                    agent: { name: connected.label },
+                  })}
+                />
               </>
             ) : (
               `Waiting for ${guide.name} to connect.`

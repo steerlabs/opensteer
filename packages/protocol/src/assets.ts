@@ -72,6 +72,7 @@ export const AssetUrlSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("unavailable"),
     reason: z.enum(["missing", "unsupported", "denied"]),
+    updateRequired: z.boolean().optional(),
   }),
 ]);
 export type AssetUrl = z.infer<typeof AssetUrlSchema>;

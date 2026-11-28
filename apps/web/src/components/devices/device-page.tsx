@@ -6,7 +6,13 @@ import {
   ComputerUseDataGrantSchema,
   type MachineSummary,
 } from "@opensteer/protocol";
-import { computerGlyph, deviceRemovalProfiles, hostsDeployment } from "@opensteer/client/computers";
+import {
+  computerGlyph,
+  deviceAsleepDetail,
+  deviceRemovalProfiles,
+  homeKeptWords,
+  hostsDeployment,
+} from "@opensteer/client/computers";
 import {
   canRespondToRequests,
   fullAccessOnThisMac,
@@ -62,6 +68,10 @@ import { deviceNotificationsOn, setDeviceNotifications } from "./device-preferen
 import { IphoneWifiRow } from "./iphone-wifi-row.js";
 import { computerAppIdFromHash, devicesRoute } from "./device-routes.js";
 import { useThisDevice } from "./this-device.js";
+import { HomeCloudComputerRow } from "../settings/sections/cloud-computer.js";
+import { HomeFacts, useHomeKind } from "./home-facts.js";
+import { openAppsPermissionsPanel } from "./macos-permission-rows.js";
+import { useToast } from "../toast.js";
 
 export function DevicePage() {
   const { deviceId } = useParams();
@@ -205,7 +215,7 @@ export function deviceRemovalCopy(input: {
   if (input.thisDevice)
     return {
       title: "Sign out and remove this Mac?",
-      body: "Your agent can no longer use this Mac. Browser profiles kept here are deleted. Your files stay.",
+      body: "Your own agents can no longer use this Mac. Browser profiles kept here are deleted. Your files stay.",
       confirm: "Sign out and remove",
     };
   const profiles = deviceRemovalProfiles(input.machine, input.profiles);
@@ -223,8 +233,10 @@ export function deviceRemovalCopy(input: {
 }
 
 function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
+  const homeKind = useHomeKind();
   const { desktopBridge, desktopDeployment, hostClient, openMobileNavigation, snapshot } =
     useShell();
+  const toast = useToast();
   const navigate = useNavigate();
   const deploymentName = useDeploymentName();
   const device = useThisDevice();
@@ -276,9 +288,16 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     ? phoneScreenDisconnectCopy(machine.name, screenMac.name)
     : null;
   const confirmation = confirming === "disconnect" ? disconnect : confirming ? removal : null;
+  const asleepDetail = deviceAsleepDetail(machine);
   const statusTone =
     screen?.tone ??
-    (machine.status === "online" ? "online" : machine.status === "offline" ? "offline" : "waiting");
+    (asleepDetail !== null
+      ? "waiting"
+      : machine.status === "online"
+        ? "online"
+        : machine.status === "offline"
+          ? "offline"
+          : "waiting");
   const appsSwitch = switches.find((item) => item.capability === "apps");
   const driverGeneration = machine.phoneDisplay?.driver?.generation;
   // A disconnected iPhone can be set up again on any of the person's Macs; one
@@ -563,9 +582,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
       onThisMac && desktopBridge ? (
         <button
           className="btn btn--small"
-          onClick={() =>
-            void desktopBridge.openComputerUsePermissionsPanel().catch(() => undefined)
-          }
+          onClick={() => void openAppsPermissionsPanel(desktopBridge, toast.error)}
           type="button"
         >
           Open System Settings
@@ -653,6 +670,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
               </span>
               {here ? <HerePin /> : null}
             </p>
+            {asleepDetail ? <p className="settings-footnote">{asleepDetail}</p> : null}
           </div>
         </header>
 
@@ -681,9 +699,14 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
 
         {home ? (
           <>
-            <div id="use-from-anywhere">
-              <RemoteAccessCard />
-            </div>
+            <HomeFacts machine={machine} />
+            {/* A networked Home is reached at its own address; only a loopback one has Remote access. */}
+            {snapshot.identityConfig?.exposure === "loopback" ? (
+              <div id="use-from-anywhere">
+                <RemoteAccessCard />
+              </div>
+            ) : null}
+            <HomeCloudComputerRow />
             {snapshot.personalSettings ? (
               <section aria-labelledby="device-home-folder" className="settings-group">
                 <h2 className="settings-group__title" id="device-home-folder">
@@ -700,9 +723,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
                 </Link>
               </section>
             ) : null}
-            <p className="settings-footnote">
-              Your Opensteer lives on this Mac, so it can’t be removed.
-            </p>
+            <p className="settings-footnote">{homeKeptWords(homeKind.kind)}</p>
           </>
         ) : machine.revocable || leavesHere ? (
           <section aria-label="Remove" className="device-remove">

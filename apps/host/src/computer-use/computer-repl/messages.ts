@@ -1,6 +1,7 @@
 import { ComputerUseTabRequestSchema, DeviceRefusalContextSchema } from "@opensteer/protocol";
 import { utf8Prefix } from "@opensteer/core";
 import { z } from "zod";
+import { BrowserReplRequestSchema } from "../../browser-use/browser-repl-messages.js";
 
 export const computerReplLimits = {
   sliceMs: 100,
@@ -19,6 +20,8 @@ export const computerReplLimits = {
   textBytes: 512 * 1024,
 } as const;
 export const ReplContentSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("ready"), context: z.string(), callId: z.string() }),
+  z.object({ type: z.literal("events-read"), context: z.string(), callId: z.string() }),
   z.object({ type: z.literal("text"), text: z.string() }),
   z.object({
     type: z.literal("image"),
@@ -65,6 +68,12 @@ export const ReplFailureSchema = z.object({
   machineId: DeviceRefusalContextSchema.shape.machineId.optional(),
   capability: DeviceRefusalContextSchema.shape.capability.optional(),
   code: z.string(),
+  cdpCode: z.number().int().optional(),
+  method: z
+    .string()
+    .max(256)
+    .regex(/^[a-zA-Z][a-zA-Z0-9.]*$/u)
+    .optional(),
   message: z.string(),
   next: z.string().nullable().optional(),
   performed: z.array(z.string()).default([]),
@@ -75,9 +84,11 @@ export function boundedReplFailure(error: ReplFailure): ReplFailure {
   return {
     ...(error.machineId ? { machineId: error.machineId } : {}),
     ...(error.capability ? { capability: error.capability } : {}),
-    code: utf8Prefix(error.code, 128),
-    message: utf8Prefix(error.message, 8192),
-    ...(error.next ? { next: utf8Prefix(error.next, 2000) } : {}),
+    code: utf8Prefix(error.code.slice(0, 128), 128),
+    ...(error.cdpCode === undefined ? {} : { cdpCode: error.cdpCode }),
+    ...(error.method === undefined ? {} : { method: error.method }),
+    message: utf8Prefix(error.message.slice(0, 8192), 8192),
+    ...(error.next ? { next: utf8Prefix(error.next.slice(0, 2000), 2000) } : {}),
     performed: error.performed.slice(0, 160).map((receipt) => utf8Prefix(receipt, 2048)),
   };
 }
@@ -87,6 +98,14 @@ export const ToWorkerSchema = z.discriminatedUnion("type", [
     context: z.string(),
     callId: z.string(),
     code: z.string(),
+    connection: z.literal(true).optional(),
+    events: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("events"),
+    context: z.string(),
+    callId: z.string(),
+    events: z.string(),
   }),
   z.object({ type: z.literal("cancel"), context: z.string(), callId: z.string() }),
   z.object({ type: z.literal("dispose"), context: z.string() }),
@@ -108,12 +127,25 @@ export const FromWorkerSchema = z.discriminatedUnion("type", [
     id: z.number(),
     request: ReplRequestSchema,
   }),
+  z.object({
+    type: z.literal("browser-request"),
+    context: z.string(),
+    callId: z.string(),
+    id: z.number(),
+    json: z.string(),
+  }),
+  z.object({ type: z.literal("ready"), context: z.string(), callId: z.string() }),
+  z.object({ type: z.literal("events-read"), context: z.string(), callId: z.string() }),
+  z.object({ type: z.literal("settled"), context: z.string(), callId: z.string() }),
   z.object({ type: z.literal("text"), context: z.string(), callId: z.string(), text: z.string() }),
   z.object({
     type: z.literal("done"),
     context: z.string(),
     callId: z.string(),
     error: ReplFailureSchema.optional(),
+    reset: z.boolean().optional(),
   }),
 ]);
 export type FromWorker = z.infer<typeof FromWorkerSchema>;
+
+export type AnyReplRequest = ReplRequest | z.infer<typeof BrowserReplRequestSchema>;

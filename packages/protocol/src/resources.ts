@@ -14,6 +14,7 @@ import {
 } from "./bootstrap.js";
 import {
   BrowserPlacementsViewSchema,
+  BrowserPoolReportsViewSchema,
   BrowserProfileDeletionsViewSchema,
   BrowserProfileHomesViewSchema,
   BrowserProfilesViewSchema,
@@ -47,8 +48,6 @@ export const personalResourceKinds = [
   "browser-availability",
   ...pluginChangeResources,
   "plugin-engine",
-  /** An accepted team reply was published; a client waiting on one rereads it. */
-  "team-replies",
 ] as const;
 
 export const PersonalRevisionSchema = z
@@ -129,10 +128,12 @@ export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("browser-placement"),
     placements: BrowserPlacementsViewSchema,
+    /** Only from a Home with a pooled browser. */
+    pools: BrowserPoolReportsViewSchema.optional(),
   }),
   z.object({ kind: z.literal("browser-home"), homes: BrowserProfileHomesViewSchema }),
   z.object({ kind: z.literal("browser-availability"), available: z.boolean() }),
-  z.object({ kind: z.enum([...pluginChangeResources, "team-replies"]) }),
+  z.object({ kind: z.enum(pluginChangeResources) }),
   z.object({ kind: z.literal("plugin-engine"), engine: PluginEngineStateViewSchema }),
 ]);
 

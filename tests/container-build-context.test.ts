@@ -67,6 +67,22 @@ describe("container build context", () => {
     ).resolves.toMatchObject({ stderr: "" });
   });
 
+  it("ships the trust module beside every copy of the container entrypoint, which imports it", async () => {
+    const containerfile = await readFile(resolve("deploy/container/Containerfile"), "utf8");
+    const stages = containerfile.split(/^FROM /mu);
+    let copies = 0;
+    for (const stage of stages) {
+      const name = stage.split("\n", 1)[0] ?? "";
+      for (const match of stage.matchAll(/(\/[^\s]*\/)opensteer-entrypoint\.mjs/gu)) {
+        copies += 1;
+        expect(stage, `${name}: ${match[1]}`).toContain(`${match[1]}opensteer-node-trust.mjs`);
+      }
+    }
+    expect(copies).toBeGreaterThan(0);
+    const entrypoint = await readFile(resolve("deploy/container/opensteer-entrypoint.mjs"), "utf8");
+    expect(entrypoint).toContain('from "./opensteer-node-trust.mjs"');
+  });
+
   it("verifies every shipped harness runtime through the Runner's own resolution", async () => {
     // The Runner's verifier resolves each engine exactly as the Runner will
     // launch it and compares `--version` with the harness catalog, so the
@@ -111,7 +127,7 @@ describe("container build context", () => {
     const containerfile = await readFile(resolve("deploy/container/Containerfile"), "utf8");
     expect(containerfile).toContain("node scripts/write-web-distribution-manifest.mjs");
     expect(containerfile).toContain(
-      "COPY --from=web-build --chown=10001:10001 /source/apps/web/dist /usr/local/share/opensteer/web",
+      "COPY --from=web-build /source/apps/web/dist /usr/local/share/opensteer/web",
     );
     expect(containerfile).toContain(
       "OPENSTEER_WEB_DISTRIBUTION_DIRECTORY=/usr/local/share/opensteer/web",
@@ -132,20 +148,9 @@ describe("container build context", () => {
     expect(runnerStage).toContain(
       "apt-get install --no-install-recommends --yes libcap2 openssh-client openssl rsync socat",
     );
-    expect(containerfile).toContain("AS bubblewrap-build");
-    expect(containerfile).toContain(
-      "69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6",
-    );
-    expect(containerfile).toContain("-Dsupport_setuid=false");
-    expect(runnerStage).toContain(
-      "COPY --from=bubblewrap-build --chmod=0555 /output/bwrap /usr/local/bin/bwrap",
-    );
-    // bubblewrap is LGPL, so its licence text has to travel with the binary.
-    expect(runnerStage).toContain(
-      "COPY --from=bubblewrap-build --chmod=0444 /output/COPYING /usr/local/share/licenses/bubblewrap/COPYING",
-    );
-    expect(runnerStage).toContain('test "$(bwrap --version)" = "bubblewrap 0.11.2"');
-    expect(runnerStage).toContain("test ! -u /usr/local/bin/bwrap");
+    // Codex brings its own bubblewrap; the image ships none of its own.
+    expect(containerfile).not.toContain("bubblewrap");
+    expect(runnerStage).not.toContain("bwrap");
     expect(runnerStage).toContain("test -x /usr/bin/socat");
     expect(containerfile).toContain("AS process-supervisor-build");
     expect(runnerStage).toContain(
@@ -317,8 +322,6 @@ describe("container build context", () => {
       "channel-runtime",
       "browser-runtime",
       "gateway",
-      "team-gateway",
-      "team-provisioner",
     ];
     for (const name of targetNames) {
       const start = containerfile.indexOf(` AS ${name}\n`);
@@ -383,9 +386,5 @@ it("builds and stages the plugin child and native runtime for the container's ow
   expect(build).toContain("pnpm --filter apps build");
   expect(build).toContain("pnpm --filter @opensteer/host build");
   expect(build).toContain("scripts/plugin-engine/stage-container-host.ts /output/host");
-  expect(recipe).toContain("COPY --from=host-build --chown=10001:10001 /output/host ./");
-  const gateway = recipe
-    .split(/^FROM /mu)
-    .find((stage) => stage.split("\n", 1)[0]?.endsWith(" AS team-gateway"));
-  expect(gateway).not.toContain("host-build");
+  expect(recipe).toContain("COPY --from=host-build /output/host ./");
 });

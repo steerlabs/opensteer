@@ -6,6 +6,8 @@ import { toolAccess } from "./tool-access.js";
 function authority() {
   const caller: ConnectionCaller = {
     kind: "connection",
+    grant: { scope: "everything" },
+    grantRevision: 1,
     key: "connection:test",
     connectionId: "test",
     userId: createId("user"),

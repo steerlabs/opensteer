@@ -38,6 +38,9 @@ export class KeyedMutationQueue {
       if (--entry.users === 0) this.#entries.delete(key);
     });
   }
+  busy(key: string): boolean {
+    return this.#entries.has(key);
+  }
   keys(): readonly string[] {
     return [...this.#entries.keys()];
   }

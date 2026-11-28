@@ -17,6 +17,8 @@ import {
   type TriggerDetail,
 } from "@opensteer/client/host";
 import {
+  AutomationSecretNameSchema,
+  TRIGGER_SCRIPT_UPDATE_REASON,
   triggerOccurrenceErrorMessage,
   type TriggerOccurrence,
   type TriggerSummary,
@@ -30,7 +32,9 @@ import { useToast } from "../toast.js";
 import { conversationPath, useMinuteClock } from "../../ui-utils.js";
 import {
   automationShape,
+  prunedOutputNotice,
   runOutcome,
+  runOutput,
   scheduleStatusWord,
   describeEvent,
   describeRepeating,
@@ -131,9 +135,11 @@ function summaryOf(detail: TriggerDetail): TriggerSummary {
     latestOccurrence: latest
       ? {
           completedAt: latest.completedAt,
+          contactLostAt: latest.contactLostAt ?? null,
           createdAt: latest.createdAt,
           error: triggerOccurrenceErrorMessage(latest.error),
           id: latest.id,
+          ...(latest.sent !== undefined ? { sent: latest.sent } : {}),
           source: latest.event.source.kind,
           status: latest.status,
         }
@@ -173,6 +179,7 @@ function AutomationView({
   const [pending, setPending] = useState(false);
   const [changingTime, setChangingTime] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [secretsUnreadableDetected, setSecretsUnreadableDetected] = useState(false);
   const deleteRef = useRef<HTMLButtonElement | null>(null);
   const conversation = conversationPath(trigger.anchorThreadId);
   const conversationTitle = conversationName(detail.anchorThreadTitle);
@@ -482,6 +489,78 @@ function AutomationView({
         ) : null}
       </dl>
 
+      {managed ? null : (
+        <AutomationSecretsSection
+          archived={archived}
+          disabled={pending}
+          names={detail.secretNames ?? []}
+          onClearAll={() => {
+            void act(async () => {
+              await client.dispatch({
+                clearAll: true,
+                idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
+                triggerId: trigger.id,
+                type: "trigger.secrets.set",
+              });
+              setSecretsUnreadableDetected(false);
+              await refresh();
+              return "Cleared all secrets";
+            });
+          }}
+          onRemove={(name) => {
+            void act(async () => {
+              try {
+                await client.dispatch({
+                  idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
+                  remove: [name],
+                  triggerId: trigger.id,
+                  type: "trigger.secrets.set",
+                });
+              } catch (error) {
+                if (
+                  typeof error === "object" &&
+                  error !== null &&
+                  "reason" in error &&
+                  (error as { readonly reason?: unknown }).reason ===
+                    "automation-secrets-unreadable"
+                ) {
+                  setSecretsUnreadableDetected(true);
+                }
+                throw error;
+              }
+              await refresh();
+              return `Removed ${name}`;
+            });
+          }}
+          onSave={(name, value, mode) =>
+            act(async () => {
+              try {
+                await client.dispatch({
+                  idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
+                  set: { [name]: value },
+                  triggerId: trigger.id,
+                  type: "trigger.secrets.set",
+                });
+              } catch (error) {
+                if (
+                  typeof error === "object" &&
+                  error !== null &&
+                  "reason" in error &&
+                  (error as { readonly reason?: unknown }).reason ===
+                    "automation-secrets-unreadable"
+                ) {
+                  setSecretsUnreadableDetected(true);
+                }
+                throw error;
+              }
+              await refresh();
+              return mode === "add" ? `Added ${name}` : `Replaced ${name}`;
+            })
+          }
+          unreadable={detail.secretsUnreadable === true || secretsUnreadableDetected}
+        />
+      )}
+
       {shape === "watch" ? null : (
         <RecentRuns
           detail={detail}
@@ -614,7 +693,7 @@ function When({
     );
   }
   if (shape === "watch" && detail.activation) {
-    const state = watchState(detail.activation.observed);
+    const state = watchState(detail.activation.observed, detail.activation.contactLostAt, now);
     return (
       <>
         {describeEvent("watch", machine)}
@@ -764,6 +843,7 @@ const runGlyph = {
   pending: { icon: "clock", tone: "warn" },
   running: { icon: "activity", tone: "accent" },
   succeeded: { icon: "check-circle", tone: "ok" },
+  unknown: { icon: "help-circle", tone: "warn" },
 } as const satisfies Record<TriggerOccurrence["status"], { icon: string; tone: Tone }>;
 
 function RunRow({
@@ -805,7 +885,9 @@ function RunRow({
           )}
           {error ? <q className="automation-run__error">{error.trim().split("\n", 1)[0]}</q> : null}
         </span>
-        {output ? (
+        {occurrence.outputPrunedAt ? (
+          <span className="automation-run__outcome">{prunedOutputNotice}</span>
+        ) : output ? (
           <details className="automation-run__output">
             <summary>Output</summary>
             <pre>{output}</pre>
@@ -820,28 +902,19 @@ function RunRow({
           Open
         </AreaLink>
       ) : null}
-      {occurrence.status === "pending" ? (
+      {occurrence.status === "pending" ||
+      (occurrence.status === "running" && occurrence.contactLostAt) ? (
         <button
           className="btn btn--small"
           disabled={disabled}
           onClick={() => onCancel(occurrence.id)}
           type="button"
         >
-          Cancel
+          {occurrence.status === "running" ? "Mark unknown" : "Cancel"}
         </button>
       ) : null}
     </div>
   );
-}
-
-/** The program's own output, for the curious: what it printed, returned or threw. */
-function runOutput(occurrence: TriggerOccurrence): string | null {
-  const parts = [
-    occurrence.stdout.trim(),
-    occurrence.stderr.trim(),
-    occurrence.result === null ? "" : JSON.stringify(occurrence.result, null, 2),
-  ].filter(Boolean);
-  return parts.length > 0 ? parts.join("\n\n") : null;
 }
 
 /**
@@ -862,13 +935,17 @@ function Advanced({
     <details className="automation-advanced">
       <summary>
         Advanced
-        <span className="automation-advanced__hint">Its program, logs and code</span>
+        <span className="automation-advanced__hint">Its script, logs and code</span>
       </summary>
       <div className="automation-advanced__body">
         <div className="automation-advanced__head">
           <span>
-            {revision.program.language === "typescript" ? "TypeScript" : "JavaScript"} program,
-            version {revision.ordinal}
+            {revision.script
+              ? revision.script.interpreter
+                ? `${revision.script.interpreter.join(" ")} script`
+                : "Node.js script"
+              : TRIGGER_SCRIPT_UPDATE_REASON}
+            , version {revision.ordinal}
           </span>
           {archived || detail.trigger.systemRole != null ? null : (
             <AreaLink
@@ -879,7 +956,9 @@ function Advanced({
             </AreaLink>
           )}
         </div>
-        <pre className="automation-advanced__code">{revision.program.source}</pre>
+        <pre className="automation-advanced__code">
+          {revision.script?.text ?? revision.legacySource ?? ""}
+        </pre>
         {shape === "watch" && activation ? (
           <>
             <p className="automation-advanced__head">
@@ -900,11 +979,281 @@ function Advanced({
           </>
         ) : null}
         {shape === "webhook" ? (
-          <p className="automation-advanced__label">
-            Its webhook address and secret were shown once, when it was created.
-          </p>
+          detail.webhook?.url ? (
+            <>
+              <p className="automation-advanced__label">
+                Webhook address ({detail.webhook.scope === "public" ? "public" : "local only"})
+              </p>
+              <pre className="automation-advanced__code">{detail.webhook.url}</pre>
+            </>
+          ) : (
+            <p className="automation-advanced__label">Webhook address is unavailable.</p>
+          )
         ) : null}
       </div>
     </details>
+  );
+}
+
+/** Write-only secrets for one automation: names are listed; values are never shown again. */
+function AutomationSecretsSection({
+  archived,
+  disabled,
+  names,
+  onClearAll,
+  onRemove,
+  onSave,
+  unreadable,
+}: {
+  readonly archived: boolean;
+  readonly disabled: boolean;
+  readonly names: readonly string[];
+  readonly onClearAll: () => void;
+  readonly onRemove: (name: string) => void;
+  readonly onSave: (name: string, value: string, mode: "add" | "replace") => Promise<void>;
+  readonly unreadable: boolean;
+}) {
+  const [editing, setEditing] = useState<{
+    readonly mode: "add" | "replace";
+    readonly name: string;
+  } | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
+  const [confirmingClearAll, setConfirmingClearAll] = useState(false);
+  const [nameInput, setNameInput] = useState("");
+  const [valueInput, setValueInput] = useState("");
+  const [invalid, setInvalid] = useState<string | null>(null);
+
+  const openAdd = () => {
+    setConfirmingRemove(null);
+    setConfirmingClearAll(false);
+    setEditing({ mode: "add", name: "" });
+    setNameInput("");
+    setValueInput("");
+    setInvalid(null);
+  };
+  const openReplace = (name: string) => {
+    setConfirmingRemove(null);
+    setConfirmingClearAll(false);
+    setEditing({ mode: "replace", name });
+    setNameInput(name);
+    setValueInput("");
+    setInvalid(null);
+  };
+  const close = () => {
+    setEditing(null);
+    setNameInput("");
+    setValueInput("");
+    setInvalid(null);
+  };
+  const trimmedAddName = editing?.mode === "add" ? nameInput.trim() : "";
+  const existingMatch =
+    trimmedAddName.length > 0
+      ? (names.find((existing) => existing.toLowerCase() === trimmedAddName.toLowerCase()) ?? null)
+      : null;
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editing || unreadable) return;
+    const targetName = editing.mode === "add" ? nameInput.trim() : editing.name;
+    const parsedName = AutomationSecretNameSchema.safeParse(targetName);
+    if (!parsedName.success) {
+      setInvalid(
+        "Use 1 to 64 letters, digits, or underscores starting with a letter or underscore.",
+      );
+      return;
+    }
+    if (valueInput.length === 0) {
+      setInvalid("Enter a value.");
+      return;
+    }
+    setInvalid(null);
+    const valueToSave = valueInput;
+    setValueInput("");
+    await onSave(parsedName.data, valueToSave, editing.mode);
+    close();
+  };
+
+  return (
+    <section aria-labelledby="automation-secrets" className="automations-group" id="secrets">
+      <div className="automation-secrets__head">
+        <h2 className="automations-group__title" id="automation-secrets">
+          Secrets
+        </h2>
+        {archived || editing || unreadable ? null : (
+          <button className="btn btn--small" disabled={disabled} onClick={openAdd} type="button">
+            Add
+          </button>
+        )}
+      </div>
+      <p className="automation-secrets__note">
+        Values are added to the script’s environment as <code>OPENSTEER_SECRET_&lt;NAME&gt;</code>{" "}
+        and aren’t shown again. The script, and any agent that can change it, can read them there. A
+        script that prints a secret puts it in its run’s record, where agents that can read this
+        automation can see it.
+      </p>
+      {unreadable ? (
+        <div className="automations-list">
+          <p className="notice" role="alert">
+            These secrets can no longer be read.
+          </p>
+          <div className="automation-secret-row">
+            <div className="automation-secret-row__actions">
+              {confirmingClearAll ? (
+                <>
+                  <button
+                    className="btn btn--small btn--ghost"
+                    disabled={disabled}
+                    onClick={() => setConfirmingClearAll(false)}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn--small btn--danger"
+                    disabled={disabled}
+                    onClick={() => {
+                      setConfirmingClearAll(false);
+                      onClearAll();
+                    }}
+                    type="button"
+                  >
+                    Confirm clear all
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn btn--small btn--danger"
+                  disabled={disabled}
+                  onClick={() => {
+                    close();
+                    setConfirmingClearAll(true);
+                  }}
+                  type="button"
+                >
+                  Clear all secrets
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          {editing ? (
+            <form className="automation-time" noValidate onSubmit={(event) => void submit(event)}>
+              {editing.mode === "add" ? (
+                <label className="field">
+                  <span className="field__label">Name</span>
+                  <input
+                    autoComplete="off"
+                    className="text-input"
+                    name="secret-name"
+                    onChange={(event) => setNameInput(event.currentTarget.value)}
+                    placeholder="API_TOKEN"
+                    required
+                    type="text"
+                    value={nameInput}
+                  />
+                  {existingMatch ? (
+                    <span className="field__hint">
+                      {existingMatch === trimmedAddName
+                        ? `Saving replaces the existing ${existingMatch} secret.`
+                        : `Conflicts with existing ${existingMatch} (names are case-insensitive).`}
+                    </span>
+                  ) : null}
+                </label>
+              ) : (
+                <p className="automation-secrets__target">
+                  Replacing <code>{editing.name}</code>
+                </p>
+              )}
+              <label className="field">
+                <span className="field__label">Value</span>
+                <input
+                  autoComplete="off"
+                  className="text-input"
+                  name="secret-value"
+                  onChange={(event) => setValueInput(event.currentTarget.value)}
+                  required
+                  type="password"
+                  value={valueInput}
+                />
+              </label>
+              <div className="automation-time__actions">
+                <button className="btn btn--small btn--ghost" onClick={close} type="button">
+                  Cancel
+                </button>
+                <button className="btn btn--small btn--primary" disabled={disabled} type="submit">
+                  {disabled ? "Saving…" : "Save"}
+                </button>
+              </div>
+              {invalid ? (
+                <p className="form-actions__error" role="alert">
+                  {invalid}
+                </p>
+              ) : null}
+            </form>
+          ) : null}
+          <div className="automations-list">
+            {names.length === 0 ? (
+              <p className="automations-list__empty">No secrets yet.</p>
+            ) : (
+              names.map((name) => (
+                <div className="automation-secret-row" key={name}>
+                  <code className="automation-secret-row__name">{name}</code>
+                  <div className="automation-secret-row__actions">
+                    {confirmingRemove === name ? (
+                      <>
+                        <button
+                          className="btn btn--small btn--ghost"
+                          disabled={disabled}
+                          onClick={() => setConfirmingRemove(null)}
+                          type="button"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="btn btn--small btn--danger"
+                          disabled={disabled}
+                          onClick={() => {
+                            setConfirmingRemove(null);
+                            onRemove(name);
+                          }}
+                          type="button"
+                        >
+                          Confirm remove
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {archived ? null : (
+                          <button
+                            className="btn btn--small btn--ghost"
+                            disabled={disabled}
+                            onClick={() => openReplace(name)}
+                            type="button"
+                          >
+                            Replace
+                          </button>
+                        )}
+                        <button
+                          className="btn btn--small btn--ghost btn--danger"
+                          disabled={disabled}
+                          onClick={() => {
+                            close();
+                            setConfirmingRemove(name);
+                          }}
+                          type="button"
+                        >
+                          Remove
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </section>
   );
 }

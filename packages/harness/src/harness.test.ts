@@ -15,8 +15,6 @@ import {
   LiveSessionDirectory,
   parseGeneratedThreadName,
   threadTitlePrompt,
-  harnessRuntimeBoundaryForRunner,
-  nativeUserHarnessRuntimeBoundary,
   type HarnessAdapter,
   type HarnessCapabilities,
   type HarnessSession,
@@ -143,22 +141,6 @@ describe("session generation fencing", () => {
     });
     expect(directory.release(first)).toBe(false);
     expect(directory.get(threadId)?.generation).toBe(second.generation);
-  });
-});
-
-describe("harness runtime boundary", () => {
-  it("refuses engines on team servers", () => {
-    expect(() =>
-      harnessRuntimeBoundaryForRunner({ deploymentKind: "team", runnerKind: "main" }),
-    ).toThrow("Team servers cannot run agents");
-  });
-
-  it("keeps every Personal Runner native-user", () => {
-    for (const runnerKind of ["main", "local", "managed"] as const) {
-      expect(harnessRuntimeBoundaryForRunner({ deploymentKind: "personal", runnerKind })).toEqual(
-        nativeUserHarnessRuntimeBoundary,
-      );
-    }
   });
 });
 

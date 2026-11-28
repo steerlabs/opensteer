@@ -30,6 +30,8 @@ test-results
 
 # Generated Chrome extension distribution
 apps/web/public/browser-extension.zip
+apps/web/public/browser-live-tabs-extension.zip
+apps/browser-extension/dist-live-tabs/
 
 # The Agent Phone APK and manifest `pnpm build:agent-phone` places for setup in Chrome
 apps/web/public/agent-phone/

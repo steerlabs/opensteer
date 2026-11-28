@@ -130,6 +130,7 @@ describe.runIf(platformVerifies)("ExecutionContainment", () => {
     const containment = new ExecutionContainment({
       bootId: "rbt_a",
       dataDirectory: await dataDirectory(),
+      terminationGraceMs: 100,
     });
     const [stubborn] = await launch(
       containment,
@@ -163,6 +164,64 @@ describe.runIf(platformVerifies)("ExecutionContainment", () => {
     expect(alive(sibling!)).toBe(true);
     expect(alive(foreign!)).toBe(true);
   });
+
+  it.runIf(process.platform === "linux")(
+    "A1(b): on Linux, supervised double-forked worker with cleared environment is re-parented to the subreaper, found, and ended",
+    async () => {
+      const containment = new ExecutionContainment({
+        bootId: "rbt_subreaper",
+        dataDirectory: await dataDirectory(),
+        terminationGraceMs: 100,
+      });
+      const doubleForkScript = `
+        const { spawn } = require("node:child_process");
+        const middle = spawn(process.execPath, [
+          "-e",
+          \`
+            const { spawn } = require("node:child_process");
+            const worker = spawn(process.execPath, [
+              "-e",
+              'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);'
+            ], { detached: true, env: {}, stdio: "ignore" });
+            worker.unref();
+            process.stdout.write(String(worker.pid) + "\\\\n", () => process.exit(0));
+          \`,
+        ], { detached: true, env: {}, stdio: ["ignore", "pipe", "ignore"] });
+        let out = "";
+        middle.stdout.on("data", (chunk) => {
+          out += chunk.toString("utf8");
+          if (out.includes("\\n")) process.stdout.write(out);
+        });
+        setInterval(() => {}, 1000);
+      `;
+      const wrapped = containment.wrap(
+        "run_subreaper",
+        (input) => input,
+      )({
+        args: ["-e", doubleForkScript],
+        cwd: tmpdir(),
+        environment: { PATH: process.env.PATH ?? "" },
+        executable: process.execPath,
+      });
+      const supervisedProc = spawnSupervised({ ...wrapped, output: "raw", stdin: "closed" });
+      const [line] = await withTimeout(
+        (async () => {
+          for await (const chunk of supervisedProc.stdout)
+            return chunk.toString("utf8").split("\n");
+          return [];
+        })(),
+        5_000,
+        { timeoutError: () => new Error("Double-forked worker never reported its PID") },
+      );
+      const workerPid = Number(line);
+      expect(workerPid).toBeGreaterThan(0);
+      spawned.push(workerPid);
+      expect(alive(workerPid)).toBe(true);
+
+      await expect(containment.terminate("run_subreaper")).resolves.toBe("proven");
+      expect(alive(workerPid)).toBe(false);
+    },
+  );
 });
 
 describe("ExecutionContainment.liveRoots", () => {
@@ -231,6 +290,7 @@ describe("ExecutionContainment from supervised scopes, as on Windows", () => {
       bootId: "rbt_a",
       dataDirectory: await dataDirectory(),
       platform: "win32",
+      terminationGraceMs: 100,
     });
     await expect(containment.liveRoots("run_1")).resolves.toBe(0);
     const first = await supervised(containment, "run_1", "setInterval(()=>{},1000)");

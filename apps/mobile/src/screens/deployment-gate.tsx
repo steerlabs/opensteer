@@ -1,17 +1,31 @@
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import type { DeploymentId } from "@opensteer/core";
+import { HeaderHeightContext } from "@react-navigation/elements";
 import { useNavigation } from "@react-navigation/native";
-import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
-import { deploymentStatusDetail, deploymentStatusLabel } from "../client/deployment-rows.js";
+import { useCallback, useContext, useState, useSyncExternalStore, type ReactNode } from "react";
+import { ScrollView, StyleSheet, View } from "react-native";
+import {
+  deploymentStatusDetail,
+  deploymentStatusLabel,
+  isMacHomeRow,
+} from "../client/deployment-rows.js";
+import { GateAsleepLine } from "./gate-asleep-line.js";
 import { resetToDeployments } from "../navigation-ref.js";
+import { deploymentsTitle } from "./deployments-title.js";
 import { color, space } from "../theme.js";
 import { ConnectionGate, type ConnectionGateButton } from "../ui/connection-gate.js";
 import { ConnectionRouteGate } from "../ui/route-gate.js";
 import { useShellGate } from "../ui/shell-gate.js";
+import { useContentInsets } from "../ui/pane.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import { AppText, PrimaryButton, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import {
+  AppText,
+  DisplayTitle,
+  PrimaryButton,
+  RowGroup,
+  SecondaryButton,
+} from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { deploymentRecoveryLabel, runDeploymentRecovery } from "./deployment-recovery.js";
 import { deploymentUpdateRows } from "./deployment-update.js";
@@ -61,7 +75,10 @@ export function useAttachedHostOf(deploymentId: string | null): HostClient | nul
  */
 export function DeploymentGate(props: {
   readonly deploymentId: string;
-  /** Room for a transparent bar above the content. */
+  /**
+   * Room for a transparent bar above the content. A route with an opaque bar leaves it out (the
+   * stack lays the screen out below it), and one with no bar too: the gate clears the status bar.
+   */
   readonly paddingTop?: number;
 }): ReactNode {
   const navigation = useNavigation();
@@ -89,7 +106,11 @@ export function DeploymentGate(props: {
       ? { label: "Other computers", onPress: () => navigation.navigate("DeploymentSwitcher") }
       : null;
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
-  const top = { paddingTop: props.paddingTop ?? 0 };
+  const insets = useContentInsets();
+  // The safe-area provider stands outside the stack: under an opaque bar its top inset is still the
+  // status bar's, which that bar already clears. Only a route with no bar clears it here.
+  const bar = useContext(HeaderHeightContext);
+  const top = { paddingTop: props.paddingTop ?? (bar ? 0 : insets.top) };
   const iphone = useOptionalIphoneApps();
   const removedFrom = useRemovedFrom(iphone);
   // Every branch below explains this computer, so the pill would only repeat it.
@@ -114,13 +135,19 @@ export function DeploymentGate(props: {
   if (row === undefined) {
     return (
       <Screen>
-        <View style={[styles.content, column, top]}>
-          <AppText role="displaySmall">This deployment is gone</AppText>
+        {/* Centred while it fits; at a large text size it scrolls, from below the bar, so
+            the title is never under the bar and the way back is never off the screen. */}
+        <ScrollView
+          contentContainerStyle={[styles.scrolling, column, top]}
+          contentInsetAdjustmentBehavior="never"
+        >
+          {/* In a person's words, and back to the list by its own title. */}
+          <DisplayTitle size="small">This Home is no longer here</DisplayTitle>
           <AppText role="secondary" tone="muted">
-            It is no longer in this phone&apos;s list. Add it again from Deployments.
+            {`It isn’t in this phone’s list any more. You can add it again from ${deploymentsTitle}.`}
           </AppText>
-          <SecondaryButton label="Choose a deployment" onPress={resetToDeployments} />
-        </View>
+          <SecondaryButton label={deploymentsTitle} onPress={resetToDeployments} />
+        </ScrollView>
       </Screen>
     );
   }
@@ -152,8 +179,12 @@ export function DeploymentGate(props: {
   if (row.status === "unverified" || row.verification === "host-too-old") {
     return (
       <Screen>
-        <View style={[styles.content, column, top]}>
-          <AppText role="displaySmall">{row.name}</AppText>
+        {/* Scrolls at a large text size, as the gate above does: the ways on stay in reach. */}
+        <ScrollView
+          contentContainerStyle={[styles.scrolling, column, top]}
+          contentInsetAdjustmentBehavior="never"
+        >
+          <DisplayTitle size="small">{row.name}</DisplayTitle>
           <AppText role="secondary" tone="muted">
             {refused ?? deploymentStatusDetail(row)}
           </AppText>
@@ -166,7 +197,7 @@ export function DeploymentGate(props: {
             onPress={() => act(() => client.retrySelection())}
           />
           {away === null ? null : <SecondaryButton label={away.label} onPress={away.onPress} />}
-        </View>
+        </ScrollView>
       </Screen>
     );
   }
@@ -191,6 +222,9 @@ export function DeploymentGate(props: {
         line={refused}
         name={row.name}
         secondary={away}
+        unreachable={
+          <GateAsleepLine deploymentId={deploymentId} macHome={isMacHomeRow(row)} name={row.name} />
+        }
         signIn={{
           busy: working,
           label: deploymentRecoveryLabel(row),
@@ -221,7 +255,7 @@ function useRemovedFrom(controller: IphoneAppsController | null) {
 const noSubscription = () => () => undefined;
 
 const styles = StyleSheet.create({
-  content: { flex: 1, gap: space[8], justifyContent: "center" },
+  scrolling: { flexGrow: 1, gap: space[8], justifyContent: "center", paddingVertical: space[16] },
   gate: { backgroundColor: color.background, flex: 1 },
   removed: { backgroundColor: color.background, flex: 1 },
 });

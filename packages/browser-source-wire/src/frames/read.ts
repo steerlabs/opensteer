@@ -1,4 +1,13 @@
 import { z } from "zod";
+import {
+  BrowserSourceLiveTabsCapabilitySchema,
+  browserSourceTabClientSchemas,
+  browserSourceTabHostSchemas,
+  browserSourceTabWire,
+  browserSourceTabDetachWire,
+  browserSourceTabDetachReplayWire,
+} from "./tab.js";
+import { browserSourceWireCurrent } from "./versions.js";
 import { BrowserSourceOriginSchema } from "../frozen/browser-source.js";
 import { PersonalAccessRouteGenerationSchema } from "../frozen/personal-access-route.js";
 import { BrowserSourceIdSchema } from "../frozen/primitives.js";
@@ -41,6 +50,7 @@ const ExportProblemSchema = z
   });
 
 const hostMessageSchemas = {
+  ...browserSourceTabHostSchemas,
   "source.error": z.discriminatedUnion("code", [
     z.object({
       type: z.literal("source.error"),
@@ -61,7 +71,11 @@ const hostMessageSchemas = {
     /** The negotiated wire version; absent from a wire-4 Host. */
     wire: z.number().int().positive().optional(),
   }),
-  "source.ready": z.object({ type: z.literal("source.ready"), sourceId: BrowserSourceIdSchema }),
+  "source.ready": z.object({
+    type: z.literal("source.ready"),
+    sourceId: BrowserSourceIdSchema,
+    capability: BrowserSourceLiveTabsCapabilitySchema.optional(),
+  }),
   "source.inspect": z.object({
     type: z.literal("source.inspect"),
     operationId: OperationIdSchema,
@@ -76,6 +90,7 @@ const hostMessageSchemas = {
 };
 
 const clientMessageSchemas = {
+  ...browserSourceTabClientSchemas,
   "source.challenge": z.object({
     type: z.literal("source.challenge"),
     origin: BrowserSourceOriginSchema,
@@ -88,6 +103,7 @@ const clientMessageSchemas = {
     sourceId: BrowserSourceIdSchema,
     token: TokenSchema,
     version: z.number().int().positive(),
+    capability: BrowserSourceLiveTabsCapabilitySchema.optional(),
   }),
   "source.inspect.result": z.object({
     type: z.literal("source.inspect.result"),
@@ -111,18 +127,26 @@ export type BrowserSourceHostFrame = Known<typeof hostMessageSchemas>;
 export type BrowserSourceClientFrame = Known<typeof clientMessageSchemas>;
 
 /** One frame a wire >= 5 Host sent, as JSON text. */
-export function readHostMessage(raw: string): BrowserSourceHostFrame | UnknownMessage | null {
-  return readMessage(raw, hostMessageSchemas);
+export function readHostMessage(
+  raw: string,
+  wire = browserSourceWireCurrent,
+): BrowserSourceHostFrame | UnknownMessage | null {
+  return readMessage(raw, hostMessageSchemas, wire, browserSourceTabDetachReplayWire);
 }
 
 /** One frame a wire >= 5 extension sent, as JSON text. */
-export function readClientMessage(raw: string): BrowserSourceClientFrame | UnknownMessage | null {
-  return readMessage(raw, clientMessageSchemas);
+export function readClientMessage(
+  raw: string,
+  wire = browserSourceWireCurrent,
+): BrowserSourceClientFrame | UnknownMessage | null {
+  return readMessage(raw, clientMessageSchemas, wire, browserSourceTabDetachWire);
 }
 
 function readMessage<Schemas extends Record<string, z.ZodType>>(
   raw: string,
   schemas: Schemas,
+  wire: number,
+  detachWire: number,
 ): Known<Schemas> | UnknownMessage | null {
   let value: unknown;
   try {
@@ -133,7 +157,9 @@ function readMessage<Schemas extends Record<string, z.ZodType>>(
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const type: unknown = "type" in value ? value.type : undefined;
   if (typeof type !== "string") return null;
-  if (!Object.hasOwn(schemas, type)) return { type: "unknown" };
+  if ((wire < browserSourceTabWire && type.startsWith("tab.")) || !Object.hasOwn(schemas, type))
+    return { type: "unknown" };
+  if (wire < detachWire && type === "tab.detached") return { type: "unknown" };
   const parsed = schemas[type as keyof Schemas]!.safeParse(value);
   return parsed.success ? (parsed.data as Known<Schemas>) : null;
 }

@@ -81,7 +81,7 @@ function SetupForm(props: SetupFormProps): ReactNode {
                 <Footer text={props.disclosure} />
               )
             }
-            title="Your agent can use"
+            title="Your own agents can use"
           >
             {props.agent.map((row) => (
               <Switch key={row.key} onToggle={props.onToggle} row={row} />
@@ -135,7 +135,7 @@ function ReadyForm(props: ReadyFormProps): ReactNode {
             {props.body}
           </Text>
         </Section>
-        <Section title="Your agent can use">
+        <Section title="Your own agents can use">
           {props.agent.map((row) => (
             <Value key={row.key} row={row} />
           ))}
@@ -234,10 +234,19 @@ function Page(props: { readonly action: ReactNode; readonly children: ReactNode 
 
 function Pinned(props: {
   readonly busy: boolean;
+  readonly disabled?: boolean;
   readonly label: string;
   readonly onPress: () => void;
 }): ReactNode {
-  return <PrimaryButton busy={props.busy} label={props.label} onPress={props.onPress} prominent />;
+  return (
+    <PrimaryButton
+      busy={props.busy}
+      disabled={props.disabled === true}
+      label={props.label}
+      onPress={props.onPress}
+      prominent
+    />
+  );
 }
 
 const styles = StyleSheet.create({

@@ -37,6 +37,33 @@ import {
   runProviderRetryMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
+import { agentGrantsMigrationName, applyAgentGrants } from "./agent-grants-migration.js";
+import { agentSessionsMigrationName, applyAgentSessions } from "./agent-sessions-migration.js";
+import {
+  agentDirectoryMigrationName,
+  applyAgentDirectoryVerification,
+} from "./agent-directory-migration.js";
+import { platformVerificationRemovalMigration } from "./platform-verification-removal-migration.js";
+import {
+  onePersonHomeContractMigration,
+  onePersonHomeFirstMigration,
+} from "./one-person-home-migration.js";
+import {
+  browserPoolMigrationName,
+  applyBrowserPool,
+  browserPoolSessionsMigrationName,
+  applyBrowserPoolSessions,
+} from "./browser-pool-migration.js";
+import {
+  applyBridgeConnections,
+  bridgeConnectionsMigrationName,
+} from "./bridge-connections-migration.js";
+import { applyChatRoutesEnd, chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
+import {
+  applyAutomationsContract,
+  automationsContractMigrationName,
+} from "./automation-scripts-migration.js";
+export { automationsContractMigrationName } from "./automation-scripts-migration.js";
 import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
@@ -317,6 +344,7 @@ create unique index plugins_owner_name on plugins(installed_by, name);
  * the Host stores each such package again under its current digest at startup.
  */
 export const pluginPackageFormatMigrationName = "0037_plugin_package_format";
+export const commandRequestsMigrationName = "0112_command_requests";
 const PLUGIN_PACKAGE_FORMAT_SQL = `
 alter table plugin_versions add column package_format text;
 `;
@@ -618,11 +646,442 @@ export function migrationProvider(options?: {
               [threadDoneByMigrationName]: { up: applyThreadDoneBy },
               [runProviderRetryMigrationName]: { up: applyRunProviderRetry },
               [taskOpenIndexesMigrationName]: { up: applyTaskOpenIndexes },
+              [agentGrantsMigrationName]: { up: applyAgentGrants },
+              [agentSessionsMigrationName]: { up: applyAgentSessions },
+              "0102_chrome_live_tabs_source": {
+                async up(database: Kysely<unknown>) {
+                  await sql`alter table browser_sources add column live_tabs_only boolean not null default false`.execute(
+                    database,
+                  );
+                },
+              },
+              [agentDirectoryMigrationName]: { up: applyAgentDirectoryVerification },
+              "0104_shared_chrome_grants": {
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table browser_source_pairings add column device_id text;
+                    alter table browser_sources add column device_id text;
+                    alter table agent_connections add column shared_chrome_attempts jsonb not null default '{}';
+                  `.execute(database);
+                },
+              },
+              ...onePersonHomeFirstMigration,
+              [browserPoolMigrationName]: { up: applyBrowserPool },
+              "0107_needs_you_counts_requests": {
+                /**
+                 * A Home that used teams counted its teammates' asks in Needs you, and those
+                 * rows no longer list: the count is what the list shows, Requests alone, and the
+                 * pending count with it, so neither can sit below the other. A database still
+                 * converting gets the same: one past its count stage keeps this, one before it
+                 * counts again the same way.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`update client_sync_state set pending_request_count=listed.count,
+                      needs_you_count=listed.count
+                    from (select count(*)::integer as count from personal_attention where kind='request') listed
+                    where pending_request_count is distinct from listed.count
+                      or needs_you_count is distinct from listed.count`.execute(database);
+                },
+              },
+              [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
+              [chatRoutesEndMigrationName]: { up: applyChatRoutesEnd },
+              // A Home is one person's, and a connected agent holds only what they granted.
+              ...onePersonHomeContractMigration,
+              // A connected agent is verified by the origin it is reached at, and nothing else.
+              ...platformVerificationRemovalMigration,
+              [commandRequestsMigrationName]: {
+                /**
+                 * An agent's proposed Home command rides an ordinary Request, with its parts in one
+                 * column. One open ask per proposer and thing.
+                 * An approval a restart cut off is found by its own small index, however many
+                 * Requests the Home has. Activity finds an agent's asks and the commands it ran at
+                 * once by who sent them (C5).
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table requests add column command jsonb;
+                    create unique index requests_command_open on requests
+                      (requested_by, (command->>'askKey'))
+                      where command is not null and status = 'pending';
+                    create index requests_command_running on requests (id)
+                      where status = 'fulfilled' and (command->'outcome'->>'status') = 'running';
+                    create index requests_command_proposer on requests
+                      ((command->'proposer'->>'key'), created_at desc)
+                      where command is not null;
+                    create index requests_command_thread on requests
+                      (originating_thread_id, created_at desc)
+                      where command is not null;
+                    create index commands_agent_caller on commands
+                      ((authority_source->>'callerKey'), created_at desc)
+                      where authority_source->>'kind' = 'mcp';
+                    -- A command with an effect outside the database, recorded before it acts and
+                    -- settled after: what a Disconnect waits on for a connection's (G4).
+                    create table command_attempts (
+                      id text primary key,
+                      requested_by text not null references users(id) on delete cascade,
+                      caller_key text not null,
+                      connection_id text references agent_connections(id) on delete cascade,
+                      type text not null,
+                      idempotency_key text not null,
+                      state text not null default 'running'
+                        check (state in ('running', 'done', 'failed', 'unknown')),
+                      started_at timestamptz not null default now(),
+                      settled_at timestamptz,
+                      check ((state = 'running') = (settled_at is null))
+                    );
+                    create index command_attempts_connection on command_attempts (connection_id)
+                      where connection_id is not null;
+                    create index command_attempts_running on command_attempts (id)
+                      where state = 'running';
+                    -- One key, one attempt (K1): an earlier one that did not fail answers instead.
+                    create unique index command_attempts_one_key on command_attempts
+                      (requested_by, caller_key, idempotency_key) where state <> 'failed';
+                  `.execute(database);
+                },
+              },
+              [automationsContractMigrationName]: { up: applyAutomationsContract },
+              "0114_thread_inputs_written_by_connection": {
+                /**
+                 * Indexes connection-written inputs per task so `threadContextLineage` checks
+                 * whether any ancestor task was written into by a connected agent without
+                 * scanning `thread_inputs` per ancestor.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    create index thread_inputs_written_by_connection
+                    on thread_inputs(thread_id)
+                    where connection_id is not null
+                      and (
+                        state <> 'cancelled'
+                        or run_id is not null
+                        or steer_command_id is not null
+                        or delivered_at is not null
+                      )
+                  `.execute(database);
+                },
+              },
+              "0115_provider_session_person_lineage": {
+                /**
+                 * Tracks whether a native provider session was created under the person's own
+                 * lineage so a narrowing (`true -> false`) rotates the session instead of
+                 * resuming a conversation that already loaded the person's own configuration.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table provider_sessions
+                    add column person_lineage boolean not null default true
+                  `.execute(database);
+                },
+              },
+              [browserPoolSessionsMigrationName]: { up: applyBrowserPoolSessions },
+              "0117_stop_truth_and_recovery": {
+                /**
+                 * Records why an interrupted Run ended (e.g. a shared engine had to retire),
+                 * why a queued Run is being held back from starting, when a late stop proof
+                 * arrived, and the failure code of a failed task so lists do not collapse
+                 * unconfirmed stops into generic failures. A shell a connected agent's Run opens
+                 * carries its Disconnect attempt: the connection and grant it was admitted under,
+                 * the target's stream, and that stream's end evidence.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table runs
+                      add column if not exists interrupted_cause text check (interrupted_cause in ('lease-lost', 'engine-retired')),
+                      add column if not exists start_hold_reason text check (start_hold_reason in ('previous-stop-unconfirmed')),
+                      add column if not exists stop_confirmed_at timestamptz;
+                    alter table threads
+                      add column if not exists failure_code text,
+                      add column if not exists run_start_hold_reason text check (run_start_hold_reason in ('previous-stop-unconfirmed')),
+                      add column if not exists unconfirmed_stop_run_id text;
+                    alter table runners
+                      add column if not exists machine_boot_id text;
+                    alter table run_attempts
+                      add column if not exists machine_boot_id text;
+                    -- A shell a connection's Run opens is an attempt in its Disconnect set:
+                    -- admitted under the live connection, bound to the target's exact shell
+                    -- stream, ended by that stream's close receipt or by contact loss (A4).
+                    alter table machine_access_sessions
+                      add column if not exists connection_id text
+                        references agent_connections(id) on delete cascade,
+                      add column if not exists admitted_grant_revision integer,
+                      add column if not exists admitted_access_mode text,
+                      add column if not exists target_fence jsonb,
+                      add column if not exists terminal_evidence_at timestamptz,
+                      add column if not exists contact_lost_at timestamptz;
+                    create index if not exists machine_access_sessions_connection
+                      on machine_access_sessions(connection_id)
+                      where connection_id is not null;
+                    create index if not exists machine_access_sessions_unsettled
+                      on machine_access_sessions(runner_id)
+                      where connection_id is not null and terminal_evidence_at is null;
+                    create index if not exists threads_unconfirmed_stop_idx
+                      on threads(environment_id)
+                      where unconfirmed_stop_run_id is not null or run_start_hold_reason is not null;
+                    update threads t
+                      set failure_code = last_run.code,
+                          unconfirmed_stop_run_id = case when last_run.code = 'execution_termination_unproven' then last_run.id else t.unconfirmed_stop_run_id end
+                      from (
+                        select distinct on (thread_id) thread_id, id, failure->>'code' as code
+                        from runs
+                        where maintenance is null
+                        order by thread_id, run_ordinal desc
+                      ) last_run
+                      where t.id = last_run.thread_id
+                        and t.status = 'failed'
+                        and last_run.code is not null;
+                    update client_sync_state set epoch = gen_random_uuid();
+                  `.execute(database);
+                },
+              },
+              "0118_problem_reports": {
+                /**
+                 * The partial indexes that let the Home count the outcomes it could not confirm
+                 * (docs/architecture.md, "Problems and reports") without reading every operation,
+                 * firing or chat reply it ever recorded. Unconfirmed Stops use 0117's index.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    create index if not exists agent_operations_unknown
+                      on agent_operations(completed_at) where outcome = 'unknown';
+                    create index if not exists trigger_occurrences_unknown
+                      on trigger_occurrences(updated_at) where status = 'unknown';
+                    create index if not exists bridge_deliveries_unknown
+                      on bridge_deliveries(updated_at) where status = 'unknown';
+                  `.execute(database);
+                },
+              },
+              "0119_automation_secret_names": {
+                /**
+                 * Stores each automation's sorted secret names unsealed beside `encrypted_secrets`
+                 * so listing names never requires decrypting values and a key mismatch never blocks
+                 * opening the automation or removing unreadable secrets (S6).
+                 *
+                 * Flushes deferred `triggers_current_revision_fk` events before `alter table` so an
+                 * upgrade that runs `0113_automations_contract` and `0119_automation_secret_names`
+                 * in one Migrator transaction does not fail PostgreSQL's `CheckTableNotInUse`.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    set constraints triggers_current_revision_fk immediate;
+                    alter table triggers
+                      add column if not exists secret_names jsonb
+                        check (secret_names is null or jsonb_typeof(secret_names) = 'array');
+                    set constraints triggers_current_revision_fk deferred;
+                  `.execute(database);
+                },
+              },
+              "0120_run_waiting_for_run": {
+                /**
+                 * A queued Run whose computer's Runner runs as many Runs as it may is held as
+                 * `waiting-for-run` (offered again, unlike an unconfirmed stop), so the person
+                 * sees that it waits for another Run to end rather than "Starting".
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table runs
+                      drop constraint if exists runs_start_hold_reason_check,
+                      add constraint runs_start_hold_reason_check
+                        check (start_hold_reason in ('previous-stop-unconfirmed', 'waiting-for-run'));
+                    alter table threads
+                      drop constraint if exists threads_run_start_hold_reason_check,
+                      add constraint threads_run_start_hold_reason_check
+                        check (run_start_hold_reason in ('previous-stop-unconfirmed', 'waiting-for-run'));
+                  `.execute(database);
+                },
+              },
+              "0121_one_device_switch_record_contract": {
+                /**
+                 * A device's switches live on its Device (`devices.access_policy`), which every
+                 * decision reads. The Runner's own copy was left by 0028 for a later contract
+                 * step and never read since; it held all-off for every new computer, so it
+                 * read as the opposite of the person's switches. Nothing of a person's is in it.
+                 * A contract step: no Home since 0028 names the column, so one still running the
+                 * previous release never reads or writes it.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table runners
+                      drop column if exists access_policy,
+                      drop column if exists access_policy_revision;
+                  `.execute(database);
+                },
+              },
+              "0122_command_attempt_outcomes": {
+                async up(database: Kysely<unknown>) {
+                  await sql`alter table command_attempts add column outcome jsonb`.execute(
+                    database,
+                  );
+                },
+              },
+              "0123_agent_operation_endings": {
+                /**
+                 * Why a connected agent's operation ended without a confirmed outcome, where the
+                 * Home knows it (the person's Stop or Disconnect, an expiry, a narrowed grant, a tab
+                 * the person closed). Earlier rows have none and read as before.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`alter table agent_operations add column ending text
+                    check (ending in ('stopped', 'disconnected', 'expired', 'narrowed',
+                      'tab-closed', 'contact-lost'))`.execute(database);
+                },
+              },
+              "0124_agent_session_device_holds": {
+                async up(database: Kysely<unknown>) {
+                  await sql`create table agent_session_device_holds (
+                    id text primary key,
+                    session_id text not null references agent_sessions(id) on delete cascade,
+                    device_name text not null,
+                    home_process_id uuid not null,
+                    unconfirmed_at timestamptz
+                  );
+                  create index agent_session_device_holds_session
+                    on agent_session_device_holds(session_id)`.execute(database);
+                },
+              },
+              "0125_retire_archived_profile_tabs": {
+                /**
+                 * Retires open and closed tabs left behind by browser profiles with explicit
+                 * deletion provenance (preserving tabs of profiles archived by device removal or
+                 * without provable deletion provenance), strips their IDs from tab_layouts.items,
+                 * drops only groups that this migration empties (preserving mixed and unrelated
+                 * groups), advances tab_layouts.revision for affected owners, and advances durable
+                 * client_sync_state sequence + tab/tab-layout resource revisions when rows retire.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    with retired as (
+                      delete from personal_tabs t
+                      using browser_profiles p
+                      where t.profile_id = p.id
+                        and t.owner_id = p.owner_id
+                        and p.archived_at is not null
+                        and (
+                          exists (
+                            select 1
+                            from browser_profile_deletions d
+                            where d.profile_id = p.id
+                              and d.state in ('pending-computer', 'pending-restart', 'deleted')
+                          )
+                          or exists (
+                            select 1
+                            from commands c
+                            where c.requested_by = p.owner_id
+                              and c.type = 'browser.profile.delete'
+                              and c.status = 'succeeded'
+                              and c.payload->'request'->>'profileId' = p.id
+                          )
+                        )
+                      returning t.owner_id, t.id
+                    ),
+                    retired_by_owner as (
+                      select owner_id, array_agg(id) as ids
+                      from retired
+                      group by owner_id
+                    ),
+                    rebuilt as (
+                      select
+                        l.owner_id,
+                        coalesce(
+                          (
+                            select jsonb_agg(mapped.next_item order by elem.ord)
+                            from jsonb_array_elements(l.items) with ordinality as elem(item, ord)
+                            cross join lateral (
+                              select case
+                                when elem.item->>'kind' = 'tab' then
+                                  case when (elem.item->>'tabId') = any(r.ids) then null else elem.item end
+                                when elem.item->>'kind' = 'group' then
+                                  case
+                                    when exists (
+                                      select 1
+                                      from jsonb_array_elements_text(coalesce(elem.item->'group'->'tabIds', '[]'::jsonb)) as m(tab_id)
+                                      where m.tab_id = any(r.ids)
+                                    ) then (
+                                      select case
+                                        when count(*) = 0 then null
+                                        else jsonb_set(
+                                          elem.item,
+                                          '{group,tabIds}',
+                                          jsonb_agg(m.tab_id order by m.ord)
+                                        )
+                                      end
+                                      from jsonb_array_elements_text(coalesce(elem.item->'group'->'tabIds', '[]'::jsonb)) with ordinality as m(tab_id, ord)
+                                      where not (m.tab_id = any(r.ids))
+                                    )
+                                    else elem.item
+                                  end
+                                else elem.item
+                              end as next_item
+                            ) mapped
+                            where mapped.next_item is not null
+                          ),
+                          '[]'::jsonb
+                        ) as next_items
+                      from tab_layouts l
+                      join retired_by_owner r on r.owner_id = l.owner_id
+                    ),
+                    updated_layouts as (
+                      update tab_layouts l
+                      set
+                        items = rebuilt.next_items,
+                        revision = l.revision + 1
+                      from rebuilt
+                      where l.owner_id = rebuilt.owner_id
+                        and l.items is distinct from rebuilt.next_items
+                      returning l.owner_id
+                    )
+                    update client_sync_state s
+                    set
+                      sequence = s.sequence + 1,
+                      last_commit_at = greatest(s.last_commit_at, clock_timestamp()),
+                      resource_revisions =
+                        s.resource_revisions
+                        || jsonb_build_object(
+                          'tab', (s.sequence + 1)::text,
+                          'tab-layout', (s.sequence + 1)::text
+                        )
+                    where exists (select 1 from retired)
+                       or exists (select 1 from updated_layouts)
+                  `.execute(database);
+                },
+              },
+              "0126_agent_operation_profile_deleted": {
+                async up(database: Kysely<unknown>) {
+                  await sql`alter table agent_operations
+                    drop constraint agent_operations_ending_check,
+                    add constraint agent_operations_ending_check
+                      check (ending in ('stopped', 'disconnected', 'expired', 'narrowed',
+                        'tab-closed', 'profile-deleted', 'contact-lost'))`.execute(database);
+                },
+              },
+              "0127_task_done_agent_session_endings": {
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table agent_sessions
+                      drop constraint agent_sessions_end_reason_check,
+                      add constraint agent_sessions_end_reason_check
+                        check (end_reason in ('stopped', 'revoked', 'expired', 'narrowed', 'idle', 'done'));
+                    alter table agent_operations
+                      drop constraint agent_operations_ending_check,
+                      add constraint agent_operations_ending_check
+                        check (ending in ('stopped', 'disconnected', 'expired', 'narrowed',
+                          'tab-closed', 'profile-deleted', 'contact-lost', 'task-done'));
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };
     },
   };
+}
+/** A team server's database, which this release does not open. */
+export class RetiredTeamServerDatabaseError extends Error {
+  constructor() {
+    super(
+      "This database is a team server's. Team servers were removed in this release of Opensteer; the previous release still opens this database.",
+    );
+    this.name = "RetiredTeamServerDatabaseError";
+  }
 }
 export class MigrationLineageError extends Error {
   readonly unknownMigrations: readonly string[];
@@ -638,14 +1097,23 @@ export class MigrationLineageError extends Error {
 export async function migrateToLatest(
   database: Kysely<DatabaseSchema>,
   provider: MigrationProvider = migrationProvider(),
-  conversion?: Parameters<typeof completePersonalStateConversion>[2],
+  conversion?: Parameters<typeof completePersonalStateConversion>[2] & {
+    /** Called as each pending migration starts: the `step`th of `of`. */
+    readonly beforeMigration?: ((step: number, of: number) => void) | undefined;
+  },
 ): Promise<MigrationResultSet> {
   const migrations = await provider.getMigrations();
   const resolved: MigrationProvider = { getMigrations: async () => migrations };
+  const before = conversion?.beforeMigration;
   if (!Object.hasOwn(migrations, personalCurrentStateMigrationName))
-    return migrateRegisteredLineage(database, resolved, Object.keys(migrations));
+    return migrateRegisteredLineage(database, resolved, Object.keys(migrations), before);
   return withPersonalStateStartupLock(database, async (signal) => {
-    const result = await migrateRegisteredLineage(database, resolved, Object.keys(migrations));
+    const result = await migrateRegisteredLineage(
+      database,
+      resolved,
+      Object.keys(migrations),
+      before,
+    );
     signal.throwIfAborted();
     await completePersonalStateConversion(database, signal, conversion);
     return result;
@@ -656,19 +1124,33 @@ async function migrateRegisteredLineage(
   database: Kysely<DatabaseSchema>,
   provider: MigrationProvider,
   migrationNames: readonly string[],
+  beforeMigration?: (step: number, of: number) => void,
 ): Promise<MigrationResultSet> {
   const ledger = await sql<{
     exists: boolean;
   }>`select to_regclass('public.kysely_migration') is not null as exists`.execute(database);
   let hasAppliedMigrations = false;
+  const appliedNames = new Set<string>();
   if (ledger.rows[0]?.exists) {
     const known = new Set(migrationNames);
     const applied = await sql<{
       name: string;
     }>`select name from public.kysely_migration order by name`.execute(database);
     hasAppliedMigrations = applied.rows.length > 0;
+    for (const { name } of applied.rows) appliedNames.add(name);
     const unknown = applied.rows.map((row) => row.name).filter((name) => !known.has(name));
     if (unknown.length) throw new MigrationLineageError(unknown);
+    // Every migrated lineage has its Deployment row; a team server's is refused before any
+    // migration, schema or data, or the personal conversion touches its database.
+    if (hasAppliedMigrations) {
+      const deployment = await sql<{
+        kind: unknown;
+      }>`select deployment_shape->>'kind' as kind from deployments where singleton_key='primary'`.execute(
+        database,
+      );
+      const kind = deployment.rows[0]?.kind;
+      if (kind !== undefined && kind !== "personal") throw new RetiredTeamServerDatabaseError();
+    }
   }
   if (!hasAppliedMigrations) {
     const existing = await sql<{
@@ -678,7 +1160,26 @@ async function migrateRegisteredLineage(
     );
     if (existing.rows.length) throw new MigrationLineageError(["unversioned-database"]);
   }
-  const result = await new Migrator({ db: database, provider }).migrateToLatest();
+  // Kysely has no hook as a migration starts: each pending one says so before its own body.
+  const pending = migrationNames.filter((name) => !appliedNames.has(name));
+  const migrations = await provider.getMigrations();
+  const announced: MigrationProvider = beforeMigration
+    ? {
+        getMigrations: async () =>
+          Object.fromEntries(
+            Object.entries(migrations).map(([name, migration]) => {
+              const step = pending.indexOf(name) + 1;
+              if (!step) return [name, migration];
+              const up = async (db: Kysely<unknown>) => {
+                beforeMigration(step, pending.length);
+                await migration.up(db);
+              };
+              return [name, { ...migration, up }];
+            }),
+          ),
+      }
+    : provider;
+  const result = await new Migrator({ db: database, provider: announced }).migrateToLatest();
   const failure = result.results?.find((entry) => entry.status === "Error");
   if (result.error || failure)
     throw new Error(`Database migration failed${failure ? ` at ${failure.migrationName}` : ""}`, {

@@ -1,10 +1,13 @@
 import type { DeploymentId } from "@opensteer/core";
 import { HostTransportError } from "@opensteer/client/connections";
 import { fileTransferHeadersTimeoutMs } from "@opensteer/protocol";
+import { responseChunkReader } from "@opensteer/shared/boundedJson";
 import {
   DesktopHostTransportErrorCodeSchema,
+  type DesktopHostTransportErrorCode,
   desktopHostRequestIdHeader,
   desktopHostRouteUrl,
+  desktopHostStreamErrorRouteUrl,
   desktopHostTransportErrorHeader,
   isDesktopHostUploadPath,
   type DesktopCloseHostWebSocketInput,
@@ -71,7 +74,7 @@ export function createDesktopHostFetch(
       // Main's answer to this caller's own cancel can arrive before fetch rejects; the caller's reason wins.
       if (failure.success)
         throw caller.aborted ? caller.reason : new HostTransportError(failure.data);
-      return release ? releasedWhenSettled(response, caller, release) : response;
+      return streamWithTransportErrors(response, caller, requestId, fetch, release);
     } catch (error) {
       release?.();
       throw error;
@@ -82,8 +85,8 @@ export function createDesktopHostFetch(
 /**
  * Uploads this renderer sends at once. Electron reads each one's Blob into main
  * as soon as main's route receives it, so this caps main at three upload
- * payloads (each at most an attachment's 25 MiB, or a team file's 100 MiB and
- * its preview); the rest wait here, where a Blob is only a reference.
+ * payloads (each at most an attachment's 25 MiB); the rest wait here, where a
+ * Blob is only a reference.
  */
 export const desktopHostUploadConcurrency = 3;
 const uploads = { active: 0, waiting: [] as (() => void)[] };
@@ -116,25 +119,86 @@ async function uploadSlot(signal: AbortSignal): Promise<() => void> {
   };
 }
 
-/** The upload's slot is held until its answer is read whole, fails, or is abandoned. */
-function releasedWhenSettled(response: Response, signal: AbortSignal, release: () => void) {
+/**
+ * Streams a Host response body while keeping upload slots held until settled
+ * and recovering typed transport errors Electron strips across `protocol.handle`.
+ */
+function streamWithTransportErrors(
+  response: Response,
+  signal: AbortSignal,
+  requestId: string,
+  fetch: typeof globalThis.fetch,
+  release: (() => void) | null,
+): Response {
   if (!response.body || signal.aborted) {
-    release();
+    release?.();
     return response;
   }
-  const done = () => {
-    signal.removeEventListener("abort", done);
-    release();
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    signal.removeEventListener("abort", finish);
+    release?.();
   };
-  signal.addEventListener("abort", done, { once: true });
-  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
-  // The pipe settles when the body ends, fails or is cancelled by its reader.
-  void response.body.pipeTo(writable).then(done, done);
-  return new Response(readable, {
+  signal.addEventListener("abort", finish, { once: true });
+  const reader = responseChunkReader(response.body);
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          finish();
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        finish();
+        if (signal.aborted) {
+          controller.error(signal.reason);
+          return;
+        }
+        // Only Chromium's cross-process protocol stream errors lose their JS error class.
+        if (!(error instanceof TypeError || error instanceof DOMException)) {
+          controller.error(error);
+          return;
+        }
+        const code = await lookupStreamError(fetch, requestId);
+        controller.error(
+          signal.aborted
+            ? signal.reason
+            : code
+              ? new HostTransportError(code, { cause: error })
+              : error,
+        );
+      }
+    },
+    cancel(reason) {
+      finish();
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(body, {
     headers: response.headers,
     status: response.status,
     statusText: response.statusText,
   });
+}
+
+async function lookupStreamError(
+  fetch: typeof globalThis.fetch,
+  requestId: string,
+): Promise<DesktopHostTransportErrorCode | null> {
+  try {
+    const response = await fetch(desktopHostStreamErrorRouteUrl(requestId), { method: "GET" });
+    const parsed = DesktopHostTransportErrorCodeSchema.safeParse(
+      response.headers.get(desktopHostTransportErrorHeader),
+    );
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 export function createDesktopHostWebSocketFactory(

@@ -17,8 +17,10 @@ const present =
 // The engine's own wake sources (`scheduler.nextWake`, `events.nextWake`, webhook source retries)
 // plus work that needs a live process: open workflows keep their timers in workerd, and claimed
 // scheduled runs finish only in the process that claimed them. Timestamps are naive UTC.
+const unfinishedWorkflows =
+  "EXISTS (SELECT 1 FROM plugin_engine.plugin_engine_workflow_runs WHERE status IN ('queued', 'running'))";
 const demand = `SELECT
-  EXISTS (SELECT 1 FROM plugin_engine.plugin_engine_workflow_runs WHERE status IN ('queued', 'running'))
+  ${unfinishedWorkflows}
   OR EXISTS (SELECT 1 FROM plugin_engine.plugin_engine_schedules WHERE active_run IS NOT NULL)
   OR EXISTS (SELECT 1 FROM plugin_engine.plugin_engine_scheduled_runs WHERE status IN ('running', 'ready'))
   AS busy,
@@ -52,6 +54,45 @@ export async function engineDemand(databaseUrl: string): Promise<EngineDemand> {
       dueInMs: row?.due_in_ms == null ? null : Number(row.due_in_ms),
     };
   });
+}
+
+const inventoryTables = {
+  apps: "plugin_engine.plugin_engine_apps",
+  accounts: "plugin_engine.plugin_engine_accounts",
+} as const;
+
+/** A missing table on a fresh Home, or an empty owner inventory, needs no runtime. */
+export function engineInventoryEmpty(
+  databaseUrl: string,
+  kind: keyof typeof inventoryTables,
+  owner: string,
+): Promise<boolean> {
+  const table = inventoryTables[kind];
+  return readEngineState(databaseUrl, async (client) => {
+    const relation = await client.query<{ present: boolean }>(
+      "SELECT to_regclass($1) IS NOT NULL AS present",
+      [table],
+    );
+    if (relation.rows[0]?.present === false) return true;
+    const result = await client.query<{ empty: boolean }>(
+      `SELECT NOT EXISTS (SELECT 1 FROM ${table} WHERE owner = $1) AS empty`,
+      [owner],
+    );
+    return result.rows[0]?.empty === true;
+  });
+}
+
+export async function hasUnfinishedPluginWorkflows(
+  database: Kysely<DatabaseSchema>,
+): Promise<boolean> {
+  const exists = await sql<{ present: boolean }>`
+    SELECT to_regclass('plugin_engine.plugin_engine_workflow_runs') IS NOT NULL AS present
+  `.execute(database);
+  if (!exists.rows[0]?.present) return false;
+  const result = await sql<{ unfinished: boolean }>`
+    SELECT ${sql.raw(unfinishedWorkflows)} AS unfinished
+  `.execute(database);
+  return result.rows[0]?.unfinished !== false;
 }
 
 /** The database, rather than a cache commit, decides which skill version a Run may pin. */

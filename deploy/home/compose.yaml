@@ -1,0 +1,311 @@
+name: opensteer-home
+
+x-container: &container
+  cap_drop: [ALL]
+  restart: "no"
+  cpus: 1
+  mem_limit: 512m
+  memswap_limit: 512m
+  security_opt: [no-new-privileges:true]
+
+x-pod: &pod
+  <<: *container
+  network_mode: "service:host"
+
+# Checked every 2 s while a service starts (up to 60 s, so a start is seen as soon as before),
+# then every 30 s: on a small machine the old 3 s checks, each starting Node, kept about 0.4 of a
+# core busy at idle. Two failures in a row (about a minute, as before) mark a service unhealthy.
+# The probes are bash's own /dev/tcp and a file read: no process beyond the shell itself.
+x-health: &health
+  interval: 30s
+  start_interval: 2s
+  start_period: 60s
+  timeout: 4s
+  retries: 2
+
+services:
+  postgres:
+    <<: *container
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
+    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    user: "70:70"
+    network_mode: none
+    # max_connections: only the Host's pool (10, and a control connection), its plugin engine's (6),
+    # their short-lived clients and the Home's own pg_dump and psql reach it (no network), about 21
+    # at most; 32 leaves room without sizing for PostgreSQL's 100. shared_buffers: PostgreSQL's
+    # 128 MB, or a quarter of a Cloud Computer's PostgreSQL limit (home_limits), since touched
+    # buffers count against it.
+    command:
+      [
+        postgres,
+        -c,
+        "listen_addresses=",
+        -c,
+        "unix_socket_directories=/var/run/postgresql",
+        -c,
+        "max_connections=32",
+        -c,
+        "shared_buffers=${OPENSTEER_HOME_PG_SHARED_BUFFERS:-128MB}",
+      ]
+    environment:
+      POSTGRES_USER: opensteer
+      POSTGRES_DB: opensteer
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256
+    secrets: [postgres_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - postgres-socket:/var/run/postgresql
+    healthcheck:
+      <<: *health
+      test:
+        [
+          CMD-SHELL,
+          'test "$$(cat /proc/1/comm)" = postgres && pg_isready -h /var/run/postgresql -U opensteer -d opensteer',
+        ]
+    stop_grace_period: 45s
+  host:
+    <<: *container
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
+    image: ${OPENSTEER_HOME_HOST_IMAGE:?Host image required}
+    environment:
+      OPENSTEER_DEPLOYMENT_KIND: personal
+      OPENSTEER_MODE: production
+      OPENSTEER_BIND_ADDRESS: 127.0.0.1
+      OPENSTEER_PORT: "4310"
+      OPENSTEER_CANONICAL_ORIGIN: https://${OPENSTEER_HOME_HOSTNAME:?Home hostname required}
+      OPENSTEER_SIGNUP_POLICY: closed
+      OPENSTEER_LOCAL_PASSWORD_ENABLED: ${OPENSTEER_HOME_LOCAL_PASSWORD_ENABLED:-true}
+      OPENSTEER_MANAGED_HOME_ID: ${OPENSTEER_HOME_MANAGED_ID:-}
+      OPENSTEER_MANAGED_HOME_GENERATION: ${OPENSTEER_HOME_MANAGED_GENERATION:-}
+      OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: ${OPENSTEER_HOME_ACCOUNT_ORIGIN:-}
+      # The account's portal, which the Home's own pages link to; empty on a bring-your-own Home.
+      OPENSTEER_PORTAL_ORIGIN: ${OPENSTEER_HOME_PORTAL_ORIGIN:-}
+      OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: ${OPENSTEER_HOME_OIDC_CLIENT_ID:-}
+      OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET_FILE: ${OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH:-}
+      # The operator's own collector for this Home's health report; setting it is the consent.
+      # Empty: nothing leaves the machine.
+      OPENSTEER_PROBLEM_REPORTS_URL: ${OPENSTEER_HOME_PROBLEM_REPORTS_URL:-}
+      # Sent as a bearer token with each report; the collector should require it.
+      OPENSTEER_PROBLEM_REPORTS_TOKEN: ${OPENSTEER_HOME_PROBLEM_REPORTS_TOKEN:-}
+      # Root's maintenance writes machine-status.json into host-data, which no Runner mounts.
+      OPENSTEER_MACHINE_STATUS: root-maintenance
+      OPENSTEER_DATABASE_URL_FILE: /run/secrets/database_url
+      OPENSTEER_AUTH_SECRET_FILE: /run/secrets/auth_secret
+      OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: /run/secrets/setup_digest
+      OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/main_token
+      OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/messaging_token
+      OPENSTEER_HOSTING_ENVIRONMENT_ID_FILE: /run/secrets/environment_id
+      OPENSTEER_HOST_DATA_DIR: /var/lib/opensteer
+      OPENSTEER_HOST_PRIVATE_KEY_PATH: /var/lib/opensteer/keys/host-private.pem
+      OPENSTEER_HOST_PUBLIC_KEY_PATH: /var/lib/opensteer/keys/host-public.pem
+      OPENSTEER_AGENT_HOME: /workspaces
+    secrets:
+      [
+        database_url,
+        auth_secret,
+        setup_digest,
+        main_token,
+        messaging_token,
+        environment_id,
+        oidc_client_secret,
+      ]
+    volumes:
+      - host-data:/var/lib/opensteer
+      - postgres-socket:/var/run/postgresql:ro
+    ports:
+      - "${OPENSTEER_HOME_BIND_IP:-0.0.0.0}:${OPENSTEER_HOME_HTTP_PORT:-80}:80"
+      - "${OPENSTEER_HOME_BIND_IP:-0.0.0.0}:${OPENSTEER_HOME_HTTPS_PORT:-443}:443"
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      <<: *health
+      test:
+        [
+          CMD,
+          bash,
+          -c,
+          'exec 3<>/dev/tcp/127.0.0.1/4310 && printf "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:4310\r\nConnection: close\r\n\r\n" >&3 && IFS= read -r line <&3 && [[ $$line == "HTTP/1.1 200 "* ]]',
+        ]
+    stop_grace_period: 45s
+  gateway:
+    <<: *pod
+    image: ${OPENSTEER_HOME_GATEWAY_IMAGE:?Gateway image required}
+    environment:
+      OPENSTEER_HOME_HOSTNAME: ${OPENSTEER_HOME_HOSTNAME}
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+      - ./tls.caddy:/etc/caddy/tls.caddy:ro
+    healthcheck:
+      <<: *health
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/ready"]
+  runner:
+    <<: *pod
+    image: ${OPENSTEER_HOME_RUNNER_IMAGE:?Runner image required}
+    cpus: ${OPENSTEER_HOME_RUNNER_CPUS:-4}
+    mem_limit: ${OPENSTEER_HOME_RUNNER_MEMORY:-8g}
+    memswap_limit: ${OPENSTEER_HOME_RUNNER_MEMORY:-8g}
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:${OPENSTEER_HOME_RELEASE_DIR:?Release directory required}/runner-oci.json
+    environment:
+      HOME: /home/opensteer
+      OPENSTEER_DEPLOYMENT_KIND: personal
+      OPENSTEER_MODE: production
+      OPENSTEER_HOST_URL: http://127.0.0.1:4310
+      OPENSTEER_ENVIRONMENT_ID_FILE: /var/lib/opensteer/.secrets/environment_id
+      OPENSTEER_RUNNER_KIND: main
+      OPENSTEER_RUNNER_DATA_DIR: /var/lib/opensteer
+      OPENSTEER_RUNNER_READINESS_PATH: /var/lib/opensteer/readiness/connected.json
+      OPENSTEER_RUNNER_ENROLLMENT_TOKEN_FILE: /var/lib/opensteer/.secrets/main_token
+      OPENSTEER_BROWSER_RUNTIME_ID: browser-main
+      OPENSTEER_BROWSER_BRIDGE_URL: http://127.0.0.1:4312
+      OPENSTEER_BROWSER_BRIDGE_TOKEN_FILE: /var/lib/opensteer/.secrets/browser_token
+    secrets:
+      - source: environment_id
+        target: /var/lib/opensteer/.secrets/environment_id
+      - source: main_token
+        target: /var/lib/opensteer/.secrets/main_token
+      - source: browser_token
+        target: /var/lib/opensteer/.secrets/browser_token
+    volumes:
+      - runner-data:/var/lib/opensteer
+      - agent-home:/workspaces
+      - engine-home:/home/opensteer
+    healthcheck:
+      <<: *health
+      test:
+        [
+          CMD,
+          bash,
+          -c,
+          'r=$$(<"$$OPENSTEER_RUNNER_READINESS_PATH") && [[ $$r =~ \"pid\":([0-9]+), && $$r == *\"state\":\"connected\"* ]] && kill -0 "$${BASH_REMATCH[1]}"',
+        ]
+    stop_grace_period: 45s
+  browser-runtime:
+    <<: *pod
+    image: ${OPENSTEER_HOME_BROWSER_RUNTIME_IMAGE:?Browser Runtime image required}
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:${OPENSTEER_HOME_RELEASE_DIR:?Release directory required}/chromium-oci.json
+    cpus: ${OPENSTEER_HOME_BROWSER_CPUS:-2}
+    mem_limit: ${OPENSTEER_HOME_BROWSER_MEMORY:-4g}
+    memswap_limit: ${OPENSTEER_HOME_BROWSER_MEMORY:-4g}
+    shm_size: 512m
+    environment:
+      OPENSTEER_MODE: production
+      OPENSTEER_BROWSER_HOST: 127.0.0.1
+      OPENSTEER_BROWSER_PORT: "4312"
+      OPENSTEER_BROWSER_RUNTIME_ID: browser-main
+      OPENSTEER_BROWSER_PROFILE_ROOT: /var/lib/opensteer/browser
+      OPENSTEER_BROWSER_BRIDGE_TOKEN_FILE: /run/secrets/browser_token
+      OPENSTEER_BROWSER_PROXY_URL: http://127.0.0.1:4313
+      OPENSTEER_CHROMIUM_SANDBOX: "true"
+    secrets: [browser_token]
+    volumes:
+      - browser-profiles:/var/lib/opensteer/browser
+    depends_on:
+      browser-egress:
+        condition: service_healthy
+    healthcheck:
+      <<: *health
+      test:
+        [
+          CMD,
+          bash,
+          -c,
+          'exec 3<>/dev/tcp/127.0.0.1/4312 && printf "GET /health HTTP/1.1\r\nHost: 127.0.0.1:4312\r\nConnection: close\r\n\r\n" >&3 && IFS= read -r line <&3 && [[ $$line == "HTTP/1.1 200 "* ]]',
+        ]
+    stop_grace_period: 45s
+  browser-egress:
+    <<: *pod
+    image: ${OPENSTEER_HOME_BROWSER_EGRESS_IMAGE:?Browser egress image required}
+    environment:
+      OPENSTEER_BROWSER_EGRESS_HOST: 127.0.0.1
+      OPENSTEER_BROWSER_EGRESS_PORT: "4313"
+    healthcheck:
+      <<: *health
+      test:
+        [
+          CMD,
+          bash,
+          -c,
+          'exec 3<>/dev/tcp/127.0.0.1/4313 && printf "GET /health HTTP/1.1\r\nHost: 127.0.0.1:4313\r\nConnection: close\r\n\r\n" >&3 && IFS= read -r line <&3 && [[ $$line == "HTTP/1.1 200 "* ]]',
+        ]
+  channel-runtime:
+    <<: *pod
+    image: ${OPENSTEER_HOME_CHANNEL_RUNTIME_IMAGE:?Channel Runtime image required}
+    environment:
+      OPENSTEER_MODE: production
+      OPENSTEER_MESSAGING_BIND_ADDRESS: 127.0.0.1
+      OPENSTEER_MESSAGING_PORT: "4320"
+      OPENSTEER_MESSAGING_HOST_URL: http://127.0.0.1:4310
+      OPENSTEER_MESSAGING_DATA_DIR: /var/lib/opensteer
+      OPENSTEER_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/messaging_token
+    secrets: [messaging_token]
+    volumes:
+      - channel-data:/var/lib/opensteer
+    healthcheck:
+      <<: *health
+      test:
+        [
+          CMD,
+          bash,
+          -c,
+          'exec 3<>/dev/tcp/127.0.0.1/4320 && printf "GET /readyz HTTP/1.1\r\nHost: 127.0.0.1:4320\r\nConnection: close\r\n\r\n" >&3 && IFS= read -r line <&3 && [[ $$line == "HTTP/1.1 200 "* ]]',
+        ]
+    stop_grace_period: 45s
+
+networks:
+  default:
+    enable_ipv6: false
+
+volumes:
+  postgres-data:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_postgres-data
+  postgres-socket:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_postgres-socket
+  host-data:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_host-data
+  runner-data:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_runner-data
+  agent-home:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_agent-home
+  engine-home:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_engine-home
+  browser-profiles:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_browser-profiles
+  channel-data:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_channel-data
+  caddy-data:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_caddy-data
+  caddy-config:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_caddy-config
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  database_url:
+    file: ./secrets/database_url
+  auth_secret:
+    file: ${OPENSTEER_HOME_IDENTITY_SECRETS:-./secrets}/auth_secret
+  setup_digest:
+    file: ./secrets/setup_digest
+  oidc_client_secret:
+    file: ./secrets/oidc_client_secret
+  main_token:
+    file: ./secrets/main_token
+  messaging_token:
+    file: ./secrets/messaging_token
+  environment_id:
+    file: ${OPENSTEER_HOME_IDENTITY_SECRETS:-./secrets}/environment_id
+  browser_token:
+    file: ./secrets/browser_token

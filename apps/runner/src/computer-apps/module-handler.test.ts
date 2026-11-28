@@ -137,6 +137,18 @@ describe("ComputerAppModuleHandler", () => {
     expect(inspect).toHaveBeenCalledTimes(2);
   });
 
+  it("refuses calls to computer apps in a stopped boot but still reports their status", async () => {
+    const fixture = setup({ stopped: true });
+    await fixture.handle(invoke("stopped", readOperation));
+    await eventually(() => expect(statuses(fixture.events)).toHaveLength(1));
+    expect(fixture.provider.invoke).not.toHaveBeenCalled();
+    expect(resultFor(fixture.events, "stopped")?.result).toEqual({
+      code: "failed",
+      kind: "error",
+      message: "Agents are stopped. Resume them to continue.",
+    });
+  });
+
   it("refuses unknown definitions, operations and contracts before touching a provider", async () => {
     const fixture = setup();
     await fixture.handle({
@@ -410,6 +422,7 @@ function setup(
     readonly phoneScreens?: FakePhoneScreenDriver;
     readonly computerUse?: ComputerUseHandler;
     readonly screenDrivers?: 1;
+    readonly stopped?: true;
     readonly info?: (message: string, details?: Readonly<Record<string, unknown>>) => void;
     readonly inspect?: ComputerAppProvider["inspect"];
     readonly invoke?: ComputerAppProvider["invoke"];
@@ -426,6 +439,7 @@ function setup(
   const handler = new ComputerAppModuleHandler({
     logger: { error: vi.fn(), info: options.info ?? vi.fn() },
     providers: [provider],
+    ...(options.stopped ? { stopped: true } : {}),
     ...(options.phoneScreens ? { phoneScreens: options.phoneScreens } : {}),
     ...(options.computerUse ? { computerUse: options.computerUse } : {}),
   });
@@ -663,6 +677,7 @@ describe("assigned phone screens", () => {
       onPasswordEvent: vi.fn(),
       negotiateLoginText: vi.fn(),
       releaseSessions: vi.fn(),
+      ownerViewKnown: () => true,
       ownerViewVersion: () => undefined,
     } as unknown as ComputerUseHandler;
     const fixture = setup({ phoneScreens: screens, screenDrivers: 1, computerUse: mac });
@@ -933,6 +948,33 @@ describe("assigned phone screens", () => {
     );
   });
 
+  it("reports owner view as not known yet until the helper answers, then its version without the 30 s wait", async () => {
+    // After an app start the helper can take longer to launch than the readiness probe waits:
+    // the first status must not read as a Mac that cannot show windows.
+    let answered = false;
+    const mac = {
+      run: vi.fn(),
+      onEvent: vi.fn(),
+      onGrantsChanged: vi.fn(),
+      onPasswordEvent: vi.fn(),
+      negotiateLoginText: vi.fn(),
+      releaseSessions: vi.fn(),
+      ownerViewKnown: () => answered,
+      ownerViewVersion: () => (answered ? 3 : undefined),
+    } as unknown as ComputerUseHandler;
+    const fixture = setup({ computerUse: mac });
+    await vi.waitFor(() => expect(statuses(fixture.events)).toHaveLength(1), { timeout: 1000 });
+    expect(statuses(fixture.events)[0]).toMatchObject({ ownerViewPending: true });
+    expect(statuses(fixture.events)[0]).not.toHaveProperty("ownerViewVersion");
+    answered = true;
+    await vi.waitFor(() => expect(statuses(fixture.events)).toHaveLength(2), { timeout: 4000 });
+    expect(statuses(fixture.events)[1]).toMatchObject({
+      ownerViewVersion: 3,
+      displayAvailable: true,
+    });
+    expect(statuses(fixture.events)[1]).not.toHaveProperty("ownerViewPending");
+  });
+
   it("preserves untargeted Mac self and Android v4 frames", async () => {
     const run = vi.fn(async () => ({ apps: [], total: 0 }));
     const mac = {
@@ -942,6 +984,7 @@ describe("assigned phone screens", () => {
       onPasswordEvent: vi.fn(),
       negotiateLoginText: vi.fn(),
       releaseSessions: vi.fn(),
+      ownerViewKnown: () => true,
       ownerViewVersion: () => undefined,
     } as unknown as ComputerUseHandler;
     const fixture = setup({ computerUse: mac });

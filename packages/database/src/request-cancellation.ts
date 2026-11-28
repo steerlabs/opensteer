@@ -6,7 +6,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { isOfflineSettlement } from "./personal-transaction.js";
-import type { Transaction } from "kysely";
+import { sql, type Transaction } from "kysely";
 import { lockRequestThreads, refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -16,62 +16,118 @@ interface Cancellation {
   readonly resolvedAt: Date;
   readonly runId?: RunId;
   readonly cancelHandedOffPlugins?: boolean;
+  /** A Run stopped: the commands it proposed close too, as nothing it asked may run after. */
+  readonly cancelProposals?: boolean;
+  /** Closed with nothing said to the proposer: a connection's lineage that lost its reach. */
+  readonly withoutContinuation?: true;
   readonly originatingThreadId?: ThreadId;
   readonly requestIds?: readonly RequestId[];
   readonly requestedBy?: UserId;
+  readonly expireAgentOperation?: boolean;
 }
 
 export function cancelPending(
   transaction: Transaction<DatabaseSchema>,
   input: Cancellation,
 ): Promise<readonly RequestId[]> {
-  if (isOfflineSettlement(transaction)) return cancelInTransaction(transaction, input, false);
-  return commitPersonalMutation(transaction, (tx) => cancelInTransaction(tx, input, true));
+  if (input.requestIds?.length === 0) return Promise.resolve([]);
+  const cancel = async (tx: Transaction<DatabaseSchema>) => {
+    const prepared = await preparePendingCancellation(tx, input);
+    await prepared.lockThreads();
+    return prepared.apply();
+  };
+  if (isOfflineSettlement(transaction)) return cancel(transaction);
+  return commitPersonalMutation(transaction, cancel);
 }
 
-async function cancelInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: Cancellation,
-  refresh: boolean,
-): Promise<readonly RequestId[]> {
+function pendingCancellationQuery(transaction: Transaction<DatabaseSchema>, input: Cancellation) {
   let pending = transaction.selectFrom("requests").selectAll().where("status", "=", "pending");
   if (input.requestIds) {
-    if (input.requestIds.length === 0) return [];
     pending = pending.where("id", "in", [...input.requestIds]);
   }
   if (input.runId)
-    pending = pending
-      .where("originatingRunId", "=", input.runId)
-      .where((eb) =>
-        eb.or([
-          eb("mode", "=", "live"),
-          eb.and([
-            eb("kind", "in", ["plugin.approval", "plugin.input"]),
-            input.cancelHandedOffPlugins
-              ? eb.val(true)
-              : eb.not(
-                  eb.exists(
-                    eb
-                      .selectFrom("pluginExecutions")
-                      .select("id")
-                      .whereRef("pluginExecutions.requestId", "=", "requests.id")
-                      .where("handoff", "=", true),
-                  ),
+    pending = pending.where("originatingRunId", "=", input.runId).where((eb) =>
+      eb.or([
+        eb("mode", "=", "live"),
+        // Only when asked for: the statement is otherwise exactly as it was (rule 7).
+        ...(input.cancelProposals ? [eb("command", "is not", null)] : []),
+        eb.and([
+          eb("kind", "in", ["plugin.approval", "plugin.input"]),
+          input.cancelHandedOffPlugins
+            ? eb.val(true)
+            : eb.not(
+                eb.exists(
+                  eb
+                    .selectFrom("pluginExecutions")
+                    .select("id")
+                    .whereRef("pluginExecutions.requestId", "=", "requests.id")
+                    .where("handoff", "=", true),
                 ),
-          ]),
+              ),
         ]),
-      );
+      ]),
+    );
   if (input.originatingThreadId) {
     pending = pending.where("originatingThreadId", "=", input.originatingThreadId);
   }
   if (input.requestedBy) pending = pending.where("requestedBy", "=", input.requestedBy);
-  if (refresh) {
+  return pending;
+}
+
+export async function preparePendingCancellation(
+  transaction: Transaction<DatabaseSchema>,
+  input: Cancellation,
+) {
+  const pending = pendingCancellationQuery(transaction, input);
+  const refresh = !isOfflineSettlement(transaction);
+  if (
+    !input.withoutContinuation &&
+    ["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(
+      input.reason,
+    )
+  ) {
+    const durable = await pending
+      .clearSelect()
+      .select("id")
+      .where("mode", "=", "durable")
+      .where("originatingAgentSessionId", "is", null)
+      .orderBy("id", "asc")
+      .execute();
+    for (const row of durable) {
+      await transaction
+        .insertInto("requestContinuations")
+        .values({
+          requestId: row.id,
+          status: "waiting",
+          reason: null,
+          attemptedAt: null,
+          createdAt: input.resolvedAt,
+          updatedAt: input.resolvedAt,
+        })
+        .onConflict((conflict) => conflict.column("requestId").doNothing())
+        .execute();
+    }
+  }
+  const lockThreads = async () => {
+    if (!refresh) return;
     const parents = await pending.clearSelect().select("originatingThreadId").distinct().execute();
     await lockRequestThreads(
       transaction,
       parents.map(({ originatingThreadId }) => originatingThreadId),
     );
-  }
+  };
+  return {
+    lockThreads,
+    apply: () => cancelInTransaction(transaction, input, pending, refresh),
+  };
+}
+
+async function cancelInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  input: Cancellation,
+  pending: ReturnType<typeof pendingCancellationQuery>,
+  refresh: boolean,
+): Promise<readonly RequestId[]> {
   const locked = await pending.orderBy("id", "asc").forNoKeyUpdate().execute();
   if (locked.length === 0) return [];
   const responseCommandIds = locked
@@ -107,6 +163,9 @@ async function cancelInTransaction(
       resolvedBy: null,
       responseCommandId: null,
       status: "cancelled",
+      ...(input.expireAgentOperation
+        ? { agentOperation: sql`agent_operation || '{"expired": true}'::jsonb` }
+        : {}),
     })
     .where(
       "id",
@@ -116,27 +175,6 @@ async function cancelInTransaction(
     .where("status", "=", "pending")
     .returningAll()
     .execute();
-  if (
-    ["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(
-      input.reason,
-    )
-  ) {
-    for (const row of rows) {
-      if (row.mode !== "durable") continue;
-      await transaction
-        .insertInto("requestContinuations")
-        .values({
-          requestId: row.id,
-          status: "waiting",
-          reason: null,
-          attemptedAt: null,
-          createdAt: input.resolvedAt,
-          updatedAt: input.resolvedAt,
-        })
-        .onConflict((conflict) => conflict.column("requestId").doNothing())
-        .execute();
-    }
-  }
   const ids = rows.map((row) => row.id).sort();
   if (refresh) for (const id of ids) await refreshRequestState(transaction, id);
   return ids;

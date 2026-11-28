@@ -9,7 +9,6 @@ import { TriggerScheduleLoop } from "../triggers/trigger-service.js";
 import { assignmentReturnPass } from "./assignment-return-pass.js";
 import { DeadlineDrain } from "./deadline-drain.js";
 import { executionLeaseDrain } from "./execution-leases.js";
-import { teamPublicationPass } from "./team-publication-pass.js";
 
 /*
  * Every durable owner, when the read of what it owes throws: the error is
@@ -59,15 +58,13 @@ const owners: readonly [string, () => { owner: Owner; read: ReturnType<typeof vi
     () => {
       const read = failingOnce<null>(null);
       const owner = new ChannelService({
-        canonicalOrigin: "https://opensteer.test",
         channels: {
           claimIngress: read,
           nextIngressDeadline: async () => null,
           pruneHistory: async () => undefined,
         } as never,
         credentials: {} as never,
-        onExecutionQueued: () => undefined,
-        runners: {} as never,
+        bridgeTools: () => ({ callTool: async () => ({}) }),
         relay: {} as never,
         store: { listEnvironments: async () => [] } as never,
       });
@@ -143,23 +140,6 @@ const owners: readonly [string, () => { owner: Owner; read: ReturnType<typeof vi
       });
       const owner = new DeadlineDrain({
         drain: () => assignmentReturnPass(read as never, () => undefined),
-        onError: () => undefined,
-      });
-      return { owner, read };
-    },
-  ],
-  [
-    "team answers",
-    () => {
-      const read = failingOnce<[]>([]);
-      const owner = new DeadlineDrain({
-        drain: () =>
-          teamPublicationPass({
-            readyTeams: () => [createId("deployment")],
-            owed: read,
-            reconcile: async () => true,
-            report: () => undefined,
-          }),
         onError: () => undefined,
       });
       return { owner, read };

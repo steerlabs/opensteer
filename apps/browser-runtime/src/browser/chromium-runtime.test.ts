@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -21,6 +21,8 @@ import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserController,
   BrowserRuntime,
+  browserPoolControlBytes,
+  type BrowserPoolControl,
   SessionFiles,
   SurfaceLedger,
 } from "@opensteer/browser-runtime-core";
@@ -65,6 +67,188 @@ import {
   waitFor,
   waitForAsync,
 } from "./chromium.test-support.js";
+
+it("adopts a frozen Chromium document, streams it, and edits its unsent draft", async () => {
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  const launch = vi.spyOn(launcher, "launch");
+  const claims = validClaims({ actor: "person", creationOrigin: "person", tabRestoreVersion: 1 });
+  const keys = generateKeyPairSync("ed25519");
+  const verifier = new FakeTicketVerifier(claims);
+  const runtime = new BrowserRuntime({
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+    // This fixture owns a single blank document, with no downloads, workers or sites.
+    pool: { controllerKey: keys.publicKey, probePage: async () => [] },
+  });
+  cleanup.push(() => runtime.shutdown());
+  // Stands in for the controller: each control is numbered and names the fence it replaces.
+  let sequence = 0;
+  let held: BrowserPoolControl["expect"] = null;
+  const signed = (input: Omit<BrowserPoolControl, "sequence" | "expect">) => {
+    const request: BrowserPoolControl = { ...input, sequence: ++sequence, expect: held };
+    if (input.kind === "install" || input.kind === "adopt") held = input.fence;
+    return runtime.controlPool(
+      request,
+      sign(null, browserPoolControlBytes(request), keys.privateKey),
+    );
+  };
+  let fence = { slot: "slot", term: 1, instance: randomUUID(), epoch: 1 };
+  const intent = { id: randomUUID(), sequence: 1 };
+  const control = (kind: BrowserPoolControl["kind"], attempt?: number) =>
+    signed({ kind, fence, intent, ...(attempt ? { attempt } : {}) });
+  await signed({ kind: "install", fence });
+  verifier.setClaims("first", { ...claims, pool: { ...fence, attachment: 1 } });
+  const first = await runtime.attach("first", new FakeSink());
+  const page = (await launch.mock.results[0]?.value)?.context.pages()[0];
+  if (!page) throw new Error("Missing initial page");
+  const cdp = await page.cdp();
+  const target = await page.targetId();
+  await cdp.send("Runtime.evaluate", {
+    expression:
+      "document.body.innerHTML = '<input>'; document.querySelector('input').focus(); window.marker = 99;",
+  });
+  await cdp.send("Input.insertText", { text: "unsent draft" });
+  await first.handle(
+    JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+  );
+  const retired = await control("retire");
+  expect(retired).toMatchObject({
+    phase: "retired",
+    retired: { documents: [expect.any(Object)], sessions: [claims.sessionId] },
+  });
+  const documents = retired.retired!.documents;
+  await control("seal");
+  await expect(control("release")).rejects.toThrow("park was committed");
+  // The controller issues the next epoch on resume; adoption installs it.
+  const stale = fence;
+  fence = { ...fence, epoch: 2 };
+  const adoption = await control("adopt");
+  expect(adoption.fence?.epoch).toBe(2);
+  const adopted = runtime.poolState();
+  await expect(control("adopt")).rejects.toThrow("The browser adoption is not ready.");
+  // The refused repeat changed nothing.
+  expect(runtime.poolState()).toEqual(adopted);
+  expect(runtime.poolState()).toMatchObject({ phase: "adopting", fence: { epoch: 2 } });
+  verifier.setClaims("old", {
+    ...claims,
+    reattach: true,
+    initialNavigation: undefined,
+    pool: { ...stale, attachment: 2 },
+  });
+  await expect(runtime.attach("old", new FakeSink())).rejects.toThrow("authority has changed");
+  verifier.setClaims("fresh", {
+    ...claims,
+    reattach: true,
+    initialNavigation: undefined,
+    pool: { ...fence, attachment: 2 },
+  });
+  const view = new FakeSink();
+  const attached = await runtime.attach("fresh", view);
+  const surfaceId = documents[0]!.surfaceId;
+  expect(view.tabs.rows.get(surfaceId)?.documentId).toBe(documents[0]!.documentId);
+  const completed = await control("complete", 2);
+  expect(completed.adoption?.outcome).toEqual({ adopted: [claims.sessionId], lost: [] });
+  expect(await control("complete", 2)).toEqual(completed);
+  const subscribe = JSON.stringify({ type: "stream.subscribe", surfaceId });
+  await attached.handle(subscribe);
+  await waitFor(() => view.frames.length > 0);
+  expect(await page.targetId()).toBe(target);
+  const draft = async () =>
+    evaluationValue(
+      await cdp.send("Runtime.evaluate", {
+        expression: "JSON.stringify([document.querySelector('input').value, window.marker])",
+        returnByValue: true,
+      }),
+    );
+  expect(await draft()).toBe('["unsent draft",99]');
+  await cdp.send("Input.insertText", { text: " edited" });
+  expect(await draft()).toBe('["unsent draft edited",99]');
+  expect(launch).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the person's live page state through Stop and Resume", async () => {
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  const launch = vi.spyOn(launcher, "launch");
+  const claims = validClaims({
+    actor: "person",
+    creationOrigin: "person",
+    initialNavigation: { operationKey: "person-restart" },
+  });
+  const verifier = new FakeTicketVerifier(claims);
+  const runtime = new BrowserRuntime({
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+  });
+  cleanup.push(() => runtime.shutdown());
+  const first = await runtime.attach("before-stop", new FakeSink());
+  const browser = await launch.mock.results[0]?.value;
+  const page = browser?.context.pages()[0];
+  expect(page).toBeDefined();
+  if (!page) throw new Error("Missing initial page");
+  const target = await page.targetId();
+  const cdp = await page.cdp();
+  await cdp.send("Runtime.evaluate", {
+    expression: `document.body.innerHTML = '<input><div style="height:4000px"></div>';
+      document.querySelector('input').focus(); window.draft = 73;`,
+  });
+  await cdp.send("Input.insertText", { text: "unsent draft" });
+  await cdp.send("Runtime.evaluate", {
+    expression: "document.activeElement.blur(); window.scrollTo(0, 400);",
+  });
+  const read = async () =>
+    (await cdp.send("Runtime.evaluate", {
+      expression:
+        "JSON.stringify([document.querySelector('input').value, window.scrollY, window.draft])",
+      returnByValue: true,
+    })) as { result: { value: string } };
+  const value = (await read()).result.value;
+  expect(JSON.parse(value)).toEqual(["unsent draft", 400, 73]);
+
+  const agentClaims = validClaims({
+    actor: "agent",
+    creationOrigin: "agent",
+    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000078"),
+  });
+  verifier.setClaims("agent", agentClaims);
+  const agent = await runtime.attach("agent", new FakeSink());
+  const agentPage = (await launch.mock.results[1]?.value)?.context.pages()[0];
+  expect(agentPage?.isClosed()).toBe(false);
+  await agent.close(true, true);
+  expect(agentPage?.isClosed()).toBe(true);
+
+  let attachment = first;
+  for (const ticket of ["after-stop", "after-resume"]) {
+    await attachment.close(true, true);
+    expect(page.isClosed()).toBe(false);
+    verifier.setClaims("agent-reconnect", { ...claims, actor: "agent" });
+    await expect(runtime.attach("agent-reconnect", new FakeSink())).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    const sink = new FakeSink();
+    attachment = await runtime.attach(ticket, sink);
+    expect(attachment.initialPage?.surfaceId).toBe(first.initialPage?.surfaceId);
+    expect(await page.targetId()).toBe(target);
+    expect((await read()).result.value).toBe(value);
+    expect(launch).toHaveBeenCalledTimes(2);
+  }
+  // An unplanned loss still closes the physical page.
+  await cdp.close();
+  await attachment.close(true);
+  expect(page.isClosed()).toBe(true);
+});
+
 it("keeps a 64 MiB upload alive through completion and the final sleep recheck", async () => {
   const uploads: import("node:http").IncomingMessage[] = [];
   let arrived = Promise.withResolvers<void>();
@@ -458,7 +642,7 @@ describe("real Chromium runtime", () => {
     const address = site.address();
     if (!address || typeof address === "string") throw new Error("Missing fixture address");
     const origin = `http://127.0.0.1:${address.port}`;
-    const claims = validClaims();
+    const claims = validClaims({ editingVersion: 2, clipboard: false });
     const browser = await new PlaywrightChromiumLauncher({
       chromiumSandbox: false,
       executablePath,
@@ -572,6 +756,7 @@ describe("real Chromium runtime", () => {
       targeted: true,
       surfaceId: x,
       text: "person editing X",
+      contextId: await publishedContext(sink, x),
     });
     await request(
       "Input.dispatchMouseEvent",
@@ -1126,7 +1311,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const address = site.address();
     if (!address || typeof address === "string") throw new Error("Missing fixture address");
     const origin = `http://127.0.0.1:${address.port}`;
-    const claims = validClaims();
+    const claims = validClaims({ editingVersion: 2, clipboard: false });
     // A session's pages start at the documented default until the person's
     // view gives it a size.
     const agentSize = {
@@ -1411,6 +1596,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       type: "clipboard.paste",
       surfaceId: person.surface.id,
       text: secret,
+      contextId: await publishedContext(sink, person.surface.id),
     });
     const pasteResult = await pasteWait;
     const pasteLatencyMs = Date.now() - pasteStarted;
@@ -2259,7 +2445,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       executablePath,
       headless: true,
     });
-    const claims = validClaims();
+    const claims = validClaims({ editingVersion: 2, clipboard: false });
     const browser = await launcher.launch({
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: `session:${claims.sessionId}`,
@@ -2365,6 +2551,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       surfaceId,
       text: "clipboard text",
       type: "clipboard.paste",
+      contextId: await publishedContext(sink, surfaceId),
     });
     const input = await active.cdp.send<{
       result?: { value?: unknown };
@@ -2689,3 +2876,686 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     ).toBe(true);
   });
 });
+
+it("never puts a tab to sleep under an agent's command on either path: a long evaluate under memory pressure completes, and the tab sleeps after it (TS12)", async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "text/html");
+    response.end("<!doctype html><title>work</title><p>work</p>");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const profile = await nativeRuntimeProfile();
+  cleanup.push(profile.close);
+  const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000912");
+  const claims = validClaims({ identity: profile.identity, sessionId, tabRestoreVersion: 1 });
+  const verifier = new FakeTicketVerifier(claims);
+  verifier.setClaims("standard", { ...claims, standardCdp: "session" });
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  // Memory stays over the start threshold the whole time, as on a full Linux machine.
+  const limitBytes = 2 * 1024 ** 3;
+  Object.defineProperty(launcher, "memoryPressure", {
+    value: async () => ({ usedBytes: Math.round(limitBytes * 0.8), limitBytes }),
+  });
+  const runtime = new BrowserRuntime({
+    localProfiles: profile.localProfiles,
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+  });
+  cleanup.push(() => runtime.shutdown());
+  const sink = new FakeSink();
+  const attachment = await runtime.attach("ticket", sink);
+  const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+  const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+    sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+  const standard = await runtime.attachStandardCdp(
+    "standard",
+    () => undefined,
+    new AbortController().signal,
+  );
+  cleanup.push(async () => standard.close());
+  const opened = async () => {
+    const targetId = String(
+      asRecord(await agent("Target.createTarget", { url: `${origin}/work` })).targetId,
+    );
+    const page = String(
+      asRecord(await agent("Target.attachToTarget", { flatten: true, targetId })).sessionId,
+    );
+    await waitForAsync(
+      async () =>
+        evaluationValue(
+          await agent(
+            "Runtime.evaluate",
+            { expression: "document.readyState", returnByValue: true },
+            page,
+          ),
+        ) === "complete",
+    );
+    return { targetId, page };
+  };
+  const viaHome = await opened();
+  const viaStandard = await opened();
+  const direct = String(
+    asRecord(
+      await standard.send({
+        method: "Target.attachToTarget",
+        parameters: { targetId: viaStandard.targetId, flatten: true },
+      }),
+    ).sessionId,
+  );
+  const suspendedTabs = () =>
+    sink.messages.filter((message) => JSON.stringify(message).includes('"state":"suspended"'))
+      .length;
+  await attachment.handle(
+    JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+  );
+  // Longer than the quiet time, with the sleeper's last resort free to take any young tab.
+  const long = {
+    expression: `new Promise((resolve) => setTimeout(() => resolve(location.pathname), 12000))`,
+    awaitPromise: true,
+    returnByValue: true,
+  };
+  const started = performance.now();
+  const [home, direct_] = await Promise.all([
+    agent("Runtime.evaluate", long, viaHome.page).then(evaluationValue),
+    standard
+      .send({ method: "Runtime.evaluate", parameters: long, sessionId: direct })
+      .then(evaluationValue),
+  ]);
+  expect({ home, direct: direct_ }).toEqual({ home: "/work", direct: "/work" });
+  expect(performance.now() - started).toBeGreaterThanOrEqual(11_500);
+  // The pressure was real: once the commands have ended, the sleeper takes the tabs.
+  await waitFor(() => suspendedTabs() >= 2, 20_000);
+}, 90_000);
+
+it("wakes a sleeping tab for an agent and answers once its page has loaded, so the agent never acts on a half-loaded page (TS11)", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/hold") {
+      // The page's load waits on this image.
+      setTimeout(() => {
+        response.setHeader("cache-control", "no-store");
+        response.setHeader("content-type", "image/gif");
+        response.end(Buffer.from("R0lGODlhAQABAAAAACw=", "base64"));
+      }, 3_000);
+      return;
+    }
+    // Nothing is kept, so the wake's reload waits on the image again.
+    response.setHeader("cache-control", "no-store");
+    response.setHeader("content-type", "text/html");
+    response.end('<!doctype html><title>slow</title><p id="text">slow</p><img src="/hold">');
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const profile = await nativeRuntimeProfile();
+  cleanup.push(profile.close);
+  const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000911");
+  const claims = validClaims({
+    identity: profile.identity,
+    sessionId,
+    tabRestoreVersion: 1,
+    surfaceState: 1,
+  });
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  // Memory over the start threshold, so the sleeper takes the tab once it has loaded.
+  const limitBytes = 2 * 1024 ** 3;
+  Object.defineProperty(launcher, "memoryPressure", {
+    value: async () => ({ usedBytes: Math.round(limitBytes * 0.8), limitBytes }),
+  });
+  const runtime = new BrowserRuntime({
+    localProfiles: profile.localProfiles,
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: new FakeTicketVerifier(claims),
+  });
+  cleanup.push(() => runtime.shutdown());
+  const sink = new FakeSink();
+  const attachment = await runtime.attach("ticket", sink);
+  const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+  const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+    sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+  const targetId = String(
+    asRecord(await agent("Target.createTarget", { url: `${origin}/slow` })).targetId,
+  );
+  const tabs = async () =>
+    z
+      .object({
+        tabs: z.array(
+          z.object({ surfaceId: z.string(), targetId: z.string().nullable(), state: z.string() }),
+        ),
+      })
+      .parse(await agent("Opensteer.listTabs", {})).tabs;
+  const surfaceId = (await tabs()).find((tab) => tab.targetId === targetId)!.surfaceId;
+  await attachment.handle(
+    JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+  );
+  await waitForAsync(
+    async () => (await tabs()).find((tab) => tab.surfaceId === surfaceId)?.state === "suspended",
+    30_000,
+  );
+  // Nothing more sleeps it while the agent works in it.
+  await attachment.handle(
+    JSON.stringify({
+      type: "session.state",
+      runs: 0,
+      personUsed: [],
+      viewed: [],
+      pinned: [surfaceId],
+    }),
+  );
+  const asked = performance.now();
+  const woken = asRecord(await agent("Opensteer.resumeTab", { surfaceId, loaded: true }));
+  const answeredMs = performance.now() - asked;
+  expect(woken.reloaded).toBe(true);
+  const page = String(
+    asRecord(
+      await agent("Target.attachToTarget", { flatten: true, targetId: String(woken.targetId) }),
+    ).sessionId,
+  );
+  // Its first command finds the whole page, the image the load waited on included.
+  expect(
+    evaluationValue(
+      await agent(
+        "Runtime.evaluate",
+        {
+          expression: "[document.readyState, location.pathname, document.images[0].complete]",
+          returnByValue: true,
+        },
+        page,
+      ),
+    ),
+  ).toEqual(["complete", "/slow", true]);
+  expect(answeredMs).toBeGreaterThanOrEqual(2_500);
+}, 90_000);
+
+/*
+ * V9, evidence first: a person signs in (the site sets a lasting cookie) and types in a field, and
+ * the browser service is stopped at once, as a Home's service is when its machine restarts. When
+ * it starts again the sign-in is still there, and the Home's tab opens again at its address
+ * (Linux loads nothing of Chromium's last session; typed text is not kept, by design: L1).
+ */
+it.each([1, 2, 3, 4, 5])(
+  "keeps a sign-in through a stop at once and a start, and opens the tab again at its address (V9, run %i)",
+  async (run) => {
+    const cookies: string[] = [];
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/check") cookies.push(request.headers.cookie ?? "");
+      response.setHeader("cache-control", "no-store");
+      response.setHeader("content-type", "text/html");
+      if (url.pathname === "/sign-in")
+        response.setHeader(
+          "set-cookie",
+          `session=signed-in-${run}; Max-Age=86400; Path=/; HttpOnly`,
+        );
+      response.end(`<!doctype html><title>${url.pathname}</title><input id="field">`);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const profile = await nativeRuntimeProfile();
+    cleanup.push(profile.close);
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_00000000-0000-4000-8000-00000000090${run}`);
+    const claims = validClaims({ identity: profile.identity, sessionId, tabRestoreVersion: 1 });
+    const start = async () => {
+      const runtime = new BrowserRuntime({
+        localProfiles: profile.localProfiles,
+        launcher: new PlaywrightChromiumLauncher({
+          chromiumSandbox: false,
+          executablePath,
+          headless: true,
+        }),
+        runtimeId: claims.runtimeId,
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(claims),
+      });
+      const sink = new FakeSink();
+      const attachment = await runtime.attach("ticket", sink);
+      const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+      const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+        sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+      return { runtime, agent };
+    };
+
+    const first = await start();
+    let firstStopped = false;
+    cleanup.push(() => (firstStopped ? Promise.resolve() : first.runtime.shutdown()));
+    const targetId = String(
+      asRecord(await first.agent("Target.createTarget", { url: `${origin}/sign-in` })).targetId,
+    );
+    const page = String(
+      asRecord(await first.agent("Target.attachToTarget", { flatten: true, targetId })).sessionId,
+    );
+    await waitForAsync(
+      async () =>
+        evaluationValue(
+          await first.agent(
+            "Runtime.evaluate",
+            { expression: "document.readyState", returnByValue: true },
+            page,
+          ),
+        ) === "complete",
+      10_000,
+    );
+    await first.agent(
+      "Runtime.evaluate",
+      { expression: "document.querySelector('#field').focus()" },
+      page,
+    );
+    await first.agent("Input.insertText", { text: "typed before the stop" }, page);
+    const listed = z
+      .object({
+        tabs: z.array(z.object({ surfaceId: z.string(), targetId: z.string().nullable() })),
+      })
+      .parse(await first.agent("Opensteer.listTabs", {})).tabs;
+    const surfaceId = listed.find((tab) => tab.targetId === targetId)!.surfaceId;
+
+    // Stopped at once: nothing waits for Chromium to write anything first.
+    const stopping = performance.now();
+    await first.runtime.shutdown();
+    firstStopped = true;
+    const stopMs = Math.round(performance.now() - stopping);
+
+    const second = await start();
+    cleanup.push(() => second.runtime.shutdown());
+    // The Home opens its tab again, by its identity, at its address.
+    const reopened = asRecord(
+      await second.agent("Opensteer.openTab", {
+        idempotencyKey: randomUUID(),
+        surfaceId,
+        url: `${origin}/check`,
+      }),
+    );
+    expect(reopened.tabId).toBe(surfaceId);
+    await waitForAsync(async () => cookies.length > 0, 10_000);
+    process.stderr.write(
+      `${JSON.stringify({ event: "v9.stop-start", run, stopMs, cookie: cookies[0] })}\n`,
+    );
+    expect(cookies[0]).toContain(`session=signed-in-${run}`);
+  },
+  90_000,
+);
+
+it("follows document.title changes and single-page app navigations without a load", async () => {
+  const server = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    if (request.url === "/untitled") {
+      response.end("<!doctype html><body>no title yet</body>");
+      return;
+    }
+    response.end("<!doctype html><title>Load title</title><body><div id='app'>start</div></body>");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing HTTP port.");
+  const origin = `http://127.0.0.1:${address.port}`;
+
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  const claims = validClaims({
+    initialNavigation: { operationKey: "title-follow-init", url: `${origin}/start` },
+  });
+  const runtime = new BrowserRuntime({
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: new FakeTicketVerifier(claims),
+  });
+  cleanup.push(() => runtime.shutdown());
+
+  const sink = new FakeSink();
+  const tabWaiters = new Set<() => boolean>();
+  sink.sendServerImplementation = async (message) => {
+    if (message.type !== "browser.tabs") return;
+    for (const check of tabWaiters) {
+      if (check()) tabWaiters.delete(check);
+    }
+  };
+  const tabRow = () => [...sink.tabs.rows.values()][0];
+  const waitForTab = (
+    match: (row: { readonly url: string; readonly title: string }) => boolean,
+    timeoutMs = 10_000,
+  ) => {
+    const existing = tabRow();
+    if (existing && match(existing)) return Promise.resolve(existing);
+    return withTimeout(
+      new Promise<NonNullable<ReturnType<typeof tabRow>>>((resolve) => {
+        tabWaiters.add(() => {
+          const row = tabRow();
+          if (!row || !match(row)) return false;
+          resolve(row);
+          return true;
+        });
+      }),
+      timeoutMs,
+      {
+        timeoutError: () =>
+          new Error(`Timed out waiting for browser.tabs; last=${JSON.stringify(tabRow())}`),
+      },
+    );
+  };
+
+  const attachment = await runtime.attach("ticket", sink);
+  cleanup.push(() => attachment.close());
+  const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+  const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+    sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+
+  await waitForTab((row) => row.title === "Load title");
+
+  const listed = z
+    .object({
+      tabs: z.array(z.object({ surfaceId: z.string(), targetId: z.string().nullable() })),
+    })
+    .parse(await agent("Opensteer.listTabs", {})).tabs;
+  const targetId = listed[0]!.targetId!;
+  const cdpSessionId = String(
+    asRecord(await agent("Target.attachToTarget", { flatten: true, targetId })).sessionId,
+  );
+
+  // 1) Direct document.title assignment after load.
+  await agent(
+    "Runtime.evaluate",
+    { expression: `document.title = "Script title"`, returnByValue: true },
+    cdpSessionId,
+  );
+  await waitForTab((row) => row.title === "Script title", 4_000);
+
+  // 2) Text node mutation inside <title>.
+  await agent(
+    "Runtime.evaluate",
+    {
+      expression: `document.querySelector("title").firstChild.data = "Text node title"`,
+      returnByValue: true,
+    },
+    cdpSessionId,
+  );
+  await waitForTab((row) => row.title === "Text node title", 4_000);
+
+  // 3) Single-page app navigation without a load: pushState and title update as separate commands
+  //    with the URL publication committed between them.
+  await agent(
+    "Runtime.evaluate",
+    { expression: `history.pushState({}, "", "/spa-route"); true`, returnByValue: true },
+    cdpSessionId,
+  );
+  await waitForTab(
+    (row) => row.url === `${origin}/spa-route` && row.title === "Text node title",
+    4_000,
+  );
+  await agent(
+    "Runtime.evaluate",
+    { expression: `document.title = "SPA route title"`, returnByValue: true },
+    cdpSessionId,
+  );
+  await waitForTab(
+    (row) => row.url === `${origin}/spa-route` && row.title === "SPA route title",
+    4_000,
+  );
+
+  // 4) Document starting with no <title> element gets one created later and then removed.
+  await agent("Page.navigate", { url: `${origin}/untitled` }, cdpSessionId);
+  await waitForTab((row) => row.url === `${origin}/untitled` && row.title === "");
+  // The row above is published at the navigation's commit, before the new document is parsed. A
+  // document with no head ignores an assignment to its title (the HTML rule), so the page's own
+  // script here waits for its document, as a real page's script runs inside it.
+  await agent(
+    "Runtime.evaluate",
+    {
+      awaitPromise: true,
+      expression: `new Promise((resolve) => document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", () => resolve(true), { once: true }) : resolve(true))`,
+      returnByValue: true,
+    },
+    cdpSessionId,
+  );
+  await agent(
+    "Runtime.evaluate",
+    { expression: `document.title = "Added later"`, returnByValue: true },
+    cdpSessionId,
+  );
+  await waitForTab((row) => row.title === "Added later", 4_000);
+  await agent(
+    "Runtime.evaluate",
+    { expression: `document.querySelector("title").remove()`, returnByValue: true },
+    cdpSessionId,
+  );
+  await waitForTab((row) => row.title === "", 4_000);
+}, 60_000);
+
+describe("Chromium title observer bounds and lifecycle", () => {
+  async function launchTitlePage() {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><title>Initial</title><body>ok</body>");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing HTTP port.");
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const launcher = new PlaywrightChromiumLauncher({
+      chromiumSandbox: false,
+      executablePath,
+      headless: true,
+    });
+    const launched = await launcher.launch({
+      initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
+      partitionKey: `session:${randomUUID()}`,
+      sessionId: validClaims().sessionId,
+      storage: { kind: "guest" },
+    });
+    cleanup.push(() => launched.close());
+    const page = launched.context.pages()[0]!;
+    const cdp = await page.cdp();
+    const inspected = page as unknown as {
+      rawCdpSession: {
+        listenerCount(event: string): number;
+        on(event: string, listener: (event: unknown) => void): void;
+        off(event: string, listener: (event: unknown) => void): void;
+        send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+      } | null;
+      titleObserver: unknown;
+    };
+    const raw = inspected.rawCdpSession!;
+    const observerWorlds: number[] = [];
+    const onContextCreated = (event: unknown) => {
+      if (
+        event &&
+        typeof event === "object" &&
+        "context" in event &&
+        event.context &&
+        typeof event.context === "object" &&
+        "id" in event.context &&
+        "name" in event.context &&
+        typeof event.context.id === "number" &&
+        typeof event.context.name === "string" &&
+        event.context.name.startsWith("opensteer-title-")
+      ) {
+        observerWorlds.push(event.context.id);
+      }
+    };
+    raw.on("Runtime.executionContextCreated", onContextCreated);
+    cleanup.push(async () => {
+      raw.off("Runtime.executionContextCreated", onContextCreated);
+    });
+
+    const loaded = new Promise<void>((resolve) => {
+      const onMeta = () => {
+        if (page.url() === `${origin}/`) {
+          page.offMetadataChanged(onMeta);
+          resolve();
+        }
+      };
+      page.onMetadataChanged(onMeta);
+    });
+    await cdp.send("Page.navigate", { url: `${origin}/` });
+    await loaded;
+
+    const waitForNextWorld = (previousCount: number) =>
+      withTimeout(
+        new Promise<number>((resolve) => {
+          const check = () => {
+            if (observerWorlds.length > previousCount) {
+              raw.off("Runtime.executionContextCreated", check);
+              resolve(observerWorlds.at(-1)!);
+            }
+          };
+          if (observerWorlds.length > previousCount) resolve(observerWorlds.at(-1)!);
+          else raw.on("Runtime.executionContextCreated", check);
+        }),
+        5_000,
+        { timeoutError: () => new Error("Title observer isolated world never created") },
+      );
+
+    return { page, cdp, inspected, raw, observerWorlds, waitForNextWorld };
+  }
+
+  it("delivers 120 title changes across 120 page tasks at a bounded cadence with latest title winning", async () => {
+    const { page, cdp, raw, observerWorlds, waitForNextWorld } = await launchTitlePage();
+    let bindingCalls = 0;
+    let burstSettled: (() => void) | undefined;
+    const burstDone = new Promise<void>((resolve) => {
+      burstSettled = resolve;
+    });
+    const onBurstBinding = (event: unknown) => {
+      if (
+        event &&
+        typeof event === "object" &&
+        "name" in event &&
+        typeof event.name === "string" &&
+        event.name.startsWith("opensteerTitle_")
+      ) {
+        bindingCalls++;
+      }
+    };
+    raw.on("Runtime.bindingCalled", onBurstBinding);
+    cleanup.push(async () => {
+      raw.off("Runtime.bindingCalled", onBurstBinding);
+    });
+
+    const prevWorlds = observerWorlds.length;
+    const onBurstMeta = () => {
+      void page.title().then((title) => {
+        if (title === "burst-120") burstSettled?.();
+      });
+    };
+    page.onMetadataChanged(onBurstMeta);
+    cleanup.push(async () => {
+      page.offMetadataChanged(onBurstMeta);
+    });
+    await waitForNextWorld(prevWorlds);
+
+    await cdp.send("Runtime.evaluate", {
+      awaitPromise: true,
+      expression: `new Promise((resolve) => {
+        const ch = new MessageChannel();
+        let i = 0;
+        ch.port1.onmessage = () => {
+          i++;
+          document.title = "burst-" + i;
+          if (i < 120) ch.port2.postMessage(0);
+          else resolve(i);
+        };
+        ch.port2.postMessage(0);
+      })`,
+      returnByValue: true,
+    });
+    await withTimeout(burstDone, 5_000, {
+      timeoutError: () => new Error("Final burst title was not delivered"),
+    });
+    expect(await page.title()).toBe("burst-120");
+    expect(bindingCalls).toBeGreaterThanOrEqual(1);
+    expect(bindingCalls).toBeLessThanOrEqual(5);
+  }, 60_000);
+
+  it("disconnects the current document's observer when the last metadata listener leaves", async () => {
+    const { page, raw, observerWorlds, waitForNextWorld } = await launchTitlePage();
+    const prevWorlds = observerWorlds.length;
+    const listener = () => {};
+    page.onMetadataChanged(listener);
+    const worldId = await waitForNextWorld(prevWorlds);
+
+    page.offMetadataChanged(listener);
+    await raw.send("Runtime.evaluate", {
+      contextId: worldId,
+      expression: "1",
+      returnByValue: true,
+    });
+    const stillInstalled = asRecord(
+      await raw.send("Runtime.evaluate", {
+        contextId: worldId,
+        expression: "Boolean(globalThis.__opensteerTitleObserver)",
+        returnByValue: true,
+      }),
+    );
+    expect(asRecord(stillInstalled.result).value).toBe(false);
+    expect(raw.listenerCount("Runtime.bindingCalled")).toBe(0);
+  }, 60_000);
+
+  it("clears the title observer record and Runtime.bindingCalled listener after a renderer crash", async () => {
+    const { page, cdp, inspected, raw, observerWorlds, waitForNextWorld } = await launchTitlePage();
+    const prevWorlds = observerWorlds.length;
+    const listener = () => {};
+    page.onMetadataChanged(listener);
+    await waitForNextWorld(prevWorlds);
+    expect(inspected.titleObserver).not.toBeNull();
+    expect(raw.listenerCount("Runtime.bindingCalled")).toBe(1);
+
+    const crashed = new Promise<void>((resolve) => {
+      const off = page.onRendererGone!(() => {
+        off();
+        resolve();
+      });
+    });
+    void cdp.send("Page.crash").catch(() => undefined);
+    await withTimeout(crashed, 10_000, {
+      timeoutError: () => new Error("Renderer crash event did not fire"),
+    });
+    expect(inspected.titleObserver).toBeNull();
+    expect(raw.listenerCount("Runtime.bindingCalled")).toBe(0);
+  }, 60_000);
+});
+
+/**
+ * CZ5: the context of the field a page surface has focused, as it last published it: what a
+ * paste into that field names (waited for, as the page reports a focus a moment after it).
+ */
+async function publishedContext(sink: FakeSink, surfaceId: string): Promise<string> {
+  let contextId: string | undefined;
+  await vi.waitFor(() => {
+    const published = sink.messages
+      .filter((message) => message.type === "browser.editing" && message.surfaceId === surfaceId)
+      .at(-1);
+    contextId =
+      published?.type === "browser.editing" && published.context.field !== null
+        ? published.context.contextId
+        : undefined;
+    expect(contextId).toBeDefined();
+  });
+  return contextId!;
+}

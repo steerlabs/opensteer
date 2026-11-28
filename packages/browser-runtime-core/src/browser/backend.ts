@@ -6,6 +6,7 @@ import type {
   BrowserSessionId,
   LocalProfileBinding,
 } from "@opensteer/protocol/browser";
+import type { PageEndReason } from "./page-ownership.js";
 import type { PageSize } from "./surface-ledger.js";
 import type { ViewportCapture, ViewportCaptureRequest } from "./viewport-capture.js";
 
@@ -53,7 +54,51 @@ export interface PageCapturePort {
   subscribe(listener: () => void): () => void;
 }
 
-export type KeepAwakeReason = "upload" | "post" | "download" | "media" | "fullscreen" | "capturing";
+/**
+ * A page's navigations as its browser side sees them. Chromium reports a commit to the page's own
+ * session (Page.frameNavigated) before its browser side takes commands for that document ("Not
+ * attached to an active page"), and a tab opened with an address takes none until its first
+ * document commits there.
+ */
+export interface PageNavigationPort {
+  read(): {
+    /** Navigations it finished since the page opened: after each, its document takes commands. */
+    readonly finished: number;
+    /** A main-frame navigation to another document started and has not ended. */
+    readonly pending: boolean;
+    /** The document it last finished is the blank one a page opens with, or there is none yet. */
+    readonly blankDocument: boolean;
+  };
+  /** Called after each change. */
+  subscribe(listener: () => void): () => void;
+}
+
+/**
+ * The event an engine sends on a page session when it ended that session's casts itself (a
+ * renderer gone, a debugger detached), which Chromium does not report: the follow view then knows
+ * nothing runs there.
+ */
+export const screencastEndedEvent = "Opensteer.screencastEnded";
+
+export type KeepAwakeReason =
+  | "upload"
+  | "post"
+  | "download"
+  | "media"
+  | "fullscreen"
+  | "capturing"
+  /** TS16: what desktop Chrome's own discarding refuses, and a beforeunload handler. */
+  | "device"
+  | "picture-in-picture"
+  | "recently-audible"
+  | "pdf"
+  | "notifications"
+  | "form"
+  | "beforeunload"
+  /** V1: a protection could not be read; not known is not unprotected. */
+  | "unknown"
+  /** The tab-lifecycle helper is still being looked for after launch. */
+  | "tab-helper";
 
 /** A renderer after its page ended: gone, still serving other pages, or still running alone. */
 export type RendererExit = "exited" | "shared" | "running";
@@ -75,9 +120,13 @@ export interface BrowserPage {
   /** Reads opaque restore state without closing or changing the page. Null refuses this document. */
   captureRestore?(): Promise<unknown | null>;
   keepAwake?(): KeepAwakeReason | null | Promise<KeepAwakeReason | null>;
+  /** Synchronous in-flight transfer reasons safe to inspect even while the page is frozen. */
+  activeTransfers?(): readonly ("download" | "upload")[];
   hasOpenerAccess?(): boolean | Promise<boolean>;
   readonly cursor?: import("./cursor-hints.js").NativePageCursor;
   readonly capture?: PageCapturePort;
+  /** An engine without it is taken to accept commands for a document once it commits. */
+  readonly navigations?: PageNavigationPort;
   /**
    * Observes compositing after geometry acknowledgement, outside its lock.
    * Electron cannot identify the metrics revision of those pixels: an already
@@ -112,10 +161,22 @@ export interface BrowserPage {
   observeHumanInput?(listener: (observation: HumanInputObservation) => void): () => void;
   /** Opened behind its opener, as a ⌘-click opens a tab: nobody asked to look at it yet. */
   readonly openedInBackground?: boolean;
+  /** A wake could not bring its tab back: a fresh page the ledger navigates to the tab's address. */
+  readonly openedFresh?: boolean;
+  /**
+   * False when this page's sleep cannot keep the tab as itself (no tab helper: it sleeps by
+   * closing and wakes at its address), so nothing of it is kept in a lineage while it sleeps.
+   */
+  sleepsAsItself?(): boolean;
+  /**
+   * V1: freezes the page so nothing in it can change while its protections are read for a sleep;
+   * the answer thaws it again when the sleep does not go ahead.
+   */
+  freeze?(): Promise<() => Promise<void>>;
   agentCdp(): Promise<CdpSession>;
   cdp(): Promise<CdpSession>;
   /** Asks the engine to end the page. Settling proves nothing; `onClose` does. */
-  close(): Promise<void>;
+  close(options?: { readonly reason?: PageEndReason }): Promise<void>;
   /** True only once the engine confirms the native page gone, never while a close is under way. */
   isClosed(): boolean;
   offClose(listener: (cause?: PageGoneCause) => void): void;
@@ -139,6 +200,11 @@ export interface BrowserContext {
   /** False after whole-context/browser teardown; page closes alone keep it connected. */
   isConnected?(): boolean;
   /**
+   * Null when its tabs may sleep now; otherwise a promise that settles when they may (a native
+   * browser's look for its tab helper, after launch).
+   */
+  sleepReady?(): Promise<void> | null;
+  /**
    * Restore precedes any load; other new pages submit their initial blank
    * document. `own` receives the page synchronously as soon as its handle
    * exists, before any later step can fail.
@@ -146,7 +212,21 @@ export interface BrowserContext {
   createPage(options?: {
     readonly restore?: unknown;
     readonly own?: (page: BrowserPage) => void;
+    /** Aborted when the creation that asked is abandoned: a wake for it stops where it checks. */
+    readonly signal?: AbortSignal;
   }): Promise<BrowserPage>;
+  /**
+   * Releases engine-held resources for a sleeping tab that will not be woken.
+   * Returns true only when the tab is confirmed gone from the browser.
+   */
+  releaseRestore?(restore: unknown): Promise<boolean> | boolean;
+  /**
+   * Set by the runtime where it reads memory pressure: awaited before `createPage` makes a page,
+   * so a burst of opens sheds sleeping-eligible tabs first. It never rejects. What it returns is
+   * called once the page exists or its creation failed: over the threshold, opens go one at a
+   * time (TS13).
+   */
+  beforeCreatePage?: ((signal?: AbortSignal) => Promise<() => void>) | undefined;
   /**
    * The one handoff of native pages to the runtime: called synchronously as
    * each page handle comes to exist, before any asynchronous work, with the
@@ -258,10 +338,17 @@ export interface BrowserRendererUsage {
   readonly unassignedProcesses?: number;
 }
 
+export interface BrowserMemoryPressure {
+  readonly usedBytes: number;
+  readonly limitBytes: number;
+}
+
 export interface BrowserLauncher {
   readonly hostCost?: "process" | "partition";
   /** Deduplicated renderer census for this runtime, including its subframes. */
-  rendererUsage?(): BrowserRendererUsage;
+  rendererUsage?(): BrowserRendererUsage | Promise<BrowserRendererUsage>;
+  /** Linux memory-pressure reading (container working set or host MemTotal - MemAvailable). */
+  memoryPressure?(): BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>;
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
   /** Cancellation covers acquisition; the shared runtime owns the admitted host's lifetime. */

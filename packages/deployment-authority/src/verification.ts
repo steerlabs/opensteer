@@ -15,6 +15,7 @@ import { decodeBase64Url } from "@opensteer/shared/base64url";
 import {
   HostDiscoveryEnvelopeSchema,
   hostDiscoverySigningBytes,
+  hostIdentityProofBytes,
   type HostDiscoveryDocument,
   type HostDiscoveryEnvelope,
 } from "./authority.js";
@@ -144,6 +145,23 @@ export function verifyBrowserSourceRouteChanged(
       origin: input.origin,
       routeGeneration: input.routeGeneration,
     }),
+  );
+}
+
+/**
+ * Whether a nonce was signed by the Home a client saved, as that same Home:
+ * the saved key, origin, deployment and installation. Anything else at the
+ * address, however valid its own discovery, fails.
+ */
+export function verifyHostIdentityProof(input: {
+  readonly saved: HostDiscoveryEnvelope;
+  readonly nonce: string;
+  readonly signature: string;
+}): boolean {
+  return verifyHostSignature(
+    input.saved,
+    input.signature,
+    hostIdentityProofBytes({ nonce: input.nonce, document: input.saved.document }),
   );
 }
 

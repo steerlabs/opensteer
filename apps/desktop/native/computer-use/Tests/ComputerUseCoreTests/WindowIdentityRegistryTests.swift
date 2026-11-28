@@ -2,6 +2,18 @@ import XCTest
 @testable import ComputerUseCore
 
 final class WindowIdentityRegistryTests: XCTestCase {
+  @WorkActor func testForeignWindowAndMissingWindowHaveTheSameBindRefusal() throws {
+    let registry = WindowIdentityRegistry<Int>()
+    let own = registry.retain(1, same: ==)
+    let foreign = registry.retain(2, same: ==)
+    XCTAssertEqual(try registry.resolve(own, inScope: { $0 == 1 }), 1)
+    for id in [foreign, "missing"] {
+      XCTAssertThrowsError(try registry.resolve(id, inScope: { $0 == 1 })) { error in
+        XCTAssertEqual(error as? HelperError, SessionWindows.closed)
+      }
+    }
+  }
+
   @WorkActor func testIdentityOutlivesLeasesButNotRetirementOrHelperBoot() throws {
       struct Identity: Equatable { let process: Int; let ax: Int }
       let registry = WindowIdentityRegistry<Identity>()

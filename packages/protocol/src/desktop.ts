@@ -5,7 +5,6 @@ export {
   type AgentConnectionAuthorizationTarget,
 } from "./agent-connections.js";
 import { BrowserOpenIdentitySchema } from "./browser.js";
-import { TeamMemberSchema } from "./team-access.js";
 import { BrowserPlacementSelectorSchema } from "./browser-tabs.js";
 import { type RealtimeFrameDiagnostic, type RendererFailureDiagnostic } from "./common.js";
 import { type DisplayClientDiagnostic } from "./display-stream.js";
@@ -32,23 +31,16 @@ import {
   ThreadIdSchema,
   MarkColorSchema,
   IconNameSchema,
-  parseTeamPageLink,
   isBareOrigin,
   isSecureOrLoopbackOrigin,
-  TeamInviteSecretSchema,
-  TeamOriginSchema,
 } from "@opensteer/core";
 import type { DeploymentId } from "@opensteer/core";
 import { z } from "zod";
 import {
-  HostAccountAdoptionAuthoritySchema,
-  UpdateAccountProfileRequestSchema,
+  CloudComputerIdSchema,
+  CloudComputerListResponseSchema,
+  CloudComputerViewSchema,
 } from "@opensteer/control-plane-protocol";
-import {
-  CreateHostedTeamRequestSchema,
-  HostedTeamIdSchema,
-  TransferHostedTeamRequestSchema,
-} from "@opensteer/control-plane-protocol/hosted-teams";
 import {
   IntegrationAuthorizationAttemptIdSchema,
   IntegrationAuthorizationReturnPortSchema,
@@ -374,6 +366,16 @@ export const DesktopUseComputerViewResultSchema = z.discriminatedUnion("activate
   }),
 ]);
 export type DesktopUseComputerViewResult = z.infer<typeof DesktopUseComputerViewResultSchema>;
+/**
+ * The desktop's own sentences for computer use that is off here, which its
+ * permission calls refuse with. A page shows them in place of a control that
+ * could do nothing.
+ */
+export const desktopComputerUseUnsupported =
+  "Computer use runs on macOS only, on the Mac the person is using.";
+export const desktopComputerUseOffInTrial =
+  "Apps are off in a trial of Opensteer, so there is nothing to allow in macOS for them.";
+
 export const DesktopComputerUsePermissionsResultSchema = ComputerUsePermissionsViewSchema;
 export type DesktopComputerUsePermissionsResult = z.infer<
   typeof DesktopComputerUsePermissionsResultSchema
@@ -475,6 +477,8 @@ export function desktopExternalUrlAllowed(value: string): boolean {
     url.protocol === "http:" &&
     loopbackExternalHostnames.has(url.hostname) &&
     ((url.pathname === loopbackChromeConnectPath && url.search === "") ||
+      // A development account website on this computer: its Cloud Computer checkout.
+      (url.pathname === "/cloud-computer/checkout" && url.search === "" && !url.hash) ||
       (url.pathname === "/oauth/mcp/complete" &&
         !url.hash &&
         url.searchParams.size === 1 &&
@@ -489,6 +493,52 @@ export const DesktopOpenExternalUrlInputSchema = z.strictObject({
 export type DesktopOpenExternalUrlInput = z.infer<typeof DesktopOpenExternalUrlInputSchema>;
 export const DesktopOpenExternalUrlResultSchema = z.strictObject({ opened: z.literal(true) });
 export type DesktopOpenExternalUrlResult = z.infer<typeof DesktopOpenExternalUrlResultSchema>;
+/**
+ * What an access operation answers, in place of throwing, when it refuses on purpose with words
+ * written for a person: a Home gone by the time its turn came, a turn that never came. Any
+ * other failure still throws, and a person never reads its text.
+ */
+export const DesktopAccessRefusedSchema = z.strictObject({
+  refused: z.string().trim().min(1).max(500),
+});
+
+const desktopRefusalKind = "opensteer.desktop-refusal";
+
+/**
+ * Such a refusal as the Mac app's window receives it. A plain frozen object, because the context
+ * bridge keeps an Error's message and drops every field of its own.
+ */
+export interface DesktopRefusal {
+  readonly kind: typeof desktopRefusalKind;
+  readonly message: string;
+  readonly words: string;
+}
+
+export function desktopRefusal(words: string): DesktopRefusal {
+  return Object.freeze({ kind: desktopRefusalKind, message: words, words });
+}
+
+/** The sentence a refusal carries for a person, or null for anything else that was thrown. */
+export function desktopRefusalWords(reason: unknown): string | null {
+  if (typeof reason !== "object" || reason === null) return null;
+  const { kind, words } = reason as { readonly kind?: unknown; readonly words?: unknown };
+  if (kind !== desktopRefusalKind || typeof words !== "string") return null;
+  const parsed = DesktopAccessRefusedSchema.shape.refused.safeParse(words);
+  return parsed.success ? parsed.data : null;
+}
+
+/** The preload's reading of an access operation's answer: nothing, or the refusal it throws. */
+export function settleDesktopAccessAnswer(answer: unknown): void {
+  const refused = DesktopAccessRefusedSchema.safeParse(answer);
+  if (refused.success) throw desktopRefusal(refused.data.refused);
+}
+
+/** A page opened in Google Chrome itself, or why it couldn't be: Chrome isn't installed. */
+export const DesktopOpenInChromeResultSchema = z.discriminatedUnion("opened", [
+  z.strictObject({ opened: z.literal(true) }),
+  z.strictObject({ opened: z.literal(false), reason: z.literal("chrome-not-installed") }),
+]);
+export type DesktopOpenInChromeResult = z.infer<typeof DesktopOpenInChromeResultSchema>;
 
 /**
  * One notification the Host decided this person gets, as the operating system
@@ -557,6 +607,8 @@ export type DesktopTailscaleShareResult = z.infer<typeof DesktopTailscaleShareRe
  */
 export const DesktopBadgeCountInputSchema = z.strictObject({
   count: z.number().int().min(0).max(9_999),
+  /** The Home the count is for; absent for a count that only clears the badge. */
+  deploymentId: z.string().min(1).max(255).optional(),
 });
 export type DesktopBadgeCountInput = z.infer<typeof DesktopBadgeCountInputSchema>;
 
@@ -902,8 +954,10 @@ export type DesktopAddDirectRouteInput = z.infer<typeof DesktopAddDirectRouteInp
 /**
  * Connects a fresh Desktop client through one explicitly selected trust path.
  * Personal pairing verifies the Host-signed remote route before spending its
- * one-use code. Self-hosted connection verifies ordinary signed discovery and
- * then delegates authentication to that Host's native OAuth surface. Electron
+ * one-use code. Adding by address (a Home at its own address) verifies
+ * ordinary signed discovery and then delegates
+ * authentication to that Host's native OAuth surface. The renderer, the bridge
+ * and the service share this one discriminator. Electron
  * main derives every Deployment identity and catalog field from those signed
  * documents; the renderer cannot infer or assert a Deployment kind.
  */
@@ -914,7 +968,7 @@ export const DesktopConnectPrivateDeploymentInputSchema = z.discriminatedUnion("
     pairingCode: PersonalPairingCodeSchema,
   }),
   z.strictObject({
-    kind: z.literal("team"),
+    kind: z.literal("address"),
     origin: DesktopAccessOriginSchema,
   }),
 ]);
@@ -1053,6 +1107,11 @@ export const DeploymentAccessSnapshotSchema = z.strictObject({
     detail: z.string().trim().min(1).max(1_000).optional(),
     email: z.string().email().max(320).optional(),
     issuer: z.url().optional(),
+    /**
+     * The Opensteer website this app's account is managed on: where checkout happens. A bare
+     * https origin (loopback http in development), as the app opens nothing else there.
+     */
+    portalOrigin: DesktopAccessOriginSchema.optional(),
     status: DesktopAccountAuthStatusSchema,
     subject: z.string().min(1).max(200).optional(),
   }),
@@ -1129,6 +1188,7 @@ export const DesktopHostTransportErrorCodeSchema = z.enum([
   "cancelled",
   "unreachable",
 ]);
+export type DesktopHostTransportErrorCode = z.infer<typeof DesktopHostTransportErrorCodeSchema>;
 /**
  * Electron hands main a fresh Request without the renderer's abort signal, so
  * each request carries an unguessable id the renderer cancels it by.
@@ -1139,13 +1199,40 @@ export const DesktopCancelHostRequestInputSchema = z.strictObject({
   requestId: DesktopHostRequestIdSchema,
 });
 export type DesktopCancelHostRequestInput = z.infer<typeof DesktopCancelHostRequestInputSchema>;
-/** The routes whose bodies are file bytes: the Host API's binary requests and team uploads. */
+/** The routes whose bodies are file bytes: the Host API's binary requests. */
 export function isDesktopHostUploadPath(pathname: string): boolean {
-  return pathname === "/v1/rpc/attachment.upload" || pathname.startsWith("/v1/team/files/upload/");
+  return pathname === "/v1/rpc/attachment.upload";
 }
 
 export function desktopHostRouteUrl(deploymentId: DeploymentId, hostUrl: URL): string {
   return `${desktopHostRouteOrigin}${desktopHostRoutePrefix}${deploymentId}${hostUrl.pathname}${hostUrl.search}`;
+}
+
+/** Main records a post-headers stream failure under the request's id for the renderer to recover. */
+export function desktopHostStreamErrorRouteUrl(requestId: string): string {
+  return `${desktopHostRouteOrigin}${desktopHostRoutePrefix}error/${requestId}`;
+}
+
+export function parseDesktopHostStreamErrorRoute(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== "app:" ||
+    url.host !== "opensteer" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  )
+    return null;
+  const match = /^\/host\/error\/([^/]+)$/u.exec(url.pathname);
+  if (!match) return null;
+  const requestId = DesktopHostRequestIdSchema.safeParse(match[1]);
+  return requestId.success ? requestId.data : null;
 }
 
 export function parseDesktopHostRoute(
@@ -1176,7 +1263,7 @@ export function parseDesktopHostRoute(
 }
 
 export const DesktopOpenHostWebSocketInputSchema = z.strictObject({
-  /** The Deployment the socket was opened for: the selected one or a joined team's own Host. */
+  /** The Deployment the socket was opened for. */
   expectedDeploymentId: DeploymentIdSchema,
   path: DesktopHostPathSchema,
 });
@@ -1393,100 +1480,6 @@ export const DesktopPersonalOldDataStateSchema = z.strictObject({
     .length(5),
 });
 export type DesktopPersonalOldDataState = z.infer<typeof DesktopPersonalOldDataStateSchema>;
-
-export const DesktopTeamLinkSchema = z.strictObject({
-  id: z.uuid(),
-  url: DesktopWebUrlSchema.refine((value) => parseTeamPageLink(value) !== null),
-});
-export type DesktopTeamLink = z.infer<typeof DesktopTeamLinkSchema>;
-export const DesktopTeamLinkDeliverySchema = z.strictObject({
-  ready: z.boolean(),
-  acknowledgedId: z.uuid().optional(),
-});
-export type DesktopTeamLinkDelivery = z.infer<typeof DesktopTeamLinkDeliverySchema>;
-
-/**
- * Account's hosted-team calls, run in main where the Account session lives. Answers carry the
- * Account's refusal reason, which an Electron rejection would drop.
- */
-export const DesktopAccountTeamsCallSchema = z.discriminatedUnion("call", [
-  z.strictObject({ call: z.literal("availability"), slug: z.string().max(256) }),
-  z.strictObject({ call: z.literal("create"), request: CreateHostedTeamRequestSchema }),
-  z.strictObject({ call: z.literal("list") }),
-  z.strictObject({ call: z.literal("get"), id: HostedTeamIdSchema }),
-  z.strictObject({ call: z.literal("retry"), id: HostedTeamIdSchema }),
-  z.strictObject({ call: z.literal("delete"), id: HostedTeamIdSchema }),
-  z.strictObject({ call: z.literal("owners"), id: HostedTeamIdSchema }),
-  z.strictObject({
-    call: z.literal("transfer"),
-    id: HostedTeamIdSchema,
-    to: TransferHostedTeamRequestSchema.shape.to,
-  }),
-  z.strictObject({ call: z.literal("profile") }),
-  z.strictObject({ call: z.literal("profile.update"), request: UpdateAccountProfileRequestSchema }),
-]);
-export type DesktopAccountTeamsCall = z.infer<typeof DesktopAccountTeamsCallSchema>;
-export const DesktopAccountTeamsResultSchema = z.discriminatedUnion("ok", [
-  z.strictObject({ ok: z.literal(true), data: z.unknown() }),
-  z.strictObject({
-    ok: z.literal(false),
-    error: z.strictObject({
-      status: z.number().int().min(0).max(599),
-      reason: z.string().max(120).nullable(),
-      message: z.string().max(2_000),
-    }),
-  }),
-]);
-export type DesktopAccountTeamsResult = z.infer<typeof DesktopAccountTeamsResultSchema>;
-
-/**
- * Entering a team natively, in main: discovery verification, invite preview, and the Account
- * identity grant with its session exchange. The grant and the team's tokens stay in main.
- */
-export const DesktopTeamSessionsCallSchema = z.discriminatedUnion("call", [
-  z.strictObject({ call: z.literal("verify"), origin: TeamOriginSchema }),
-  z.strictObject({
-    call: z.literal("preview-invite"),
-    origin: TeamOriginSchema,
-    invite: TeamInviteSecretSchema,
-  }),
-  z.strictObject({
-    call: z.literal("enter"),
-    deploymentId: DeploymentIdSchema,
-    origin: TeamOriginSchema,
-    invite: TeamInviteSecretSchema.nullable(),
-  }),
-  /**
-   * The team's own sign-in in the system browser, for a team older than
-   * `team-session-exchange-v1` or an Account that can't vouch yet; `invite` admits the person there.
-   */
-  z.strictObject({
-    call: z.literal("sign-in"),
-    deploymentId: DeploymentIdSchema,
-    origin: TeamOriginSchema,
-    invite: TeamInviteSecretSchema.nullable(),
-  }),
-  z.strictObject({
-    call: z.literal("restore"),
-    origin: TeamOriginSchema,
-    deploymentId: DeploymentIdSchema,
-  }),
-  z.strictObject({ call: z.literal("forget"), deploymentId: DeploymentIdSchema }),
-]);
-export type DesktopTeamSessionsCall = z.infer<typeof DesktopTeamSessionsCallSchema>;
-/** What `verify` answers: the team Host's signed identity and what it offers. */
-export const DesktopVerifiedTeamSchema = z.strictObject({
-  authority: HostAccountAdoptionAuthoritySchema,
-  capabilities: z.array(HostCapabilitySchema).max(64),
-});
-/** What `enter` answers; the credential stays in main. */
-export const DesktopTeamEnteredSchema = z.strictObject({
-  admitted: z.boolean(),
-  member: TeamMemberSchema,
-});
-/** Refusals keep their `TeamEntryRefusalReason`, which an Electron rejection would drop. */
-export const DesktopTeamSessionsResultSchema = DesktopAccountTeamsResultSchema;
-export type DesktopTeamSessionsResult = DesktopAccountTeamsResult;
 
 export const DesktopWebLinkRequestSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
@@ -1922,6 +1915,41 @@ export interface DesktopBrowserPresentationBridge {
   openExtensionStore?(input: DesktopBrowserPresentationTarget): Promise<void>;
 }
 
+/**
+ * The person's Opensteer Cloud Computers, read and changed by main with the Account
+ * session it holds. A failure crosses the bridge as words and a kind, never as a
+ * thrown error whose class and reason Electron would drop.
+ */
+export const DesktopCloudComputerFailureSchema = z.strictObject({
+  /** `refused`: the Account answered no, and `message` is its own sentence. */
+  kind: z.enum(["signed-out", "unreachable", "refused", "unavailable"]),
+  message: z.string().min(1).max(1000),
+});
+export type DesktopCloudComputerFailure = z.infer<typeof DesktopCloudComputerFailureSchema>;
+export const DesktopCloudComputerReadResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({
+    ok: z.literal(true),
+    data: CloudComputerListResponseSchema,
+  }),
+  z.strictObject({ ok: z.literal(false), failure: DesktopCloudComputerFailureSchema }),
+]);
+export type DesktopCloudComputerReadResult = z.infer<typeof DesktopCloudComputerReadResultSchema>;
+export const DesktopCloudComputerActInputSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("suspend"), id: CloudComputerIdSchema }),
+  z.strictObject({ action: z.literal("resume"), id: CloudComputerIdSchema }),
+  z.strictObject({
+    action: z.literal("delete"),
+    id: CloudComputerIdSchema,
+    confirmation: z.string().min(1).max(200),
+  }),
+]);
+export type DesktopCloudComputerActInput = z.infer<typeof DesktopCloudComputerActInputSchema>;
+export const DesktopCloudComputerActResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), data: CloudComputerViewSchema }),
+  z.strictObject({ ok: z.literal(false), failure: DesktopCloudComputerFailureSchema }),
+]);
+export type DesktopCloudComputerActResult = z.infer<typeof DesktopCloudComputerActResultSchema>;
+
 export interface OpensteerDesktopBridge {
   readonly passkeys?: {
     available(): Promise<boolean>;
@@ -1940,14 +1968,13 @@ export interface OpensteerDesktopBridge {
     oldData(): Promise<DesktopPersonalOldDataState | null>;
     startFresh(): Promise<void>;
   };
-  teamLinkDelivery?(input: DesktopTeamLinkDelivery): Promise<void>;
-  /** Present only in the desktop app, signed in to Opensteer Account. */
-  accountTeams?(input: DesktopAccountTeamsCall): Promise<DesktopAccountTeamsResult>;
-  teamSessions?(input: DesktopTeamSessionsCall): Promise<DesktopTeamSessionsResult>;
-  onTeamLink?(listener: (link: DesktopTeamLink) => void): () => void;
   webLinkDelivery?(input: DesktopWebLinkDelivery): Promise<DesktopWebLink | null>;
   dismissMcpAuthorization?(requestId: string): Promise<void>;
   onMcpAuthorization?(listener: (target: AgentConnectionAuthorizationTarget) => void): () => void;
+  /** The person's Cloud Computers, from the Account this app is signed in to. */
+  cloudComputerRead?(): Promise<DesktopCloudComputerReadResult>;
+  /** Suspends, resumes or deletes one; the Account decides what is allowed. */
+  cloudComputerAct?(input: DesktopCloudComputerActInput): Promise<DesktopCloudComputerActResult>;
   onPersonalTabCommand(listener: (command: DesktopPersonalTabCommand) => void): () => void;
   onAppLink?(listener: (link: DesktopAppLink) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
@@ -2045,6 +2072,8 @@ export interface OpensteerDesktopBridge {
   tailscaleShare(): Promise<DesktopTailscaleShareResult>;
   setBadgeCount(input: DesktopBadgeCountInput): Promise<void>;
   openExternalUrl(input: DesktopOpenExternalUrlInput): Promise<DesktopOpenExternalUrlResult>;
+  /** Opens a page in Google Chrome itself, which connecting Chrome needs. */
+  openInChrome?(input: DesktopOpenExternalUrlInput): Promise<DesktopOpenInChromeResult>;
   /** Called before `begin`, because the Account seals the port into the attempt. */
   prepareIntegrationAuthorizationReturn(
     input: DesktopPrepareIntegrationAuthorizationReturnInput,

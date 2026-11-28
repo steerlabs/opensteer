@@ -2,6 +2,7 @@ import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
   createMessageOutboxStorage,
   disposeMessageOutbox,
+  homeFailureText,
   initializeMessageOutbox,
   realtimeIdleProbeDeadlineMs,
   realtimeIdleProbeMs,
@@ -11,6 +12,10 @@ import {
   createConnectionController,
   type ConnectionController,
   type ClientScope,
+} from "@opensteer/client/connections";
+import {
+  AccountCloudComputerClient,
+  type CloudComputerAccount,
 } from "@opensteer/client/connections";
 import {
   includeDeviceAccessRequests,
@@ -50,12 +55,12 @@ import {
   CapabilityVerificationError,
   emptyDeploymentCatalog,
   resolveConnection,
+  usesHostNativeOAuth,
   type AccountDeploymentDirectoryUnavailable,
   type DeploymentCatalog,
   type DeploymentConnection,
   type DeploymentConnectionInput,
   type DesktopUpdates,
-  type HostCredentialProvider,
   type PrivateFilesystem,
 } from "@opensteer/client/connections";
 import {
@@ -83,7 +88,7 @@ import {
   IntegrationAuthorizationCancelledError,
   type NativeIntegrationAuthorizationCallback,
 } from "@opensteer/client/integrations";
-import { DeploymentIdSchema, type DeploymentId, type TeamInviteSecret } from "@opensteer/core";
+import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHostAuthorization, type HostFetch } from "../platform/host-network.js";
@@ -137,18 +142,10 @@ export interface MobileClientState {
   readonly catalog: DeploymentCatalog;
   readonly directory: MobileDirectoryState;
   readonly rows: readonly DeploymentRow[];
-  /** The teams this phone can reach: their own Hosts, never the selection. */
-  readonly teams: readonly MobileTeamConnection[];
   readonly selection: MobileSelection;
   /** The last write to this device's own storage that did not land. */
   readonly storageFailure: Error | null;
   readonly savedViewFailure: string | null;
-}
-
-export interface MobileTeamConnection {
-  readonly connection: DeploymentConnection;
-  /** A credential for the team's Host is held; drawing this never reaches the network. */
-  readonly signedIn: boolean;
 }
 
 export interface MobileDirectoryState {
@@ -197,6 +194,8 @@ export interface MobileClientOptions {
   readonly savedViewStore?: SavedViewStore;
   readonly accountOrigin: string | null;
   readonly portalOrigin?: string | null;
+  /** The person's Cloud Computers; mock mode passes its own Account, a build its real one. */
+  readonly cloudComputers?: CloudComputerAccount;
   readonly catalogFilePath: string;
   readonly quietSeenFilePath: string;
   readonly draftsFilePath: string;
@@ -258,6 +257,7 @@ export class MobileClient {
   readonly savedViews: SavedViewPresentation;
   readonly #lifecycle: ClientLifecycle | undefined;
   readonly accountDirectory: AccountDeploymentDirectoryService;
+  readonly cloudComputers: CloudComputerAccount;
   readonly catalog: DeploymentCatalogStore;
   readonly directoryRefresh: AccountDirectoryRefreshService<void>;
   /** The quiet moves to Done this phone has shown, behind the sidebar's "+N". */
@@ -346,7 +346,6 @@ export class MobileClient {
     catalog: emptyDeploymentCatalog(),
     directory: idleDirectoryState(),
     rows: [],
-    teams: [],
     selection: detachedSelection("loading"),
     storageFailure: null,
     savedViewFailure: null,
@@ -508,18 +507,6 @@ export class MobileClient {
       },
     });
     this.oauth = new NativeOAuthManager({
-      onAccountIdentityChange: () => {
-        const teams = this.#state.catalog.deployments.filter(({ kind }) => kind === "team");
-        for (const { authority } of teams)
-          void this.#invalidateSavedView(authority.document.deploymentId);
-        if (
-          teams.some(
-            ({ authority }) =>
-              authority.document.deploymentId === this.#state.selection.deploymentId,
-          )
-        )
-          this.#releaseAttachment();
-      },
       // Previews end with the login itself (sign-out, removal, a replaced session),
       // not when a sign-in flow starts: a cancelled flow keeps the live login.
       beforeAccountIdentityChange: () => this.#leaveAccountIphoneApps(),
@@ -541,6 +528,11 @@ export class MobileClient {
       catalog: this.catalog,
       fetch: (input, init) => options.fetch(input, init),
     });
+    this.cloudComputers =
+      options.cloudComputers ??
+      new AccountCloudComputerClient({
+        transport: options.accountOrigin ? this.accountDirectory : null,
+      });
     this.sessionExchange = new HostSessionExchange({
       account: this.accountDirectory,
       application: options.oauthIdentity.application,
@@ -751,9 +743,7 @@ export class MobileClient {
       // remembered — it was removed here, or dropped from the Account — and
       // forgetting it is the answer, not refusing to start.
       const listed = (await this.catalog.load()).deployments.some(
-        (connection) =>
-          isPersonalConnection(connection) &&
-          connection.authority.document.deploymentId === remembered,
+        (connection) => connection.authority.document.deploymentId === remembered,
       );
       if (listed) {
         await this.#operations.run(() => this.#activateSelectionLocally(remembered, false));
@@ -763,7 +753,7 @@ export class MobileClient {
     } else if (remembered === undefined && this.#pendingComputer === null) {
       await this.#operations.run(async () => {
         const catalog = await this.catalog.load();
-        const personal = catalog.deployments.filter(isPersonalConnection);
+        const personal = catalog.deployments;
         if (this.#pendingComputer === null && personal.length === 1) {
           await this.#activateSelectionLocally(
             personal[0]!.authority.document.deploymentId,
@@ -800,7 +790,7 @@ export class MobileClient {
   async openDeployment(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     this.cancelOpenComputer();
-    this.#requirePersonalConnection(id, await this.catalog.load());
+    this.#requireConnection(id, await this.catalog.load());
     const row = this.#state.rows.find((candidate) => candidate.deploymentId === id);
     await this.#clearSignOutSuppression(id);
     const force =
@@ -833,36 +823,30 @@ export class MobileClient {
    * Signs this phone in to one Deployment, by whichever door that Deployment
    * has, and attaches once the credential is held.
    *
-   * A team Host runs its own authorization server. One that takes the Account's
-   * identity signs this phone in directly; any other hands the person to the
-   * system browser and the credential arrives through the registered callback. A Personal computer reached over Opensteer Connect
+   * A Home at its own address runs its own authorization server: signing in
+   * hands the person to the system browser and the credential arrives through
+   * the registered callback. A Personal computer reached over Opensteer Connect
    * needs nobody at the keyboard: the Account signs a grant for this route and
    * the Host exchanges it for the session this phone keeps. A Personal computer
    * on its own private route needs a pairing code only the operator can carry,
    * which is a different door and not this one.
    */
-  /** `invite`, for a team: the person isn't a member yet and the team admits them through it. */
-  async signIn(
-    deploymentId: DeploymentId | string,
-    invite: TeamInviteSecret | null = null,
-  ): Promise<void> {
+  async signIn(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
-    const team = this.#state.catalog.deployments.find(
-      (connection) =>
-        connection.authority.document.deploymentId === id && connection.kind === "team",
-    );
-    if (team) {
-      await this.oauth.signInTeam(team, invite ?? undefined);
+    const connection = this.#requireConnection(id, await this.catalog.load());
+    if (usesHostNativeOAuth(connection)) {
+      await this.#clearSignOutSuppression(id);
+      this.#sessionFailures.delete(id);
+      await this.oauth.signInHome(connection);
       return;
     }
-    const connection = this.#requireConnection(id, await this.catalog.load());
     const verification = this.#verification.get(id);
     if (verification !== undefined) throw new Error(verificationFailureDetail(verification));
     await this.#clearSignOutSuppression(id);
     this.#sessionFailures.delete(id);
     const resolved = resolveConnection(connection, null, { authorization: null });
     if (resolved.access !== "connect" || !this.sessionExchange.supports(resolved)) {
-      throw new Error("This deployment has no address this phone can sign in to.");
+      throw new Error("This Opensteer has no address this phone can sign in to.");
     }
     const outcome = await this.#startSelection(id, true, { establishPersonal: true });
     if (outcome.kind === "session-failed") throw outcome.error;
@@ -871,11 +855,9 @@ export class MobileClient {
   /**
    * Signs this phone out of one Deployment, keeping the Deployment itself.
    *
-   * The credential is ended where it lives before it is dropped here. A
-   * team Host's revoke ends the session its token hangs from, so the
-   * access token dies with the record rather than outliving it; a Personal
-   * Deployment's header-delivered session is its own session on that Host and
-   * is revoked through the Host's own command. Either way the row comes back
+   * The credential is ended where it lives before it is dropped here: a
+   * Personal Deployment's header-delivered session is its own session on that
+   * Host and is revoked through the Host's own command. The row comes back
    * saying "Needs sign-in", which is the true state — not "Unavailable", and
    * not a Deployment this phone has forgotten.
    *
@@ -1256,7 +1238,11 @@ export class MobileClient {
   async signInAccount(): Promise<void> {
     const result = await this.oauth.beginAccountSignIn();
     if (result.account.status !== "signed-in" || result.account.identity === null) {
-      throw new Error(result.account.detail ?? "Opensteer Account sign-in did not complete.");
+      // Signed in at the account, but this phone couldn't keep it: that, in its own words.
+      throw (
+        this.oauth.accountSignInStorageFailure() ??
+        new Error(result.account.detail ?? "Opensteer account sign-in did not complete.")
+      );
     }
   }
 
@@ -1320,14 +1306,8 @@ export class MobileClient {
     });
   }
 
-  /** What a pinned team transport presents: the team Host's own credential, nothing else. */
-  readonly teamCredentials: HostCredentialProvider = {
-    teamRuntime: () => this.oauth.teamRuntime(),
-    authorizationHeader: (connection) => this.#host.credentials.authorization(connection),
-  };
-
   async signInHost(connection: DeploymentConnection): Promise<void> {
-    await this.oauth.signInTeam(connection);
+    await this.oauth.signInHome(connection);
   }
 
   /** Forgets a Deployment this phone added itself. */
@@ -1366,9 +1346,7 @@ export class MobileClient {
     if (
       catalog.selectedDeploymentId !== null &&
       catalog.deployments.some(
-        (connection) =>
-          connection.authority.document.deploymentId === catalog.selectedDeploymentId &&
-          isPersonalConnection(connection),
+        (connection) => connection.authority.document.deploymentId === catalog.selectedDeploymentId,
       )
     ) {
       await this.select(catalog.selectedDeploymentId);
@@ -1416,7 +1394,7 @@ export class MobileClient {
   ): Promise<number | null> {
     let catalog = await this.catalog.load();
     if (!current()) return null;
-    this.#requirePersonalConnection(id, catalog);
+    this.#requireConnection(id, catalog);
     if (
       !force &&
       this.#attachedDeploymentId === id &&
@@ -1562,7 +1540,7 @@ export class MobileClient {
             !catalog.deployments.some(({ authority }) => authority.document.deploymentId === id)
           ) {
             await this.#forgetRemovedSelectionNow();
-            throw new Error("That deployment is no longer in this app's list.");
+            throw new Error("That Opensteer is no longer in this app's list.");
           }
           await this.catalog.select(id);
           return true;
@@ -1910,7 +1888,7 @@ export class MobileClient {
   ): Promise<void> {
     const catalog = await this.catalog.load();
     if (!current()) return;
-    this.#requirePersonalConnection(id, catalog);
+    this.#requireConnection(id, catalog);
     if (catalog.selectedDeploymentId !== id) await this.catalog.select(id);
     if (!current()) return;
     if (persist) await this.#selectionFile.write(id);
@@ -1927,7 +1905,7 @@ export class MobileClient {
   async #signOutNow(id: DeploymentId, options = { revoke: true, removed: false }): Promise<void> {
     const connection = this.#requireConnection(id);
     try {
-      if (connection.kind === "team") await this.oauth.signOutHost(connection);
+      if (usesHostNativeOAuth(connection)) await this.oauth.signOutHost(connection);
       else {
         if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
@@ -1955,7 +1933,7 @@ export class MobileClient {
   async #removeNow(id: DeploymentId, options = { revoke: true, removed: false }): Promise<void> {
     const connection = this.#requireConnection(id);
     try {
-      if (connection.kind === "team") await this.oauth.signOutHost(connection);
+      if (usesHostNativeOAuth(connection)) await this.oauth.signOutHost(connection);
       else {
         if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
@@ -2010,7 +1988,7 @@ export class MobileClient {
       }
       const catalog = await this.catalog.load();
       if (this.#pendingComputer !== null) return;
-      const personal = catalog.deployments.filter(isPersonalConnection);
+      const personal = catalog.deployments;
       if (personal.length === 1) {
         const id = personal[0]!.authority.document.deploymentId;
         const attempt = await this.#selectLocallyNow(
@@ -2267,7 +2245,7 @@ export class MobileClient {
     if (!loginId) return null;
     const identity = connection.authority.document;
     const base = {
-      schema: 1 as const,
+      schema: 2 as const,
       epoch: hostApiVersion,
       hostIdentity: {
         deploymentId: identity.deploymentId,
@@ -2385,12 +2363,6 @@ export class MobileClient {
           const selected = catalog.deployments.find(
             ({ authority }) => authority.document.deploymentId === catalog.selectedDeploymentId,
           );
-          if (selected !== undefined && !isPersonalConnection(selected)) {
-            await this.catalog.select(deploymentId);
-            const attempt = await this.#selectLocallyNow(deploymentId, true);
-            if (attempt !== null) void this.#attachSelection(deploymentId, attempt).catch(noop);
-            return;
-          }
           if (selected === undefined) {
             await this.#deselectNow();
             return;
@@ -2472,8 +2444,15 @@ export class MobileClient {
       const listed = await client.rpc["sessions.list"]({});
       if (!listed.ok && removed && listed.error.code === "unauthorized") return;
       if (!listed.ok) {
+        // The Home's refusal in its words when it wrote one for the person; never a raw fault.
+        let refusal: unknown;
+        try {
+          unwrapRpcResult(listed);
+        } catch (error) {
+          refusal = error;
+        }
         throw new Error(
-          listed.error.message || "That deployment would not list this phone's session.",
+          homeFailureText(refusal, "That Opensteer would not list this phone's session."),
         );
       }
       const own = listed.data.sessions.find((session) => session.current);
@@ -2554,7 +2533,7 @@ export class MobileClient {
     const connection = this.#state.catalog.deployments.find(
       ({ authority }) => authority.document.deploymentId === id,
     );
-    if (connection?.kind !== "personal") return null;
+    if (!connection) return null;
     const authorization = await this.#host.credentials.authorization(connection).catch(() => null);
     if (authorization === null) return null;
     let client: HostClient;
@@ -2596,13 +2575,6 @@ export class MobileClient {
     return created;
   }
 
-  #requirePersonalConnection(id: DeploymentId, catalog: DeploymentCatalog): DeploymentConnection {
-    const connection = this.#requireConnection(id, catalog);
-    if (!isPersonalConnection(connection))
-      throw new Error("A team cannot be opened as a computer. Open it from your team list.");
-    return connection;
-  }
-
   #requireConnection(
     deploymentId: DeploymentId,
     catalog: DeploymentCatalog = this.#state.catalog,
@@ -2610,7 +2582,7 @@ export class MobileClient {
     const connection = catalog.deployments.find(
       ({ authority }) => authority.document.deploymentId === deploymentId,
     );
-    if (!connection) throw new Error("That deployment is no longer in this app's list.");
+    if (!connection) throw new Error("That Opensteer is no longer in this app's list.");
     return connection;
   }
 
@@ -2730,7 +2702,7 @@ export class MobileClient {
       }
     }
     const attachedId = this.#attachedDeploymentId;
-    const rows = catalog.deployments.filter(isPersonalConnection).map((connection) => {
+    const rows = catalog.deployments.map((connection) => {
       const deploymentId = connection.authority.document.deploymentId;
       const attached = deploymentId === attachedId;
       return describeDeploymentRow(connection, {
@@ -2766,12 +2738,6 @@ export class MobileClient {
       catalog,
       directory: this.#directoryState,
       rows,
-      teams: catalog.deployments
-        .filter((connection) => !isPersonalConnection(connection))
-        .map((connection) => ({
-          connection,
-          signedIn: this.#credentialed.has(connection.authority.document.deploymentId),
-        })),
       selection: {
         session: this.#connection ? { connection: this.#connection } : null,
         connection,
@@ -2906,9 +2872,9 @@ function sameConnectionSource(
 function verificationFailureDetail(verification: HostVerification): string {
   switch (verification) {
     case "identity-mismatch":
-      return "Sign-in was not started because this address answers as a different deployment.";
+      return "Sign-in was not started because this address answers as a different Opensteer.";
     case "host-too-old":
-      return "Sign-in was not started because this deployment must be updated first.";
+      return "Sign-in was not started because this Opensteer must be updated first.";
     case "client-too-old":
       return "Sign-in was not started because this app must be updated first.";
   }
@@ -2926,11 +2892,3 @@ function signedOutAccountState(): DesktopAccountAuthState {
 }
 
 /** The message a screen shows for a failed operation, with nothing leaked. */
-
-/**
- * A team is its own Host beside the person's Opensteer: it is listed in the
- * drawer and driven by its own session, and is never the selected Deployment.
- */
-export function isPersonalConnection(connection: DeploymentConnection): boolean {
-  return connection.authority.document.deploymentShape.kind === "personal";
-}

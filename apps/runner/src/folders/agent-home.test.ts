@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId } from "@opensteer/core";
@@ -43,6 +43,28 @@ describe("Agent home", () => {
     await expect(f.manager.prepare({ agentHome: f.agentHome, signal: signal() })).rejects.toThrow(
       /now resolves to/,
     );
+  });
+
+  it("only canonicalizes a provisional home and refuses to create an initialized home through a symlink", async () => {
+    const f = await fixture();
+    const alias = join(f.root, "alias");
+    await symlink(f.agentHome.path, alias);
+    const home = { ...f.agentHome, path: join(alias, "new-home") };
+    await expect(f.manager.ensure(home, signal(), true)).rejects.toThrow(/now resolves to/);
+    await expect(access(join(f.agentHome.path, "new-home"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(f.manager.ensure(home, signal(), false)).resolves.toBe(
+      join(f.agentHome.path, "new-home"),
+    );
+  });
+
+  it("refuses instructions symlinked outside Agent home", async () => {
+    const f = await fixture();
+    const outside = join(f.root, "outside.md");
+    await writeFile(outside, "outside instructions");
+    await symlink(outside, join(f.agentHome.path, "AGENTS.md"));
+    await expect(f.manager.prepare({ agentHome: f.agentHome, signal: signal() })).rejects.toThrow();
   });
 
   it("resolves app folders only inside Agent home, refusing a symlink that leads out", async () => {

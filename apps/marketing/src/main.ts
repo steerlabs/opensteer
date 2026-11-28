@@ -4,11 +4,17 @@ import "@fontsource-variable/fraunces/opsz-italic.css";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/site.css";
-import { mountDemo } from "./demo/index.js";
+import { mountConsent } from "./demo/consent.js";
+import { mountWatch } from "./demo/phone.js";
 import { byId } from "./dom.js";
+import { mountOffer } from "./offer.js";
 import { startSections } from "./sections.js";
-import { mountTeam } from "./team.js";
 
-mountDemo(byId("demo"), byId("rail"));
 startSections();
-mountTeam();
+mountWatch(
+  byId("watchPhone"),
+  document.querySelector<HTMLElement>('[data-part="claudeState"]'),
+  byId("showHint"),
+);
+mountConsent(byId("consent"));
+void mountOffer(document.querySelector<HTMLElement>("[data-offer]"));

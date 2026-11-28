@@ -1,8 +1,12 @@
 export { cancelDeviceSetup } from "@opensteer/client/computers";
 import { deviceAccess, type DeviceInitialAccess, type MachineSummary } from "@opensteer/protocol";
 import {
+  computerStatus,
   deviceAccessRows,
+  deviceWords,
   hostsDeployment,
+  deviceStoppedLabel,
+  isDeviceAsleep,
   type DeviceAccessRow,
   type DeviceCapability,
 } from "@opensteer/client/computers";
@@ -16,25 +20,25 @@ import {
 export type { DeviceCapability };
 
 export const capabilityLabel: Readonly<Record<DeviceCapability, string>> = {
-  browser: "Browser",
-  apps: "Apps",
-  files: "Files and commands",
+  browser: deviceWords("devices.switch.browser"),
+  apps: deviceWords("devices.switch.apps"),
+  files: deviceWords("devices.switch.files"),
 };
 
 /** The setup screen's words, about the Mac the person is sitting at. */
 export const capabilityDetailHere: Readonly<Record<DeviceCapability, string>> = {
   browser: "Open and use tabs on this Mac",
-  apps: "See and control apps",
-  files: "Read files and run commands",
+  apps: deviceWords("devices.switch.appsDetail"),
+  files: deviceWords("devices.switch.filesDetail"),
 };
 
 const capabilityDetail: Readonly<Record<DeviceCapability, string>> = {
-  browser: "Open and use tabs",
-  apps: "See and control apps",
-  files: "Read files and run commands",
+  browser: deviceWords("devices.switch.browserDetail"),
+  apps: deviceWords("devices.switch.appsDetail"),
+  files: deviceWords("devices.switch.filesDetail"),
 };
 
-const homeFixedDetail = "Always on. Your agent runs here.";
+const homeFixedDetail = "Always on. Your own agents run here.";
 const olderHostDetail = "Always on. Update Opensteer on your Home Mac to switch it off.";
 
 export type DeviceSwitch =
@@ -119,15 +123,18 @@ export function deviceUsesLine(machine: MachineSummary, devicesAvailable: boolea
 
 /** "Online", "Offline · last seen Tuesday", or Home's role, in one line. */
 export function deviceStatusLine(machine: MachineSummary, now = new Date()): string {
-  if (hostsDeployment(machine)) return "Home · your agent runs here";
+  if (hostsDeployment(machine)) return "Home · your own agents run here";
   const screen = phoneScreenStatus(machine);
   if (screen) return screen.label;
+  const stopped = deviceStoppedLabel(machine, now);
+  if (stopped) return stopped;
   if (machine.status === "online") return "Online";
   if (machine.status === "pending")
     return machine.expiresAt
       ? `Setting up · expires ${expiryWords(new Date(machine.expiresAt), now)}`
       : "Setting up";
   if (machine.status !== "offline") return "Needs an update";
+  if (isDeviceAsleep(machine)) return computerStatus(machine, now).label;
   if (!machine.lastSeenAt) return "Offline";
   return `Offline · last seen ${lastSeenWords(new Date(machine.lastSeenAt), now)}`;
 }

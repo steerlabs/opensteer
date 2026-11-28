@@ -1,0 +1,1099 @@
+// @vitest-environment happy-dom
+
+import { createId, ThreadIdSchema } from "@opensteer/core";
+import { readAsDrawn } from "./read-as-drawn.test-support.js";
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { HostTransportError } from "@opensteer/client/connections";
+import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
+import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  NativeSettingsPageProps,
+  NativeSettingsRow,
+  NativeSettingsSection,
+} from "./native-settings-page.types.js";
+
+interface AlertButton {
+  readonly text: string;
+  readonly onPress?: () => void;
+}
+const state = vi.hoisted(() => ({
+  page: null as NativeSettingsPageProps | null,
+  sheet: null as NativeSettingsPageProps | null,
+  alerts: [] as { title: string; body: string; buttons: readonly AlertButton[] }[],
+  goBack: vi.fn(),
+  navigate: vi.fn(),
+  setOptions: vi.fn(),
+}));
+
+vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26", select: (choices: { ios?: unknown }) => choices.ios },
+  StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
+  View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Pressable: ({
+    children,
+    onPress,
+    accessibilityLabel,
+  }: {
+    children?: ReactNode;
+    onPress?: () => void;
+    accessibilityLabel?: string;
+  }) => (
+    <button aria-label={accessibilityLabel} onClick={onPress}>
+      {children}
+    </button>
+  ),
+  Alert: {
+    alert: (title: string, body: string, buttons: readonly AlertButton[]) =>
+      state.alerts.push({ title, body, buttons }),
+  },
+}));
+vi.mock("../thread/agent-session.js", () => ({
+  OperationRowView: ({ row }: { row: { action: string } }) => <div>{row.action}</div>,
+  OperationRequestCard: ({ item }: { item: { view: { question: string } } }) => (
+    <div>{item.view.question}</div>
+  ),
+  SessionQuestionCard: ({ request }: { request: { presentation: { title: string } } }) => (
+    <div>{request.presentation.title}</div>
+  ),
+}));
+vi.mock("./external-agent-mark.js", () => ({ ExternalAgentMark: () => null }));
+vi.mock("../ui/primitives.js", () => ({
+  AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+}));
+vi.mock("../ui/action-line.js", () => ({ ActionLine: () => null }));
+vi.mock("@react-navigation/native", () => ({
+  useNavigation: () => ({
+    goBack: state.goBack,
+    navigate: state.navigate,
+    setOptions: state.setOptions,
+  }),
+}));
+vi.mock("./deployment-gate.js", () => ({
+  DeploymentGate: () => null,
+  useAttachedHost: () => null,
+}));
+vi.mock("./native-settings-page.js", async () => {
+  const { useEffect } = await import("react");
+  return {
+    NativeSettingsPage: (props: NativeSettingsPageProps) => {
+      const sheet = props.sheet !== undefined;
+      if (sheet) state.sheet = props;
+      else state.page = readAsDrawn(props);
+      useEffect(
+        () => () => {
+          if (sheet) state.sheet = null;
+        },
+        [sheet],
+      );
+      return (
+        <>
+          {props.sections.flatMap(({ rows }) =>
+            rows.map((row) =>
+              row.kind === "content" ? <div key={row.key}>{row.content}</div> : null,
+            ),
+          )}
+        </>
+      );
+    },
+  };
+});
+
+const { ConnectedAgentController } = await import("./connected-agent.js");
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+let root: Root | undefined;
+let host: MockHostClient | undefined;
+afterEach(() => {
+  act(() => root?.unmount());
+  host?.dispose();
+  document.body.replaceChildren();
+  state.page = null;
+  state.sheet = null;
+  state.alerts = [];
+  vi.clearAllMocks();
+  vi.restoreAllMocks();
+});
+
+const grok = "mcn_00000000-0000-4000-8000-000000000001";
+const claude = "mcn_00000000-0000-4000-8000-000000000002";
+const trips = "mcn_00000000-0000-4000-8000-000000000003";
+const shopHelper = "mcn_00000000-0000-4000-8000-000000000004";
+const oldNotes = "mcn_00000000-0000-4000-8000-000000000005";
+const oldSearch = "mcn_00000000-0000-4000-8000-000000000009";
+const shopping = "bpr_00000000-0000-4000-8000-000000000003";
+
+async function open(
+  connectionId: string,
+  client = new MockHostClient({
+    latencyMs: 0,
+    connections: mockConnectedAgents("seeded").connections,
+  }),
+) {
+  host = client;
+  root = createRoot(document.body.appendChild(document.createElement("div")));
+  await act(async () =>
+    root!.render(
+      <ConnectedAgentController
+        connectionId={connectionId}
+        deploymentId="deployment-a"
+        host={client}
+      />,
+    ),
+  );
+  await vi.waitFor(() =>
+    expect(section("status") ?? section("now") ?? section("who")).toBeDefined(),
+  );
+  return client;
+}
+function section(key: string, page = state.page): NativeSettingsSection | undefined {
+  return page?.sections.find((candidate) => candidate.key === key);
+}
+function row(sectionKey: string, key: string, page = state.page): NativeSettingsRow {
+  const found = section(sectionKey, page)?.rows.find((candidate) => candidate.key === key);
+  if (!found) throw new Error(`no row ${sectionKey}/${key}`);
+  return found;
+}
+async function press(target: NativeSettingsRow) {
+  if (target.kind !== "button" && target.kind !== "choice")
+    throw new Error(`${target.kind} can't be pressed`);
+  await act(async () => target.onPress());
+}
+async function answer(text: string) {
+  const alert = state.alerts.at(-1);
+  const button = alert?.buttons.find((candidate) => candidate.text === text);
+  if (!button?.onPress) throw new Error(`no ${text} in ${alert?.title}`);
+  await act(async () => button.onPress!());
+}
+const status = () => section("status")!.rows[0] as Extract<NativeSettingsRow, { kind: "status" }>;
+
+describe("one connected agent on the phone", () => {
+  it("shows Now, opens its task, and removes Now after Stop", async () => {
+    const client = new MockHostClient({ ...mockConnectedAgents("seeded"), latencyMs: 0 });
+    client.mockAgentWork();
+    const history = vi.fn(client.rpc["connections.activity"]);
+    Object.defineProperty(client.rpc, "connections.activity", { value: history });
+    await open(claude, client);
+    expect(section("earlier")).toBeUndefined();
+    const threadId = mockAgentWorkThreads.working;
+    const sessionId = client.getSnapshot().activeTasks.find(({ thread }) => thread.id === threadId)
+      ?.thread.agentSessionId;
+    expect(sessionId).toBeTruthy();
+    expect(section("now")?.rows[0]?.label).toBe("Find flights to Lisbon");
+    expect(section("status")).toBeUndefined();
+    const buttons = [...document.querySelectorAll("button")];
+    await act(async () =>
+      buttons.find((button) => button.textContent?.includes("Find flights to Lisbon"))!.click(),
+    );
+    expect(state.navigate).toHaveBeenCalledWith("Thread", {
+      deploymentId: "deployment-a",
+      threadId,
+    });
+    const dispatch = vi.spyOn(client, "dispatch");
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('button[aria-label="Stop Claude"]')!.click(),
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "agent.session.stop",
+        threadId,
+        agentSessionId: sessionId,
+      }),
+    );
+    expect(section("now")).toBeUndefined();
+    await vi.waitFor(() => expect(section("earlier")).toBeDefined());
+    expect(history).toHaveBeenCalledOnce();
+  });
+
+  it("quotes and isolates a self-declared name in the navigation title", async () => {
+    await open(grok);
+    expect(state.setOptions).toHaveBeenLastCalledWith({ title: "“\u2068Grok\u2069”" });
+  });
+
+  it("shows Now activity in task order and only for the displayed session", async () => {
+    const client = new MockHostClient({ ...mockConnectedAgents("seeded"), latencyMs: 0 });
+    client.mockAgentWork();
+    const original = client.rpc["threads.activity"];
+    Object.defineProperty(client.rpc, "threads.activity", {
+      value: async (...args: Parameters<typeof original>) => {
+        const result = await original(...args);
+        if (!result.ok || args[0].threadId !== mockAgentWorkThreads.working) return result;
+        return {
+          ...result,
+          data: {
+            ...result.data,
+            operations: [
+              {
+                ...result.data.operations[0]!,
+                target: { ...result.data.operations[0]!.target, name: "Another session" },
+                id: createId("agentOperation"),
+                sessionId: createId("agentSession"),
+              },
+              ...result.data.operations,
+            ],
+          },
+        };
+      },
+    });
+    await open(claude, client);
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Listed tabs in Travel"));
+    const text = document.body.textContent!;
+    expect(text.indexOf("Listed tabs in Travel")).toBeLessThan(
+      text.indexOf("Run a script on Travel"),
+    );
+    expect(text).not.toContain("Another session");
+  });
+
+  it("keeps Disconnect progress visible while there is still activity in Now", async () => {
+    const seed = mockConnectedAgents("seeded");
+    const fixture = seed.connections.find(({ id }) => id === shopHelper)!;
+    const client = new MockHostClient({
+      ...seed,
+      connections: seed.connections.map((connection) =>
+        connection.id === claude
+          ? { ...connection, revokedAt: fixture.revokedAt, state: fixture.state }
+          : connection,
+      ),
+      latencyMs: 0,
+    });
+    client.mockAgentWork();
+    await open(claude, client);
+    expect(section("now")).toBeDefined();
+    expect(section("status")?.rows[0]).toMatchObject({ label: "Stopping its work" });
+    expect(status().steps?.map(({ state }) => state)).toEqual(["done", "current", "pending"]);
+  });
+
+  it("puts the waiting operation's Request in Now and opens the exact question", async () => {
+    const seed = mockConnectedAgents("seeded");
+    const client = new MockHostClient({ ...seed, latencyMs: 0 });
+    client.mockAgentWork({ livePanel: "needs-you" });
+    const threadId = mockAgentWorkThreads.waiting;
+    const request = client
+      .getSnapshot()
+      .waitingRequests.find(({ request }) => request.originatingThreadId === threadId)!.request;
+    await open(claude, client);
+    await vi.waitFor(() => expect(document.body.textContent).toContain(request.presentation.title));
+    expect(document.body.textContent).toContain("Needs you");
+    const openTask = [...document.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Needs you"),
+    )!;
+    await act(async () => openTask.click());
+    expect(state.navigate).toHaveBeenCalledWith("Thread", {
+      deploymentId: "deployment-a",
+      threadId,
+      requestId: request.id,
+    });
+  });
+
+  it("embeds the existing question card for a connected agent's own question", async () => {
+    const seed = mockConnectedAgents("seeded");
+    const client = new MockHostClient({ ...seed, latencyMs: 0 });
+    client.mockAgentWork({ question: true });
+    await open(claude, client);
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain(
+        "Connected agent Claude asks in Find flights to Lisbon",
+      ),
+    );
+    expect(document.body.textContent).toContain("Needs you");
+  });
+
+  it("groups and pages Earlier, and opens the task of a previous session", async () => {
+    const seeded = mockConnectedAgents("seeded");
+    const agent = seeded.connections.find(({ label }) => label === "ChatGPT")!;
+    const client = new MockHostClient({ ...seeded, latencyMs: 0 });
+    client.mockAgentWork({ livePanel: "one-history" });
+    const original = client.rpc["connections.activity"];
+    const all = await original({ connectionId: agent.id });
+    if (!all.ok) throw new Error("Missing history fixture");
+    const activity = vi.fn(async ({ before }: Parameters<typeof original>[0]) => ({
+      ok: true as const,
+      data: before
+        ? { ...all.data, operations: all.data.operations.slice(5), nextBefore: null }
+        : { ...all.data, operations: all.data.operations.slice(0, 5), nextBefore: "page-2" },
+    }));
+    Object.defineProperty(client.rpc, "connections.activity", { value: activity });
+    await open(agent.id, client);
+    await vi.waitFor(() => expect(section("earlier")).toBeDefined());
+    expect(
+      section("earlier")
+        ?.rows.filter((item) => item.kind === "text")
+        .map(({ label }) => label),
+    ).toEqual(["Today", "Yesterday"]);
+    expect(section("earlier")?.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: "Opened a tab in Shopping · Done" }),
+      ]),
+    );
+    expect(activity).toHaveBeenCalledTimes(1);
+    await press(row("earlier", "more"));
+    expect(activity).toHaveBeenCalledTimes(2);
+    const past = section("earlier")!.rows.find((item) => item.kind === "button")!;
+    await press(past);
+    expect(state.navigate).toHaveBeenCalledWith(
+      "Thread",
+      expect.objectContaining({ deploymentId: "deployment-a", threadId: expect.any(String) }),
+    );
+  });
+
+  it.each([390, 1440])(
+    "saves a paired Chrome on an active connection after verification is withdrawn at %d px",
+    async (width) => {
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
+      const sourceId = createId("browserSource");
+      const connections = mockConnectedAgents("seeded").connections;
+      const connection = connections.find(({ label }) => label === "ChatGPT")!;
+      const client = new MockHostClient({
+        latencyMs: 0,
+        connections: [{ ...connection, verificationWithdrawnAt: "2026-11-20T11:00:00.000Z" }],
+      });
+      const read = vi.fn(async () => ({
+        ok: true,
+        data: {
+          extensionDirectory: null,
+          sources: [],
+          sites: [],
+          chromeTabs: [{ paired: true, sourceId, computerName: "Work Mac" }],
+          chromeTabsRepairNames: ["Home Mac"],
+        },
+      }));
+      Object.defineProperty(client.rpc, "browser.sources.get", { value: read, configurable: true });
+      const dispatch = vi.spyOn(client, "dispatch");
+      await open(connection.id, client);
+      expect(row("withdrawn", "withdrawn").label).toMatch(/^No longer verified since /u);
+      // Its name is the title; the who rows add only where its access goes.
+      // What the origin is (outside name quoted), then the origin, which the row draws as an address.
+      expect(section("who")?.rows).toEqual([
+        expect.objectContaining({
+          addressIn: "detail",
+          detail: "https://chatgpt.com",
+          label: "Holds the access: “ChatGPT”",
+        }),
+      ]);
+      expect(section("withdrawn")?.footer?.text).toBe("Check its last action or disconnect it.");
+      expect(readAsDrawn(row("withdrawn", "disconnect").label)).toBe("Disconnect “ChatGPT”");
+      const option = row("resources", sourceId);
+      expect(option.label).toBe("Tabs you share from Chrome on Work Mac");
+      expect(section("chrome-pairing")?.footer?.text).toBe(
+        "To share tabs from Chrome on Home Mac, pair it again.",
+      );
+      if (option.kind !== "toggle") throw new Error("Expected a Chrome toggle");
+      await act(async () => option.onChange(true));
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "connection.update",
+          grant: {
+            scope: "selected",
+            tasks: false,
+            resources: [{ kind: "chrome-tabs", sourceId }],
+          },
+        }),
+      );
+    },
+  );
+
+  it("shows what it can use, its mode, and who it says it is while idle", async () => {
+    await open(trips);
+    expect(state.setOptions).toHaveBeenCalledWith({ title: "“\u2068Trip planner\u2069”" });
+    expect(section("now")).toBeUndefined();
+    expect(section("status")).toBeUndefined();
+    expect(state.page?.sections.map(({ key }) => key)).toEqual([
+      "who",
+      "scope",
+      "resources",
+      "tasks",
+      "mode",
+      "about",
+      "end",
+    ]);
+    expect(row("tasks", "tasks")).toMatchObject({ value: true });
+    expect(row("mode", "auto")).toMatchObject({ selected: true });
+    expect(section("earlier")).toBeUndefined();
+    expect(
+      section("about")?.rows.map((candidate) => [
+        candidate.label,
+        "detail" in candidate ? candidate.detail : null,
+      ]),
+    ).toEqual([
+      ["Calls itself", "TravelBot Agent"],
+      ["Address it uses", "https://trips.example"],
+      // The day it was added, never read as where it stands now.
+      ["Added", expect.any(String)],
+      ["Expires", expect.any(String)],
+    ]);
+    expect(readAsDrawn(row("end", "disconnect"))).toMatchObject({
+      label: "Disconnect “Trip planner”",
+      destructive: true,
+    });
+  });
+
+  it("saves each change against the revision it was made on", async () => {
+    const client = await open(grok);
+    const dispatch = vi.spyOn(client, "dispatch");
+    const tasks = row("tasks", "tasks");
+    if (tasks.kind !== "toggle") throw new Error("Tasks is a switch");
+    await act(async () => tasks.onChange(true));
+    expect(dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "connection.update",
+        connectionId: grok,
+        expectedRevision: 1,
+        grant: {
+          scope: "selected",
+          tasks: true,
+          resources: [{ kind: "browser-profile", profileId: shopping }],
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(readAsDrawn(section("note")?.footer?.text)).toBe(
+        "Saved. “Grok” uses this from its next action.",
+      ),
+    );
+    await press(row("mode", "full-access"));
+    expect(dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "connection.update",
+        expectedRevision: 2,
+        accessMode: "full-access",
+      }),
+    );
+    expect(dispatch.mock.lastCall![0]).not.toHaveProperty("grant");
+  });
+
+  it("shows what is set now when another device changed it first", async () => {
+    const client = await open(grok);
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type === "connection.update")
+        throw new HostClientRequestError({ code: "conflict", message: "changed", status: 409 });
+      return real(command);
+    });
+    await press(row("mode", "auto"));
+    await vi.waitFor(() =>
+      expect(section("conflict")?.footer?.text).toBe(
+        "This changed on another device. Showing what’s set now.",
+      ),
+    );
+    expect(row("mode", "approval-required")).toMatchObject({ selected: true });
+    expect(section("error")).toBeUndefined();
+  });
+
+  it("asks before limiting an agent that could do everything", async () => {
+    const client = await open(claude);
+    const dispatch = vi.spyOn(client, "dispatch");
+    await press(row("scope", "selected"));
+    expect(state.alerts.at(-1)).toMatchObject({
+      title: "Limit “\u2068Claude\u2069” to what you choose?",
+      body: "It stops being able to use anything you don’t pick.",
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+    await answer("Limit");
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "connection.update",
+        grant: { scope: "selected", tasks: false, resources: [] },
+      }),
+    );
+  });
+
+  it("edits a list in its sheet and saves it when the sheet closes, creating a new profile first", async () => {
+    const client = await open(grok);
+    const real = client.dispatch.bind(client);
+    const created = "bpr_00000000-0000-4000-8000-0000000000aa";
+    const dispatch = vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type === "browser.profile.create")
+        return {
+          type: "browser.profile.create",
+          profile: { id: created, name: "Grok", homeRunnerId: null },
+        } as never;
+      return real(command);
+    });
+    await press(row("resources", "browser"));
+    expect(state.sheet?.sheet?.title).toBe("Browser");
+    await press(row("new", "new", state.sheet));
+    await press(row("profiles", shopping, state.sheet));
+    expect(dispatch).not.toHaveBeenCalled();
+    await act(async () => state.sheet!.sheet!.onClose());
+    expect(state.sheet).toBeNull();
+    expect(dispatch.mock.calls.map(([command]) => command.type)).toEqual([
+      "browser.profile.create",
+      "connection.update",
+    ]);
+    expect(dispatch.mock.calls[1]![0]).toMatchObject({
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: created }],
+      },
+    });
+  });
+
+  it("disconnects after confirming: Revoked at once, then the outcome the Home reports, then removes it", async () => {
+    const client = await open(grok);
+    const list = client.rpc["connections.list"];
+    const held: (() => void)[] = [];
+    Object.defineProperty(client.rpc, "connections.list", {
+      value: vi.fn(
+        (...args: Parameters<typeof list>) =>
+          new Promise((done) => held.push(() => done(list(...args)))),
+      ),
+      configurable: true,
+    });
+    const dispatch = vi.spyOn(client, "dispatch");
+    await press(row("end", "disconnect"));
+    expect(state.alerts.at(-1)).toMatchObject({
+      title: "Disconnect “\u2068Grok\u2069”?",
+      body: "It stops right away and can’t use anything again unless you connect it again. Tabs it was using stay open so you can check them.",
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+    await answer("Disconnect");
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "connection.revoke", connectionId: grok }),
+    );
+    await vi.waitFor(() =>
+      expect(readAsDrawn(status().label)).toBe("“Grok” can’t do anything now"),
+    );
+    expect(status().steps?.map((step) => step.state)).toEqual(["done", "current", "pending"]);
+    expect(section("scope")).toBeUndefined();
+    Object.defineProperty(client.rpc, "connections.list", { value: list, configurable: true });
+    await act(async () => {
+      for (const release of held) release();
+    });
+    await vi.waitFor(() => expect(status()).toMatchObject({ label: "Disconnected", tone: "good" }));
+    expect(section("status")?.footer?.text).toContain("everything it was doing has stopped");
+    await press(row("end", "remove"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "connection.remove", connectionId: grok }),
+    );
+    expect(state.goBack).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Stopping and a lost last action apart, with nothing to disconnect or remove", async () => {
+    await open(shopHelper);
+    expect(status()).toMatchObject({ label: "Stopping its work" });
+    expect(readAsDrawn(section("status")?.footer?.text ?? "")).toContain(
+      "“Shop helper” already can’t use anything",
+    );
+    expect(section("uncertain")?.rows[0]).toMatchObject({
+      tone: "attention",
+      label: "Check its last action",
+    });
+    expect(section("end")).toBeUndefined();
+  });
+
+  it("offers Remove from list for a stopped agent", async () => {
+    await open(oldNotes);
+    expect(status()).toMatchObject({ label: "Disconnected", tone: "good" });
+    expect(row("end", "remove").label).toBe("Remove from list");
+  });
+
+  it("shows an expired agent with its quoted reconnect sentence and Remove from list", async () => {
+    await open(oldSearch);
+    expect(status()).toMatchObject({ label: "Expired", tone: "neutral" });
+    expect(readAsDrawn(section("status")?.footer?.text ?? "")).toContain(
+      "Connect it again from “Old search agent” to use it.",
+    );
+    expect(row("end", "remove").label).toBe("Remove from list");
+  });
+
+  it("stays on the page, saying why, when Remove from list was not confirmed", async () => {
+    const client = await open(oldNotes);
+    vi.spyOn(client, "dispatch").mockRejectedValue(
+      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
+    );
+    await press(row("end", "remove"));
+    await vi.waitFor(() => expect(section("error")?.footer?.tone).toBe("danger"));
+    expect(state.goBack).not.toHaveBeenCalled();
+  });
+
+  it("says when an agent isn't connected anymore", async () => {
+    host = new MockHostClient({ latencyMs: 0 });
+    root = createRoot(document.body.appendChild(document.createElement("div")));
+    await act(async () =>
+      root!.render(
+        <ConnectedAgentController connectionId={grok} deploymentId="deployment-a" host={host!} />,
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(row("gone", "gone").label).toBe("This agent isn’t connected anymore."),
+    );
+  });
+
+  it("can't edit an agent on a Home without grants, and says why", async () => {
+    await open(
+      grok,
+      new MockHostClient({
+        latencyMs: 0,
+        grantsAvailable: false,
+        connections: mockConnectedAgents("seeded").connections.map(
+          ({ grant: _grant, ...connection }) => connection,
+        ),
+      }),
+    );
+    expect(section("legacy")?.footer?.text).toBe(
+      "Update Opensteer on your Home to choose what this agent can use. Until then it can do everything your own agents can.",
+    );
+    expect(section("scope")).toBeUndefined();
+    expect(readAsDrawn(row("end", "disconnect").label)).toBe("Disconnect “Grok”");
+  });
+});
+
+/** Pauses Workshop, as a person does on Messaging: its chats pause with it. */
+async function pauseWorkshop(client: MockHostClient) {
+  const dashboard = await client.rpc["channels.get"]({});
+  if (!dashboard.ok) throw new Error("No messaging accounts");
+  const workshop = dashboard.data.connections.find(
+    ({ displayName }) => displayName === "Workshop",
+  )!;
+  await client.dispatch({
+    type: "channel.connection.status.set",
+    connectionId: workshop.id,
+    status: "paused",
+    idempotencyKey: mutationIdempotencyKey("channel-status"),
+  });
+}
+
+describe("a chat on the phone", () => {
+  const chat = (n: number) => `mcn_00000000-0000-4000-8000-0000000000c${n}`;
+  const chats = () => new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+  /** The Home takes each Stop of a Run; the Run ends only when the test lets it. */
+  const holdInterrupts = (client: MockHostClient) => {
+    const held: Extract<Parameters<MockHostClient["dispatch"]>[0], { type: "run.interrupt" }>[] =
+      [];
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      held.push(command);
+      return { type: "run.interrupt", wasDuplicate: false };
+    });
+    return held;
+  };
+
+  it("shows where a live chat listens, who can give it work, its work with Stop, and Disconnect", async () => {
+    const client = await open(chat(1), chats());
+    expect(row("chat-where", "where").label).toBe("Direct messages to “Workshop” on Slack");
+    expect(row("chat-speakers", "speakers")).toMatchObject({
+      label: "You, as “Tim”",
+      detail:
+        "Only messages you send as “Tim” give this agent work. To use another account, link it on Messaging: the new one replaces this one.",
+    });
+    expect(section("chat-speakers")?.footer?.text).toBe(
+      "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
+    );
+    const interrupts = holdInterrupts(client);
+    await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
+    expect(interrupts).toEqual([
+      expect.objectContaining({
+        threadId: "thr_00000000-0000-4000-8000-0000000000c1",
+        runId: "run_00000000-0000-4000-8000-0000000000c1",
+      }),
+    ]);
+    // Taken, and the task still runs until its device answers: it says so, and asks no second time.
+    expect(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop")).toMatchObject({
+      label: "Stopping…",
+      disabled: true,
+    });
+    expect(readAsDrawn(row("end", "disconnect").label)).toBe("Disconnect “Slack”");
+  });
+
+  it("ends Stopping… when the Run ends, as the task's own updates say, and gives its next Run a Stop of its own", async () => {
+    const client = await open(chat(1), chats());
+    const task = "thr_00000000-0000-4000-8000-0000000000c1";
+    const key = `${task}-stop`;
+    const real = client.dispatch.bind(client);
+    const interrupts = holdInterrupts(client);
+    await press(row("chat-tasks", key));
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stopping…", disabled: true });
+    // Its device answers: the Run ends, and nothing about the connection changes.
+    const changed = vi.fn();
+    const unsubscribe = client.subscribeConnectionsChanged(changed);
+    await act(async () => void (await real(interrupts[0]!)));
+    await vi.waitFor(() =>
+      expect(section("chat-tasks")?.rows.map(({ key }) => key)).not.toContain(key),
+    );
+    expect(row("chat-tasks", task)).toMatchObject({ detail: "Not running" });
+    expect(changed).not.toHaveBeenCalled();
+    unsubscribe();
+    // The task is given more work: a new Run, which has a Stop of its own. The preview's reply
+    // waits on a timer that is held here, so the Run is still at work when it is stopped.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    await act(async () => client.resumeThreadInputQueue(task));
+    void real({
+      type: "thread.sendMessage",
+      threadId: ThreadIdSchema.parse(task),
+      content: [{ type: "text", text: "One more thing" }],
+      delivery: "queue",
+      idempotencyKey: "chat-next-run",
+    });
+    const stoppable = () =>
+      section("chat-tasks")?.rows.some((candidate) => candidate.key === key) === true;
+    for (let step = 0; step < 50 && !stoppable(); step++)
+      await act(async () => void (await vi.advanceTimersToNextTimerAsync()));
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stop", disabled: false });
+    await press(row("chat-tasks", key));
+    vi.useRealTimers();
+    expect(interrupts).toHaveLength(2);
+    expect(new Set(interrupts.map(({ runId }) => runId)).size).toBe(2);
+  });
+
+  it("shows a Stop in flight as Stopping and sends no second one", async () => {
+    const client = await open(chat(1), chats());
+    let finish = () => {};
+    const real = client.dispatch.bind(client);
+    const stop = vi
+      .spyOn(client, "dispatch")
+      .mockImplementation((command) =>
+        command.type === "run.interrupt"
+          ? new Promise(
+              (done) => (finish = () => done({ type: "run.interrupt", wasDuplicate: false })),
+            )
+          : real(command),
+      );
+    const key = "thr_00000000-0000-4000-8000-0000000000c1-stop";
+    await press(row("chat-tasks", key));
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stopping…", disabled: true });
+    await press(row("chat-tasks", key));
+    expect(stop.mock.calls.filter(([command]) => command.type === "run.interrupt")).toHaveLength(1);
+    await act(async () => finish());
+    // Taken: it reads Stopping… until the Home says the task no longer runs.
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stopping…", disabled: true });
+  });
+
+  it("keeps what a paused chat holds on screen when an edit met a newer one", async () => {
+    const client = await open(chat(3), chats());
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type === "connection.update")
+        throw new HostClientRequestError({ code: "conflict", message: "changed", status: 409 });
+      return real(command);
+    });
+    await press(row("mode", "auto"));
+    await vi.waitFor(() =>
+      expect(section("conflict")?.footer?.text).toBe(
+        "This changed on another device. Showing what’s set now.",
+      ),
+    );
+    expect(section("status")?.footer?.text).toContain(
+      "Messages sent while this is paused arrive when it’s back;",
+    );
+  });
+
+  it.each([
+    [2, "Messages sent while this is paused are not delivered."],
+    [
+      3,
+      "Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late.",
+    ],
+    [4, "It says: Slack says the token was revoked."],
+  ])(
+    "says what a paused chat holds and what becomes of what is sent to it (chat %i)",
+    async (n, sentence) => {
+      const client = chats();
+      // #team speaks through Workshop: paused only once Workshop is.
+      if (n === 2) await pauseWorkshop(client);
+      await open(chat(n), client);
+      expect(status()).toMatchObject({ label: "Paused", tone: "attention" });
+      expect(section("status")?.footer?.text).toContain(sentence);
+      expect(section("end")?.rows[0]?.label).toMatch(/^Disconnect /u);
+    },
+  );
+
+  it("offers an anyone chat only what it may hold, keeps Tasks on, and limits a chat with Tasks kept", async () => {
+    await open(chat(2), chats());
+    const labels = (state.page?.sections ?? []).flatMap((s) => s.rows.map((r) => r.label));
+    for (const id of [
+      "consent.scope.everything.label",
+      "consent.browser.title",
+      "consent.apps.title",
+    ] as const)
+      expect(labels, id).not.toContain(agentWords(id));
+    expect(labels).toContain(agentWords("consent.plugins.title"));
+    expect(row("tasks", "tasks")).toMatchObject({ value: true, disabled: true });
+    // A chat for you alone that can do everything is limited with Tasks kept, never refused.
+    const scene = mockConnectedAgents("chats");
+    const everything = scene.connections.map((row) =>
+      row.id === chat(1) ? { ...row, grant: { scope: "everything" as const } } : row,
+    );
+    const owner = new MockHostClient({ latencyMs: 0, ...scene, connections: everything });
+    host?.dispose();
+    act(() => root?.unmount());
+    await open(chat(1), owner);
+    const dispatch = vi.spyOn(owner, "dispatch");
+    await press(row("scope", "selected"));
+    await answer(agentWords("agent.narrow.confirm"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "connection.update",
+        grant: { scope: "selected", tasks: true, resources: [] },
+      }),
+    );
+  });
+
+  it("says, where an anyone chat's mode is chosen, what the people there can have it do", async () => {
+    await open(chat(2), chats());
+    // The conversation's name is someone else's: drawn as a name, in quotation marks.
+    expect(readAsDrawn(row("mode", "auto"))).toMatchObject({
+      detail:
+        "People in “#team” can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.",
+    });
+    expect(readAsDrawn(row("mode", "full-access"))).toMatchObject({
+      detail:
+        "Never asks. People in “#team” can have it do anything on its computer that your user account can.",
+    });
+    expect(row("mode", "approval-required")).toMatchObject({
+      detail: "Asks you before anything that changes something.",
+    });
+    // A chat that answers only you reads as a connected agent does: its tasks work in Agent home.
+    host?.dispose();
+    act(() => root?.unmount());
+    await open(chat(1), chats());
+    expect(row("mode", "full-access")).toMatchObject({
+      detail:
+        "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",
+    });
+  });
+
+  it("says a chat's page could not be read when the read failed, never that it is gone", async () => {
+    const client = chats();
+    Object.defineProperty(client.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      }),
+      configurable: true,
+    });
+    host = client;
+    root = createRoot(document.body.appendChild(document.createElement("div")));
+    await act(async () =>
+      root!.render(
+        <ConnectedAgentController
+          connectionId={chat(1)}
+          deploymentId="deployment-a"
+          host={client}
+        />,
+      ),
+    );
+    await vi.waitFor(() => expect(section("unreadable")).toBeDefined());
+    expect(row("unreadable", "unreadable").label).toBe("Couldn’t read your connected agents.");
+    expect(section("gone")).toBeUndefined();
+  });
+
+  it("after a refresh fails on a page read before, offers only Try again", async () => {
+    const client = chats();
+    const changed: (() => void)[] = [];
+    const subscribe = client.subscribeConnectionsChanged.bind(client);
+    vi.spyOn(client, "subscribeConnectionsChanged").mockImplementation((listener) => {
+      changed.push(listener);
+      return subscribe(listener);
+    });
+    await open(chat(1), client);
+    expect(section("chat-where")).toBeDefined();
+    Object.defineProperty(client.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      }),
+      configurable: true,
+    });
+    await act(async () => {
+      for (const listener of changed) listener();
+    });
+    await vi.waitFor(() => expect(section("read-failed")).toBeDefined());
+    // Every row that acts, found by enumeration: only Try again.
+    const acting = (state.page?.sections ?? []).flatMap((candidate) =>
+      candidate.rows
+        .filter(
+          (candidateRow) =>
+            (candidateRow.kind === "button" && !candidateRow.opens) ||
+            candidateRow.kind === "toggle" ||
+            candidateRow.kind === "input" ||
+            candidateRow.kind === "choice" ||
+            candidateRow.kind === "chips",
+        )
+        .map((candidateRow) => candidateRow.label),
+    );
+    expect(acting).toEqual(["Try again"]);
+  });
+
+  it("shows a chat none of a signed-in agent's identity lines", async () => {
+    await open(chat(2), chats());
+    expect(section("who")).toBeUndefined();
+    const labels = (state.page?.sections ?? []).flatMap((s) => s.rows.map((r) => r.label));
+    for (const id of ["agent.about.says", "agent.about.origin"] as const)
+      expect(labels, id).not.toContain(agentWords(id));
+    expect(labels.join(" ")).not.toMatch(/Says it is|an app on this computer/u);
+  });
+
+  it("says a reply may have been sent, never that it failed", async () => {
+    await open(chat(4), chats());
+    expect(row("chat-unknown", "unknown").label).toBe(
+      "1 reply may have been sent. Opensteer couldn’t confirm it arrived, so it won’t send it again.",
+    );
+  });
+
+  it("says why an ended chat ended, and offers no Stop, Disconnect or resume", async () => {
+    await open(chat(5), chats());
+    expect(row("chat-ended", "ended").label).toBe(
+      "You disconnected it. To use it again, add the chat again on Messaging.",
+    );
+    const buttons = (state.page?.sections ?? []).flatMap((s) =>
+      s.rows.filter((r) => r.kind === "button").map((r) => r.label),
+    );
+    expect(buttons.filter((label) => /^(Stop|Disconnect|Resume)/u.test(label))).toEqual([]);
+  });
+
+  it("says who can give a chat work when nobody is linked as you yet", async () => {
+    await open(chat(4), chats());
+    expect(row("chat-speakers", "speakers")).toMatchObject({
+      label: "You, once you link your account",
+      detail:
+        "No Slack account is linked as you yet. Link yours on Messaging; until then, nothing sent here gives this agent work.",
+    });
+  });
+
+  it("says a chat ended with its account", async () => {
+    const client = chats();
+    const dashboard = await client.rpc["channels.get"]({});
+    if (!dashboard.ok) throw new Error("No messaging accounts");
+    await client.dispatch({
+      type: "channel.connection.status.set",
+      connectionId: dashboard.data.connections.find(({ displayName }) => displayName === "On-call")!
+        .id,
+      status: "revoked",
+      idempotencyKey: mutationIdempotencyKey("channel-remove"),
+    });
+    await open(chat(4), client);
+    await vi.waitFor(() =>
+      expect(row("chat-ended", "ended").label).toBe(
+        "Its messaging account was disconnected. To use it again, add the chat again on Messaging.",
+      ),
+    );
+  });
+
+  it("says it couldn't confirm the task was stopped when the answer is lost, and keeps Stop enabled", async () => {
+    const client = await open(chat(1), chats());
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      throw new HostTransportError("timed-out");
+    });
+    await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
+    await vi.waitFor(() => expect(state.alerts.at(-1)?.title).toBe("Stop"));
+    expect(state.alerts.at(-1)?.body).toContain("Couldn't confirm the task was stopped.");
+    expect(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop")).toMatchObject({
+      label: "Stop",
+      disabled: false,
+    });
+  });
+
+  it("says why a task could not be stopped, in words, never the raw error", async () => {
+    const client = await open(chat(1), chats());
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      throw new HostClientRequestError({ code: "unavailable", message: "down", status: 503 });
+    });
+    await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
+    await vi.waitFor(() => expect(state.alerts.at(-1)?.title).toBe("Stop"));
+    expect(state.alerts.at(-1)?.body).toBeTruthy();
+    expect(state.alerts.at(-1)?.body).not.toContain("down");
+    expect(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop")).toMatchObject({
+      label: "Stop",
+      disabled: false,
+    });
+  });
+
+  it("saves an anyone chat's safety mode and then a plugin, refusing neither", async () => {
+    const client = await open(chat(2), chats());
+    const dispatch = vi.spyOn(client, "dispatch");
+    await press(row("mode", "auto"));
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "connection.update", accessMode: "auto" }),
+      ),
+    );
+    expect(state.alerts).toEqual([]);
+    await vi.waitFor(() => expect(section("status")).toBeDefined());
+    await press(row("resources", "plugins"));
+    await vi.waitFor(() => expect(section("plugins", state.sheet)?.rows.length).toBeGreaterThan(0));
+    const plugin = section("plugins", state.sheet)!.rows[0]!;
+    if (plugin.kind !== "chips") throw new Error("Not a plugin choice");
+    await act(async () => plugin.onChange("read"));
+    await act(async () => state.sheet!.sheet!.onClose());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          type: "connection.update",
+          grant: expect.objectContaining({
+            scope: "selected",
+            tasks: true,
+            resources: [expect.objectContaining({ kind: "plugin" })],
+          }),
+        }),
+      ),
+    );
+    expect(state.alerts).toEqual([]);
+  });
+
+  it("offers no Chrome pairing note and no Plugins where the chat's shape does not", async () => {
+    const scene = mockConnectedAgents("chats");
+    const client = new MockHostClient({
+      latencyMs: 0,
+      ...scene,
+      chromeTabs: { chromeTabs: [], chromeTabsNeedPairing: true },
+      connections: scene.connections.map((row) =>
+        row.id === chat(3)
+          ? {
+              ...row,
+              bridge: {
+                ...row.bridge!,
+                grantShape: { everything: false, resources: [], tasks: "required" as const },
+              },
+            }
+          : row,
+      ),
+    });
+    await open(chat(2), client);
+    const texts = () =>
+      (state.page?.sections ?? []).flatMap((s) => [
+        ...s.rows.map((r) => r.label),
+        s.footer?.text ?? "",
+      ]);
+    await vi.waitFor(() => expect(texts()).toContain(agentWords("consent.plugins.title")));
+    expect(texts()).not.toContain(agentWords("consent.chromeTabs.repair"));
+    act(() => root?.unmount());
+    await open(chat(3), client);
+    expect(texts()).not.toContain(agentWords("consent.plugins.title"));
+  });
+
+  it("warns about Tasks only where Tasks is the person's choice, never on a chat", async () => {
+    const warning = agentWords("consent.tasks.warning", { home: "" }).slice(0, 30);
+    const footers = () => (state.page?.sections ?? []).map((s) => s.footer?.text ?? "");
+    await open(chat(2), chats());
+    expect(footers().some((text) => text.startsWith(warning))).toBe(false);
+    act(() => root?.unmount());
+    await open("mcn_00000000-0000-4000-8000-000000000003");
+    expect(footers().some((text) => text.startsWith(warning))).toBe(true);
+  });
+
+  it("offers Remove from list on an ended chat only, never on a live or paused one", async () => {
+    for (const [n, removable] of [
+      [1, false],
+      [2, false],
+      [3, false],
+      [4, false],
+      [5, true],
+    ] as const) {
+      await open(chat(n), chats());
+      const labels = (state.page?.sections ?? []).flatMap((s) => s.rows.map((r) => r.label));
+      expect(labels.includes("Remove from list"), `chat ${n}`).toBe(removable);
+      act(() => root?.unmount());
+    }
+  });
+
+  it("says a chat is at work when its page lists a task running, from that one list", async () => {
+    await open(chat(1), chats());
+    expect(status().label).not.toBe("Not doing anything");
+    expect(section("status")?.footer?.text).toContain("Summarize my week");
+  });
+});

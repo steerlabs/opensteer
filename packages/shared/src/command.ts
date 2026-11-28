@@ -147,6 +147,30 @@ export function resolveCommand(
     : resolvePosixCommand(command, options.environment, options.cwd, probes);
 }
 
+/**
+ * Every copy of a bare command on PATH, in PATH order, each once: the first is
+ * what `resolveCommand` and a shell run. On Windows only that first one is
+ * listed, because a later copy there may be a script its extension decides.
+ */
+export function resolveCommandCopies(
+  command: string,
+  options: Parameters<typeof resolveCommand>[1],
+): readonly ResolvedCommand[] {
+  const first = resolveCommand(command, options);
+  if (!first || options.platform === "win32" || command.includes("/")) return first ? [first] : [];
+  const probes = options.probes ?? nodeCommandProbes;
+  const seen = new Set<string>();
+  const copies: ResolvedCommand[] = [];
+  for (const directory of (options.environment.PATH ?? "").split(":")) {
+    if (!path.posix.isAbsolute(directory)) continue;
+    const candidate = path.posix.join(directory, command);
+    if (seen.has(candidate) || !probes.isExecutable(candidate)) continue;
+    seen.add(candidate);
+    copies.push({ kind: "native", path: candidate });
+  }
+  return copies;
+}
+
 function resolvePosixCommand(
   command: string,
   environment: Environment,

@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { publishThreadCard } from "./message-visibility.js";
 import { itemView } from "./personal-sync-store.js";
 import { transcriptPreview } from "./transcript-store.js";
@@ -68,8 +69,11 @@ export type AppAuthorization = (database: Kysely<DatabaseSchema>) => Promise<voi
 
 export interface AppRunScope {
   readonly threadId: ThreadId;
-  readonly runId: RunId;
+  readonly runId: RunId | null;
   readonly userId: UserId;
+  /** Present when publishing from an automation script (runId === null). */
+  readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
+  readonly callerKey?: string;
 }
 
 const missing = () => new OpensteerError({ code: "not_found", message: "App not found" });
@@ -168,25 +172,33 @@ export class AppStore {
     });
   }
 
-  /** Unpublished reservations whose admitting Run has ended or was deleted. */
+  /** Unpublished reservations whose admitting Run has ended or was deleted (or expired program reservation). */
   async abandonedReservations(): Promise<AppRecord[]> {
+    const programCutoff = new Date(Date.now() - 10 * 60 * 1000);
     return this.#records(this.database, (query) =>
       query
         .where("apps.latestVersion", "=", 0)
         .leftJoin("runs", "runs.id", "apps.runId")
         .where((eb) =>
-          eb.or([eb("runs.id", "is", null), eb("runs.status", "not in", nonTerminalRunStatuses)]),
+          eb.or([
+            eb.and([eb("apps.runId", "is not", null), eb("runs.id", "is", null)]),
+            eb("runs.status", "not in", nonTerminalRunStatuses),
+            eb.and([eb("apps.runId", "is", null), eb("apps.createdAt", "<", programCutoff)]),
+          ]),
         ),
     );
   }
 
-  publication(runId: RunId, publishKey: string) {
-    return this.database
+  publication(runId: RunId | null, publishKey: string) {
+    let query = this.database
       .selectFrom("appVersions")
       .select(["appId", "version"])
-      .where("createdByRun", "=", runId)
-      .where("publishKey", "=", publishKey)
-      .executeTakeFirst();
+      .where("publishKey", "=", publishKey);
+    query =
+      runId === null
+        ? query.where("createdByRun", "is", null)
+        : query.where("createdByRun", "=", runId);
+    return query.executeTakeFirst();
   }
 
   /** The publishing Run must still be active and belong to the personal owner. */
@@ -344,7 +356,7 @@ export class AppStore {
         (await createApp(tx, {
           scope: input.scope,
           name,
-          creationKey: `${input.scope.runId}:${input.publishKey}`,
+          creationKey: `${input.scope.runId ?? input.scope.callerKey ?? "program"}:${input.publishKey}`,
           computerId: agentHome.computerId,
         }));
       await tx
@@ -354,12 +366,15 @@ export class AppStore {
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       const app = await lockApp(tx, input.scope.userId, appId, true);
-      const replay = await tx
+      let replayQuery = tx
         .selectFrom("appVersions")
         .select(["appId", "version"])
-        .where("createdByRun", "=", input.scope.runId)
-        .where("publishKey", "=", input.publishKey)
-        .executeTakeFirst();
+        .where("publishKey", "=", input.publishKey);
+      replayQuery =
+        input.scope.runId === null
+          ? replayQuery.where("createdByRun", "is", null)
+          : replayQuery.where("createdByRun", "=", input.scope.runId);
+      const replay = await replayQuery.executeTakeFirst();
       if (replay) {
         if (replay.appId !== app.id)
           throw new OpensteerError({
@@ -400,9 +415,10 @@ export class AppStore {
           message: "App version changed during publication",
         });
       const now = new Date();
+      const cleanName = outsideName(name, 160) || "App";
       await tx
         .updateTable("apps")
-        .set({ name, latestVersion: version, updatedAt: now })
+        .set({ name: cleanName, latestVersion: version, updatedAt: now })
         .where("id", "=", app.id)
         .execute();
       await tx
@@ -458,7 +474,7 @@ export class AppStore {
           kind: "app",
           appId: app.id,
           createdAt: mutation.state.now,
-          view: transcriptPreview({ title: name, version }),
+          view: transcriptPreview({ title: cleanName, version }),
         },
         true,
       );
@@ -469,11 +485,12 @@ export class AppStore {
 
   async rename(ownerId: UserId, appId: AppId, name: string): Promise<void> {
     const parsed = AppNameSchema.parse(name);
+    const cleanName = outsideName(parsed, 160) || "App";
     await commitPersonalMutation(this.database, async (tx, mutation) => {
       const app = await lockApp(tx, ownerId, appId);
       await tx
         .updateTable("apps")
-        .set({ name: parsed, updatedAt: mutation.state.now })
+        .set({ name: cleanName, updatedAt: mutation.state.now })
         .where("id", "=", app.id)
         .execute();
       await tx
@@ -486,7 +503,7 @@ export class AppStore {
         .execute();
       const cards = await tx
         .updateTable("transcriptItems")
-        .set({ view: transcriptPreview({ title: parsed }), revision: mutation.sequence })
+        .set({ view: transcriptPreview({ title: cleanName }), revision: mutation.sequence })
         .where("appId", "=", app.id)
         .where("visible", "=", true)
         .returningAll()
@@ -734,7 +751,8 @@ async function createApp(
       computerId: input.computerId,
       threadId: input.scope.threadId,
       runId: input.scope.runId,
-      name: input.name,
+      // An agent names its app: the name enters clean, as every name from outside.
+      name: outsideName(input.name, 160) || "App",
       creationKey: input.creationKey,
       latestVersion: 0,
       createdAt: now,
@@ -761,6 +779,28 @@ async function authorizeRun(
   fullAccess: boolean,
 ): Promise<{ readonly agentHome: ComputerFolder }> {
   await requireOwner(database, scope.userId);
+  if (scope.runId === null) {
+    const thread = await database
+      .selectFrom("threads")
+      .innerJoin("personalSettings", "personalSettings.ownerId", "threads.createdBy")
+      .select([
+        "personalSettings.agentHomeComputerId",
+        "personalSettings.agentHomePath",
+        "threads.accessMode",
+      ])
+      .where("threads.id", "=", scope.threadId)
+      .where("threads.createdBy", "=", scope.userId)
+      .where("threads.removedAt", "is", null)
+      .executeTakeFirst();
+    if (!thread) throw missing();
+    if (fullAccess && (scope.accessMode ?? thread.accessMode) !== "full-access")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "App servers require a full-access Run",
+        next: "Publish HTML instead, or ask the person to run this task with full access.",
+      });
+    return { agentHome: { computerId: thread.agentHomeComputerId, path: thread.agentHomePath } };
+  }
   let query = database
     .selectFrom("threads")
     .innerJoin("runs", "runs.threadId", "threads.id")

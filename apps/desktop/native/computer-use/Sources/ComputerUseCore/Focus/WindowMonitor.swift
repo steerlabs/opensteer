@@ -340,8 +340,9 @@ public final class WindowMonitor: @unchecked Sendable {
       guard let helperInput = app.lastHelperInputAt,
         Date().timeIntervalSince(helperInput) < Self.helperInputWindow
       else { return false }
-      // The app brought itself forward on receiving the helper's input. The
-      // helper reports it and never pushes focus back.
+      // The app brought itself forward on receiving the helper's input. It is
+      // reported; while the person had another app in front, the act's guard
+      // also puts that app back (`FocusEnforcer.guarded`).
       app.focusChangedByHelper = true
       state.states[processIdentifier] = app
       return true

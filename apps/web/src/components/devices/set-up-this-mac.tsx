@@ -98,7 +98,7 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
   const submit = (choice: DeviceSetupChoice) => void device.setUp(choice);
   return (
     <SetupFrame
-      description={`Your agent keeps running on ${device.homeName} and can use this Mac for what you turn on.`}
+      description={`Your own agents keep running on ${device.homeName} and can use this Mac for what you turn on.`}
       footer={
         <SetupFooter
           action={
@@ -130,7 +130,7 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
         />
       </label>
       {device.devicesAvailable ? (
-        <SetupGroup title="Your agent can use">
+        <SetupGroup title="Your own agents can use">
           {(["browser", "apps", "files"] as const).map((capability) => (
             <SwitchRow
               checked={access[capability]}
@@ -246,8 +246,8 @@ function ReadyStep({
         access === null
           ? "Checking what your agent can use here."
           : anything
-            ? `It’s one of your devices now. Tabs you open here run here, and your agent can reach it from ${device.homeName}.`
-            : "Your agent can’t use it until you turn something on."
+            ? `It’s one of your devices now. Tabs you open here run here, and your own agents can reach it from ${device.homeName}.`
+            : "Your own agents can’t use it until you turn something on."
       }
       footer={
         <SetupFooter

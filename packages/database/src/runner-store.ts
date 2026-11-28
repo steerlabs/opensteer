@@ -1,14 +1,20 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   lockDeviceRemovalInTransaction,
   clearRemovedDeviceStopsInTransaction,
 } from "./device-removal-store.js";
-import { DeviceIdSchema, type DeviceId, type DeviceDriverIdentity } from "@opensteer/core";
+import {
+  DeviceIdSchema,
+  isLoopbackHostname,
+  type DeviceId,
+  type DeviceDriverIdentity,
+} from "@opensteer/core";
 import { upsertSelfDeviceInTransaction, getSelfDeviceId } from "./device-inventory-store.js";
 import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
 import { cancelPending } from "./request-cancellation.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
 import {
@@ -29,6 +35,7 @@ import {
   type RequestId,
   type RunId,
   type RunnerId,
+  type TriggerOccurrenceId,
   type UserId,
   nonTerminalRunStatuses,
   OpensteerError,
@@ -295,13 +302,14 @@ async function activateRunnerConnection(
           : descriptor.device
             ? jsonValue(descriptor.device)
             : null,
+      machineBootId: descriptor.machineBootId ?? null,
       lastSeenAt: seenAt,
       maxConcurrentRuns: descriptor.modules.agents?.maxConcurrentRuns ?? null,
       moduleDescriptors: jsonValue(descriptor.modules),
       updateRequired: null,
       ...(descriptor.modules.integrations?.platform === "android"
         ? {
-            name: descriptor.name,
+            name: outsideName(descriptor.name, 120) || "Computer",
           }
         : {}),
       updatedAt: seenAt,
@@ -409,6 +417,7 @@ async function failRunsForRevokedRunner(
   transaction: Transaction<DatabaseSchema>,
   runnerId: RunnerId,
   links: ChannelLinks,
+  extraCommandIds: readonly DatabaseSchema["commands"]["id"][] = [],
 ): Promise<void> {
   const affected = await transaction
     .selectFrom("runs")
@@ -434,6 +443,7 @@ async function failRunsForRevokedRunner(
       .execute(databaseOperationOptions());
   }
   await lockRunProjectionRows(transaction, {
+    ...(extraCommandIds.length > 0 ? { commandIds: extraCommandIds } : {}),
     runIds: affected.map(({ id }) => id),
     threadIds: affected.map(({ threadId }) => threadId),
   });
@@ -531,6 +541,18 @@ export const personalReachableGrant: readonly RunnerModuleName[] = [
 ];
 const supervisedServiceModules: readonly RunnerModuleName[] = ["integrations", "messaging"];
 
+function isSupervisedServiceRunner(input: {
+  readonly allowedModules: readonly RunnerModuleName[];
+  readonly ownerKind: "deployment" | "user";
+  readonly runnerKind: RunnerDescriptor["runnerKind"];
+}): boolean {
+  return (
+    input.ownerKind === "deployment" &&
+    input.runnerKind === "managed" &&
+    sameStringSet(input.allowedModules, supervisedServiceModules)
+  );
+}
+
 /** Said when a Personal Deployment is asked for a computer that would execute. */
 export const personalReachableGrantRefusal =
   "Only reachable computers can join a Personal Deployment.";
@@ -575,7 +597,7 @@ async function assertPersonalRunnerAdmission(
 ): Promise<number | null> {
   const deployment = await transaction
     .selectFrom("deployments")
-    .select("deploymentShape")
+    .select(["canonicalOrigin", "deploymentShape"])
     .where("singletonKey", "=", "primary")
     .executeTakeFirst(databaseOperationOptions());
   if (deployment?.deploymentShape.kind !== "personal")
@@ -592,13 +614,7 @@ async function assertPersonalRunnerAdmission(
   ) {
     return null;
   }
-  if (
-    input.ownerKind === "deployment" &&
-    input.runnerKind === "managed" &&
-    sameStringSet(input.allowedModules, supervisedServiceModules)
-  ) {
-    return null;
-  }
+  if (isSupervisedServiceRunner(input)) return null;
   // Phones lend browsers and apps without executing the Deployment's agents.
   if (
     !sameStringSet(input.allowedModules, personalReachableGrant) &&
@@ -610,6 +626,9 @@ async function assertPersonalRunnerAdmission(
     });
   }
   if (input.stage === "issuance") return null;
+  // A networked Home's canonical origin is the route every other computer
+  // arrives on, so there is no Remote access generation to fence against.
+  if (!isLoopbackHostname(new URL(deployment.canonicalOrigin).hostname)) return null;
   const remoteAccess = await transaction
     .selectFrom("personalRemoteAccess")
     .select(["generation", "mode"])
@@ -961,12 +980,35 @@ export async function revokeRunner(
         ),
       );
   let runIds = new Set<RunId>();
+  let occurrenceIds = new Set<TriggerOccurrenceId>();
   let sessionIds = new Set<BrowserSessionId>();
+  const activeTriggerOccurrences = (transaction: Transaction<DatabaseSchema>) =>
+    transaction
+      .selectFrom("triggerOccurrences")
+      .select(["commandId", "id", "status", "connectionId", "terminalEvidenceAt"])
+      .where("status", "in", ["pending", "running"])
+      .where((expression) =>
+        expression.or([
+          expression("runnerId", "=", runnerId),
+          expression(
+            "environmentId",
+            "in",
+            transaction
+              .selectFrom("executionEnvironments")
+              .select("id")
+              .where("runnerId", "=", runnerId),
+          ),
+        ]),
+      );
   const recheck = async (transaction: Transaction<DatabaseSchema>) => {
     const currentRuns = await runs(transaction).execute(databaseOperationOptions());
+    const currentOccurrences = await activeTriggerOccurrences(transaction).execute(
+      databaseOperationOptions(),
+    );
     const currentSessions = await sessions(transaction).execute(databaseOperationOptions());
     if (
       currentRuns.some(({ id }) => !runIds.has(id)) ||
+      currentOccurrences.some(({ id }) => !occurrenceIds.has(id)) ||
       currentSessions.some(({ id }) => !sessionIds.has(id))
     ) {
       throw new TransactionScopeChanged();
@@ -1018,6 +1060,14 @@ export async function revokeRunner(
           await runs(transaction)
             .orderBy("runs.id", "asc")
             .forNoKeyUpdate("runs")
+            .execute(databaseOperationOptions())
+        ).map(({ id }) => id),
+      );
+      occurrenceIds = new Set(
+        (
+          await activeTriggerOccurrences(transaction)
+            .orderBy("id", "asc")
+            .forNoKeyUpdate()
             .execute(databaseOperationOptions())
         ).map(({ id }) => id),
       );
@@ -1084,15 +1134,58 @@ export async function revokeRunner(
 
         await clearRemovedDeviceStopsInTransaction(transaction, deviceEffects.removedDeviceIds);
         await recheck(transaction);
-        await failRunsForRevokedRunner(transaction, runnerId, links);
-        await transaction
-          .updateTable("triggerWatchActivations")
-          .set({
-            desired: "stopped",
-            leaseExpiresAt: null,
-            observed: "stopped",
-            updatedAt: revokedAt,
-          })
+        // Lock threads of affected runs (188) before triggers (189) and trigger_watch_activations (190),
+        // which precede failRunsForRevokedRunner's provider_sessions (192) and commands (218).
+        const affectedRunThreadIds = [
+          ...new Set(
+            (
+              await runs(transaction).select("runs.threadId").execute(databaseOperationOptions())
+            ).map(({ threadId }) => threadId),
+          ),
+        ];
+        if (affectedRunThreadIds.length > 0) {
+          await transaction
+            .selectFrom("threads")
+            .select("id")
+            .where("id", "in", affectedRunThreadIds)
+            .orderBy("id", "asc")
+            .forNoKeyUpdate()
+            .execute(databaseOperationOptions());
+        }
+        // Y6: Removing a computer pauses its active automations and stops active watches.
+        const runnerTriggers = await transaction
+          .selectFrom("triggers")
+          .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
+          .innerJoin("executionEnvironments", "executionEnvironments.id", "threads.environmentId")
+          .select("triggers.id")
+          .where("executionEnvironments.runnerId", "=", runnerId)
+          .where("triggers.status", "=", "active")
+          .orderBy("triggers.id", "asc")
+          .forNoKeyUpdate("triggers")
+          .execute(databaseOperationOptions());
+        if (runnerTriggers.length > 0) {
+          await transaction
+            .updateTable("triggers")
+            .set({
+              nextFireAt: null,
+              pauseReason: "Paused because its computer was removed.",
+              pausedAt: revokedAt,
+              pausedBy: "system",
+              pausedByConnectionId: null,
+              pausedByThreadId: null,
+              status: "paused",
+              updatedAt: revokedAt,
+            })
+            .where(
+              "id",
+              "in",
+              runnerTriggers.map(({ id }) => id),
+            )
+            .execute(databaseOperationOptions());
+        }
+        const activeWatches = await transaction
+          .selectFrom("triggerWatchActivations")
+          .select("id")
           .where((expression) =>
             expression.or([
               expression("runnerId", "=", runnerId),
@@ -1107,7 +1200,34 @@ export async function revokeRunner(
             ]),
           )
           .where("desired", "=", "active")
+          .orderBy("id", "asc")
+          .forNoKeyUpdate()
           .execute(databaseOperationOptions());
+        if (activeWatches.length > 0) {
+          await transaction
+            .updateTable("triggerWatchActivations")
+            .set({
+              desired: "stopped",
+              leaseExpiresAt: null,
+              observed: "stopped",
+              updatedAt: revokedAt,
+            })
+            .where(
+              "id",
+              "in",
+              activeWatches.map(({ id }) => id),
+            )
+            .execute(databaseOperationOptions());
+        }
+        const lockedOccurrences = await activeTriggerOccurrences(transaction)
+          .orderBy("id", "asc")
+          .execute(databaseOperationOptions());
+        await failRunsForRevokedRunner(
+          transaction,
+          runnerId,
+          links,
+          lockedOccurrences.map(({ commandId }) => commandId),
+        );
         const closed = await transaction
           .updateTable("browserSessions")
           .set({
@@ -1136,7 +1256,17 @@ export async function revokeRunner(
         };
 
         // A messaging service's accounts may move to another; a channel pinned
-        // to this computer went with its app connection above.
+        // to this computer went with its app connection above. Each set of rows is
+        // locked in id order before it changes.
+        await transaction
+          .selectFrom("integrationConnections")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .where("connectionKind", "=", "channel")
+          .where("transportKind", "!=", "computer")
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute(databaseOperationOptions());
         await transaction
           .updateTable("integrationConnections")
           .set({
@@ -1147,8 +1277,17 @@ export async function revokeRunner(
           .where("connectionKind", "=", "channel")
           .where("transportKind", "!=", "computer")
           .execute(databaseOperationOptions());
+        // A bridge's reply this computer held but never started goes to whichever takes over.
         await transaction
-          .updateTable("channelDeliveries")
+          .selectFrom("bridgeDeliveries")
+          .select("id")
+          .where("claimOwner", "=", runnerId)
+          .where("status", "=", "leased")
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute(databaseOperationOptions());
+        await transaction
+          .updateTable("bridgeDeliveries")
           .set({
             claimExpiresAt: null,
             claimOwner: null,
@@ -1186,6 +1325,87 @@ export async function revokeRunner(
           reason: "resource-deleted",
           resolvedAt: revokedAt,
         });
+        if (lockedOccurrences.length > 0) {
+          const lockedCommands = await transaction
+            .selectFrom("commands")
+            .select(["frameSentAt", "id"])
+            .where(
+              "id",
+              "in",
+              lockedOccurrences.map(({ commandId }) => commandId),
+            )
+            .orderBy("id", "asc")
+            .forNoKeyUpdate()
+            .execute(databaseOperationOptions());
+          const frameSentByCommandId = new Map(
+            lockedCommands.map((row) => [row.id, row.frameSentAt]),
+          );
+          const cancelError = {
+            code: "canceled_by_computer_removed",
+            message: "Automation occurrence was canceled because its computer was removed.",
+          };
+          const unknownError = {
+            code: "outcome_unknown",
+            message: "Outcome unknown: its computer was removed while this firing was running.",
+          };
+          for (const row of lockedOccurrences) {
+            const neverSent =
+              row.status === "pending" || frameSentByCommandId.get(row.commandId) === null;
+            if (neverSent) {
+              await transaction
+                .updateTable("commands")
+                .set({
+                  lastError: jsonValue(cancelError),
+                  status: "failed",
+                  updatedAt: revokedAt,
+                })
+                .where("id", "=", row.commandId)
+                .where("status", "in", ["pending", "dispatched"])
+                .execute(databaseOperationOptions());
+              await transaction
+                .updateTable("triggerOccurrences")
+                .set({
+                  completedAt: revokedAt,
+                  error: jsonValue(cancelError),
+                  ...(row.connectionId && !row.terminalEvidenceAt
+                    ? { terminalEvidenceAt: revokedAt }
+                    : {}),
+                  status: "canceled",
+                  updatedAt: revokedAt,
+                })
+                .where("id", "=", row.id)
+                .where("status", "in", ["pending", "running"])
+                .execute(databaseOperationOptions());
+            } else if (row.status === "running") {
+              await transaction
+                .updateTable("commands")
+                .set({
+                  lastError: jsonValue(unknownError),
+                  status: "unknown",
+                  updatedAt: revokedAt,
+                })
+                .where("id", "=", row.commandId)
+                .where("status", "in", ["dispatched", "pending"])
+                .execute(databaseOperationOptions());
+              await transaction
+                .updateTable("triggerOccurrences")
+                .set({
+                  completedAt: revokedAt,
+                  contactLostAt: revokedAt,
+                  error: jsonValue(unknownError),
+                  ...(row.connectionId && !row.terminalEvidenceAt
+                    ? { terminalEvidenceAt: revokedAt }
+                    : {}),
+                  status: "unknown",
+                  updatedAt: revokedAt,
+                })
+                .where("id", "=", row.id)
+                .where("status", "=", "running")
+                .execute(databaseOperationOptions());
+            }
+          }
+          await wakeExecutionCommands(transaction);
+        }
         const sessionTargets = [
           ...new Set([DeviceIdSchema.parse(runnerId), ...deviceEffects.removedDeviceIds]),
         ];
@@ -1230,12 +1450,13 @@ export async function renameRunner(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
   ownerId: UserId,
-  name: string,
+  requestedName: string,
   options: {
     readonly allowDeployment?: boolean;
     readonly administration?: AdministrationCommandIdentity | undefined;
   } = {},
 ): Promise<void> {
+  const name = outsideName(requestedName, 120) || "Computer";
   await commitPersonalMutation(database, (transaction, mutation) =>
     administrationCommand(transaction, options.administration, async () => {
       const updatedAt = new Date();
@@ -1424,6 +1645,7 @@ export async function createRunnerEnrollment(
     readonly id: string;
     readonly idempotencyKey: string;
     readonly mainEnrollmentPurpose?: "initial" | "replacement";
+    readonly configuredInitial?: true;
     readonly name: string;
     /**
      * The person whose work runs on a managed Runner. Administration stays
@@ -1437,6 +1659,7 @@ export async function createRunnerEnrollment(
     readonly tokenHash: string;
   },
 ): Promise<RunnerEnrollmentIssuanceRecord> {
+  const name = outsideName(input.name, 120) || "Computer";
   return commitPersonalMutation(database, async (transaction, mutation) => {
     let preparedIdentity = input.preparedIdentity ?? null;
     if (preparedIdentity) {
@@ -1515,6 +1738,7 @@ export async function createRunnerEnrollment(
       .selectFrom("runnerEnrollments")
       .select([
         "deviceProfile",
+        "consumedAt",
         "allowedModules",
         "issuanceModules",
         "initialAccess",
@@ -1538,14 +1762,16 @@ export async function createRunnerEnrollment(
       .forNoKeyUpdate()
       .executeTakeFirst(databaseOperationOptions());
     if (existing) {
+      const keepEnrolled =
+        input.configuredInitial && input.createdBy === null && existing.consumedAt !== null;
       if (
         !isDeepStrictEqual(existing.initialAccess, input.initialAccess ?? null) ||
         !isDeepStrictEqual(existing.preparedIdentity, preparedIdentity) ||
         existing.deviceProfile !== (input.deviceProfile ?? null) ||
-        existing.requestFingerprint !== input.requestFingerprint ||
-        existing.name !== input.name ||
+        (!keepEnrolled && existing.requestFingerprint !== input.requestFingerprint) ||
+        existing.name !== name ||
         existing.runnerKind !== input.runnerKind ||
-        existing.tokenHash !== input.tokenHash ||
+        (!keepEnrolled && existing.tokenHash !== input.tokenHash) ||
         // A replay that names a different owner is a different request, not
         // the same one: re-binding a Runner to another person on replay would
         // hand them the credentials living inside it.
@@ -1645,7 +1871,7 @@ export async function createRunnerEnrollment(
         expiresAt: input.expiresAt,
         id: input.id,
         idempotencyKey: input.idempotencyKey,
-        name: input.name,
+        name,
         ownerKind: input.runnerKind === "local" ? "user" : "deployment",
         ownerUserId,
         requestFingerprint: input.requestFingerprint,
@@ -2041,4 +2267,41 @@ export async function touchRunnerConnection(
     .where("revokedAt", "is", null)
     .executeTakeFirst(databaseOperationOptions());
   return result.numUpdatedRows === 1n;
+}
+
+/**
+ * Refreshes the Runner's attach fence and, in the same single statement, checks
+ * the partial unconfirmed-stop index so an ordinary Home with no unconfirmed
+ * stops incurs zero extra startup queries.
+ */
+export async function touchRunnerConnectionForAttach(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly connectionGeneration: number;
+    readonly runnerId: RunnerId;
+  },
+): Promise<{ readonly current: boolean; readonly hasUnconfirmedStop: boolean }> {
+  const seenAt = new Date();
+  const row = await database
+    .updateTable("runners")
+    .set({
+      lastSeenAt: seenAt,
+      updatedAt: seenAt,
+    })
+    .where("id", "=", input.runnerId)
+    .where("connectionGeneration", "=", String(input.connectionGeneration))
+    .where("revokedAt", "is", null)
+    .returning(
+      sql<boolean>`exists (
+        select 1
+        from threads
+        inner join execution_environments on execution_environments.id = threads.environment_id
+        where execution_environments.runner_id = runners.id
+          and (threads.unconfirmed_stop_run_id is not null or threads.run_start_hold_reason = 'previous-stop-unconfirmed')
+      )`.as("hasUnconfirmedStop"),
+    )
+    .executeTakeFirst(databaseOperationOptions());
+  return row
+    ? { current: true, hasUnconfirmedStop: Boolean(row.hasUnconfirmedStop) }
+    : { current: false, hasUnconfirmedStop: false };
 }

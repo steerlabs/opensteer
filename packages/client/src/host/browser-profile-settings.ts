@@ -8,6 +8,7 @@ import {
   type DeviceElsewhere,
 } from "../computers/computers.js";
 import type { BrowserProfileSummary, HostSnapshot } from "./client.js";
+import { browserSleepFromHome } from "./browser-sleep.js";
 import { placeList, type PlaceListSource } from "./places.js";
 import { browserIdentity, type PlaceBrowserIdentity } from "./start-page-model.js";
 
@@ -125,18 +126,27 @@ export function browserProfileDeleteConsequence(row: BrowserProfileSettingsRow):
 }
 
 export function browserProfileDeletionRows(
-  snapshot: Pick<HostSnapshot, "browserProfileDeletions" | "machines">,
+  snapshot: Pick<HostSnapshot, "browserProfileDeletions" | "browserPools" | "machines">,
 ): { readonly profileId: string; readonly status: string }[] {
   return (snapshot.browserProfileDeletions ?? []).map((deletion) => {
-    const computer =
-      snapshot.machines.find((machine) => machineSelfRunnerId(machine) === deletion.computerId)
-        ?.name ?? "its computer";
-    return {
-      profileId: deletion.profileId,
-      status:
-        deletion.state === "pending-restart"
-          ? `Erased after Opensteer restarts on ${computer}`
-          : `Will be erased when ${computer} is back online`,
-    };
+    const machine = snapshot.machines.find(
+      (machine) => machineSelfRunnerId(machine) === deletion.computerId,
+    );
+    const name = machine?.name ?? "its device";
+    let status: string;
+    if (machine?.status !== "online") {
+      status = `Will be erased when ${name} is back online`;
+    } else if (deletion.state === "pending-restart") {
+      status = `Erased after Opensteer restarts on ${name}`;
+    } else if (
+      !["awake", "not-pooled"].includes(
+        browserSleepFromHome(snapshot.browserPools, deletion.computerId, null).browser.kind,
+      )
+    ) {
+      status = "Will be erased when the browser next starts";
+    } else {
+      status = "Not erased yet";
+    }
+    return { profileId: deletion.profileId, status };
   });
 }

@@ -5,6 +5,8 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./raw-cdp-relay": "./src/raw-cdp-relay.ts",
+    "./standard-cdp": "./src/standard-cdp.ts",
     ".": "./src/index.ts",
     "./browser": "./src/browser.ts",
     "./browser-actions": "./src/browser-actions.ts",
@@ -34,7 +36,13 @@
     "./personal-sync": "./src/personal-sync.ts",
     "./resources": "./src/resources.ts",
     "./transcript": "./src/transcript.ts",
-    "./test-support/personal-wire": "./src/personal-wire.test-support.ts"
+    "./test-support/personal-wire": "./src/personal-wire.test-support.ts",
+    "./command-arguments": "./src/command-arguments.ts",
+    "./command-table": "./src/command-table.ts",
+    "./command-review": "./src/command-review.ts",
+    "./command-words": "./src/command-words.ts",
+    "./test-support/command-samples": "./src/command-samples.test-support.ts",
+    "./problems": "./src/problems.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

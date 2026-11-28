@@ -1,4 +1,5 @@
 import { afterResponse } from "../server/after-response.js";
+import { unversionedRoute } from "../server/unversioned-route.js";
 
 import { OpensteerError } from "@opensteer/core";
 import type { TokenFreeAuthResponse } from "@opensteer/identity";
@@ -9,8 +10,6 @@ import {
   type HostApiServerContext,
 } from "@opensteer/protocol";
 import {
-  CompleteHostAccountAdoptionRequestSchema,
-  CompleteHostAccountAdoptionResponseSchema,
   ConsumeHostAccountAdoptionProofRequestSchema,
   ConsumeHostAccountAdoptionProofResponseSchema,
   HostAccountAdoptionProofIdSchema,
@@ -82,6 +81,7 @@ export function createIdentityRpcHandlers(
       authSuccess(
         context,
         await identity.beginOidcSignIn({
+          ...(input.chooseAccount ? { chooseAccount: true } : {}),
           headers: contextHeaders(context),
           ...(input.oauthQuery
             ? {
@@ -138,7 +138,6 @@ export function registerIdentityRoutes(
   authenticator: HostAuthenticator,
   options: {
     readonly assertOwner: (userId: import("@opensteer/core").UserId) => Promise<void>;
-    readonly acknowledgeAccountAdoption?: ((proofId: string) => Promise<void>) | undefined;
   },
 ): void {
   const identity = authenticator.identity;
@@ -189,28 +188,8 @@ export function registerIdentityRoutes(
       }),
     );
   });
-  if (identity?.accountAdoptionCompletionEnabled?.()) {
-    if (!options.acknowledgeAccountAdoption) {
-      throw new Error(
-        "Account adoption completion requires a control-plane acknowledgement client",
-      );
-    }
-    app.post("/v1/auth/account-adoption/complete", async (request, reply) => {
-      const session = await authenticator.authenticateSession(request.headers, {
-        mutation: true,
-      });
-      await options.assertOwner(session.user.id);
-      const body = CompleteHostAccountAdoptionRequestSchema.parse(request.body);
-      const completed = await identity.completeAccountAdoption(body.completionGrant, session);
-      await options.acknowledgeAccountAdoption!(completed.proofId);
-      return reply.header("cache-control", "no-store").send(
-        CompleteHostAccountAdoptionResponseSchema.parse({
-          ...completed,
-        }),
-      );
-    });
-  }
-  app.get("/v1/auth/oidc/callback", async (request, reply) => {
+  // The identity provider sends the browser here; a navigation states no API version.
+  app.get("/v1/auth/oidc/callback", { config: unversionedRoute }, async (request, reply) => {
     const incoming = new Request(
       new URL(request.raw.url ?? request.url, authenticator.publicOrigin),
       {
@@ -269,6 +248,8 @@ export function registerIdentityRoutes(
       ] as const) {
         oauth.route({
           ...(route.method === "POST" ? { bodyLimit: maximumNativeOAuthBodyBytes } : {}),
+          // Standard OAuth: a system browser and a token client state no Opensteer version.
+          config: unversionedRoute,
           handler: (request, reply) => handleNativeOAuth(identity, authenticator, request, reply),
           method: route.method,
           url: route.path,

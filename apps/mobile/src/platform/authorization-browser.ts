@@ -24,7 +24,7 @@ export interface AuthorizationSessionOpener {
  * authentication session, so the returned URL is fed to the broker rather than
  * waiting for the operating system to route the scheme to a cold start.
  *
- * The OAuth owner supplies the callback for invite continuations. Only this
+ * The OAuth owner supplies the callback. Only this
  * build's registered callbacks can open a system authorization session.
  */
 export function createAuthorizationBrowser(options: {

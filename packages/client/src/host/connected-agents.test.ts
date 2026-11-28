@@ -3,7 +3,12 @@ import { UserIdSchema } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { describe, expect, it, vi } from "vitest";
-import { ConnectedAgentsClient, externalAgentAddresses } from "./connected-agents.js";
+import {
+  answerAgentConnection,
+  ConnectedAgentsClient,
+  createDedicatedProfile,
+  externalAgentAddresses,
+} from "./connected-agents.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 
 function connectionFixture(): AgentConnection {
@@ -79,7 +84,11 @@ describe("Settings connected agents", () => {
   });
   it("adds no construction or attach reads; lists only when observed and revokes through commands", async () => {
     const row = connectionFixture();
-    const host = new MockHostClient({ latencyMs: 0, connections: [row] });
+    const host = new MockHostClient({
+      latencyMs: 0,
+      connections: [row],
+      grantsAvailable: false,
+    });
     const rpc = vi.fn(host.rpc["connections.list"]);
     Object.defineProperty(host.rpc, "connections.list", { value: rpc, configurable: true });
     const dispatch = vi.spyOn(host, "dispatch");
@@ -164,7 +173,11 @@ describe("Settings connected agents", () => {
   });
   it("fences an old list response after revocation and disposes pending reads", async () => {
     const row = connectionFixture();
-    const host = new MockHostClient({ latencyMs: 0, connections: [row] });
+    const host = new MockHostClient({
+      latencyMs: 0,
+      connections: [row],
+      grantsAvailable: false,
+    });
     let resolve:
       ((value: Awaited<ReturnType<(typeof host.rpc)["connections.list"]>>) => void) | undefined;
     Object.defineProperty(host.rpc, "connections.list", {
@@ -222,4 +235,200 @@ describe("external agent addresses", () => {
       thisComputer: "http://127.0.0.1:4310/internal/v1/mcp",
     });
   });
+});
+
+function grantedFixture(patch: Partial<AgentConnection> = {}): AgentConnection {
+  return {
+    ...connectionFixture(),
+    grant: { scope: "selected", tasks: false, resources: [] },
+    grantRevision: 1,
+    consentVersion: 2,
+    client: { fingerprint: null, redirectOrigin: "https://grok.com" },
+    state: "active",
+    lastActionUncertain: false,
+    revokedAt: null,
+    ...patch,
+  };
+}
+
+describe("Connected agents with grants", () => {
+  it("never takes a paused chat, or a state it does not know, as proof that a Disconnect happened", async () => {
+    for (const state of ["paused"] as const) {
+      const row = grantedFixture({ state: state as never });
+      const host = new MockHostClient({ latencyMs: 0, connections: [row] });
+      const resource = new ConnectedAgentsClient(host);
+      const stop = resource.start();
+      try {
+        await vi.waitFor(() => expect(resource.getSnapshot().connections).toHaveLength(1));
+        // The Disconnect may never have reached the Home: its answer was lost.
+        const dispatch = host.dispatch.bind(host);
+        vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
+          if (command.type === "connection.revoke") throw new Error("Lost acknowledgement");
+          return dispatch(command);
+        });
+        await resource.revoke(row.id);
+        expect(resource.getSnapshot().revoked.has(row.id), state).toBe(false);
+      } finally {
+        stop();
+        host.dispose();
+      }
+    }
+  });
+
+  it("lists ended connections only from a Home that keeps their outcome", async () => {
+    const stopped = grantedFixture({ state: "stopped", revokedAt: new Date().toISOString() });
+    for (const grants of [true, false]) {
+      const host = new MockHostClient({
+        latencyMs: 0,
+        connections: [stopped],
+        grantsAvailable: grants,
+      });
+      const list = vi.fn(host.rpc["connections.list"]);
+      Object.defineProperty(host.rpc, "connections.list", { value: list, configurable: true });
+      const resource = new ConnectedAgentsClient(host);
+      const loaded = Promise.withResolvers<void>();
+      const unsubscribe = resource.subscribe(() => {
+        if (resource.getSnapshot().connections !== null) loaded.resolve();
+      });
+      const stop = resource.start();
+      try {
+        await loaded.promise;
+        expect(list.mock.calls.map(([input]) => input)).toEqual([{}]);
+        expect(resource.getSnapshot().grantsAvailable).toBe(grants);
+        expect(resource.getSnapshot().connections).toEqual(grants ? [stopped] : []);
+      } finally {
+        unsubscribe();
+        stop();
+        host.dispose();
+      }
+    }
+  });
+
+  it("saves an edit against its revision, and reads again after a stale one", async () => {
+    const row = grantedFixture();
+    const host = new MockHostClient({ latencyMs: 0, connections: [row] });
+    const resource = new ConnectedAgentsClient(host);
+    const stop = resource.start();
+    try {
+      await vi.waitFor(() => expect(resource.getSnapshot().connections).toHaveLength(1));
+      const grant = { scope: "selected" as const, tasks: true, resources: [] };
+      const saved = await resource.update(row.id, {
+        expectedRevision: 1,
+        grant,
+        accessMode: "auto",
+      });
+      expect(saved).toMatchObject({
+        kind: "saved",
+        connection: { grantRevision: 2, accessMode: "auto", grant },
+      });
+      expect(resource.getSnapshot().connections?.[0]).toMatchObject({ grantRevision: 2 });
+      const stale = await resource.update(row.id, {
+        expectedRevision: 1,
+        accessMode: "full-access",
+      });
+      expect(stale).toEqual({ kind: "conflict" });
+      expect(resource.getSnapshot().conflict).toBe(row.id);
+      expect(resource.getSnapshot().issue).toBeNull();
+      await vi.waitFor(() =>
+        expect(resource.getSnapshot().connections?.[0]).toMatchObject({ accessMode: "auto" }),
+      );
+      resource.dismiss();
+      expect(resource.getSnapshot().conflict).toBeNull();
+    } finally {
+      stop();
+      host.dispose();
+    }
+  });
+
+  it("says Revoked the moment the Home confirms, then what the list reports, then removes it", async () => {
+    const row = grantedFixture();
+    const host = new MockHostClient({ latencyMs: 0, connections: [row] });
+    const held: (() => void)[] = [];
+    const list = host.rpc["connections.list"];
+    const resource = new ConnectedAgentsClient(host);
+    const stop = resource.start();
+    try {
+      await vi.waitFor(() => expect(resource.getSnapshot().connections).toHaveLength(1));
+      Object.defineProperty(host.rpc, "connections.list", {
+        value: vi.fn(
+          (...args: Parameters<typeof list>) =>
+            new Promise((done) => {
+              held.push(() => done(list(...args)));
+            }),
+        ),
+        configurable: true,
+      });
+      await resource.revoke(row.id);
+      expect(resource.getSnapshot().revoked.has(row.id)).toBe(true);
+      await vi.waitFor(() => expect(held.length).toBeGreaterThan(0));
+      Object.defineProperty(host.rpc, "connections.list", { value: list, configurable: true });
+      for (const release of held) release();
+      await vi.waitFor(() =>
+        expect(resource.getSnapshot().connections?.[0]).toMatchObject({ state: "stopped" }),
+      );
+      expect(resource.getSnapshot().revoked.size).toBe(0);
+      const dispatch = vi.spyOn(host, "dispatch");
+      expect(await resource.remove(row.id)).toBe(true);
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "connection.remove", connectionId: row.id }),
+      );
+      await vi.waitFor(() => expect(resource.getSnapshot().connections).toEqual([]));
+    } finally {
+      stop();
+      host.dispose();
+    }
+  });
+
+  it.each([true, false])(
+    "honors the consent response when grants support is %s",
+    async (grantsAvailable) => {
+      const host = new MockHostClient({
+        latencyMs: 0,
+        grantsAvailable,
+        connectionConsent: {
+          requestId: "r".repeat(43),
+          clientName: "Grok",
+          redirectUri: "https://grok.com/cb",
+          resource: "https://host.test/internal/v1/mcp",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      });
+      try {
+        const dispatch = vi.spyOn(host, "dispatch");
+        const profileId = await createDedicatedProfile(host, { name: "Grok", homeRunnerId: null });
+        expect(dispatch).toHaveBeenLastCalledWith(
+          expect.objectContaining({ type: "browser.profile.create", input: { name: "Grok" } }),
+        );
+        const consent = unwrapRpcResult(
+          await host.rpc["connections.authorization.get"]({ requestId: "r".repeat(43) }),
+        );
+        const grant = {
+          scope: "selected" as const,
+          tasks: false,
+          resources: [{ kind: "browser-profile" as const, profileId: profileId as never }],
+        };
+        await answerAgentConnection(host, consent, {
+          kind: "approve",
+          label: "Grok",
+          accessMode: "approval-required",
+          grant,
+        });
+        expect(dispatch).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            type: "connection.authorize",
+            decision: {
+              kind: "approve",
+              label: "Grok",
+              accessMode: "approval-required",
+              ...(grantsAvailable ? { grant } : {}),
+            },
+          }),
+        );
+        const [connection] = unwrapRpcResult(await host.rpc["connections.list"]({})).connections;
+        expect(connection?.grant).toEqual(grantsAvailable ? grant : { scope: "everything" });
+      } finally {
+        host.dispose();
+      }
+    },
+  );
 });

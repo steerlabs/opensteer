@@ -33,7 +33,9 @@ describeStore("Idle personal writers", (it) => {
             timeoutError: () => new Error(`Idle ${kind} scan waited for personal event order`),
           }),
         ).resolves.toEqual(
-          kind === "schedules" ? { occurrences: [], changed: false, failures: [] } : null,
+          kind === "schedules"
+            ? { occurrences: [], changed: false, failures: [], runningFirings: [] }
+            : null,
         );
       } finally {
         release.resolve();

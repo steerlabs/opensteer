@@ -41,6 +41,7 @@ import { MessageFold } from "./message-fold.js";
 import { requestAnswerMaxLength } from "./request-form-model.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 import { useQuestionAnswering } from "./use-question-answering.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 
 /** Body lines of detail shown before Show more: a short draft whole, its answers still near. */
 const detailFoldLines = 6;
@@ -67,6 +68,7 @@ export interface QuestionRequestCardProps {
   readonly showQueue?: boolean;
   readonly asker?: boolean;
   readonly surface: SurfaceModel;
+  readonly title?: string | undefined;
 }
 
 /**
@@ -88,6 +90,7 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
   const { draft, field, fields, index, responder, step } = question;
   const { session } = responder;
   const { height } = useWindowDimensions();
+  const stacked = useStackedLayout();
   const asked = useRequestAsker(props.hostClient, request);
   const asker = props.asker === false ? null : asked;
   const queue =
@@ -98,15 +101,15 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
         requestId={request.id}
       />
     );
-  const { heading, prompt } = questionHeading(requestTitle(request), field.prompt);
+  const { heading, prompt } = questionHeading(props.title ?? requestTitle(request), field.prompt);
   const detail = presentation.detail ?? "";
   const [unfolded, setUnfolded] = useState(false);
 
   useEffect(() => {
     void AccessibilityInfo.announceForAccessibility(
-      `Opensteer needs your input. ${requestTitleText(presentation)}`,
+      `Opensteer needs your input. ${props.title ?? requestTitleText(presentation)}`,
     );
-  }, [request.id, presentation]);
+  }, [request.id, presentation, props.title]);
 
   const scroller = useRef<ScrollViewInstance>(null);
   const [scroll, setScroll] = useState({ box: 0, content: 0, offset: 0 });
@@ -144,7 +147,16 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
           />
         </View>
       )}
-      <View style={[styles.head, asker !== null && styles.headAfterAsker]}>
+      {/* At an accessibility text size the waiting count stands above the heading, which takes
+          the full width: beside it, "Connected" broke inside itself. */}
+      <View
+        style={[
+          styles.head,
+          stacked && styles.headStacked,
+          asker !== null && styles.headAfterAsker,
+        ]}
+      >
+        {stacked && asker === null ? queue : null}
         <AppText
           {...(asker === null ? {} : { accessibilityLabel: `${asker.title} asks: ${heading}` })}
           role="secondaryMedium"
@@ -152,7 +164,7 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
         >
           {heading}
         </AppText>
-        {asker === null ? queue : null}
+        {!stacked && asker === null ? queue : null}
       </View>
       <View>
         <ScrollView
@@ -169,8 +181,15 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
           }}
           ref={scroller}
           scrollEventThrottle={32}
-          // Bounded so the composer and keyboard stay in view; long options scroll here.
-          style={{ maxHeight: Math.max(160, Math.min(height * 0.32, 320)) }}
+          // Bounded above a composer, so it and the keyboard stay in view; long options
+          // scroll here. With no composer under it the card stands in a scrolling page of its
+          // own, which scrolls it whole: a box scrolling inside a scrolling page hid choices
+          // under the page's title at a large text size.
+          style={
+            props.composer === null
+              ? undefined
+              : { maxHeight: Math.max(160, Math.min(height * 0.32, 320)) }
+          }
         >
           {detail === "" ? null : (
             <View style={styles.detail}>
@@ -181,7 +200,8 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
                 onToggle={() => setUnfolded(!unfolded)}
                 open={unfolded}
               >
-                {request.kind === "person.question" ? (
+                {request.kind === "person.question" &&
+                !(presentation.kind === "form" && presentation.detailFormat === "plain") ? (
                   <Markdown text={detail} />
                 ) : (
                   <AppText role="caption" tone="soft">
@@ -287,9 +307,19 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
             </View>
           )}
         </ScrollView>
-        {/* More below: the last rows fade rather than ending at the card's edge as if they were all. */}
-        {scroll.content - scroll.box - scroll.offset > 4 ? (
-          <View pointerEvents="none" style={styles.fade} />
+        {/* More below: said under the rows, never over them. A fade over the last row made a
+            choice that works look disabled. The edge stays while the rows scroll, so the card
+            keeps its height; it shows its mark only while there is more below. */}
+        {scroll.content - scroll.box > 4 ? (
+          <View
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={styles.moreEdge}
+          >
+            <View style={scroll.content - scroll.box - scroll.offset > 4 ? null : styles.spent}>
+              <Symbol name="chevron.down" size={11} tint={color.muted} weight="semibold" />
+            </View>
+          </View>
         ) : null}
       </View>
       {typedHere ? (
@@ -315,9 +345,7 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
               {reason}
             </AppText>
           )}
-          {session.failure === null ? null : (
-            <ActionLine line={session.failure} numberOfLines={2} />
-          )}
+          {session.failure === null ? null : <ActionLine line={session.failure} />}
         </View>
       )}
       {question.dismiss === null &&
@@ -404,14 +432,13 @@ const styles = StyleSheet.create({
   cardHighlighted: { backgroundColor: material.selected.backgroundColor },
   detail: { gap: space[2], paddingHorizontal: inset, paddingTop: space[2] },
   dimmed: { opacity: 0.35 },
+  spent: { opacity: 0 },
   end: { height: space[12] },
-  fade: {
-    backgroundImage: `linear-gradient(rgba(20, 20, 20, 0), ${String(material.attention.backgroundColor)})`,
-    bottom: 0,
-    height: 36,
-    left: 0,
-    position: "absolute",
-    right: 0,
+  moreEdge: {
+    alignItems: "center",
+    borderTopColor: color.line,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingVertical: space[2],
   },
   foot: { paddingBottom: 2, paddingLeft: space[4], paddingRight: 6 },
   head: {
@@ -422,7 +449,8 @@ const styles = StyleSheet.create({
     paddingTop: space[10] - 1,
   },
   headAfterAsker: { paddingTop: space[4] },
-  heading: { flex: 1 },
+  headStacked: { alignItems: "flex-end", flexDirection: "column" },
+  heading: { alignSelf: "stretch", flexGrow: 1, flexShrink: 1 },
   input: {
     ...material.control,
     borderRadius: radius.lg,

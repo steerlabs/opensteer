@@ -463,7 +463,12 @@ describe("browser text entry through the presented page", async () => {
     composition(target, "compositionend", "한글");
     input(target, "한글", false, "insertCompositionText");
     expect(textCommands(commands)).toEqual([
-      { type: "clipboard.paste", surfaceId: firstSurface, text: "한글" },
+      {
+        type: "clipboard.paste",
+        surfaceId: firstSurface,
+        text: "한글",
+        contextId: expect.any(String),
+      },
     ]);
   });
 
@@ -518,7 +523,12 @@ describe("browser text entry through the presented page", async () => {
     );
     expect(clicked).toBeGreaterThanOrEqual(0);
     expect(textCommands(commands.slice(0, clicked))).toEqual([
-      { type: "clipboard.paste", surfaceId: firstSurface, text: "한" },
+      {
+        type: "clipboard.paste",
+        surfaceId: firstSurface,
+        text: "한",
+        contextId: expect.any(String),
+      },
     ]);
     expect(textCommands(commands.slice(clicked + 1))).toEqual([]);
     const current = keyboard(container);
@@ -561,7 +571,14 @@ describe("browser text entry through the presented page", async () => {
       input(target, "private draft", false, "insertCompositionText");
       expect(textCommands(commands)).toEqual(
         change === "tab" || change === "session"
-          ? [{ type: "clipboard.paste", surfaceId: firstSurface, text: "private draft" }]
+          ? [
+              {
+                type: "clipboard.paste",
+                surfaceId: firstSurface,
+                text: "private draft",
+                contextId: expect.any(String),
+              },
+            ]
           : [],
       );
     },
@@ -578,13 +595,28 @@ describe("browser text entry through the presented page", async () => {
     composition(previous, "compositionend", "old tab draft");
     input(previous, "old tab draft", false, "insertCompositionText");
     expect(textCommands(commands)).toEqual([
-      { type: "clipboard.paste", surfaceId: firstSurface, text: "old tab draft" },
+      {
+        type: "clipboard.paste",
+        surfaceId: firstSurface,
+        text: "old tab draft",
+        contextId: expect.any(String),
+      },
     ]);
     const current = keyboard(container);
     input(current, "next page");
     expect(textCommands(commands)).toEqual([
-      { type: "clipboard.paste", surfaceId: firstSurface, text: "old tab draft" },
-      { type: "clipboard.paste", surfaceId: secondSurface, text: "next page" },
+      {
+        type: "clipboard.paste",
+        surfaceId: firstSurface,
+        text: "old tab draft",
+        contextId: expect.any(String),
+      },
+      {
+        type: "clipboard.paste",
+        surfaceId: secondSurface,
+        text: "next page",
+        contextId: expect.any(String),
+      },
     ]);
   });
 });

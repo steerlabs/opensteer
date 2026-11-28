@@ -1,8 +1,15 @@
+import type { AgentCommandActivity } from "@opensteer/core";
+import type { CommandActivityOf, CommandActivitySpan } from "../../commands/activity.js";
+import { agentOperationCursor, listAgentOperations } from "@opensteer/database";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ConnectionCaller } from "../agent-caller.js";
+import type { UserId } from "@opensteer/core";
 import { OpensteerError } from "@opensteer/core";
 import {
+  AgentConnectionConsentSchema,
   rpcSuccess,
+  type AgentConnection,
+  type AgentConnectionConsent,
   type HostApiHandlers,
   type HostApiCommand,
   type HostApiServerContext,
@@ -18,6 +25,7 @@ import {
   mcpResourcePath,
   mcpResourceMetadataPath,
   mcpServerMetadataPath,
+  presentIdentity,
 } from "./connection-oauth.js";
 import { connectionCredentialPrefix } from "./connection-authenticator.js";
 
@@ -96,6 +104,16 @@ export function registerConnectionRoutes(
         ...connection,
         kind: "connection",
         key: `connection:${connection.connectionId}`,
+        // Its row as every authenticated connection carries it: the consent it gave decides what
+        // it is listed and what it may call, by one predicate (B5).
+        agentConnection: {
+          agentConnectionId: connection.connectionId,
+          grant: connection.grant,
+          grantRevision: connection.grantRevision,
+          consentVersion: connection.consentVersion,
+          accessMode: connection.accessMode,
+          bridgeSenders: null,
+        },
       };
       (request.raw as typeof request.raw & { auth?: AuthInfo }).auth = {
         token: header.slice(7),
@@ -110,11 +128,15 @@ export function registerConnectionRoutes(
         .send({ error: "unauthorized" });
     }
   });
+  const rootMetadataPath = "/.well-known/oauth-authorization-server";
+  const serverMetadataPaths = [mcpServerMetadataPath];
+  if (!app.hasRoute({ method: "GET", url: rootMetadataPath }))
+    serverMetadataPaths.push(rootMetadataPath);
   app.addHook("onSend", async (request, reply, payload) => {
     const path = request.url.split("?", 1)[0];
     if (
       path === mcpResourceMetadataPath ||
-      path === mcpServerMetadataPath ||
+      serverMetadataPaths.includes(path ?? "") ||
       path === "/.well-known/oauth-protected-resource" ||
       path === `${mcpIssuerPath}/register` ||
       path === `${mcpIssuerPath}/token`
@@ -136,21 +158,22 @@ export function registerConnectionRoutes(
         scopes_supported: ["opensteer"],
       });
     });
-  app.get(mcpServerMetadataPath, async (request, reply) => {
-    const issuer = (await getOrigin(request)) + mcpIssuerPath;
-    return reply.header("cache-control", "no-store").send({
-      issuer,
-      authorization_endpoint: `${issuer}/authorize`,
-      token_endpoint: `${issuer}/token`,
-      registration_endpoint: `${issuer}/register`,
-      response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code"],
-      code_challenge_methods_supported: ["S256"],
-      token_endpoint_auth_methods_supported: ["none"],
-      scopes_supported: ["opensteer"],
-      authorization_response_iss_parameter_supported: true,
+  for (const path of serverMetadataPaths)
+    app.get(path, async (request, reply) => {
+      const issuer = (await getOrigin(request)) + mcpIssuerPath;
+      return reply.header("cache-control", "no-store").send({
+        issuer,
+        authorization_endpoint: `${issuer}/authorize`,
+        token_endpoint: `${issuer}/token`,
+        registration_endpoint: `${issuer}/register`,
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code"],
+        code_challenge_methods_supported: ["S256"],
+        token_endpoint_auth_methods_supported: ["none"],
+        scopes_supported: ["opensteer"],
+        authorization_response_iss_parameter_supported: true,
+      });
     });
-  });
   // Keep OAuth errors and responses away from generic error serializers and logs.
   app.register(async (routes) => {
     for (const path of [`${mcpIssuerPath}/register`, `${mcpIssuerPath}/token`])
@@ -188,10 +211,8 @@ export function registerConnectionRoutes(
         .send(oauth.register(await getOrigin(request), request.body)),
     );
     routes.get(`${mcpIssuerPath}/authorize`, async (request, reply) => {
-      const path = oauth.authorize(
-        await getOrigin(request),
-        uniqueParameters(new URL(request.url, options.canonicalOrigin).searchParams),
-      );
+      const parameters = new URL(request.url, options.canonicalOrigin).searchParams;
+      const path = await oauth.authorize(await getOrigin(request), uniqueParameters(parameters));
       return reply
         .header("cache-control", "no-store")
         .header("referrer-policy", "no-referrer")
@@ -240,25 +261,187 @@ function uniqueParameters(parameters: URLSearchParams): Record<string, string> {
 
 export function createConnectionRpcHandlers(
   oauth: ConnectionOAuth,
-): Pick<HostApiHandlers, "connections.list" | "connections.authorization.get"> {
-  return {
-    "connections.list": async (_input, context) =>
-      rpcSuccess({ connections: await oauth.store.list(requireOwner(context).user.id) }),
-    "connections.authorization.get": async (input, context) =>
-      rpcSuccess(await oauth.consent(input.requestId, requireOwner(context).user.id)),
+  chromeTabGrantCatalog?: (
+    ownerId: UserId,
+  ) => Promise<
+    Pick<AgentConnectionConsent, "chromeTabs" | "chromeTabsNeedPairing" | "chromeTabsRepairNames">
+  >,
+  /** The commands agents sent through the door: activity's second source (C5). */
+  commandActivityOf?: (
+    input: { readonly userId: UserId } & CommandActivityOf & CommandActivitySpan,
+  ) => Promise<readonly AgentCommandActivity[]>,
+): Pick<
+  HostApiHandlers,
+  "connections.list" | "connections.authorization.get" | "connections.activity" | "threads.activity"
+> {
+  // One page of operations, with the door's commands of the same span beside them.
+  const page = async (userId: UserId, of: CommandActivityOf, before: string | undefined) => {
+    const cursor = optionalBefore(before);
+    const operations = await listAgentOperations(oauth.store.database, {
+      userId,
+      ...of,
+      limit: 50,
+      ...cursor,
+    });
+    if (!commandActivityOf) return { ...operations, commands: [] };
+    // A page that goes on stops at its oldest operation: older commands come with the next page.
+    const oldest = operations.nextBefore ? operations.operations.at(-1)?.createdAt : undefined;
+    const commands = await commandActivityOf({
+      userId,
+      ...of,
+      ...cursor,
+      ...(oldest ? { since: new Date(oldest) } : {}),
+    } as { readonly userId: UserId } & CommandActivityOf & CommandActivitySpan);
+    return { ...operations, commands: [...commands] };
   };
+  return {
+    "connections.activity": async (input, context) =>
+      rpcSuccess(
+        await page(
+          requireOwner(context).user.id,
+          { connectionId: input.connectionId },
+          input.before,
+        ),
+      ),
+    "threads.activity": async (input, context) =>
+      rpcSuccess(
+        await page(requireOwner(context).user.id, { threadId: input.threadId }, input.before),
+      ),
+    "connections.list": async (input, context) => {
+      const connections = (
+        await oauth.store.list(requireOwner(context).user.id, { includeRevoked: true })
+      ).map(withIdentity);
+      return rpcSuccess(
+        input.includeRevoked
+          ? { connections, endedConnections: [] }
+          : {
+              // A paused chat is still connected: it waits, and comes back with what it holds.
+              connections: connections.filter(
+                (connection) => connection.state === "active" || connection.state === "paused",
+              ),
+              endedConnections: connections.filter(
+                (connection) => connection.state !== "active" && connection.state !== "paused",
+              ),
+            },
+      );
+    },
+    "connections.authorization.get": async (input, context) => {
+      const ownerId = requireOwner(context).user.id;
+      const consent = await oauth.consent(input.requestId, ownerId);
+      return rpcSuccess(
+        AgentConnectionConsentSchema.parse({
+          ...consent,
+          grantsAvailable: true,
+          ...(await chromeTabGrantCatalog?.(ownerId)),
+        }),
+      );
+    },
+  };
+}
+/** A connection with how the Home words who asked, from what it recorded at consent. */
+function withIdentity(connection: AgentConnection): AgentConnection {
+  return connection.identityAtConsent
+    ? { ...connection, identity: presentIdentity(connection.identityAtConsent) }
+    : connection;
+}
+export type ConnectionCommand = Extract<
+  HostApiCommand,
+  {
+    type:
+      | "connection.revoke"
+      | "connection.authorize"
+      | "connection.update"
+      | "connection.remove"
+      | "connection.uncertain.acknowledge";
+  }
+>;
+export function isConnectionCommand(command: HostApiCommand): command is ConnectionCommand {
+  return (
+    command.type === "connection.revoke" ||
+    command.type === "connection.authorize" ||
+    command.type === "connection.update" ||
+    command.type === "connection.remove" ||
+    command.type === "connection.uncertain.acknowledge"
+  );
+}
+/** What a connection change leaves for the runtime once it committed. */
+export interface ConnectionCommandEffects {
+  /** Stops the lineage's durable work: Requests, queued inputs, Runs and automations. */
+  readonly stopLineage?: (
+    userId: UserId,
+    connectionId: string,
+    reason: "disconnect" | "narrowed",
+  ) => Promise<void>;
+}
+export function connectionCommandEffects(options: {
+  readonly store: Pick<import("@opensteer/database").OpensteerStore, "driveConnectionCleanups">;
+  readonly closeLineage: (connectionId: string, revision?: number) => Promise<void>;
+  readonly stopper?: NonNullable<
+    Parameters<import("@opensteer/database").OpensteerStore["driveConnectionCleanups"]>[0]
+  >["stopper"];
+  readonly onFailure: (error: unknown, connectionId?: string) => void;
+  /**
+   * After a lineage was stopped: abort this process's work for sessions that ended. `cause` is
+   * the cleanup's own reason, which the work it cuts reads (a Disconnect, an expiry, a narrowing).
+   */
+  readonly afterStop?: (
+    connectionId: string,
+    reason: "disconnect" | "narrowed",
+    cause: "revoked" | "expired" | "narrowed",
+  ) => Promise<void>;
+}): ConnectionCommandEffects & { readonly driveCleanups: () => Promise<void> } {
+  const driveCleanups = async () => {
+    const { failures } = await options.store.driveConnectionCleanups({
+      ...(options.stopper ? { stopper: options.stopper } : {}),
+      onCleanup: async ({ connectionId, reason, minimumGrantRevision }) => {
+        const narrowed = reason === "narrowed";
+        await options.closeLineage(connectionId, narrowed ? minimumGrantRevision : undefined);
+        await options.afterStop?.(connectionId, narrowed ? "narrowed" : "disconnect", reason);
+      },
+    });
+    for (const error of failures) options.onFailure(error);
+  };
+  return { driveCleanups, stopLineage: driveCleanups };
 }
 export async function handleConnectionCommand(
   oauth: ConnectionOAuth,
-  command: Extract<HostApiCommand, { type: "connection.revoke" | "connection.authorize" }>,
+  command: ConnectionCommand,
   context: HostApiServerContext,
+  effects: ConnectionCommandEffects = {},
 ) {
   const session = requireOwner(context);
-  if (command.type === "connection.revoke") {
-    await oauth.store.revoke(session.user.id, command.connectionId);
-    return { type: "connection.revoke" as const };
+  switch (command.type) {
+    case "connection.revoke":
+      // Authority ends when this commits; a retry still finishes stopping the lineage.
+      await oauth.store.revoke(session.user.id, command.connectionId);
+      await effects.stopLineage?.(session.user.id, command.connectionId, "disconnect");
+      return { type: "connection.revoke" as const };
+    case "connection.update": {
+      const { connection, narrowed } = await oauth.store.update(session.user.id, {
+        connectionId: command.connectionId,
+        expectedRevision: command.expectedRevision,
+        ...(command.label !== undefined ? { label: command.label } : {}),
+        ...(command.accessMode !== undefined ? { accessMode: command.accessMode } : {}),
+        ...(command.grant !== undefined ? { grant: command.grant } : {}),
+      });
+      if (narrowed) await effects.stopLineage?.(session.user.id, command.connectionId, "narrowed");
+      // The connection as the list draws it (a chat with its account, who is you, its tasks), so
+      // a screen that keeps this answer loses nothing until its next read.
+      const listed = (await oauth.store.list(session.user.id, { includeRevoked: true })).find(
+        ({ id }) => id === connection.id,
+      );
+      return { type: "connection.update" as const, connection: withIdentity(listed ?? connection) };
+    }
+    case "connection.remove":
+      await oauth.store.remove(session.user.id, command.connectionId);
+      await effects.stopLineage?.(session.user.id, command.connectionId, "disconnect");
+      return { type: "connection.remove" as const };
+    case "connection.uncertain.acknowledge":
+      await oauth.store.acknowledgeUncertain(session.user.id, command.connectionId);
+      return { type: "connection.uncertain.acknowledge" as const };
+    case "connection.authorize":
+      return oauth.decide(command, session.user.id, session.id);
   }
-  return oauth.decide(command, session.user.id, session.id);
 }
 function requireOwner(context: HostApiServerContext) {
   if (!context.session || context.session.user.disabledAt !== null)
@@ -267,4 +450,9 @@ function requireOwner(context: HostApiServerContext) {
       message: "Sign in to manage connected agents.",
     });
   return context.session;
+}
+
+function optionalBefore(before: string | undefined) {
+  const cursor = agentOperationCursor(before);
+  return cursor ? { before: cursor } : {};
 }

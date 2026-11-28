@@ -22,6 +22,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("focus", 180000);
 
 const smokeDownloads = smokeDesktopDownloads();
 
@@ -117,10 +120,11 @@ async function run(): Promise<void> {
       );
     };
 
+    const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000072");
     const request: BrowserLaunchRequest = {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000071",
-      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000072"),
+      sessionId,
       storage: { kind: "guest" },
     };
     let browser = await launcher.launch(request);
@@ -132,15 +136,15 @@ async function run(): Promise<void> {
     // page the ledger registers for it.
     const router = new SessionCdpRouter(browser.cdp);
     cleanup.push(() => router.close());
-    const sessionFiles = new SessionFiles(path.join(temporaryDirectory, request.sessionId));
+    const sessionFiles = new SessionFiles(path.join(temporaryDirectory, sessionId));
     const sessionLedger = new SurfaceLedger(browser.context, {
-      claimTarget: (targetId) => router.claimTarget(request.sessionId, targetId),
+      claimTarget: (targetId) => router.claimTarget(sessionId, targetId),
       initialViewport: request.initialViewport,
     });
     let ledger = sessionLedger;
     cleanup.push(() => sessionLedger.close());
     router.registerSession(
-      request.sessionId,
+      sessionId,
       await page.targetId(),
       (targetId) => sessionLedger.resolveTarget(targetId),
       sessionFiles.root,
@@ -149,7 +153,9 @@ async function run(): Promise<void> {
     await assertBackground("initial surface selection");
     let pageCdp = await page.cdp();
     await pageCdp.send("Page.navigate", { url: origin });
-    await waitFor(() => page.url() === `${origin}/`);
+    // The root page as it is now: `page` is reassigned below, so the wait holds this one.
+    const rootPage = page;
+    await waitFor(() => rootPage.url() === `${origin}/`);
 
     const messages: BrowserRuntimeServerMessage[] = [];
     const frames: BrowserFrame[] = [];
@@ -159,6 +165,9 @@ async function run(): Promise<void> {
         operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
         remainingBudgetMs: 18_000,
         wireVersion: 2,
+        // An editing session, as the Electron panel's: its contexts are what a paste is made for.
+        editingVersion: 2,
+        clipboard: false,
         access: "read-write",
         audience: "opensteer-browser-runtime",
         creationOrigin: "person",
@@ -173,14 +182,7 @@ async function run(): Promise<void> {
       files: sessionFiles,
       replaceSiteCookies: (site, cookies, deadline) =>
         browser.replaceSiteCookies(site, cookies, deadline),
-      signIns: new HostSignIns({
-        state: { run: (work) => work() },
-        writeCookies: () => Promise.resolve(),
-        deliveryTimeoutMs: 1_000,
-        executor: undefined,
-        fresh: true,
-        runtimeId: "electron-smoke",
-      }),
+      signIns: new HostSignIns({ authority: undefined, runtimeId: "electron-smoke" }),
       ledger,
       sink: {
         sendFrame: async (frame) => {
@@ -210,6 +212,7 @@ async function run(): Promise<void> {
       surfaceId: active.surface.id,
       text: "agent-input",
       type: "clipboard.paste",
+      contextId: await fieldContext(messages, active.surface.id),
     });
     await controller.handle({
       action: "down",
@@ -526,42 +529,28 @@ async function run(): Promise<void> {
     });
     await assertBackground("website focus and dialog handling");
 
-    await controller.handle({ type: "state.export" });
-    if (!messages.some((message) => message.type === "state.exported")) {
-      throw new Error("Electron focus smoke did not export browser state.");
-    }
-    const snapshot = await browser.exportSnapshot();
-    await assertBackground("profile export");
+    // Portable legacy profile snapshots (`exportSnapshot` / `storage.kind: "legacy"`)
+    // were removed in 2fa8004e2; keep verifying that closing and relaunching stays background.
     await controller.handle({ type: "stream.unsubscribe" });
     await controller.close();
     await router.close();
     await ledger.close();
     await browser.close();
 
-    browser = await launcher.launch({ ...request, storage: { kind: "legacy", snapshot } });
+    browser = await launcher.launch(request);
     cleanup.push(() => browser.close());
-    const restoredLedger = new SurfaceLedger(browser.context, {
+    const relaunchedLedger = new SurfaceLedger(browser.context, {
       initialViewport: request.initialViewport,
     });
-    ledger = restoredLedger;
-    cleanup.push(() => restoredLedger.close());
+    ledger = relaunchedLedger;
+    cleanup.push(() => relaunchedLedger.close());
     await ledger.start();
     page = browser.context.pages()[0];
-    if (!page) throw new Error("Electron restored focus smoke page missing.");
+    if (!page) throw new Error("Electron relaunched focus smoke page missing.");
     pageCdp = await page.cdp();
     await pageCdp.send("Page.navigate", { url: origin });
     await waitFor(() => page.url() === `${origin}/`);
-    const restored = await pageCdp.send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
-      expression: '({ cookie: document.cookie, localStorage: localStorage.getItem("focus") })',
-      returnByValue: true,
-    });
-    if (
-      JSON.stringify(restored.result?.value) !==
-      JSON.stringify({ cookie: "focus=preserved", localStorage: "preserved" })
-    ) {
-      throw new Error(`Electron focus smoke profile restore mismatch: ${JSON.stringify(restored)}`);
-    }
-    await assertBackground("profile restore and relaunch");
+    await assertBackground("relaunch");
     await ledger.close();
     await browser.close();
     if (focusFailures.length > 0) {
@@ -650,8 +639,9 @@ workspaceNotifications.removeObserver(activationObserver)
 }
 
 async function readSentinelPid(child: ChildProcess): Promise<number> {
-  if (!child.stdout) throw new Error("Focus sentinel stdout missing.");
-  child.stdout.setEncoding("utf8");
+  const stdout = child.stdout;
+  if (!stdout) throw new Error("Focus sentinel stdout missing.");
+  stdout.setEncoding("utf8");
   return await new Promise<number>((resolve, reject) => {
     let output = "";
     const onData = (chunk: string) => {
@@ -668,10 +658,10 @@ async function readSentinelPid(child: ChildProcess): Promise<number> {
       reject(new Error("Focus sentinel exited before becoming ready."));
     };
     const cleanup = () => {
-      child.stdout?.off("data", onData);
+      stdout.off("data", onData);
       child.off("exit", onExit);
     };
-    child.stdout.on("data", onData);
+    stdout.on("data", onData);
     child.once("exit", onExit);
   });
 }
@@ -727,4 +717,23 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
     if (Date.now() >= deadline) throw new Error("Electron focus smoke condition timed out.");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+/** The page's latest editing context once a field holds focus: a paste is made for it (CZ5). */
+async function fieldContext(
+  messages: readonly BrowserRuntimeServerMessage[],
+  surfaceId: string,
+): Promise<string> {
+  let contextId: string | undefined;
+  await waitFor(() => {
+    const published = messages
+      .filter((message) => message.type === "browser.editing" && message.surfaceId === surfaceId)
+      .at(-1);
+    contextId =
+      published?.type === "browser.editing" && published.context.field !== null
+        ? published.context.contextId
+        : undefined;
+    return contextId !== undefined;
+  });
+  return contextId!;
 }

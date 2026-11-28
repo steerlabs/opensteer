@@ -52,6 +52,7 @@ import {
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type {
   AppTabPort,
+  BrowserBindingTabActor,
   NativeTabTargetsPort,
   DeviceNativeTabTargetsPort,
   DeviceNativeTargetAcquired,
@@ -61,12 +62,16 @@ import type {
   TabServicePort,
 } from "./ports.js";
 
+/** A last admission, run in the transaction that makes the change (an approved proposal's). */
+type TabReadmit = (transaction: TabDatabase) => Promise<void>;
+
 export interface PageTabsPort {
   open(
     actor: TabActor,
     target: Extract<TabTarget, { kind: "page" }>,
     key: string,
     typed?: boolean,
+    onRollback?: (rollback: () => void) => void,
   ): Promise<TabWrite>;
   admitted?(row: TabWrite): Promise<void>;
   states?(ownerId: UserId, rows: TabRecord[]): Promise<Map<TabId, NativeTabTargetState>>;
@@ -77,7 +82,13 @@ export interface PageTabsPort {
     key: string,
   ): Promise<Extract<TabViewer, { kind: "page" }>>;
   bind(claims: RunToolScope, row: TabRecord): Promise<PageAgentBinding>;
-  closeViewers(ownerId: UserId, row: TabRecord): Promise<void>;
+  bindBrowserScript?(actor: BrowserBindingTabActor, row: TabRecord): Promise<PageAgentBinding>;
+  closeViewers(ownerId: UserId, row: TabRecord, closePage?: boolean): Promise<void>;
+  /**
+   * The person closed this page tab: work using its page learns that cause when the page ends
+   * under it (said, never acted on: the close itself is `closeViewers`).
+   */
+  personClosed?(row: TabRecord): void;
 }
 export interface TabComputerFact {
   readonly name: string;
@@ -87,6 +98,7 @@ export interface TabComputerFact {
 }
 export interface TabServiceOptions {
   store: TabStore;
+  sharedChromeTabs?: (actor: TabActor) => Promise<Tab[]>;
   devices: Pick<OpensteerStore, "requireSelfDeviceId" | "requireDeviceSelfRunnerId">;
   nativeTargets: NativeTabTargetsPort;
   deviceNativeTargets?: DeviceNativeTabTargetsPort;
@@ -117,9 +129,18 @@ export interface TabServiceOptions {
   /** Rechecks the Run/connection and current grants. Called again inside membership commits. */
   authorize(actor: TabActor, target: TabTarget | TabWrite, database: TabDatabase): Promise<void>;
   authorizeMembership(actor: TabActor, database: TabDatabase): Promise<void>;
+  /** The affected tabs work for a selected connection may not change; empty for everyone else. */
+  deniedRows?(
+    actor: TabActor,
+    rows: readonly TabRecord[],
+    database: TabDatabase,
+  ): Promise<ReadonlySet<TabId>>;
   onError(error: unknown): void;
+  /** A tab closed, by whoever closed it: nothing may go on naming it as a place work is in. */
+  closed?(ownerId: UserId, tabId: TabId): void;
 }
 function owner(actor: TabActor): UserId {
+  if (actor.kind === "browser-binding") return actor.authority.ownerId;
   return actor.kind === "person"
     ? actor.ownerId
     : actor.kind === "run"
@@ -144,7 +165,9 @@ function operationKey(actor: TabActor, key: string): string {
           ? [actor.claims.runId, actor.claims.bindingGeneration]
           : actor.kind === "connection"
             ? actor.caller.connectionId
-            : actor.ownerId,
+            : actor.kind === "browser-binding"
+              ? actor.authority.agentBindingId
+              : actor.ownerId,
         key,
       ]),
     )
@@ -458,9 +481,13 @@ export class TabService implements TabServicePort {
     if (actor.kind === "person" && database === this.options.store.database) {
       await this.options.authorizeMembership(actor, database);
       const { rows, layout } = await this.#catalog(actor.ownerId);
-      return { tabs: [...rows.values()], layout };
+      return {
+        tabs: [...rows.values(), ...((await this.options.sharedChromeTabs?.(actor)) ?? [])],
+        layout,
+      };
     }
     const { tabs, layout } = await this.#snapshotProject(actor, database);
+    tabs.push(...((await this.options.sharedChromeTabs?.(actor)) ?? []));
     return { tabs, layout };
   }
   async #snapshotProject(
@@ -770,10 +797,19 @@ export class TabService implements TabServicePort {
                     : "This app failed to start.",
             };
     }
-    const usedBy = [...new Set(live.usedBy.map(({ taskId }) => taskId))]
+    // Each task once, with the latest time its work took the tab up.
+    const since = new Map<Tab["usedBy"][number]["taskId"], string | undefined>();
+    for (const { taskId, since: at } of live.usedBy) {
+      const known = since.get(taskId);
+      since.set(taskId, known === undefined || (at !== undefined && at > known) ? at : known);
+    }
+    const usedBy = [...since.keys()]
       .sort()
       .slice(0, 128)
-      .map((taskId) => ({ taskId }));
+      .map((taskId) => {
+        const at = since.get(taskId);
+        return at === undefined ? { taskId } : { taskId, since: at };
+      });
     return TabSchema.parse({
       tabId: row.id,
       kind: row.kind,
@@ -800,9 +836,15 @@ export class TabService implements TabServicePort {
       ...(row.kind === "app" ? { appId: row.appId! } : {}),
     });
   }
-  async list(actor: TabActor, input: TabListInput): Promise<TabListResult> {
+  async list(
+    actor: TabActor,
+    input: TabListInput,
+    mayNameComputer?: (deviceId: DeviceId) => boolean,
+    select?: (tab: Tab) => boolean,
+  ): Promise<TabListResult> {
     input = TabListInputSchema.parse(input);
-    const { tabs, layout } = await this.project(actor);
+    const { tabs: visible, layout } = await this.project(actor);
+    const tabs = select ? visible.filter(select) : visible;
     const groups = layout.items.flatMap((item) => (item.kind === "group" ? [item.group] : []));
     const query = input.query?.toLowerCase();
     const filtered = tabs.filter(
@@ -815,7 +857,10 @@ export class TabService implements TabServicePort {
             tab.profile?.name,
             tab.appName,
             tab.bundleId,
-            tab.computer.name,
+            tab.sharedByPerson?.computerName ??
+              (mayNameComputer?.(tab.computer.computerId) === false
+                ? undefined
+                : tab.computer.name),
             groups.find((group) => group.groupId === tab.groupId)?.name,
           ].some((value) => value?.toLowerCase().includes(query))),
     );
@@ -856,6 +901,14 @@ export class TabService implements TabServicePort {
           : null,
     };
   }
+  /** An authorization that also runs an approved proposal's last admission, in the same transaction. */
+  #readmitting(authorize: TabAuthorization, readmit: TabReadmit | undefined): TabAuthorization {
+    if (!readmit) return authorize;
+    return async (tx, rows, layout, replayed) => {
+      await authorize(tx, rows, layout, replayed);
+      await readmit(tx);
+    };
+  }
   #authorize(
     actor: TabActor,
     ids: readonly TabId[],
@@ -871,10 +924,13 @@ export class TabService implements TabServicePort {
             item.group.tabIds.some((id) => affected.has(id)))
         )
           for (const id of item.group.tabIds) affected.add(id);
+      const affectedRows: TabRecord[] = [];
       for (const id of affected) {
         const row = rows.find((row) => row.id === id);
         if (!row || row.ownerId !== owner(actor)) notFound();
+        affectedRows.push(row);
       }
+      if ((await this.options.deniedRows?.(actor, affectedRows, tx))?.size) notFound();
     };
   }
   async open(
@@ -895,21 +951,35 @@ export class TabService implements TabServicePort {
     membershipRevision?: number,
     typed = false,
   ): Promise<{ tab: Tab; layout: TabLayout }> {
+    if (actor.kind === "browser-binding") actor.signal?.throwIfAborted();
     const target = DeviceTabTargetSchema.parse(targetInput);
     const ownerId = owner(actor),
       database = this.options.store.database;
     await this.options.authorize(actor, target, database);
     const initialRevision = membershipRevision ?? (await this.#layoutRevision(ownerId));
     const openedBy: TabOpenedBy =
-      actor.kind === "run" ? { taskId: actor.claims.threadId } : "person";
+      actor.kind === "run"
+        ? { taskId: actor.claims.threadId }
+        : actor.kind === "browser-binding"
+          ? { taskId: actor.threadId }
+          : "person";
     const hash = operationKey(actor, key);
     const id = TabIdSchema.parse(
       `tab_${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`,
     );
     let write: TabWrite;
+    let rollbackOpen: (() => void) | undefined;
     let appFence: { version: number; generation: number | null } | undefined;
     if (target.kind === "page")
-      write = await this.options.pages.open(actor, target, operationKey(actor, key), typed);
+      write = await this.options.pages.open(
+        actor,
+        target,
+        operationKey(actor, key),
+        typed,
+        (rollback) => {
+          rollbackOpen = rollback;
+        },
+      );
     else if (target.kind === "app") {
       const app = await this.options.apps.get(ownerId, target.appId);
       appFence = { version: app.version, generation: app.server?.generation ?? null };
@@ -954,39 +1024,45 @@ export class TabService implements TabServicePort {
         };
       }
     }
-    const result = await this.options.store.open(
-      write,
-      operationKey(actor, key),
-      async (tx) => {
-        await this.options.authorize(actor, target, tx);
-        await this.options.authorize(actor, write, tx);
-        if (target.kind === "app") {
-          const current = await tx
-            .selectFrom("apps")
-            .select(["deleting", "computerId", "latestVersion"])
-            .where("id", "=", target.appId)
-            .where("ownerId", "=", ownerId)
-            .executeTakeFirst();
-          if (
-            !current ||
-            current.deleting ||
-            (await requireSelfDeviceId(tx, current.computerId)) !== write.computerId
-          )
-            notFound();
-          if (current.latestVersion !== appFence!.version) conflict();
-          if (appFence!.generation !== null) {
-            const server = await tx
-              .selectFrom("appServers")
-              .select("generation")
-              .where("appId", "=", target.appId)
+    let result: Awaited<ReturnType<TabStore["open"]>>;
+    try {
+      result = await this.options.store.open(
+        write,
+        operationKey(actor, key),
+        async (tx) => {
+          await this.options.authorize(actor, target, tx);
+          await this.options.authorize(actor, write, tx);
+          if (target.kind === "app") {
+            const current = await tx
+              .selectFrom("apps")
+              .select(["deleting", "computerId", "latestVersion"])
+              .where("id", "=", target.appId)
+              .where("ownerId", "=", ownerId)
               .executeTakeFirst();
-            if (Number(server?.generation) !== appFence!.generation) conflict();
+            if (
+              !current ||
+              current.deleting ||
+              (await requireSelfDeviceId(tx, current.computerId)) !== write.computerId
+            )
+              notFound();
+            if (current.latestVersion !== appFence!.version) conflict();
+            if (appFence!.generation !== null) {
+              const server = await tx
+                .selectFrom("appServers")
+                .select("generation")
+                .where("appId", "=", target.appId)
+                .executeTakeFirst();
+              if (Number(server?.generation) !== appFence!.generation) conflict();
+            }
           }
-        }
-      },
-      target,
-      initialRevision,
-    );
+        },
+        target,
+        initialRevision,
+      );
+    } catch (error) {
+      rollbackOpen?.();
+      throw error;
+    }
     const meta = tabMutationMeta(result);
     const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
     try {
@@ -1044,7 +1120,13 @@ export class TabService implements TabServicePort {
       if (cached) return cached;
     }
     const row = await this.options.store.get(ownerId, tabId);
-    if (!row) notFound();
+    if (!row) {
+      const shared = (await this.options.sharedChromeTabs?.(actor))?.find(
+        (tab) => tab.tabId === tabId,
+      );
+      if (shared) return shared;
+      notFound();
+    }
     const groupId = await this.#singleTabGroupId(ownerId, tabId, database);
     const { tabs } = await this.#projectRows(
       actor,
@@ -1060,6 +1142,12 @@ export class TabService implements TabServicePort {
     if (!row || !(await this.options.canRead(actor, row, this.options.store.database))) notFound();
     return row;
   }
+  async connectionTab(
+    actor: Extract<TabActor, { kind: "connection" | "browser-binding" }>,
+    tabId: TabId,
+  ) {
+    return this.#row(actor, tabId);
+  }
   async #fence(actor: TabActor, row: TabRecord, viewer: TabViewer): Promise<void> {
     const current = await this.#row(actor, row.id);
     if (
@@ -1071,33 +1159,45 @@ export class TabService implements TabServicePort {
     )
       conflict();
   }
-  async close(actor: TabActor, tabIds: TabId[], key: string): Promise<TabCloseResult> {
-    const { closed, failed } = await this.#close(actor, tabIds, key);
+  async close(
+    actor: TabActor,
+    tabIds: TabId[],
+    key: string,
+    expectedGeneration?: number,
+  ): Promise<TabCloseResult> {
+    const { closed, failed } = await this.#close(actor, tabIds, key, expectedGeneration);
     return { closed, failed };
   }
   async #close(
     actor: TabActor,
     tabIds: TabId[],
     key: string,
+    expectedGeneration?: number,
   ): Promise<TabCloseResult & { layout: TabLayout }> {
     TabCloseInputSchema.parse({ tabIds });
     const ownerId = owner(actor);
     const failed: TabCloseResult["failed"] = [],
       permitted = new Set<TabId>(),
-      cleanup: TabRecord[] = [];
+      cleanup: { row: TabRecord; closePage: boolean }[] = [];
     const result = await this.options.store.close(
       ownerId,
       tabIds,
       operationKey(actor, key),
       async (tx, rows) => {
+        const denied = (await this.options.deniedRows?.(actor, rows, tx)) ?? new Set<TabId>();
         for (const tabId of tabIds) {
           try {
             const row = rows.find((row) => row.id === tabId);
-            if (!row || row.ownerId !== ownerId) notFound();
+            if (!row || row.ownerId !== ownerId || denied.has(row.id)) notFound();
+            if (expectedGeneration !== undefined && row.generation !== expectedGeneration)
+              conflict();
             await this.options.authorizeMembership(actor, tx);
             permitted.add(tabId);
-            if (!row.closedAt) cleanup.push(row);
+            // A closed tab ends its page, whoever opened it and whatever holds it: the person
+            // is told it closed, so nothing of it may go on running in the browser.
+            if (!row.closedAt) cleanup.push({ row, closePage: true });
           } catch (error) {
+            if (expectedGeneration !== undefined) throw error;
             failed.push({
               tabId,
               error: normalizeToolError({
@@ -1113,23 +1213,104 @@ export class TabService implements TabServicePort {
     );
     const meta = tabMutationMeta(result);
     if (!meta.replayed) {
+      const ending = cleanup
+        .filter(({ row }) => result.tabIds.includes(row.id))
+        .map(async ({ row, closePage }) => {
+          this.options.closed?.(ownerId, row.id);
+          if (row.kind === "page" && actor.kind === "person")
+            this.options.pages.personClosed?.(row);
+          if (row.kind === "page") await this.options.pages.closeViewers(ownerId, row, closePage);
+          else if (row.kind === "phone" || row.kind === "window")
+            await this.options.nativeTargets.closeOwnerViews(ownerId, row.id, row.generation);
+        });
       this.#applyCatalogMutation(ownerId, result.layout);
-      for (const row of cleanup)
-        if (result.tabIds.includes(row.id)) {
-          try {
-            if (row.kind === "page") await this.options.pages.closeViewers(ownerId, row);
-            else if (row.kind === "phone" || row.kind === "window")
-              await this.options.nativeTargets.closeOwnerViews(ownerId, row.id, row.generation);
-          } catch (error) {
-            this.options.onError(error);
-          }
-        }
+      for (const outcome of await Promise.allSettled(ending))
+        if (outcome.status === "rejected") this.options.onError(outcome.reason);
     }
     const responseLayout = meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout;
     return {
       closed: result.tabIds.filter((id) => permitted.has(id)),
       failed,
       layout: responseLayout,
+    };
+  }
+
+  /**
+   * Closes a group in one decision on the Home: the members it has now close as a close of each
+   * would, and the group goes once none is left. A member that may not close stays, and so does
+   * the group; the result names it.
+   */
+  async closeGroup(
+    actor: TabActor,
+    groupId: TabGroupId,
+    key: string,
+    readmit?: TabReadmit,
+    /** The members the person was shown: only these close (`tab.group.close` `tabIds`). */
+    only?: readonly TabId[],
+  ): Promise<TabCloseResult & { groupClosed: boolean; layout: TabLayout }> {
+    const permitted = new Set<TabId>(),
+      cleanup: { row: TabRecord; closePage: boolean }[] = [];
+    const result = await this.options.store.closeGroup(
+      owner(actor),
+      groupId,
+      operationKey(actor, key),
+      this.#readmitting(async (tx, rows, layout) => {
+        const item = layout.items.find(
+          (item) => item.kind === "group" && item.group.groupId === groupId,
+        );
+        if (item?.kind !== "group") return;
+        await this.options.authorizeMembership(actor, tx);
+        const denied = (await this.options.deniedRows?.(actor, rows, tx)) ?? new Set<TabId>();
+        for (const tabId of item.group.tabIds) {
+          const row = rows.find((row) => row.id === tabId);
+          if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) continue;
+          permitted.add(tabId);
+          // As a close of each: the member's page ends with it.
+          cleanup.push({ row, closePage: true });
+        }
+      }, readmit),
+      (row) => permitted.has(row.id),
+      only,
+    );
+    // The members this close left in its group are the ones that could not close: read from the
+    // mutation's own layout, a replay answers exactly what the first call answered.
+    const left = result.layout.items.find(
+      (item) => item.kind === "group" && item.group.groupId === groupId,
+    );
+    const failed: TabCloseResult["failed"] = (left?.kind === "group" ? left.group.tabIds : []).map(
+      (tabId) => ({
+        tabId,
+        error: normalizeToolError({
+          code: "not_found",
+          message: "This tab is no longer in the list.",
+          next: null,
+        }),
+      }),
+    );
+    // As a close of each member finishes: viewers end and the catalog moves, once.
+    const meta = tabMutationMeta(result);
+    if (!meta.replayed) {
+      const ending = cleanup
+        .filter(({ row }) => result.tabIds.includes(row.id))
+        .map(async ({ row, closePage }) => {
+          this.options.closed?.(owner(actor), row.id);
+          if (row.kind === "page" && actor.kind === "person")
+            this.options.pages.personClosed?.(row);
+          if (row.kind === "page")
+            await this.options.pages.closeViewers(owner(actor), row, closePage);
+          else if (row.kind === "phone" || row.kind === "window")
+            await this.options.nativeTargets.closeOwnerViews(owner(actor), row.id, row.generation);
+        });
+      this.#applyCatalogMutation(owner(actor), result.layout);
+      for (const outcome of await Promise.allSettled(ending))
+        if (outcome.status === "rejected") this.options.onError(outcome.reason);
+    }
+    return {
+      // The store's answer, a replay's included: exactly the members this close took.
+      closed: result.tabIds,
+      failed,
+      groupClosed: left === undefined,
+      layout: meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout,
     };
   }
 
@@ -1352,6 +1533,7 @@ export class TabService implements TabServicePort {
     actor: TabActor,
     input: TabGroupUpdateInput,
     key: string,
+    readmit?: TabReadmit,
   ): Promise<{ group: TabGroup; layout: TabLayout }> {
     TabGroupUpdateInputSchema.parse(input);
     const ownerId = owner(actor);
@@ -1360,7 +1542,7 @@ export class TabService implements TabServicePort {
       ownerId,
       input,
       operationKey(actor, key),
-      this.#authorize(actor, [], [input.groupId]),
+      this.#readmitting(this.#authorize(actor, [], [input.groupId]), readmit),
     );
     const meta = tabMutationMeta(result);
     if (!meta.replayed) {
@@ -1374,12 +1556,12 @@ export class TabService implements TabServicePort {
     if (item?.kind !== "group") notFound();
     return { group: item.group, layout: visibleLayout };
   }
-  async deleteGroup(ownerId: UserId, groupId: TabGroupId, key: string) {
+  async deleteGroup(ownerId: UserId, groupId: TabGroupId, key: string, readmit?: TabReadmit) {
     const result = await this.options.store.deleteGroup(
       ownerId,
       groupId,
       operationKey({ kind: "person", ownerId }, key),
-      this.#authorize({ kind: "person", ownerId }, [], [groupId]),
+      this.#readmitting(this.#authorize({ kind: "person", ownerId }, [], [groupId]), readmit),
     );
     const meta = tabMutationMeta(result);
     if (!meta.replayed) {
@@ -1389,7 +1571,12 @@ export class TabService implements TabServicePort {
       layout: meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout,
     };
   }
-  async executeCommand(ownerId: UserId, command: TabCommand): Promise<TabCommandResult> {
+  /** `readmit`: an approved proposal's last admission, run where a group's change is made. */
+  async executeCommand(
+    ownerId: UserId,
+    command: TabCommand,
+    readmit?: TabReadmit,
+  ): Promise<TabCommandResult> {
     const actor = { kind: "person", ownerId } as const;
     switch (command.type) {
       case "tab.open":
@@ -1427,13 +1614,24 @@ export class TabService implements TabServicePort {
         const { type, idempotencyKey, ...input } = command;
         return {
           type,
-          ...(await this.#updateGroup(actor, input, idempotencyKey)),
+          ...(await this.#updateGroup(actor, input, idempotencyKey, readmit)),
         };
       }
       case "tab.group.delete":
         return {
           type: command.type,
-          ...(await this.deleteGroup(ownerId, command.groupId, command.idempotencyKey)),
+          ...(await this.deleteGroup(ownerId, command.groupId, command.idempotencyKey, readmit)),
+        };
+      case "tab.group.close":
+        return {
+          type: command.type,
+          ...(await this.closeGroup(
+            actor,
+            command.groupId,
+            command.idempotencyKey,
+            readmit,
+            command.tabIds,
+          )),
         };
     }
   }
@@ -1476,7 +1674,17 @@ export class TabService implements TabServicePort {
       catalog,
     );
     const byId = new Map(tabs.map((tab) => [tab.tabId, tab]));
-    return rows.map(({ id }) => ({ id, tab: byId.get(id) }));
+    const shared = (await this.options.sharedChromeTabs?.({ kind: "person", ownerId })) ?? [];
+    return [
+      ...rows.map(({ id }) => ({ id, tab: byId.get(id) })),
+      ...shared
+        .filter(
+          ({ tabId }) => (!input.after || tabId > input.after) && (!input.id || input.id === tabId),
+        )
+        .map((tab) => ({ id: tab.tabId, tab })),
+    ]
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, input.limit);
   }
 
   async resourceLayout(
@@ -1487,16 +1695,62 @@ export class TabService implements TabServicePort {
     await this.options.authorizeMembership({ kind: "person", ownerId }, database);
     return this.options.store.resourceLayout(database, ownerId, input);
   }
+  async *browserScriptPages(actor: BrowserBindingTabActor): AsyncGenerator<TabRecord> {
+    const db = this.options.store.database;
+    const canRead = this.options.readAuthority
+      ? await this.options.readAuthority(actor, db)
+      : (row: TabRecord) => this.options.canRead(actor, row, db);
+    let after: TabId | undefined;
+    for (;;) {
+      actor.signal?.throwIfAborted();
+      const rows = await this.options.store.resourceTabs(db, owner(actor), {
+        limit: 32,
+        ...(after ? { after } : {}),
+      });
+      for (const row of rows) {
+        actor.signal?.throwIfAborted();
+        if (row.kind === "page" && (await canRead(row))) yield row;
+      }
+      if (rows.length < 32) return;
+      after = rows.at(-1)!.id;
+    }
+  }
+
   async requireOpenPage(claims: RunToolScope, tabId: TabId): Promise<PageAgentBinding> {
-    const actor = { kind: "run", claims } as const,
-      row = await this.#row(actor, tabId);
+    return this.#bindPage({ kind: "run", claims }, tabId);
+  }
+  async bindBrowserScript(
+    actor: BrowserBindingTabActor,
+    tabId: TabId,
+    options?: { savedProfileOnly: boolean; expectedGeneration?: number },
+  ): Promise<PageAgentBinding> {
+    return this.#bindPage(actor, tabId, options);
+  }
+  async #bindPage(
+    actor: Extract<TabActor, { kind: "run" | "browser-binding" }>,
+    tabId: TabId,
+    options?: { savedProfileOnly: boolean; expectedGeneration?: number },
+  ) {
+    const row = await this.#row(actor, tabId);
+    if (options?.expectedGeneration !== undefined && row.generation !== options.expectedGeneration)
+      conflict();
     if (row.kind !== "page")
       throw new OpensteerError({
         code: "bad_request",
         message: "Use Browser Harness only with a page tab.",
       });
+    if (options?.savedProfileOnly && !row.profileId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message:
+          "This browser connection requires a granted saved profile. Guest tabs are unavailable.",
+      });
     await this.options.authorize(actor, row, this.options.store.database);
-    const binding = await this.options.pages.bind(claims, row);
+    if (actor.kind === "browser-binding") actor.signal?.throwIfAborted();
+    const binding =
+      actor.kind === "run"
+        ? await this.options.pages.bind(actor.claims, row)
+        : await this.options.pages.bindBrowserScript!(actor, row);
     const current = await this.#row(actor, tabId);
     if (current.generation !== row.generation) conflict();
     return binding;

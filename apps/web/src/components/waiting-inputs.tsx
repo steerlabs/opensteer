@@ -10,7 +10,7 @@ import {
   type MouseEvent,
   type RefObject,
 } from "react";
-import type { ContentPart, TeamSource } from "@opensteer/core";
+import type { ContentPart } from "@opensteer/core";
 import {
   followWaitingDraft,
   hydrateWaitingDraft,
@@ -27,12 +27,10 @@ import {
   type MessageEntry,
   type TranscriptEntry,
   type HostClient,
-  type WaitingAsk,
   type WaitingDraft,
   type WaitingInput,
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
-import { useWaitingBody } from "@opensteer/client/react";
 import { TranscriptMessage } from "./agent-activity.js";
 import { ComposerEditor, type ComposerEditorControl } from "./composer-editor.js";
 import { personalReferenceCandidates, useReferencePicker } from "./composer-reference-picker.js";
@@ -43,7 +41,6 @@ import {
   storageUnavailable,
   type PendingSubmission,
 } from "../host/message-outbox.js";
-import { TeamInputSource } from "../team/task-source-chip.js";
 
 /** A longer list shows what is next in line and folds the rest. */
 const foldAfter = 3;
@@ -52,8 +49,7 @@ const noLocalMessages: readonly MessageEntry[] = [];
 /**
  * Everything waiting to reach the task's agent, at the foot of its
  * conversation in the order it will go: the person's own messages, drawn as
- * the bubbles they will be behind a dashed edge, then teammates' asks awaiting
- * an answer. Each is edited in place. An open edit outlives its message
+ * the bubbles they will be behind a dashed edge. Each is edited in place. An open edit outlives its message
  * leaving the line, so words typed while a Run took it are never lost.
  */
 export const WaitingInputs = memo(function WaitingInputs({
@@ -515,23 +511,10 @@ function WaitingRow({
 }) {
   const trigger = useRef<HTMLButtonElement | null>(null);
   const edit = useInPlaceEdit(client, input, gone, onOpenChange, trigger);
-  const [deciding, setDeciding] = useState<"approve" | "decline" | null>(null);
   const id = input?.messageId ?? message.id;
   const otherDevice = input?.lease.kind === "other" ? input.lease.deviceLabel : null;
   const editable =
     input?.canEdit && otherDevice === null && !disabled && !gone && edit.draft === null;
-  const ask = input?.kind === "ask" ? input : null;
-  // A long ask's preview is clipped: Answer waits until its whole text is on screen.
-  const body = useWaitingBody(client, ask);
-  const shown =
-    ask && body.status === "complete" && message.previewTruncated
-      ? { ...message, body: body.text, previewTruncated: false }
-      : message;
-  // An ask is shown unfolded, and Answer waits while the person has folded it away again.
-  const asking = ask !== null;
-  const askReveal = useMemo(() => (asking ? { id: message.id } : null), [asking, message.id]);
-  const [askOpen, setAskOpen] = useState(false);
-  const seen = edit.draft ? !edit.draft.loading : !ask || (body.status === "complete" && askOpen);
 
   const startEditing = () => {
     if (editable && !blocked) edit.open();
@@ -544,40 +527,13 @@ function WaitingRow({
     startEditing();
   };
 
-  const decide = (decision: "approve" | "decline", ask: WaitingAsk) =>
-    act(id, async () => {
-      setDeciding(decision);
-      try {
-        if (decision === "decline") {
-          edit.close();
-          await client.decideTeamAsk({ decision, requestId: ask.requestId, teamId: ask.teamId });
-          return;
-        }
-        // Consent names the version on screen: the editor's, saved first when changed.
-        if (!seen) return;
-        const revision = edit.draft ? await edit.save() : ask.revision;
-        if (revision === null) return;
-        await client.decideTeamAsk({
-          decision,
-          expectedRevision: revision,
-          requestId: ask.requestId,
-          teamId: ask.teamId,
-        });
-      } finally {
-        setDeciding(null);
-      }
-    });
-
   const files = message.attachments?.length ?? 0;
   const label =
     input === null
       ? undefined
-      : input.kind === "ask"
-        ? `Ask from ${input.asker}, ${position}: ${input.text}`
-        : `Queued message ${position}: ${input.text}${
-            files === 0 ? "" : `, ${files} ${files === 1 ? "attachment" : "attachments"}`
-          }`;
-  const approving = ask !== null && (ask.approving || deciding === "approve");
+      : `Queued message ${position}: ${input.text}${
+          files === 0 ? "" : `, ${files} ${files === 1 ? "attachment" : "attachments"}`
+        }`;
   const editButton = (name: string) => (
     <button
       aria-label={name}
@@ -597,7 +553,7 @@ function WaitingRow({
       aria-label={label}
       className={[
         "queued__item",
-        busy && !ask ? "queued__item--busy" : "",
+        busy ? "queued__item--busy" : "",
         editable ? "queued__item--editable" : "",
       ]
         .filter(Boolean)
@@ -608,16 +564,14 @@ function WaitingRow({
       {edit.draft && input ? (
         <InPlaceEditor
           asker={
-            ask?.asker ??
-            (input.entry.author.kind === "human" && input.entry.author.userId === viewerUserId
+            input.entry.author.kind === "human" && input.entry.author.userId === viewerUserId
               ? null
-              : messageAuthorName(input.entry.author))
+              : messageAuthorName(input.entry.author)
           }
           client={client}
           draft={edit.draft}
           field={edit.field}
           locked={edit.saving || edit.notice === "unconfirmed" || edit.draft.loading}
-          source={input.entry.teamSource ?? null}
           onCancel={edit.close}
           onRemovePart={edit.removePart}
           onSave={() => void edit.save()}
@@ -625,18 +579,16 @@ function WaitingRow({
         />
       ) : (
         <TranscriptMessage
-          message={shown}
-          onOpenChange={asking ? setAskOpen : undefined}
+          message={message}
           queued={input !== null || message.queuePending === true}
-          reveal={askReveal}
+          reveal={null}
           viewerUserId={viewerUserId}
         />
       )}
       {edit.draft ? (
         <EditStatus
-          ask={ask !== null}
           canReload={edit.draft.conflict !== null}
-          canSendAsNew={!ask && waitingDraftOutgoing(edit.draft) !== null}
+          canSendAsNew={waitingDraftOutgoing(edit.draft) !== null}
           disabled={blocked}
           notice={edit.notice}
           onCancel={edit.close}
@@ -646,98 +598,7 @@ function WaitingRow({
           saving={edit.saving}
         />
       ) : null}
-      {input === null ? null : ask ? (
-        <div className="queued__row waiting-ask">
-          {approving ? (
-            <span className="waiting-ask__line" data-approving role="status">
-              <span aria-hidden className="waiting-ask__dot" />
-              Approving…
-            </span>
-          ) : (
-            <>
-              <span
-                className="waiting-ask__line"
-                title={
-                  ask.consentExpiresAt
-                    ? `Lapses unanswered ${new Date(ask.consentExpiresAt).toLocaleString()}`
-                    : undefined
-                }
-              >
-                <span aria-hidden className="waiting-ask__dot" />
-                {otherDevice
-                  ? `Being edited on ${otherDevice}`
-                  : body.status === "loading" && !edit.draft
-                    ? "Loading the whole ask…"
-                    : body.status === "failed" && !edit.draft
-                      ? "Couldn’t load the whole ask."
-                      : ask.consent.line}
-              </span>
-              {body.status === "failed" && !edit.draft && !otherDevice ? (
-                <button
-                  className="queued__action"
-                  disabled={blocked}
-                  onClick={body.retry}
-                  type="button"
-                >
-                  Try again
-                </button>
-              ) : null}
-              <span className="waiting-ask__actions">
-                {otherDevice ? (
-                  <ReleaseAction
-                    disabled={blocked}
-                    onRelease={() => act(id, () => client.releaseWaitingMessage(ask.threadId, id))}
-                  />
-                ) : ask.edit && !edit.draft ? (
-                  <>
-                    <span aria-hidden className="waiting__sep">
-                      ·
-                    </span>
-                    <EditedMark
-                      client={client}
-                      edit={ask.edit}
-                      messageId={id}
-                      threadId={ask.threadId}
-                      viewerUserId={viewerUserId}
-                    />
-                  </>
-                ) : null}
-                {ask.canEdit && !otherDevice && !edit.draft
-                  ? editButton(`Edit ${ask.asker}’s ask`)
-                  : null}
-                <button
-                  className="queued__action waiting-ask__decline"
-                  disabled={blocked || gone || edit.saving}
-                  onClick={() => decide("decline", ask)}
-                  type="button"
-                >
-                  {deciding === "decline" ? "Declining…" : "Decline"}
-                </button>
-                <button
-                  className="btn btn--small btn--primary waiting-ask__answer"
-                  disabled={
-                    blocked ||
-                    gone ||
-                    otherDevice !== null ||
-                    edit.saving ||
-                    edit.draft?.conflict != null ||
-                    !seen
-                  }
-                  onClick={() => decide("approve", ask)}
-                  title={
-                    otherDevice
-                      ? `Being edited on ${otherDevice}`
-                      : `Let your agent answer · ${ask.consent.line}`
-                  }
-                  type="button"
-                >
-                  {edit.draft?.dirty ? "Save and answer" : "Answer"}
-                </button>
-              </span>
-            </>
-          )}
-        </div>
-      ) : edit.draft ? null : (
+      {input === null || edit.draft ? null : (
         <div className={otherDevice ? "queued__row" : "queued__row queued__row--reveal"}>
           {otherDevice ? (
             <>
@@ -821,7 +682,7 @@ function ReleaseAction({
 
 /**
  * The message as an auto-growing field in its own footprint: the bubble for
- * the person's own words, the card for a teammate's. Its files and places
+ * the person's own words, a card under its author's name for anyone else's. Its files and places
  * stay as chips that can be taken off.
  */
 function InPlaceEditor({
@@ -834,17 +695,14 @@ function InPlaceEditor({
   onRemovePart,
   onSave,
   onText,
-  source,
 }: {
-  /** Someone else's words, a teammate's ask, are edited inside their card, under their name. */
+  /** Someone else's words are edited inside their card, under their name. */
   readonly asker: string | null;
   readonly client: HostClient;
   readonly draft: WaitingDraft;
   readonly field: RefObject<ComposerEditorControl | null>;
   /** The words are on their way, as an edit or a new message, and stay as sent. */
   readonly locked: boolean;
-  /** Where a teammate's ask came from, kept under its card while it is edited. */
-  readonly source: TeamSource | null;
   readonly onCancel: () => void;
   readonly onRemovePart: (index: number) => void;
   readonly onSave: () => void;
@@ -906,7 +764,7 @@ function InPlaceEditor({
           fieldAttributes={{
             "aria-describedby": hint,
             "aria-keyshortcuts": "Enter Escape",
-            "aria-label": asker ? `Edit ${asker}’s ask` : "Edit message",
+            "aria-label": asker ? `Edit ${asker}’s message` : "Edit message",
             "aria-expanded": String(picker.expanded),
           }}
           fieldRef={(element) => {
@@ -918,7 +776,6 @@ function InPlaceEditor({
           onSelectionChange={picker.read}
           readOnly={locked}
           ref={field}
-          scope="personal"
           value={draft.text}
         />
       </div>
@@ -937,7 +794,6 @@ function InPlaceEditor({
         </header>
         {body}
       </article>
-      {source ? <TeamInputSource source={source} /> : null}
     </div>
   ) : (
     <div className="msg--user-row waiting-edit">
@@ -980,7 +836,6 @@ function partName(part: ContentPart): string {
  * end it, or, when it can't be saved where it is, why and what to do instead.
  */
 function EditStatus({
-  ask,
   canReload,
   canSendAsNew,
   disabled,
@@ -991,7 +846,6 @@ function EditStatus({
   onSendAsNew,
   saving,
 }: {
-  readonly ask: boolean;
   /** A newer version came in under the words; it can replace them. */
   readonly canReload: boolean;
   readonly canSendAsNew: boolean;
@@ -1010,7 +864,7 @@ function EditStatus({
           {notice === "taken"
             ? "Your agent took this message before you saved."
             : notice === "changed"
-              ? `This ${ask ? "ask" : "message"} changed elsewhere before you saved.`
+              ? "This message changed elsewhere before you saved."
               : notice === "unconfirmed"
                 ? "Opensteer couldn’t confirm your message was sent."
                 : "Couldn’t save your edit."}
@@ -1054,9 +908,7 @@ function EditStatus({
     );
   return (
     <div className="queued__row waiting-edit__hint">
-      <span>
-        {saving ? "Saving…" : ask ? "Only your agent sees your edit" : "Waits while you edit"}
-      </span>
+      <span>{saving ? "Saving…" : "Waits while you edit"}</span>
       <span aria-hidden className="waiting-edit__keys">
         <kbd className="kbd">esc</kbd>
         <kbd className="kbd">↵</kbd>

@@ -17,7 +17,10 @@ it("returns a fixture refusal as an MCP tool error after validation", async () =
       profile: "task",
       source: { commit: "a".repeat(40), note: "Mock errors retain production input validation" },
       turns: ["Inspect availability"],
-      mocks: { plugin_search: { $error: "Service is offline." } },
+      mocks: {
+        plugin_search: { $error: "Service is offline." },
+        chrome_cookies_request: { status: "unavailable" },
+      },
       expect: { calls: [{ tool: "plugin_search", args: { query: "mail" } }] },
     }),
   )[0]!;
@@ -40,13 +43,25 @@ it("returns a fixture refusal as an MCP tool error after validation", async () =
     expect(host.calls).toMatchObject([
       { ...call, valid: true, result: { $error: "Service is offline." } },
     ]);
+    // A configured answer that does not fit the tool's output is the case's fault, and flagged.
     const badOutput = await client.callTool({
-      name: "saved_login_request",
+      name: "chrome_cookies_request",
       arguments: { tabId: "sign-in-tab", site: "https://example.com", reason: "Sign in" },
     });
     expect(badOutput.isError).toBe(true);
-    expect(JSON.stringify(badOutput)).toContain("invalid mock output for saved_login_request");
+    expect(JSON.stringify(badOutput)).toContain("invalid mock output for chrome_cookies_request");
     expect(host.calls.at(-1)?.valid).toBe(false);
+    // Nothing configured, and no empty answer fits: an unavailable refusal, not the agent's fault.
+    const unconfigured = await client.callTool({
+      name: "saved_login_request",
+      arguments: { tabId: "sign-in-tab", site: "https://example.com", reason: "Sign in" },
+    });
+    expect(unconfigured).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "unavailable", next: null } },
+    });
+    expect(JSON.stringify(unconfigured)).not.toContain("invalid mock output");
+    expect(host.calls.at(-1)?.valid).toBe(true);
     const invalid = await client.callTool({ name: call.tool, arguments: { unexpected: true } });
     expect(invalid.isError).toBe(true);
     expect(invalid.content).not.toEqual(result.content);
@@ -269,9 +284,20 @@ it("validates the new surface cases with each caller's production inventory", as
         expect(host.calls.at(-1)?.valid, `${c.id}: ${required.tool}`).toBe(true);
       }
       if (c.caller === "connection") {
+        expect(names).toEqual(expect.arrayContaining(["browser_use", "browser_connect"]));
+        expect(names).not.toContain("tab_open");
+        expect(names).not.toContain("tab_close");
+        const apps = await client.callTool({
+          name: "discover",
+          arguments: { query: "Notes", taskId: host.scope.threadId },
+        });
+        expect(apps.isError).not.toBe(true);
+        expect(host.calls.at(-1)?.valid).toBe(true);
+        // A tool outside a connection's inventory is refused, and counts as invalid. (A
+        // connected agent's saved_login_request is offered since direct tools, a1a669ecf.)
         const result = await client.callTool({
-          name: "saved_login_request",
-          arguments: { site: "example.com", reason: "Check account" },
+          name: "tab_open",
+          arguments: { url: "https://example.com" },
         });
         expect(result.isError).toBe(true);
         expect(host.calls.at(-1)?.valid).toBe(false);
@@ -341,10 +367,8 @@ it("preserves production action validation before consuming mocks", async () => 
         taskId: "thr_00000000-0000-4000-8000-000000000011",
         name: "Light memory pass",
         source: { kind: "schedule", cron: "*/30 8-22 * * *", timezone: "America/New_York" },
-        program: {
-          language: "javascript",
-          toolContractVersion: 5,
-          source: "export default async function () {}",
+        script: {
+          text: "console.log('ok');",
         },
       },
     });
@@ -431,10 +455,8 @@ it("reads back successful automation changes and the requested one-shot time", a
       arguments: {
         name: "Reminder: finish deleting memory",
         source: { kind: "schedule", at: "2027-01-01T09:05:00-05:00" },
-        program: {
-          language: "typescript",
-          toolContractVersion: 5,
-          source: "export default async function () {}",
+        script: {
+          text: "console.log('ok');",
         },
       },
     });
@@ -445,6 +467,37 @@ it("reads back successful automation changes and the requested one-shot time", a
       arguments: { automationId: "trg_00000000-0000-4000-8000-000000000099" },
     });
     expect(host.calls.at(-1)?.result).toMatchObject({ automation: created.automation });
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
+
+it("keeps a listed automation's summary fields after a write changes it", async () => {
+  const c = parseCases(
+    await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
+  ).find((c) => c.id === "memory-resume-passes")!;
+  const host = await startFakeHost(c);
+  const client = new Client({ name: "eval-trigger-summary", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const resume = c.expect.calls.find(
+      (call) => call.tool === "opensteer_automation_control" && call.args.action === "resume",
+    )!;
+    await client.callTool({ name: resume.tool, arguments: resume.args });
+    expect(host.calls.at(-1)?.valid).toBe(true);
+    await client.callTool({
+      name: "opensteer_automation_list",
+      arguments: { systemRole: "memory-light" },
+    });
+    expect(host.calls.at(-1)).toMatchObject({
+      valid: true,
+      result: { automations: [{ taskTitle: "Light memory pass", source: { kind: "schedule" } }] },
+    });
   } finally {
     await client.close();
     await host.close();
@@ -476,28 +529,14 @@ it("validates subagent read and stop cases with the production tool schemas", as
   }
 });
 
-it("discovers changed tasks from message times and reads own handoffs and team audiences", async () => {
+it("discovers changed tasks from message times and reads own handoffs", async () => {
   const taskId = "thr_00000000-0000-4000-8000-000000000021";
   const workerId = "thr_00000000-0000-4000-8000-000000000011";
-  const teamSource = {
-    teamId: "dep_00000000-0000-4000-8000-000000000001",
-    channelId: "tch_00000000-0000-4000-8000-000000000001",
-    threadRootId: "1",
-    messageId: "2",
-    audience: {
-      teamName: "Eval team",
-      channelName: "leadership",
-      channelKind: "private",
-      memberCount: 3,
-      peopleOnly: false,
-    },
-  };
   const task = (id: string, title: string) => ({
     id,
     title,
     status: "idle",
     purpose: "task",
-    teamOrigin: null,
     aiAccountId: "hin_00000000-0000-4000-8000-000000000001",
     modelSelection: { providerId: "openai", modelId: "eval", options: {} },
     accessMode: "full-access",
@@ -539,7 +578,7 @@ it("discovers changed tasks from message times and reads own handoffs and team a
           items: [
             item("Old", "2026-11-16T14:00:00Z"),
             item("Boundary", "2026-11-16T15:30:00Z"),
-            { ...item("New", "2026-11-16T15:45:00Z"), teamSource },
+            item("New", "2026-11-16T15:45:00Z"),
             item("Newest", "2026-11-16T15:50:00Z"),
           ],
         },
@@ -573,7 +612,7 @@ it("discovers changed tasks from message times and reads own handoffs and team a
       items: [{ text: "Handoff: Gmail through msg-X" }],
     });
     expect(await call("opensteer_task_read", { taskId, limit: 2 })).toMatchObject({
-      items: [{ text: "Newest" }, { text: "New", teamSource }],
+      items: [{ text: "Newest" }, { text: "New" }],
       hasMore: true,
       nextCursor: "2",
     });
@@ -581,6 +620,65 @@ it("discovers changed tasks from message times and reads own handoffs and team a
       items: [{ text: "Boundary" }, { text: "Old" }],
       hasMore: false,
     });
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
+
+it("answers a read with what an accepted command changed ($after)", async () => {
+  const testCase = parseCases(
+    JSON.stringify({
+      id: "mock-after",
+      area: "transport",
+      kind: "guard",
+      profile: "task",
+      source: { commit: "a".repeat(40), note: "A Home that changed answers with the change" },
+      turns: ["Use the other engine"],
+      mocks: {
+        opensteer_state: {
+          $byArgs: [
+            {
+              args: { area: "engines" },
+              result: {
+                $after: {
+                  call: {
+                    tool: "opensteer_command",
+                    args: { command: { type: "harness.default.set" } },
+                  },
+                  before: { area: "engines", view: { default: "Codex" } },
+                  changed: { area: "engines", view: { default: "Claude Code" } },
+                },
+              },
+            },
+          ],
+        },
+        opensteer_command: { status: "done", result: { type: "harness.default.set" } },
+      },
+      expect: {},
+    }),
+  )[0]!;
+  const host = await startFakeHost(testCase);
+  const client = new Client({ name: "eval-after", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const read = () => client.callTool({ name: "opensteer_state", arguments: { area: "engines" } });
+    expect(JSON.stringify(await read())).toContain("Codex");
+    await client.callTool({
+      name: "opensteer_command",
+      arguments: {
+        command: {
+          type: "harness.default.set",
+          environmentId: "env_00000000-0000-4000-8000-000000000501",
+          harnessInstanceId: "hin_00000000-0000-4000-8000-000000000602",
+        },
+      },
+    });
+    expect(JSON.stringify(await read())).toContain("Claude Code");
   } finally {
     await client.close();
     await host.close();

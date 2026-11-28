@@ -536,7 +536,13 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.browser-journeys != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 17
+    timeout-minutes: 20
+    # Each shard runs its share of the real-browser files and of the web journeys
+    # (apps/web/scripts/journeys.ts); Check verifies that together they ran them all.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -547,9 +553,6 @@ jobs:
           {
             echo "OPENSTEER_EXTENSION_REPORT=$RUNNER_TEMP/evidence/extension.json"
             echo "OPENSTEER_EXTENSION_SCREENSHOTS=$RUNNER_TEMP/evidence/extension-screenshots"
-            echo "OPENSTEER_TRANSCRIPT_LINKS_E2E_ARTIFACT_DIR=$RUNNER_TEMP/evidence/transcript-links"
-            echo "OPENSTEER_LONG_THREAD_E2E_ARTIFACT_DIR=$RUNNER_TEMP/evidence/long-thread"
-            echo "OPENSTEER_START_PAGE_COMPUTERS_E2E_ARTIFACT_DIR=$RUNNER_TEMP/evidence/start-page-computers"
           } >> "$GITHUB_ENV"
         shell: bash
       - uses: ./.github/actions/ci-browser
@@ -557,24 +560,28 @@ jobs:
         shell: bash
         env:
           CI_LANE: browser
-          CI_SHARD: 1
-          CI_SHARDS: 1
-          CI_DISCOVERY_PATH: ${{ runner.temp }}/evidence/browser-1.discovered.json
-          CI_INVENTORY_PATH: ${{ runner.temp }}/evidence/browser-1.inventory.json
+          CI_SHARD: ${{ matrix.shard }}
+          CI_SHARDS: ${{ strategy.job-total }}
+          CI_DISCOVERY_PATH: ${{ runner.temp }}/evidence/browser-${{ matrix.shard }}.discovered.json
+          CI_INVENTORY_PATH: ${{ runner.temp }}/evidence/browser-${{ matrix.shard }}.inventory.json
         run: |
           set -o pipefail
           pnpm exec vitest list --config vitest.browser.config.ts --filesOnly --json "$CI_DISCOVERY_PATH"
-          pnpm test:browser --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/browser-1.xml" --outputFile.json="$RUNNER_TEMP/evidence/browser-1.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/browser-1.log"
-      - shell: bash
+          pnpm test:browser --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/browser-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/browser-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/browser-${{ matrix.shard }}.log"
+      - name: Test the browser extension
+        if: matrix.shard == 1
+        shell: bash
         run: |
           set -o pipefail
           {
             pnpm --filter @opensteer/browser-extension build
             pnpm --filter @opensteer/browser-extension test:integration
-            pnpm --filter @opensteer/web test:transcript-links
-            pnpm --filter @opensteer/web test:long-thread
-            pnpm --filter @opensteer/web test:start-page-computers
-          } 2>&1 | tee "$RUNNER_TEMP/evidence/browser-journeys.log"
+          } 2>&1 | tee "$RUNNER_TEMP/evidence/browser-extension.log"
+      - name: Test web journeys
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm --filter @opensteer/web test:journeys --shard ${{ matrix.shard }}/${{ strategy.job-total }} --evidence "$RUNNER_TEMP/evidence/web-journeys" --inventory "$RUNNER_TEMP/evidence/journeys-${{ matrix.shard }}.inventory.json" 2>&1 | tee "$RUNNER_TEMP/evidence/web-journeys.log"
       - name: Collect browser journey evidence
         if: always()
         shell: bash
@@ -588,7 +595,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: browser-journeys-${{ github.sha }}
+          name: browser-journeys-${{ matrix.shard }}-${{ github.sha }}
           path: ${{ runner.temp }}/evidence
           if-no-files-found: error
   Check:

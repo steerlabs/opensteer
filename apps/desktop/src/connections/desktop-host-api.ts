@@ -1,6 +1,8 @@
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import type { HostApiClient, RpcResult } from "@opensteer/protocol";
+import type { DeploymentId } from "@opensteer/core";
+import { desktopHostRequestIdHeader } from "@opensteer/protocol/desktop";
 
 export type DesktopHostFetch = (input: URL | RequestInfo, init: RequestInit) => Promise<Response>;
 
@@ -52,13 +54,57 @@ export function createDesktopHostApi(options: {
   const origin = new URL(options.origin).origin;
   return createHttpHostApiClient({
     baseUrl: new URL(origin),
-    kind: "personal",
     personalVersion: scopedPersonalApiVersion,
     fetch: (input, init) =>
       options.fetch(input, {
         ...init,
         headers: { ...Object.fromEntries(new Headers(init?.headers)), origin },
       }),
+    onAuthenticationRequired: () => undefined,
+  });
+}
+
+/**
+ * Main's own typed calls to a Home, selected or not: through the same route the
+ * window's requests to that Home take, so they carry whatever that place's
+ * sign-in is (its session cookie, or a native sign-in's Authorization header).
+ * The calls still start in main, which alone holds this Mac's device key.
+ */
+export function homeHostApi(
+  transport: Parameters<typeof createForwardedHostApi>[0],
+): (deploymentId: DeploymentId) => HostApiClient {
+  return (deploymentId) => createForwardedHostApi(transport, deploymentId, { anyHome: true });
+}
+
+/**
+ * The selected Home's typed API with the window's own owner session: each
+ * call goes through the same Host route the bundled UI's requests take.
+ */
+export function createForwardedHostApi(
+  transport: {
+    forward(
+      deploymentId: DeploymentId,
+      path: string,
+      request: Request,
+      options?: { readonly anyHome?: boolean },
+    ): Promise<Response>;
+  },
+  deploymentId: DeploymentId,
+  /** Answer every call under that Home's own session, selected or not. */
+  options: { readonly anyHome?: boolean } = {},
+): HostApiClient {
+  return createHttpHostApiClient({
+    baseUrl: new URL("https://selected-home.invalid"),
+    personalVersion: scopedPersonalApiVersion,
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set(desktopHostRequestIdHeader, crypto.randomUUID());
+      const request = new Request(input, { ...init, headers });
+      const url = new URL(request.url);
+      return options.anyHome
+        ? transport.forward(deploymentId, `${url.pathname}${url.search}`, request, options)
+        : transport.forward(deploymentId, `${url.pathname}${url.search}`, request);
+    },
     onAuthenticationRequired: () => undefined,
   });
 }

@@ -183,7 +183,11 @@ function alive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    // Every process this test starts runs with the test's own token, so the test can always
+    // open its own. A pid that refuses to be opened is one Windows has since given to a process
+    // of another account (a system service): the process this test started is gone.
+    if (code === "ESRCH" || code === "EPERM") return false;
     throw error;
   }
 }
@@ -437,6 +441,8 @@ describe("the personal stack from source", () => {
 
     // The person's own Codex is found on PATH as a package manager's shim, launched
     // through it, read for its version and signed in on its default account.
+    // What the Runner logged last, so a wait that runs out names what the Runner was doing.
+    const runnerSaid = () => `The Runner's last lines:\n${runner.lines.slice(-40).join("\n")}`;
     const engines = await vi.waitFor(
       async () => {
         const [{ environments }, { harnesses }] = await Promise.all([
@@ -452,9 +458,13 @@ describe("the personal stack from source", () => {
           (value) => value.harnessInstanceId === account?.id,
         );
         if (!driver || driver.readiness === "unavailable" || !driver.installation?.version)
-          throw new Error(`Codex on PATH was never inspected: ${JSON.stringify(driver)}`);
+          throw new Error(
+            `Codex on PATH was never inspected: ${JSON.stringify(driver)}\n${runnerSaid()}`,
+          );
         if (catalog?.status !== "ready" || !catalog.models[0])
-          throw new Error(`The Codex account never became ready: ${JSON.stringify(catalog)}`);
+          throw new Error(
+            `The Codex account never became ready: ${JSON.stringify(catalog)}\n${runnerSaid()}`,
+          );
         return { account: account!, driver, model: catalog.models[0] };
       },
       { interval: 250, timeout: 60_000 },
@@ -538,13 +548,13 @@ describe("the personal stack from source", () => {
     pids.set("app server", served.pid);
     pids.set("app server child", served.child);
 
-    // A program automation runs on the Runner and returns its result to the Host.
+    // A script automation runs on the Runner and returns its stdout to the Host.
     const trigger = await dispatch({
       idempotencyKey: randomUUID(),
       input: {
         anchorThreadId: threadId,
         name: "Doubler",
-        program: { language: "typescript", source: automationSource, toolContractVersion: 5 },
+        script: { interpreter: null, text: automationSource },
         source: { kind: "webhook" },
       },
       type: "trigger.create",
@@ -568,7 +578,10 @@ describe("the personal stack from source", () => {
       },
       { interval: 250, timeout: 60_000 },
     );
-    const result = occurrence.result as { readonly doubled: number; readonly pid: number };
+    const result = JSON.parse(occurrence.stdout.trim()) as {
+      readonly doubled: number;
+      readonly pid: number;
+    };
     expect(result.doubled).toBe(42);
     pids.set("automation", result.pid);
 
@@ -616,9 +629,14 @@ describe("the personal stack from source", () => {
     );
     const { tasks } = await rpc("tasks.list", {});
     expect(tasks.map((task) => task.thread.id)).toContain(threadId);
-    expect((await rpc("triggers.get", { triggerId })).occurrences[0]).toMatchObject({
-      result: { doubled: 42 },
+    const persistedOccurrence = (await rpc("triggers.get", { triggerId })).occurrences[0];
+    expect(persistedOccurrence).toMatchObject({
+      exitCode: 0,
       status: "succeeded",
+    });
+    expect(JSON.parse(persistedOccurrence!.stdout.trim())).toEqual({
+      doubled: 42,
+      pid: pids.get("automation"),
     });
     // And the task goes on, through the engine the restarted Runner launches again.
     await turn("[[reply Still here.]]", "Still here.");
@@ -680,9 +698,9 @@ require("node:http").createServer((request, response) => {
 }).listen(Number(process.env.PORT), "127.0.0.1");
 `;
 
-const automationSource = `export default function ({ event }: { event: { payload: { n: number } } }) {
-  return { doubled: event.payload.n * 2, pid: process.pid };
-}`;
+const automationSource = `import { readFileSync } from "node:fs";
+const event = JSON.parse(readFileSync(process.env.OPENSTEER_EVENT, "utf8"));
+console.log(JSON.stringify({ doubled: event.payload.n * 2, pid: process.pid }));`;
 
 /**
  * A person's global CLI as npm installs it: the shim npm generates on Windows,

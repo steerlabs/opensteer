@@ -1,3 +1,4 @@
+import { personTaskReader } from "./task-reader.js";
 import { BrowserHistoryStore } from "./browser-history-store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { readAgentRequest } from "./request-agent-response.js";
@@ -61,12 +62,17 @@ const readers: Record<string, (tx: Transaction<DatabaseSchema>, f: Fixture) => P
   "owner task page": (tx, f) => ownerThreadPageForOwner(tx, { ownerId: f.userId }),
   "agent task page": (tx, f) =>
     agentThreadPageForOwner(tx, {
+      reader: personTaskReader,
       ownerId: f.userId,
       scope: { kind: "personal" },
       scopeId: f.userId,
     }),
   "assignment lookup": (tx, f) =>
-    getAssignmentForOwner(tx, { ownerId: f.userId, assignmentId: createId("delegation") }),
+    getAssignmentForOwner(tx, {
+      ownerId: f.userId,
+      assignmentId: createId("delegation"),
+      reader: personTaskReader,
+    }),
   "assignment page": (tx, f) =>
     listThreadAssignmentsForOwner(tx, { ownerId: f.userId, threadId: f.thread.id }),
   "task messages": (tx, f) => readThreadForOwner(tx, f.thread.id, f.userId),

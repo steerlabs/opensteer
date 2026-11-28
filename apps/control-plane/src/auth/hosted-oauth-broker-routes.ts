@@ -177,7 +177,7 @@ export function registerHostedOAuthBrokerRoutes(
               mark: "person",
               tone: "warn",
               title: "Use the linked Opensteer Account",
-              detail: `This browser is signed in${session ? ` as ${session.user.email}` : " to another Account"}. Switch to the Opensteer Account linked to that Opensteer.`,
+              detail: `This browser is signed in${session ? ` as ${session.user.email}` : " to another account"}. Switch to the Opensteer account linked to that Home.`,
             }) +
             `<form method="post" action="/sign-in/google"><input type="hidden" name="return_to" value="${escapeHtml(request.url)}"><input type="hidden" name="switch_account" value="1"><button class="btn btn--primary" type="submit">Switch account</button></form>` +
             (dependencies.appleSignIn

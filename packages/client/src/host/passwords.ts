@@ -17,6 +17,7 @@ import {
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import type { PasswordsBrokerAccount } from "@opensteer/protocol/passwords-broker";
 import { browserSignInProblemCopy, browserSiteLabel } from "./browser-sign-in.js";
+import { named, plainSentence, sentence, type SentencePart } from "./said.js";
 
 /** Shared copy for requester consent from any signed-in device. */
 
@@ -29,7 +30,7 @@ export const passwordsAppName = "Opensteer Passwords";
 
 /** The promise every sign-in card makes, word for word the same everywhere. */
 export function passwordSignInPrivacy(site: string): string {
-  return `Your agents can type your saved login on ${browserSiteLabel(site)} and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.`;
+  return `Opensteer fills your saved login on ${browserSiteLabel(site)}, and in apps on your devices, like your phone, for your own agents and connected agents you allow. It isn't handed to the agent, but an agent working in that page can read it, and a tricked agent could reveal it.`;
 }
 export function passwordSignInConsent(site: string, account: string): string {
   return `Let your agents sign in to ${browserSiteLabel(site)} as ${account}. ${passwordSignInPrivacy(site)}`;
@@ -254,37 +255,61 @@ export function readChromeCookiesResult(text: string): ChromeCookiesResult | nul
 
 export interface SignInStep {
   readonly hint: string;
+  /** The hint as it was made (`said.ts`): an account or a site in it is an address. */
+  readonly hintParts: readonly SentencePart[];
   readonly label: string;
+  /** The label as it was made: the site in it is an address. */
+  readonly labelParts: readonly SentencePart[];
   /** Whether the step did what it asked; null while it is still on its way. */
   readonly succeeded: boolean | null;
 }
 
-const notAllowed: SignInStep = { hint: "", label: "Not allowed", succeeded: false };
+/** A step from its words as they were made. */
+function signInStep(
+  label: readonly SentencePart[],
+  hint: readonly SentencePart[],
+  succeeded: boolean | null,
+): SignInStep {
+  return {
+    hint: plainSentence(hint),
+    hintParts: hint,
+    label: plainSentence(label),
+    labelParts: label,
+    succeeded,
+  };
+}
+
+/** Words made elsewhere that hold no address: words, as they are. */
+function wordsOnly(text: string): readonly SentencePart[] {
+  return text === "" ? [] : [text];
+}
+
+const notAllowed: SignInStep = signInStep(sentence`Not allowed`, wordsOnly(""), false);
 
 /** What one `saved_login_request` call came to, in the words its Request card uses. */
 export function savedLoginStep(result: SavedLoginResult): SignInStep {
   const domain = browserSiteLabel(result.site);
   switch (result.status) {
     case "ready":
-      return {
-        hint: `As ${result.account}`,
-        label: `Ready to sign in to ${domain}`,
-        succeeded: true,
-      };
+      return signInStep(
+        sentence`Ready to sign in to ${domain}`,
+        sentence`As ${result.account}`,
+        true,
+      );
     case "pending":
-      return {
-        hint: "Waiting for you",
-        label: `Asked to use your saved login for ${domain}`,
-        succeeded: null,
-      };
+      return signInStep(
+        sentence`Asked to use your saved login for ${domain}`,
+        sentence`Waiting for you`,
+        null,
+      );
     case "declined":
       return notAllowed;
     case "unavailable":
-      return {
-        hint: savedLoginUnavailableMessage(result.reason, result.site),
-        label: `Couldn’t use a saved login for ${domain}`,
-        succeeded: false,
-      };
+      return signInStep(
+        sentence`Couldn’t use a saved login for ${domain}`,
+        savedLoginUnavailableMessage(result.reason, result.site),
+        false,
+      );
   }
 }
 
@@ -293,84 +318,104 @@ export function chromeCookiesStep(result: ChromeCookiesResult): SignInStep {
   const domain = browserSiteLabel(result.site);
   switch (result.status) {
     case "copied":
-      return {
-        hint:
-          result.profileName === null
-            ? `From ${result.sourceName}`
-            : `From ${result.sourceName} · saved to ${result.profileName}`,
-        label: `Copied your Chrome sign-in for ${domain}`,
-        succeeded: true,
-      };
+      return signInStep(
+        sentence`Copied your Chrome sign-in for ${domain}`,
+        result.profileName === null
+          ? sentence`From ${named(result.sourceName)}`
+          : sentence`From ${named(result.sourceName)} · saved to ${named(result.profileName)}`,
+        true,
+      );
     case "pending":
-      return {
-        hint: "Waiting for you",
-        label: `Asked to copy your Chrome sign-in for ${domain}`,
-        succeeded: null,
-      };
+      return signInStep(
+        sentence`Asked to copy your Chrome sign-in for ${domain}`,
+        sentence`Waiting for you`,
+        null,
+      );
     case "declined":
       return notAllowed;
     case "unavailable":
-      return {
-        hint: chromeCookiesUnavailableMessage(result.reason, result.site),
-        label: `Couldn’t copy your Chrome sign-in for ${domain}`,
-        succeeded: false,
-      };
+      return signInStep(
+        sentence`Couldn’t copy your Chrome sign-in for ${domain}`,
+        chromeCookiesUnavailableMessage(result.reason, result.site),
+        false,
+      );
   }
 }
 
-function savedLoginUnavailableMessage(reason: SavedLoginUnavailableReason, site: string): string {
+/** A sign-in problem's title as it was made. */
+function problemTitle(
+  reason: Parameters<typeof browserSignInProblemCopy>[0],
+  site: string,
+): readonly SentencePart[] {
+  const copy = browserSignInProblemCopy(reason, { context: "request", site, sourceName: null });
+  return copy.titleParts;
+}
+
+function savedLoginUnavailableMessage(
+  reason: SavedLoginUnavailableReason,
+  site: string,
+): readonly SentencePart[] {
   switch (reason) {
     case "no-saved-login":
-      return `No saved login for ${browserSiteLabel(site)}`;
+      return sentence`No saved login for ${browserSiteLabel(site)}`;
     case "needs-approval":
-      return "A task or automation can’t ask you to allow a sign-in";
+      return sentence`A task or automation can’t ask you to allow a sign-in`;
     case "rate-limited":
-      return "Too many sign-in attempts for now";
+      return sentence`Too many sign-in attempts for now`;
+    // These name no site: a computer at most, which is words.
     case "passwords-off":
-      return passwordSignInResponseMessage(
-        { outcome: "unavailable", reason: "passwords-off" },
-        { site },
+      return wordsOnly(
+        passwordSignInResponseMessage(
+          { outcome: "unavailable", reason: "passwords-off" },
+          { site },
+        ),
       );
     case "passwords-not-set-up":
-      return passwordSignInResponseMessage(
-        { outcome: "unavailable", reason: "not-set-up" },
-        { site, computerName: "your Passwords Mac" },
+      return wordsOnly(
+        passwordSignInResponseMessage(
+          { outcome: "unavailable", reason: "not-set-up" },
+          { site, computerName: "your Passwords Mac" },
+        ),
       );
     case "passwords-not-responding":
-      return passwordSignInResponseMessage(
-        { outcome: "unavailable", reason: "not-responding" },
-        { site },
+      return wordsOnly(
+        passwordSignInResponseMessage(
+          { outcome: "unavailable", reason: "not-responding" },
+          { site },
+        ),
       );
     case "expired":
-      return passwordSignInResponseMessage({ outcome: "expired" }, { site });
+      return wordsOnly(passwordSignInResponseMessage({ outcome: "expired" }, { site }));
     case "interrupted":
     case "stopped":
-      return passwordSignInResponseMessage({ outcome: "interrupted" }, { site });
+      return wordsOnly(passwordSignInResponseMessage({ outcome: "interrupted" }, { site }));
     case "busy":
-      return "Another agent is waiting for you to allow this site. Try again later";
+      return sentence`Another agent is waiting for you to allow this site. Try again later`;
     case "main-browser-required":
-      return "Saved logins fill only in the browser on the computer that runs Opensteer";
+      return sentence`Saved logins fill only in the browser on the computer that runs Opensteer`;
     case "unsupported":
     case "session-closed":
     case "runtime-outdated":
     case "not-allowed":
-      return browserSignInProblemCopy(reason, { context: "request", site, sourceName: null }).title;
+      return problemTitle(reason, site);
   }
 }
 
 function chromeCookiesUnavailableMessage(
   reason: ChromeCookiesUnavailableReason,
   site: string,
-): string {
+): readonly SentencePart[] {
   switch (reason) {
     case "chrome-signed-out":
-      return `Chrome isn’t signed in to ${browserSiteLabel(site)}`;
+      return sentence`Chrome isn’t signed in to ${browserSiteLabel(site)}`;
     case "needs-approval":
-      return "A task or automation can’t ask you to allow a sign-in";
+      return sentence`A task or automation can’t ask you to allow a sign-in`;
     case "rate-limited":
-      return "Too many sign-in attempts for now";
+      return sentence`Too many sign-in attempts for now`;
+    case "unconfirmed":
+      return sentence`Couldn’t confirm whether the sign-in reached the browser`;
     default:
-      return browserSignInProblemCopy(reason, { context: "request", site, sourceName: null }).title;
+      return problemTitle(reason, site);
   }
 }
 
@@ -545,16 +590,28 @@ export function passwordsSettingsState(status: DesktopPasswordsStatus): Password
 export function passwordsElsewhere(input: {
   readonly homeName: string;
   readonly personal: boolean;
+  /**
+   * The Home is on the person's Mac. False for a Cloud Computer or a server:
+   * there is no Passwords there, and a site is signed in to in that Home's own browser.
+   */
+  readonly onMac?: boolean;
 }): string {
+  if (input.personal && input.onMac === false) return passwordsNotOnMac;
   return input.personal
     ? `Passwords are kept in the Opensteer app on ${input.homeName}. Set them up and manage them there.`
     : "Saved-password sign-ins are available on a Personal Opensteer for now.";
 }
 
+/** What Passwords says on a Home that isn't on the person's Mac. */
+export const passwordsNotOnMac =
+  "Saved logins and cards work only when your Home is on your Mac. On this Home, sign in to a site in its own browser.";
+
 /** The line under Passwords in a list of settings. */
 export function passwordsSettingsSubtitle(input: {
   readonly homeName: string;
   readonly personal: boolean;
+  readonly onMac?: boolean;
 }): string {
+  if (input.personal && input.onMac === false) return "Only on a Home on your Mac";
   return input.personal ? `Kept on ${input.homeName}` : "Not available on this Opensteer";
 }

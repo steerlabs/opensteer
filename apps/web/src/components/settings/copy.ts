@@ -1,5 +1,9 @@
 import type { DeploymentDisplayKind, IdentityConfig } from "@opensteer/core";
-import { passwordsSettingsDescription, passwordsSettingsLabel } from "@opensteer/client/host";
+import {
+  connectedAgentsCopy,
+  passwordsSettingsDescription,
+  passwordsSettingsLabel,
+} from "@opensteer/client/host";
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
 
 /** Settings copy follows observable access facts so presentation labels cannot select behavior. */
@@ -119,8 +123,8 @@ export const settingsItems: Readonly<Record<SettingsSectionId, SettingsRailItem>
   },
   "external-agents": {
     id: "external-agents",
-    label: "External agents",
-    description: "ChatGPT, Claude and other agents you let use Opensteer",
+    label: connectedAgentsCopy["agents.settings.label"],
+    description: connectedAgentsCopy["agents.settings.description"],
   },
   account: {
     id: "account",

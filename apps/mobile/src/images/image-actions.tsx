@@ -1,9 +1,12 @@
+import { fileDeviceUpdateMessage } from "@opensteer/client/host";
 import { classifyClientFailure } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
 import type { FileResource, FileSource } from "@opensteer/protocol";
 import { useEffect, useRef, type ReactNode } from "react";
 import { Alert, type StyleProp, type ViewStyle } from "react-native";
 import { HoldMenu } from "../thread/hold-menu.js";
+
+class ImageDeviceUpdateError extends Error {}
 
 export interface ImageActionsSource {
   readonly signal?: AbortSignal | undefined;
@@ -21,6 +24,8 @@ export function personalImageSource(
     name,
     read: async (signal) => {
       const result = await client.transcriptFiles.original(threadId, source, signal);
+      if (result.status === "update-required")
+        throw new ImageDeviceUpdateError(fileDeviceUpdateMessage);
       if (result.status !== "ok") throw new Error("This image could not be read.");
       return result;
     },
@@ -37,6 +42,8 @@ export function openImageSource(
     name: file.name,
     read: async (signal) => {
       const result = await client.transcriptFiles.download(threadId, file.resource, signal);
+      if (result.status === "update-required")
+        throw new ImageDeviceUpdateError(fileDeviceUpdateMessage);
       if (result.status !== "ok") throw new Error("This image could not be read.");
       return { bytes: result.bytes, mediaType: file.mediaType };
     },
@@ -73,7 +80,9 @@ export function useImageActions(source: ImageActionsSource) {
           return;
         Alert.alert(
           id === "copy" ? "Copy unavailable" : "Share unavailable",
-          "This image could not be read. Try again.",
+          error instanceof ImageDeviceUpdateError
+            ? error.message
+            : "This image could not be read. Try again.",
         );
       })
       .finally(() => {

@@ -4,115 +4,17 @@ import { stripRefs } from "@opensteer/shared/stripRefs";
 import { placeContentLabel } from "@opensteer/core";
 import {
   ChannelConversationIdSchema,
-  NormalizedChannelEventSchema,
   channelProviderCatalog,
   createChannelId,
   splitMessageText,
   type IntegrationConnectionId,
   type ChannelAccountId,
-  type ChannelConversationId,
-  type ChannelDeliveryId,
-  type ChannelIngressId,
 } from "@opensteer/channel-core";
 import type { ContentPart, MessageId, ThreadId } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
+import { chatNotEnded } from "./connection-liveness.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue, type ChannelLinks } from "./store-primitives.js";
-
-/** One delivery a `status` message becomes, addressed by conversation or by ingress. */
-export interface ChannelStatusDelivery {
-  readonly accountId: ChannelAccountId;
-  readonly audience: "conversation" | "actor";
-  readonly conversationId: ChannelConversationId | null;
-  readonly ingressId: ChannelIngressId | null;
-  readonly text: string;
-}
-
-/**
- * Inserts one `status` message — every word the system says for itself goes
- * through here, which is why the silence rule lives here and nowhere else.
- * Where anybody who knows the address can write to the bot (`senders:
- * "anyone"`, iMessage), a person the system did not admit is told nothing: a
- * wrong number or a spammer never learns the bot exists, never receives a
- * link code, an approval acknowledgement or a failure notice. Null when that
- * rule kept it back.
- */
-export async function insertStatusDelivery(
-  transaction: Transaction<DatabaseSchema>,
-  input: ChannelStatusDelivery,
-): Promise<ChannelDeliveryId | null> {
-  if (input.audience === "actor" && !(await speaksToActor(transaction, input))) return null;
-  const row = await transaction
-    .insertInto("channelDeliveries")
-    .values({
-      accountId: input.accountId,
-      audience: input.audience,
-      claimExpiresAt: null,
-      claimOwner: null,
-      claimTokenHash: null,
-      content: jsonValue([{ text: stripRefs(input.text), type: "text" }]),
-      conversationId: input.conversationId,
-      id: createChannelId("delivery"),
-      ingressId: input.ingressId,
-      kind: "status",
-      lastError: null,
-      messageId: null,
-      // Claimed against statement_timestamp(): stamp it on the same clock.
-      nextAttemptAt: sql<Date>`statement_timestamp()`,
-      part: 0,
-      partCount: 1,
-      receipt: null,
-      sentAt: null,
-      status: "pending",
-    })
-    .returning("id")
-    .executeTakeFirstOrThrow();
-  return row.id;
-}
-
-/**
- * Whether an `actor` notice may reach the person whose message it answers:
- * always where only a provider workspace's own members can write, and only to
- * a linked or approved sender where anybody can.
- */
-async function speaksToActor(
-  transaction: Transaction<DatabaseSchema>,
-  input: ChannelStatusDelivery,
-): Promise<boolean> {
-  const account = await transaction
-    .selectFrom("channelAccounts")
-    .select("provider")
-    .where("id", "=", input.accountId)
-    .executeTakeFirst();
-  const manifest = channelProviderCatalog.find(({ provider }) => provider === account?.provider);
-  if (manifest?.senders !== "anyone") return true;
-  if (!input.ingressId) return false;
-  const ingress = await transaction
-    .selectFrom("channelIngressEvents")
-    .select("event")
-    .where("id", "=", input.ingressId)
-    .executeTakeFirst();
-  const author = NormalizedChannelEventSchema.safeParse(ingress?.event);
-  if (!author.success) return false;
-  const externalUserId = author.data.actor.externalUserId;
-  const identity = await transaction
-    .selectFrom("channelIdentities")
-    .select("linkedUserId")
-    .where("accountId", "=", input.accountId)
-    .where("externalUserId", "=", externalUserId)
-    .executeTakeFirst();
-  if (identity?.linkedUserId) return true;
-  const approved = await transaction
-    .selectFrom("channelAccessGrants")
-    .innerJoin("channelBindings", "channelBindings.id", "channelAccessGrants.bindingId")
-    .select("channelAccessGrants.bindingId")
-    .where("channelAccessGrants.accountId", "=", input.accountId)
-    .where("channelAccessGrants.externalUserId", "=", externalUserId)
-    .where("channelAccessGrants.status", "=", "approved")
-    .where("channelBindings.status", "=", "active")
-    .executeTakeFirst();
-  return approved !== undefined;
-}
 
 /**
  * Whether a channel still has the use it was set up on. A channel whose
@@ -207,55 +109,8 @@ export async function revokeChannelConnectionsInTransaction(
     .set({ status: "revoked", updatedAt: now })
     .where("connectionId", "in", connectionIds)
     .execute();
-  const accountIds = transaction
-    .selectFrom("channelAccounts")
-    .select("id")
-    .where("connectionId", "in", connectionIds);
-  await transaction
-    .selectFrom("channelBindings")
-    .select("id")
-    .where("accountId", "in", accountIds)
-    .orderBy("id", "asc")
-    .forNoKeyUpdate()
-    .execute();
-  await transaction
-    .updateTable("channelBindings")
-    .set({ status: "revoked", updatedAt: now })
-    .where("accountId", "in", accountIds)
-    .execute();
-  await transaction
-    .selectFrom("channelDeliveries")
-    .select("id")
-    .where("accountId", "in", accountIds)
-    .orderBy("id", "asc")
-    .forNoKeyUpdate()
-    .execute();
-  await transaction
-    .updateTable("channelDeliveries")
-    .set({
-      claimExpiresAt: null,
-      claimOwner: null,
-      claimTokenHash: null,
-      lastError: "Channel connection was revoked before delivery",
-      status: "dead",
-      updatedAt: now,
-    })
-    .where("accountId", "in", accountIds)
-    .where("status", "in", ["pending", "leased", "retryable-failed"])
-    .execute();
-  await transaction
-    .updateTable("channelDeliveries")
-    .set({
-      claimExpiresAt: null,
-      claimOwner: null,
-      claimTokenHash: null,
-      lastError: "Channel connection was revoked after delivery began",
-      status: "unknown",
-      updatedAt: now,
-    })
-    .where("accountId", "in", accountIds)
-    .where("status", "=", "attempt-started")
-    .execute();
+  // Its bridges lose their authority in the same statement that reads them (their account is
+  // no longer connected); the Disconnect worker revokes them and stops what they started.
 }
 
 /**
@@ -267,19 +122,54 @@ export async function enqueueChannelConversationStatus(
   transaction: Transaction<DatabaseSchema>,
   input: { readonly conversationId: string; readonly text: string },
 ): Promise<void> {
-  const conversation = await transaction
-    .selectFrom("channelConversations")
-    .select(["accountId", "id"])
-    .where("id", "=", ChannelConversationIdSchema.parse(input.conversationId))
-    .executeTakeFirst();
+  const conversation = await liveBridgeConversation(transaction, input.conversationId);
   if (!conversation) return;
-  await insertStatusDelivery(transaction, {
-    accountId: conversation.accountId,
-    audience: "conversation",
-    conversationId: conversation.id,
-    ingressId: null,
-    text: input.text,
-  });
+  await transaction
+    .insertInto("bridgeDeliveries")
+    .values({
+      id: createChannelId("delivery"),
+      bridgeId: conversation.bridgeId,
+      accountId: conversation.accountId,
+      conversationId: conversation.id,
+      messageId: null,
+      kind: "status",
+      part: 0,
+      partCount: 1,
+      content: jsonValue([{ text: stripRefs(input.text), type: "text" }]),
+      status: "pending",
+      receipt: null,
+      nextAttemptAt: sql<Date>`statement_timestamp()`,
+    })
+    .execute();
+}
+
+/**
+ * The bridge conversation a Run replies to, while its bridge has not ended. A reply target naming
+ * a conversation from before the update, or a bridge that ended, produces nothing: nothing leaves
+ * the Home except as an attempt of a bridge, and only a live one sends it.
+ */
+async function liveBridgeConversation(
+  transaction: Transaction<DatabaseSchema>,
+  conversationId: string,
+) {
+  const parsed = ChannelConversationIdSchema.safeParse(conversationId);
+  if (!parsed.success) return undefined;
+  return (
+    transaction
+      .selectFrom("bridgeConversations")
+      .innerJoin("agentConnections", "agentConnections.id", "bridgeConversations.bridgeId")
+      .innerJoin("channelAccounts", "channelAccounts.id", "bridgeConversations.accountId")
+      .select([
+        "bridgeConversations.id",
+        "bridgeConversations.bridgeId",
+        "bridgeConversations.accountId",
+        "channelAccounts.provider",
+      ])
+      .where("bridgeConversations.id", "=", parsed.data)
+      // A paused chat keeps what it makes and sends it when it is back; an ended one makes nothing.
+      .where(chatNotEnded())
+      .executeTakeFirst()
+  );
 }
 
 /**
@@ -302,16 +192,7 @@ export async function enqueueChannelReply(
     readonly threadId: ThreadId;
   },
 ): Promise<void> {
-  const conversation = await transaction
-    .selectFrom("channelConversations")
-    .innerJoin("channelAccounts", "channelAccounts.id", "channelConversations.accountId")
-    .select([
-      "channelConversations.accountId",
-      "channelConversations.id",
-      "channelAccounts.provider",
-    ])
-    .where("channelConversations.id", "=", ChannelConversationIdSchema.parse(input.conversationId))
-    .executeTakeFirst();
+  const conversation = await liveBridgeConversation(transaction, input.conversationId);
   if (!conversation) return;
   const manifest = channelProviderCatalog.find(
     (candidate) => candidate.provider === conversation.provider,
@@ -323,26 +204,20 @@ export async function enqueueChannelReply(
   );
   for (const [index, text] of parts.entries()) {
     await transaction
-      .insertInto("channelDeliveries")
+      .insertInto("bridgeDeliveries")
       .values({
-        accountId: conversation.accountId,
-        audience: "conversation",
-        claimExpiresAt: null,
-        claimOwner: null,
-        claimTokenHash: null,
-        content: jsonValue([{ text, type: "text" }]),
-        conversationId: conversation.id,
         id: createChannelId("delivery"),
-        ingressId: null,
-        kind: "reply",
-        lastError: null,
+        bridgeId: conversation.bridgeId,
+        accountId: conversation.accountId,
+        conversationId: conversation.id,
         messageId: input.messageId,
-        nextAttemptAt: sql<Date>`statement_timestamp()`,
+        kind: "reply",
         part: index,
         partCount: parts.length,
-        receipt: null,
-        sentAt: null,
+        content: jsonValue([{ text, type: "text" }]),
         status: "pending",
+        receipt: null,
+        nextAttemptAt: sql<Date>`statement_timestamp()`,
       })
       .onConflict((conflict) =>
         conflict

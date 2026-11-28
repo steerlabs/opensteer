@@ -63,9 +63,9 @@ final class NativeSafetyRegressionTests: XCTestCase {
     let connection = IPCConnection(
       id: 1, fileDescriptor: descriptors[0], onFrame: { _, _ in }, onClose: { _ in })
     XCTAssertFalse(connection.isGreeted)
-    connection.markGreeted(protocolVersion: 10)
+    connection.markGreeted(protocolVersion: 11)
     XCTAssertTrue(connection.isGreeted)
-    XCTAssertEqual(connection.negotiatedProtocolVersion, 10)
+    XCTAssertEqual(connection.negotiatedProtocolVersion, 11)
     XCTAssertThrowsError(
       try emptyParams.validatedPane()
     ) { error in
@@ -117,11 +117,9 @@ final class NativeSafetyRegressionTests: XCTestCase {
     let identity = AppIdentity(bundleId: "com.example.Fixture", displayName: "Fixture", teamId: nil)
     let old = HelperSession(sessionId: "same", connectionID: 7)
     let oldApp = hostApp(identity: identity, path: "/tmp/Fixture.app")
-    old.add(oldApp, access: .readWrite)
+    old.add(oldApp)
     let replacement = HelperSession(sessionId: "same", connectionID: 7)
-    replacement.add(
-      hostApp(identity: identity, path: "/tmp/Fixture.app"), access: .readWrite
-    )
+    replacement.add(hostApp(identity: identity, path: "/tmp/Fixture.app"))
 
     XCTAssertThrowsError(
       try HelperRuntime.validateObservationCommit(

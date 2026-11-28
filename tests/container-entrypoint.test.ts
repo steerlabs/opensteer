@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5,75 +6,65 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   expandSecretFiles,
+  findExecutable,
+  handOver,
+  nodeServiceArguments,
   immutablePackageManifestPath,
   immutableReleaseRecordPath,
   rejectRuntimeInjectionEnvironment,
+  serviceEnvironment,
   verifyReleaseIdentity,
 } from "../deploy/container/opensteer-entrypoint.mjs";
-import { loadProvisionerConfig } from "../apps/team-provisioner/src/config.js";
-import { newTeamSecret, renderTeam } from "../apps/team-provisioner/src/template.js";
-import { parseHostConfig } from "../packages/config/src/config.js";
 
 describe("container entrypoint", () => {
-  it("starts a hosted team Host from the Deployment and Secret the provisioner writes", async () => {
-    const directory = join(tmpdir(), `opensteer-team-host-${randomUUID()}`);
-    await mkdir(directory, { mode: 0o700 });
-    const id = "0b8f2b5e-3c0a-4b8e-9c47-6c1f3a2d9e10";
-    const secret = newTeamSecret({
-      id,
-      slug: "acme",
-      setupTokenDigest: "a".repeat(64),
-      databaseUrl: "postgresql://team:secret@db.example.com:5432/team?sslmode=verify-full",
-      databaseCa: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
-    }) as unknown as { stringData: Record<string, string> };
-    for (const [name, value] of Object.entries(secret.stringData))
-      await writeFile(join(directory, name), value, { mode: 0o600 });
-    const deployment = renderTeam({
-      id,
-      slug: "acme",
-      name: "Acme",
-      images: { host: `ghcr.io/steerlabs/opensteer-team-host@sha256:${"1".repeat(64)}` },
-      platform: { databaseIp: "10.1.1.1", bucket: "teams", databaseCaDigest: "ca-1" },
-      replicas: 1,
-      setupGeneration: 1,
-    }).find((object) => object.kind === "Deployment") as unknown as {
-      spec: {
-        template: { spec: { containers: { env: { name: string; value?: string }[] }[] } };
-      };
-    };
-    const environment: NodeJS.ProcessEnv = Object.fromEntries(
-      deployment.spec.template.spec.containers[0]!.env.map(({ name, value }) => [
-        name,
-        value?.replace("/run/secrets/host/", `${directory}/`),
-      ]),
-    );
-    await expandSecretFiles(environment);
-    expect(parseHostConfig(environment).strictInstallation).toBe(true);
+  it.each(["@opensteer/host", "@opensteer/runner", "@opensteer/channel-runtime"])(
+    "starts %s trusting its container's certificates and keeping its operator's",
+    (service) => {
+      const started = serviceEnvironment(service, {
+        NODE_EXTRA_CA_CERTS: "/home-proof-account-ca.pem",
+        OPENSTEER_MODE: "production",
+        SSL_CERT_DIR: "/etc/ssl/certs",
+      });
+      expect(started).toEqual({
+        NODE_EXTRA_CA_CERTS: "/home-proof-account-ca.pem",
+        NODE_USE_SYSTEM_CA: "1",
+        OPENSTEER_MODE: "production",
+        SSL_CERT_DIR: "/etc/ssl/certs",
+      });
+    },
+  );
+
+  it.each([
+    "@opensteer/control-plane",
+    "@opensteer/home-provisioner",
+    "@opensteer/browser-runtime",
+    null,
+  ])("leaves the trust of %s, which is not a Home service, as it was", (service) => {
+    const environment = { OPENSTEER_MODE: "production" };
+    expect(serviceEnvironment(service, environment)).toEqual({ OPENSTEER_MODE: "production" });
   });
-  it("starts the team provisioner from the settings its Deployment mounts", async () => {
-    const directory = join(tmpdir(), `opensteer-provisioner-${randomUUID()}`);
-    await mkdir(directory, { mode: 0o700 });
-    const ca = join(directory, "ca.pem");
-    await writeFile(ca, "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n");
-    // As teams-1's team-platform ConfigMap and the provisioner Deployment set them.
-    const environment: NodeJS.ProcessEnv = {
-      OPENSTEER_ACCOUNT_URL: "https://accounts.opensteer.com",
-      OPENSTEER_TEAM_HOST_IMAGE: `ghcr.io/steerlabs/opensteer-team-host@sha256:${"a".repeat(64)}`,
-      OPENSTEER_TEAM_DATABASE_IP: "10.40.0.2",
-      OPENSTEER_TEAM_DATABASE_HOST: "abc.def.us-west1.sql-psa.goog",
-      OPENSTEER_TEAM_DATABASE_CA_FILE: ca,
-      OPENSTEER_PROVISIONER_DATABASE_USER: "team-provisioner@opensteer-prod.iam",
-      OPENSTEER_TEAM_GCS_BUCKET: "opensteer-prod-team-files",
-      OPENSTEER_GOOGLE_PROJECT: "opensteer-prod",
-      OPENSTEER_GOOGLE_PROJECT_NUMBER: "285547258220",
-      KUBERNETES_SERVICE_HOST: "10.0.0.1",
-      KUBERNETES_SERVICE_PORT: "443",
-    };
-    await expandSecretFiles(environment);
-    expect(loadProvisionerConfig(environment).platform.databaseCa).toContain(
-      "-----BEGIN CERTIFICATE-----",
-    );
+
+  it("reads the off switch from the environment it starts the service with", () => {
+    expect(process.env.OPENSTEER_SYSTEM_CERTIFICATES).toBeUndefined();
+    expect(
+      serviceEnvironment("@opensteer/host", {
+        OPENSTEER_MODE: "production",
+        OPENSTEER_SYSTEM_CERTIFICATES: "off",
+      }),
+    ).toEqual({ OPENSTEER_MODE: "production", OPENSTEER_SYSTEM_CERTIFICATES: "off" });
   });
+
+  it("names the service its package stamp is for", async () => {
+    await expect(
+      verifyReleaseIdentity(
+        {},
+        async () =>
+          JSON.stringify({ schemaVersion: 1, sourceRevision: "a".repeat(40), version: "1.2.3" }),
+        async () => packageStamp("1.2.3", "a".repeat(40)),
+      ),
+    ).resolves.toBe("@opensteer/service");
+  });
+
   it("loads the immutable image release record into the child process", async () => {
     const directory = join(tmpdir(), `opensteer-release-record-${randomUUID()}`);
     await mkdir(directory, { mode: 0o700 });
@@ -181,6 +172,73 @@ describe("container entrypoint", () => {
       );
     },
   );
+
+  it("hands the process over to the service: the same process ID, no wrapper left behind", () => {
+    const entrypoint = join(import.meta.dirname, "../deploy/container/opensteer-entrypoint.mjs");
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `const { handOver } = await import(${JSON.stringify(entrypoint)});
+         process.stdout.write(process.pid + "\\n");
+         handOver("sh", ["-c", 'echo "$$ $SERVICE"; exit 7'], { PATH: process.env.PATH, SERVICE: "started" });`,
+      ],
+      { encoding: "utf8" },
+    );
+    const [before, after] = result.stdout.trim().split("\n");
+    // The service runs as this process: its exit is the container's, and tini signals it directly.
+    expect(after).toBe(`${before} started`);
+    expect(result.status).toBe(7);
+  });
+
+  it("names a service it cannot find instead of handing over to nothing", () => {
+    const calls: unknown[] = [];
+    expect(() =>
+      handOver("no-such-opensteer-service", [], { PATH: "/usr/bin:/bin" }, (...call) => {
+        calls.push(call);
+        throw new Error("handed over");
+      }),
+    ).toThrow("Could not start Opensteer: no-such-opensteer-service was not found.");
+    expect(calls).toEqual([]);
+    expect(findExecutable("sh", "relative:/bin:/usr/bin")).toMatch(/^\/(usr\/)?bin\/sh$/u);
+    expect(findExecutable("sh", "relative")).toBe(undefined);
+  });
+
+  it.each(["@opensteer/host", "@opensteer/runner", "@opensteer/channel-runtime"])(
+    "starts %s's Node with a small young generation and the old space its Home sized",
+    (service) => {
+      const environment: Record<string, string> = { OPENSTEER_NODE_OLD_SPACE_MB: "642" };
+      expect(nodeServiceArguments(service, "node", ["dist/main.js"], environment)).toEqual([
+        "--max-semi-space-size=4",
+        "--max-old-space-size=642",
+        "dist/main.js",
+      ]);
+      // The size goes no further than this Node's flags.
+      expect(environment).toEqual({});
+      // A Home that sizes nothing (a self-hosted one) still gets the small young generation.
+      expect(nodeServiceArguments(service, "node", ["dist/main.js"], {})).toEqual([
+        "--max-semi-space-size=4",
+        "dist/main.js",
+      ]);
+      expect(() =>
+        nodeServiceArguments(service, "node", [], { OPENSTEER_NODE_OLD_SPACE_MB: "642 --inspect" }),
+      ).toThrow("OPENSTEER_NODE_OLD_SPACE_MB must be a number of MiB.");
+    },
+  );
+
+  it("leaves another image's command as it was", () => {
+    for (const [service, command] of [
+      ["@opensteer/control-plane", "node"],
+      ["@opensteer/browser-runtime", "node"],
+      ["@opensteer/host", "sh"],
+    ] as const)
+      expect(
+        nodeServiceArguments(service, command, ["dist/main.js"], {
+          OPENSTEER_NODE_OLD_SPACE_MB: "64",
+        }),
+      ).toEqual(["dist/main.js"]);
+  });
 
   it("loads file-backed environment values without passing the file variable", async () => {
     const directory = join(tmpdir(), `opensteer-entrypoint-${randomUUID()}`);

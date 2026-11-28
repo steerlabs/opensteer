@@ -150,6 +150,7 @@ describe("Product tool handlers", () => {
     });
     expect(agentPage).toHaveBeenCalledWith({
       ownerId,
+      reader: { kind: "work", threadId: claims.threadId },
       scope: { kind: "personal" },
       scopeId: claims.threadId,
       status: "all",
@@ -212,6 +213,7 @@ describe("Product tool handlers", () => {
     });
     expect(agentPage).toHaveBeenCalledWith({
       ownerId,
+      reader: { kind: "work", threadId: claims.threadId },
       scope: { kind: "personal" },
       scopeId: claims.threadId,
       status: "all",
@@ -856,10 +858,9 @@ describe("Product tool handlers", () => {
         idempotencyKey: requestId,
         name: "Nightly report",
         operation: "create",
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default () => {}",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "webhook",
@@ -914,9 +915,7 @@ describe("Product tool handlers", () => {
         operation: "list",
       },
       current.id,
-      {
-        accessMode: current.accessMode,
-      },
+      undefined,
     );
   });
 });
@@ -1156,7 +1155,19 @@ function makeService(options: {
         sourceId: native ? "native" : "openai",
       };
     },
+    bindingAgentConnectionId: async () => null,
+    admitExecution: async () => ({
+      mode: "full-access" as const,
+      agentConnection: null,
+      threadId: null,
+      runId: null,
+    }),
     getThreadForOwner: async (id: Thread["id"], requestedBy: typeof ownerId) => {
+      const value = options.threads.find((candidate) => candidate.id === id);
+      return value?.createdBy === requestedBy ? value : null;
+    },
+    // Agent tools read a task as their caller; these fixtures hold no memory pass.
+    readTask: async (_reader: unknown, id: Thread["id"], requestedBy: typeof ownerId) => {
       const value = options.threads.find((candidate) => candidate.id === id);
       return value?.createdBy === requestedBy ? value : null;
     },
@@ -1238,7 +1249,6 @@ function makeService(options: {
         }),
     },
     effectiveDeviceOwners: async () => new Map(),
-    messageTeamSources: async () => new Map(),
     threadMessagePageForOwner: async (input: {
       maxItems: number;
       ownerId: typeof ownerId;
@@ -1498,7 +1508,6 @@ function thread(
     lastVisitedAt: null,
     latestRunCompletedAt: null,
     accessMode: "full-access",
-    teamOrigin: null,
     continuationIdentity: null,
     doneAt: null,
     doneReason: null,
@@ -1526,7 +1535,6 @@ function run(value: Thread): Run {
   const seedInputId = createId("message");
   return {
     accessMode: value.accessMode,
-    delivery: null,
     activationInputId: seedInputId,
     assignmentId: null,
     completedAt: null,
@@ -1576,8 +1584,6 @@ function inboxInput(
 ): ThreadInput {
   return {
     assignmentId: null,
-    teamRequestId: null,
-    teamSource: null,
     cancelReason: null,
     causalChainId: run?.causalChainId ?? createId("causalChain"),
     createdAt: now,

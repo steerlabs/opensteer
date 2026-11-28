@@ -7,12 +7,14 @@ import {
 } from "@opensteer/control-plane-protocol/broker-sealing";
 import {
   PersonalRemoteAdministration,
+  refuseManagedAccountUnlink,
   requirePersonalAdministrator,
 } from "./personal-remote-administration.js";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import {
+  createId,
   OpensteerError,
   type AuthenticatedSession,
   type AuthSessionId,
@@ -27,8 +29,9 @@ import {
   PersonalHostAccountLinkCompletionPayloadSchema,
   personalHostAccountLinkCompletionContext,
   PersonalHostAccountLinkChallengeIdSchema,
-  PersonalHostAccessAuthoritySchema,
+  PersonalHostAccountAuthoritySchema,
   PersonalHostAccessRouteDocumentSchema,
+  isNetworkedPersonalAuthority,
   PersonalHostAccountLinkProofEnvelopeSchema,
   RevokeConnectRequestSchema,
   type RevokeConnectRequest,
@@ -36,7 +39,7 @@ import {
   type UpdateAccountProfileRequest,
   personalHostAccessRouteEnvelopeSha256,
   type IssuePersonalHostAccountLinkChallengeResponse,
-  type PersonalHostAccessAuthority,
+  type PersonalHostAccountAuthority,
   type PersonalHostAccessRouteDocument,
   type PersonalHostAccessRouteEnvelope,
 } from "@opensteer/control-plane-protocol";
@@ -56,6 +59,8 @@ import {
   type IssuePersonalPairingCodeResponse,
   type PersonalPairingCodeCredential,
   type PersonalRemoteAccessStatus,
+  PersonalAccountLinkStatusSchema,
+  type PersonalAccountLinkStatus,
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { HostKeyPair } from "../identity/host-keys.js";
@@ -104,13 +109,15 @@ export interface PersonalRemoteSessionAuthenticator {
 }
 
 /**
- * Durable Personal reachability authority. The canonical Host remains
- * loopback-only; this service signs and fences optional HTTPS access routes.
+ * Durable Personal reachability authority and the Opensteer Account link.
+ * A Mac Home stays loopback-only and this service signs and fences its
+ * optional HTTPS access routes. A Home on its own server has no routes — its
+ * canonical origin is its route — so only the Account link is used there.
  */
 export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthenticator {
   readonly desktopUpdates: PersonalDesktopUpdate;
   readonly administration: PersonalRemoteAdministration;
-  readonly #authority: PersonalHostAccessAuthority;
+  readonly #authority: PersonalHostAccountAuthority;
   readonly #database: Kysely<DatabaseSchema>;
   readonly #identity: IdentityService;
   readonly #keys: Pick<HostKeyPair, "privateKey" | "publicKey">;
@@ -120,9 +127,10 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   readonly #accountOperations = new Map<string, Promise<RevokeConnectResponse | undefined>>();
   readonly #disconnectRunners: () => Promise<void>;
   readonly #accountLinkChanged: () => void;
+  readonly #routeChanged: (routeOrigin: string | null) => void;
 
   constructor(options: {
-    readonly authority: PersonalHostAccessAuthority;
+    readonly authority: PersonalHostAccountAuthority;
     readonly database: Kysely<DatabaseSchema>;
     /**
      * Drops the computers that reached this Deployment over the route being
@@ -138,6 +146,11 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     readonly now?: () => Date;
     /** Called after a link becomes active or ends, so what follows the Account can catch up. */
     readonly onAccountLinkChanged?: () => void;
+    /**
+     * Called after the route changed and committed, with the committed route's origin (null when
+     * Remote access is off): this Home's addresses are published from it, never read again.
+     */
+    readonly onRouteChanged?: (routeOrigin: string | null) => void;
   }) {
     this.desktopUpdates = new PersonalDesktopUpdate(
       new PersonalDesktopUpdateStore(options.database),
@@ -149,7 +162,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       resumeAccountOperation: (intent) => this.#resumeAccountOperation(intent.action === "unlink"),
       accountIssuer: options.grantVerifier?.issuer ?? null,
     });
-    this.#authority = PersonalHostAccessAuthoritySchema.parse(options.authority);
+    this.#authority = PersonalHostAccountAuthoritySchema.parse(options.authority);
     this.#database = options.database;
     this.#identity = options.identity;
     this.#keys = options.keys;
@@ -158,10 +171,21 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     this.#now = options.now ?? (() => new Date());
     this.#disconnectRunners = options.disconnectRunners ?? (async () => undefined);
     this.#accountLinkChanged = options.onAccountLinkChanged ?? (() => undefined);
+    this.#routeChanged = options.onRouteChanged ?? (() => undefined);
   }
 
   status(): Promise<PersonalRemoteAccessStatus> {
     return this.#readStatus(this.#database);
+  }
+
+  /** The current route's origin, null when Remote access is off: one narrow read, no signing. */
+  async routeOrigin(): Promise<string | null> {
+    const state = await this.#database
+      .selectFrom("personalRemoteAccess")
+      .select(["mode", "routeOrigin"])
+      .where("singletonKey", "=", "personal")
+      .executeTakeFirstOrThrow();
+    return state.mode === "off" ? null : state.routeOrigin;
   }
 
   async #readStatus(database: Kysely<DatabaseSchema>): Promise<PersonalRemoteAccessStatus> {
@@ -203,9 +227,15 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     input: ConfigurePersonalRemoteAccessRequest | unknown,
     afterResponse?: (effect: () => void) => void,
   ): Promise<PersonalRemoteAccessStatus> {
+    if (isNetworkedPersonalAuthority(this.#authority))
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Remote access is for a Home on a Mac; this Home is reached at its own address",
+      });
     await requirePersonalAdministrator(this.#database, caller.session);
     const request = ConfigurePersonalRemoteAccessRequestSchema.parse(input);
     let reconfigured = false;
+    let committedRoute: string | null = null;
     let ended: readonly AuthSessionId[] = [];
     await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
@@ -236,6 +266,10 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
         return;
       }
+      // An executor's step (AD10): the Mac app carries out a `personal.remoteAccess.request` the
+      // door admitted, so the change stands only while that operation is unfinished and asks for
+      // this mode. Turning it on is the person's to approve, there, never here.
+      await requireRemoteAccessOperation(transaction, request.mode);
       const generation = Number(current.generation) + 1;
       if (!Number.isSafeInteger(generation)) {
         throw new OpensteerError({ code: "conflict", message: "Route generation is exhausted" });
@@ -270,6 +304,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         .where("singletonKey", "=", "personal")
         .executeTakeFirstOrThrow();
       reconfigured = true;
+      committedRoute = request.mode === "off" ? null : (request.routeOrigin ?? null);
     });
     // Their browser and realtime connections end with the logins, after commit.
     const announce = () => this.#identity.announceSessionsEnded(ended);
@@ -282,6 +317,9 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     // shell sessions have ended as the disconnection they are.
     if (reconfigured) {
       this.administration.changed();
+      // From the route this transaction committed, before the computers are taken away: what they
+      // reconnect to issues tickets with it, and agents attached under the old set attach again.
+      this.#routeChanged(committedRoute);
       await this.#disconnectRunners();
     }
     return this.status();
@@ -669,6 +707,37 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     return this.status();
   }
 
+  /** The owner's view of the Account link alone, whatever Remote access is doing. */
+  async accountLinkStatus(session: AuthenticatedSession): Promise<PersonalAccountLinkStatus> {
+    const status = await this.administration.status(session);
+    let managed = false;
+    try {
+      await refuseManagedAccountUnlink(this.#database);
+    } catch {
+      managed = true;
+    }
+    return PersonalAccountLinkStatusSchema.parse({
+      accountIssuer: status.accountIssuer,
+      accountLink: status.access.accountLink,
+      authorityEnvelope: status.authorityEnvelope,
+      managed,
+    });
+  }
+
+  /**
+   * Ends the Account link on this Host's own authority, as the desktop
+   * executor would step it: the Account's sessions here first, then the link.
+   */
+  async unlinkAccount(
+    caller: { readonly session: AuthenticatedSession },
+    afterResponse?: (effect: () => void) => void,
+  ): Promise<void> {
+    await requirePersonalAdministrator(this.#database, caller.session);
+    await refuseManagedAccountUnlink(this.#database);
+    await this.revokeAccountSessions(caller, afterResponse);
+    await this.removeAccountLink(caller, afterResponse);
+  }
+
   async revokeAccountSessions(
     caller: { readonly session: AuthenticatedSession },
     afterResponse?: (effect: () => void) => void,
@@ -688,6 +757,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     afterResponse?: (effect: () => void) => void,
   ): Promise<void> {
     await requirePersonalAdministrator(this.#database, caller.session);
+    await refuseManagedAccountUnlink(this.#database);
     const linked = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
       await requireConnectDisabled(transaction);
@@ -896,6 +966,9 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
           message: "Connect projection requires a linked Opensteer Account",
         });
       }
+      // Publishing Connect as on is the step of the person's Connect (or rotate) operation;
+      // publishing it as off narrows, and the Mac app's own cleanup does it at startup.
+      if (request.state !== "disabled") await requireRemoteAccessOperation(transaction, "connect");
       if (request.state === "disabled" && status.mode === "connect") {
         throw new OpensteerError({
           code: "conflict",
@@ -917,6 +990,10 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
           message: "The Personal Connect route changed before it could be published",
         });
       }
+      // Publishing Connect as off takes Remote access away only: it needs no operation (the Mac
+      // app's startup cleanup does it with none), and the person can see it happened (AD10).
+      if (request.state === "disabled")
+        await recordRemoteAccessNarrowing(transaction, caller.session, "remote-access.connect-off");
       return this.#admitAccountOperation(transaction, linked, {
         kind: "projection",
         projection: {
@@ -1029,6 +1106,13 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
           message: "Link an Opensteer Account before revoking Connect",
         });
       }
+      // Revoking the Connect resource takes Remote access away only: no operation is needed, and
+      // the person can see that it was cleaned up on this Mac, and when (AD10).
+      await recordRemoteAccessNarrowing(
+        transaction,
+        caller.session,
+        "remote-access.connect-removed",
+      );
       return this.#admitAccountOperation(transaction, linked, { kind: "revoke", request });
     });
     const result = await this.#executeAccountOperation(admitted);
@@ -1053,6 +1137,8 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         code: "conflict",
         message: "Link an Opensteer Account before enabling Connect",
       });
+    // A Connect credential is the step of the person's Connect operation, or of a rotate.
+    await requireRemoteAccessOperation(this.#database, rotate ? "rotate" : "connect");
     return this.#accountClient(link).connectCredential(input, rotate);
   }
 
@@ -1444,6 +1530,79 @@ function assertStoredAccountLinkConsume(
       message: "Personal Host is linked to another Account",
     });
   }
+}
+
+/** What a step of the Mac app's Remote access executor would do, as its operation must ask. */
+export type RemoteAccessStep = ConfigurePersonalRemoteAccessRequest["mode"] | "rotate";
+
+/**
+ * The one check every executor step makes (AD10): the step stands only while the latest Remote
+ * access operation is admitted, unfinished, and asks for it. Turning Remote access off belongs to
+ * any of them (unlink, rotate and a change of mode each pass through off); Connect to the
+ * operation that asked for Connect, or a rotate of it; private to the one that asked for private;
+ * a new Connect credential by rotation only to a rotate.
+ */
+export async function requireRemoteAccessOperation(
+  executor: Kysely<DatabaseSchema>,
+  step: RemoteAccessStep,
+): Promise<void> {
+  const operation = await executor
+    .selectFrom("personalRemoteAdministration")
+    .select(["intent", "state"])
+    .orderBy("position", "desc")
+    .limit(1)
+    // A plain read under the Remote access lock a step already holds: a row lock here would
+    // come before the sessions it ends, the reverse of every other path.
+    .executeTakeFirst();
+  const intent = operation?.intent as
+    { readonly action: string; readonly mode?: string } | undefined;
+  const unfinished = operation?.state === "pending" || operation?.state === "running";
+  const carries =
+    unfinished &&
+    (step === "off" ||
+      (step === "rotate"
+        ? intent?.action === "rotate"
+        : (intent?.action === "configure" && intent.mode === step) ||
+          (step === "connect" && intent?.action === "rotate")));
+  if (!carries)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Remote access changes only as part of a change you asked for in Opensteer.",
+    });
+}
+
+/**
+ * A step that only takes Remote access away, on record for the person's activity, with who acted:
+ * the person, when an operation they asked for stands behind it, or the Mac app cleaning up on its
+ * own at startup, when none does. The desktop sends both on the person's session, so the session
+ * alone cannot say; the record must never tell the person they did what the app did.
+ */
+async function recordRemoteAccessNarrowing(
+  transaction: Transaction<DatabaseSchema>,
+  session: AuthenticatedSession,
+  action: "remote-access.connect-off" | "remote-access.connect-removed",
+): Promise<void> {
+  const operation = await transaction
+    .selectFrom("personalRemoteAdministration")
+    .select("state")
+    .orderBy("position", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  const by =
+    operation?.state === "pending" || operation?.state === "running" ? "person" : "app-cleanup";
+  await transaction
+    .insertInto("securityAudit")
+    .values({
+      id: createId("securityAudit"),
+      action,
+      actorUserId: session.user.id,
+      actorSessionId: session.id,
+      requestId: null,
+      targetType: "remote-access",
+      targetId: null,
+      metadata: JSON.stringify({ narrowing: true, by }) as never,
+    })
+    .execute();
 }
 
 async function lockRemoteAccess(transaction: Transaction<DatabaseSchema>): Promise<void> {

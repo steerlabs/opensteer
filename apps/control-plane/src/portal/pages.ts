@@ -10,9 +10,16 @@ import {
   renderBrowserPage,
   statusPageBody,
   type BrowserPageFonts,
+  type BrowserPageIcon,
   type BrowserPageLayout,
 } from "@opensteer/shared/browserPage";
 import type { FastifyReply } from "fastify";
+import {
+  cloudComputerPriceLine,
+  cloudWords,
+  homesListTitle,
+  type CloudComputerOfferResponse,
+} from "@opensteer/control-plane-protocol";
 import type { ConsentGrant } from "../account/account-oauth.js";
 
 /**
@@ -68,7 +75,7 @@ export function sendBrowserPage(
 
 export function accountFrontDoorBody(): string {
   return card({
-    head: `${brandMark()}<h1 class="title">Opensteer Account</h1>`,
+    head: `${brandMark()}<h1 class="title">Opensteer account</h1>`,
     content: `<a class="btn btn--primary btn--block" href="/sign-in">Sign in</a>`,
   });
 }
@@ -89,7 +96,7 @@ export function signInBody(input: {
     : "";
   return card({
     head: `${brandMark()}<h1 class="title">${input.reauthorization ? "Confirm it’s you" : "Sign in to Opensteer"}</h1>`,
-    content: `${input.hostedOAuth ? '<p class="lead">Use the Opensteer Account linked to that Opensteer to continue connecting.</p>' : ""}<div class="sign-in-options">${apple}<form method="post" action="/sign-in/google">${input.hiddenFields}<button class="btn btn--block" type="submit">${googleMark()}Continue with Google</button></form>${email}</div>`,
+    content: `${input.hostedOAuth ? '<p class="lead">Sign in with the Opensteer account linked to that Home.</p>' : ""}<div class="sign-in-options">${apple}<form method="post" action="/sign-in/google">${input.hiddenFields}<button class="btn btn--block" type="submit">${googleMark()}Continue with Google</button></form>${email}</div>`,
   });
 }
 
@@ -200,38 +207,21 @@ export function deleteAccountBody(input: {
   readonly email: string;
   /** True when the last attempt failed after it may have turned remote access off. */
   readonly failed: boolean;
-  /** Teams the Account holds, which it must delete or transfer before it can go. */
-  readonly heldTeams: readonly {
-    readonly name: string;
-    readonly origin: string;
-    readonly href: string;
-  }[];
-  /** Teams still being set up, which deleting the Account cancels. */
-  readonly settingUp: readonly string[];
   readonly servers: readonly { readonly name: string; readonly otherMembers: number }[];
+  /** The person has their own Cloud Computer, which is deleted with the Account. */
+  readonly cloudComputer?: boolean;
 }): string {
   const list = (items: readonly string[]) =>
     `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
-  const head = `${brandMark()}<h1 class="title">Delete your Opensteer Account?</h1>`;
-  if (input.heldTeams.length > 0) {
-    const teams = input.heldTeams
-      .map(
-        (team) =>
-          `<li class="grant"><a href="${escapeHtml(team.href)}">${escapeHtml(team.name)}</a><span class="grant__detail">${escapeHtml(new URL(team.origin).host)}</span></li>`,
-      )
-      .join("");
-    return card({
-      head,
-      content: `<div class="alert" role="alert"><p class="alert__title">Delete or transfer these teams first</p><p class="lead">Other people may use them, so Opensteer never deletes a team with your Account. Transfer one to another owner to keep it for them.</p><ul class="grants">${teams}</ul></div>
-      <p class="lead">Nothing has been deleted or turned off.</p>
-      <a class="btn btn--block" href="/">Back</a>`,
-    });
-  }
+  const head = `${brandMark()}<h1 class="title">Delete your Opensteer account?</h1>`;
+  const cloud = input.cloudComputer
+    ? `<p class="lead">Your Cloud Computer is deleted with it. ${escapeHtml(cloudWords("cloud.delete.billing"))} Opensteer destroys the computer and its disk, including its browser profiles and tasks, deletes its backups, and deletes the payment details kept with Stripe for its subscription; Stripe keeps its own records of past payments. Your account itself is deleted at once.</p>`
+    : "";
   const computers = input.computers.length
-    ? `<p class="lead">These computers lose remote access and leave your Account. Opensteer keeps running on them, with their files and conversations. Apps connected through Opensteer’s sign-in will need reconnecting.</p>${list(input.computers)}`
+    ? `<p class="lead">These computers lose remote access and leave your account. Opensteer keeps running on them, with their files and conversations. Apps connected through Opensteer’s sign-in will need reconnecting.</p>${list(input.computers)}`
     : "";
   const servers = input.servers.length
-    ? `<p class="lead">These servers stop accepting Opensteer Account sign-in, for you and anyone else who uses them.</p>${list(
+    ? `<p class="lead">These servers stop accepting Opensteer account sign-in, for you and anyone else who uses them.</p>${list(
         input.servers.map(({ name, otherMembers }) =>
           otherMembers === 0
             ? name
@@ -239,24 +229,28 @@ export function deleteAccountBody(input: {
         ),
       )}`
     : "";
-  const settingUp = input.settingUp.length
-    ? `<p class="lead">Setting these teams up stops, and their addresses aren’t used again.</p>${list(input.settingUp)}`
-    : "";
   const failed = input.failed
-    ? `<p class="lead" role="alert">Your Account wasn’t deleted. Remote access may already be off on these computers. Try again, or turn it back on from each computer.</p>`
+    ? `<p class="lead" role="alert">Your account wasn’t deleted. Remote access may already be off on these computers. Try again, or turn it back on from each computer.</p>`
     : "";
   return card({
     head,
-    content: `<p class="lead">This permanently deletes ${escapeHtml(input.email)}. It can’t be undone.</p>${failed}${computers}${servers}${settingUp}
-      <form method="post" action="${escapeHtml(input.action)}"><div class="actions"><a class="btn" href="/">Keep Account</a><button class="btn btn--danger" type="submit">Delete Account</button></div></form>`,
+    content: `<p class="lead">This permanently deletes ${escapeHtml(input.email)}. It can’t be undone.</p>${failed}${cloud}${computers}${servers}
+      <form method="post" action="${escapeHtml(input.action)}"><div class="actions"><a class="btn" href="/">Keep account</a><button class="btn btn--danger" type="submit">Delete account</button></div></form>`,
   });
 }
 
-export function accountDeletedBody(): string {
+export function accountDeletedBody(
+  input: {
+    /** A Cloud Computer was deleted with it; Opensteer finishes its deletion after the Account. */
+    readonly cloudComputer?: boolean;
+  } = {},
+): string {
   return statusPageBody({
-    detail: "You can close this window.",
+    detail: input.cloudComputer
+      ? `Opensteer is finishing your Cloud Computer’s deletion. ${cloudWords("cloud.delete.billing")} The computer, its disk, its backups and the payment details kept with Stripe for its subscription are deleted. You can close this window.`
+      : "You can close this window.",
     mark: "check",
-    title: "Your Opensteer Account is deleted",
+    title: "Your Opensteer account is deleted",
     tone: "ok",
   });
 }
@@ -264,9 +258,9 @@ export function accountDeletedBody(): string {
 export function differentAccountBody(retryHref: string): string {
   return statusPageBody({
     action: { href: retryHref, label: "Try again" },
-    detail: "Nothing was deleted. Sign in with the Account you want to delete.",
+    detail: "Nothing was deleted. Sign in with the account you want to delete.",
     mark: "person",
-    title: "That’s a different Account",
+    title: "That’s a different account",
     tone: "warn",
   });
 }
@@ -275,10 +269,12 @@ export function portalHomeBody(input: {
   readonly account: AccountIdentity;
   readonly desktopDownloadUrl: string | null;
   readonly deleteAccountHref: string;
-  /** Present when this Account service offers hosted teams. */
-  readonly hostedTeams: { readonly createHref: string; readonly rows: readonly string[] } | null;
   readonly rows: readonly string[];
   readonly signOutAction: string;
+  /** The Cloud Computer page, when this Account service offers one. */
+  readonly cloudComputerHref?: string | null;
+  /** What checkout sells a Cloud Computer for now; null while it sells none. */
+  readonly cloudOffer?: CloudComputerOfferResponse["plan"];
 }): string {
   const { account } = input;
   const label = account.displayName ?? account.email;
@@ -287,32 +283,57 @@ export function portalHomeBody(input: {
     <div class="menu" id="account-menu" popover>
       <div class="menu__who">${avatar(label)}<span>${account.displayName ? `<strong>${escapeHtml(account.displayName)}</strong>` : ""}<small>${escapeHtml(account.email)}</small></span></div>
       <form method="post" action="${escapeHtml(input.signOutAction)}"><button class="menu__item" type="submit">${icon("signOut")}Sign out</button></form>
-      <a class="menu__item" href="${escapeHtml(input.deleteAccountHref)}">${icon("trash")}Delete Account</a>
+      <a class="menu__item" href="${escapeHtml(input.deleteAccountHref)}">${icon("trash")}Delete account</a>
     </div>
   </header>`;
   // Without the popover API the menu cannot open, so sign-out stays reachable
   // as a plain control instead.
   const fallbackSignOut = `<form class="fallback-only" method="post" action="${escapeHtml(input.signOutAction)}"><button class="btn" type="submit">Sign out</button></form>`;
-  const hosted = input.hostedTeams
-    ? `<h2 class="section-title">Hosted teams</h2><ul class="places">${input.hostedTeams.rows.join("")}<li class="place place--add"><span class="device">${icon("plus")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.hostedTeams.createHref)}">Create a team</a></span></li></ul>`
+  // A person who has no Mac starts from here too.
+  const more = input.cloudComputerHref
+    ? `<li class="place place--add"><span class="device">${icon("cloud")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.cloudComputerHref)}">${escapeHtml(cloudWords("cloud.title"))}</a></span></li>`
     : "";
   if (input.rows.length === 0) {
+    // No Opensteer yet: where should it live? A Mac, free while it is awake, or a Cloud
+    // Computer at the price checkout sells now, always on.
+    const mac = input.desktopDownloadUrl
+      ? `<a class="place__name" href="${escapeHtml(input.desktopDownloadUrl)}">On your Mac</a>`
+      : `<span class="place__name">On your Mac</span>`;
+    const cloudNote = input.cloudOffer
+      ? `${cloudComputerPriceLine(input.cloudOffer, "en-US").line}. Always on.`
+      : "Always on.";
+    const where = [
+      `<li class="place place--add"><span class="device">${icon("laptop")}</span><span class="place__body">${mac}<span class="place__note">Free. Works while your Mac is awake.</span></span></li>`,
+      input.cloudComputerHref
+        ? `<li class="place place--add"><span class="device">${icon("cloud")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.cloudComputerHref)}">On an Opensteer Cloud Computer</a><span class="place__note">${escapeHtml(cloudNote)}</span></span></li>`
+        : "",
+    ].join("");
     return `${masthead}<main class="column"><div class="empty">
-      <span class="device">${icon("laptop")}</span>
-      <h1 class="title title--page">Set up Opensteer</h1>
-      <p class="lead">Opensteers you set up or join show up here.</p>
-      ${input.desktopDownloadUrl ? `<a class="btn btn--primary" href="${escapeHtml(input.desktopDownloadUrl)}">${icon("download")}Get the desktop app</a>` : ""}
-    </div>${hosted}${fallbackSignOut}</main>`;
+      <h1 class="title title--page">Where should your Opensteer live?</h1>
+      <p class="lead">Your browser profiles, apps, plugins, tasks and rules live in one Home.</p>
+    </div><ul class="places">${where}</ul>${fallbackSignOut}</main>`;
   }
   const download = input.desktopDownloadUrl
     ? `<li class="place place--add"><span class="device">${icon("download")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.desktopDownloadUrl)}">Get the desktop app</a></span></li>`
     : "";
   return `${masthead}<main class="column">
-    <h1 class="title title--page">Your Opensteers</h1>
-    <ul class="places">${input.rows.join("")}${download}</ul>
-    ${hosted}${fallbackSignOut}
+    <h1 class="title title--page">${escapeHtml(homesListTitle)}</h1>
+    <ul class="places">${input.rows.join("")}${download}${more}</ul>
+    ${fallbackSignOut}
   </main>`;
 }
+
+/**
+ * How a row draws each kind of Home: its mark, and whether it says the kind in words, from the
+ * one table every client reads ("Mac", "Cloud Computer", "Server"). A Home whose kind isn't
+ * known draws none.
+ */
+const placeMarks = {
+  personal: { icon: "laptop", said: true },
+  cloud: { icon: "cloud", said: true },
+  server: { icon: "server", said: true },
+  unknown: { icon: null, said: false },
+} as const satisfies Record<string, { icon: BrowserPageIcon | null; said: boolean }>;
 
 export type PlaceControl =
   | { readonly kind: "link"; readonly href: string }
@@ -336,7 +357,9 @@ export function placeRow(input: {
   readonly anchor?: string;
   readonly control: PlaceControl;
   readonly id: string;
-  readonly kind: "personal" | "team";
+  /** A Mac reached by its route, a Cloud Computer, a server at its own address, or a Home
+   * whose kind the Account cannot say (no kind is shown). */
+  readonly kind: "personal" | "cloud" | "server" | "unknown";
   readonly kindLabel: string;
   readonly name: string;
   readonly remove: {
@@ -361,7 +384,14 @@ export function placeRow(input: {
   const note = status?.reason
     ? `<span class="place__note${status.tone === "warn" ? " place__note--warn" : ""}">${escapeHtml(status.reason)}</span>`
     : "";
-  const spoken = `<span class="visually-hidden">${escapeHtml(input.kindLabel)}${status ? `, ${escapeHtml(status.label)}` : ""}</span>`;
+  // Every known kind says so in words.
+  const kindLine = placeMarks[input.kind].said
+    ? `<span class="place__note">${escapeHtml(input.kindLabel)}</span>`
+    : "";
+  const spoken = `<span class="visually-hidden">${[input.kindLabel, status?.label]
+    .filter(Boolean)
+    .map((part) => escapeHtml(part!))
+    .join(", ")}</span>`;
   const sheetId = `remove-${input.id.replace(/[^\w-]/gu, "")}`;
   const confirm = input.remove?.confirm ?? {
     detail: "It leaves your list. Your access doesn’t change.",
@@ -377,256 +407,10 @@ export function placeRow(input: {
       </div>`
     : "";
   return `<li class="place ${open ? "place--open" : "place--still"}"${input.anchor ? ` id="${escapeHtml(input.anchor)}"` : ""}>
-    <span class="device">${icon(input.kind === "personal" ? "laptop" : "server")}${dot}</span>
-    <span class="place__body">${control}${note}${spoken}</span>
+    <span class="device">${placeMarks[input.kind].icon === null ? "" : icon(placeMarks[input.kind].icon!)}${dot}</span>
+    <span class="place__body">${control}${kindLine}${note}${spoken}</span>
     ${remove}${open ? `<span class="place__go" aria-hidden="true">${icon("chevron")}</span>` : ""}
   </li>`;
-}
-
-/* ---- Portal: teams Opensteer hosts ---- */
-
-export function createHostedTeamBody(input: {
-  readonly action: string;
-  readonly availabilityPath: string;
-  readonly domain: string;
-  readonly failure: string | null;
-  readonly limit: number;
-  readonly limitReached: boolean;
-  readonly name: string;
-  readonly nonce: string;
-  readonly requestId: string;
-  readonly slug: string;
-}): string {
-  const head = `<span class="device device--large">${icon("server")}</span><h1 class="title">Create a team</h1>`;
-  if (input.limitReached) {
-    return card({
-      head,
-      content: `<p class="lead">You have ${input.limit} hosted teams, the most an Account can have. Delete one to create another.</p><a class="btn btn--block" href="/">Back</a>`,
-    });
-  }
-  const parameters = JSON.stringify({ availabilityPath: input.availabilityPath }).replace(
-    /</gu,
-    "\\u003c",
-  );
-  return `${card({
-    head,
-    content: `<form class="form" method="post" action="${escapeHtml(input.action)}">
-        <input type="hidden" name="requestId" value="${escapeHtml(input.requestId)}">
-        <label class="field"><input id="name" name="name" value="${escapeHtml(input.name)}" required maxlength="120" autocomplete="off" aria-label="Team name" placeholder="Team name"></label>
-        <label class="field"><input id="slug" name="slug" value="${escapeHtml(input.slug)}" required minlength="3" maxlength="32" pattern="[a-z0-9][a-z0-9\\-]{1,30}[a-z0-9]" autocapitalize="none" autocomplete="off" spellcheck="false" aria-label="Team address" aria-describedby="slug-state"><span class="field__suffix">.${escapeHtml(input.domain)}</span></label>
-        <p class="fine" id="slug-state" aria-live="polite">${input.failure ? escapeHtml(input.failure) : "It can’t be changed later."}</p>
-        <div class="actions"><a class="btn" href="/">Cancel</a><button class="btn btn--primary" type="submit">Create team</button></div>
-      </form>
-      <p class="fine">Opensteer runs this team’s server, so its operators can technically read what’s stored there. Everyone’s agents still run on their own computers.</p>`,
-  })}<script nonce="${escapeHtml(input.nonce)}">
-    const p = ${parameters};
-    const name = document.getElementById("name"), slug = document.getElementById("slug"), state = document.getElementById("slug-state");
-    let edited = slug.value !== "", timer;
-    const derive = (value) => value.normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32).replace(/-+$/g, "");
-    const check = () => {
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        const value = slug.value;
-        if (value.length < 3) return;
-        try {
-          const response = await fetch(p.availabilityPath + "?" + new URLSearchParams({ slug: value }), { headers: { accept: "application/json" }, redirect: "error" });
-          const result = await response.json();
-          if (slug.value !== value) return;
-          state.textContent = result.available ? "Available." : result.reason === "taken" ? "That address is taken." : result.reason === "reserved" ? "That address is reserved." : "Use 3–32 lowercase letters, digits or hyphens.";
-        } catch {}
-      }, 250);
-    };
-    name.addEventListener("input", () => { if (!edited) { slug.value = derive(name.value); check(); } });
-    slug.addEventListener("input", () => { edited = true; check(); });
-  </script>`;
-}
-
-/**
- * Follows a team Account is setting up, then opens it: the team's own sign-in uses the Account
- * this browser is already signed in to, so the creator arrives as its owner.
- */
-export function hostedTeamProgressBody(input: {
-  readonly cancelAction: string;
-  readonly nonce: string;
-  readonly retryAction: string;
-  readonly statusPath: string;
-  readonly team: {
-    readonly name: string;
-    readonly origin: string;
-    readonly stage: string;
-    readonly error?: { readonly message: string } | undefined;
-  };
-}): string {
-  const parameters = JSON.stringify({
-    origin: input.team.origin,
-    statusPath: input.statusPath,
-  }).replace(/</gu, "\\u003c");
-  const failed = input.team.stage === "failed";
-  return `${card({
-    attributes: ` data-stage="${escapeHtml(input.team.stage)}"`,
-    head: `<span class="device device--large">${icon("server")}</span><h1 class="title">Setting up ${escapeHtml(input.team.name)}</h1>`,
-    content: `<ol class="steps" id="steps">
-        <li class="step" data-step="reserving">Address reserved</li>
-        <li class="step" data-step="starting">Team server starting</li>
-        <li class="step" data-step="configuring">Finishing setup</li>
-      </ol>
-      <p class="lead" id="state" aria-live="polite">${failed ? escapeHtml(input.team.error?.message ?? "Setup didn’t finish.") : "About a minute."}</p>
-      <div class="actions" id="failed"${failed ? "" : " hidden"}>
-        <form method="post" action="${escapeHtml(input.cancelAction)}"><button class="btn btn--block" type="submit">Cancel</button></form>
-        <form method="post" action="${escapeHtml(input.retryAction)}"><button class="btn btn--primary btn--block" type="submit">Try again</button></form>
-      </div>
-      <noscript><p class="fine">Reload to see how setup is going.</p></noscript>`,
-  })}<script nonce="${escapeHtml(input.nonce)}">
-    const p = ${parameters};
-    const order = ["reserving", "starting", "configuring", "ready"];
-    const card = document.querySelector(".card"), state = document.getElementById("state"), failed = document.getElementById("failed");
-    let delay = 1500;
-    const show = (stage) => {
-      card.dataset.stage = stage;
-      const at = order.indexOf(stage);
-      for (const step of document.querySelectorAll(".step")) {
-        const index = order.indexOf(step.dataset.step);
-        step.dataset.state = at < 0 ? "" : index < at ? "done" : index === at ? "active" : "";
-      }
-    };
-    const poll = async () => {
-      try {
-        const response = await fetch(p.statusPath, { headers: { accept: "application/json" }, redirect: "error" });
-        if (response.status === 404) return void (state.textContent = "This team was deleted.");
-        if (response.ok) {
-          const team = await response.json();
-          show(team.stage);
-          if (team.stage === "ready") return location.replace(p.origin);
-          if (team.stage === "deleting") return void (state.textContent = "This team was deleted.");
-          if (team.stage === "failed") {
-            state.textContent = team.error?.message ?? "Setup didn’t finish.";
-            failed.hidden = false;
-            return;
-          }
-        }
-      } catch {}
-      delay = Math.min(delay * 1.5, 10000);
-      setTimeout(poll, delay);
-    };
-    show(card.dataset.stage);
-    if (card.dataset.stage !== "failed") poll();
-  </script>`;
-}
-
-export function hostedTeamRow(input: {
-  readonly id: string;
-  readonly name: string;
-  readonly origin: string;
-  readonly progressHref: string;
-  readonly removeAction: string;
-  readonly transferHref: string;
-  readonly stage: "configuring" | "deleting" | "failed" | "ready" | "reserving" | "starting";
-}): string {
-  const ready = input.stage === "ready";
-  const settingUp = !ready && input.stage !== "deleting";
-  const control: PlaceControl = ready
-    ? { kind: "link", href: input.origin }
-    : settingUp
-      ? { kind: "link", href: input.progressHref }
-      : { kind: "none" };
-  const status: PlaceStatus =
-    input.stage === "failed"
-      ? { label: "Not set up", reason: "Setup didn’t finish.", tone: "warn" }
-      : input.stage === "deleting"
-        ? { label: "Deleting", reason: "Deleting…", tone: "muted" }
-        : settingUp
-          ? { label: "Setting up", reason: "Setting up…", tone: "busy" }
-          : { label: "Ready", reason: null, tone: "ok" };
-  return placeRow({
-    anchor: hostedTeamAnchor(input.id),
-    control,
-    id: input.id,
-    kind: "team",
-    kindLabel: "Hosted team",
-    name: input.name,
-    remove:
-      input.stage === "deleting"
-        ? null
-        : {
-            action: input.removeAction,
-            confirm: ready
-              ? {
-                  detail:
-                    "This permanently deletes the team and everything in it, for everyone who uses it: channels, messages, knowledge and files. It can’t be undone.",
-                  label: "Delete",
-                  title: `Delete ${input.name}?`,
-                }
-              : {
-                  detail: "Its address won’t be available again.",
-                  label: "Cancel setup",
-                  title: `Stop setting up ${input.name}?`,
-                },
-            ...(ready
-              ? {
-                  instead: {
-                    href: input.transferHref,
-                    label: "Transfer it to another owner instead",
-                  },
-                }
-              : {}),
-          },
-    status,
-  });
-}
-
-export function hostedTeamAnchor(id: string): string {
-  return `team-${id.replace(/[^\w-]/gu, "")}`;
-}
-
-/** Hand a team to one of the other owners its Host confirms. */
-export function transferHostedTeamBody(input: {
-  readonly action: string;
-  readonly failure: string | null;
-  readonly name: string;
-  readonly owners:
-    | readonly {
-        readonly accountId: string;
-        readonly displayName: string;
-        readonly email: string;
-      }[]
-    | null;
-}): string {
-  const head = `<span class="device device--large">${icon("server")}</span><h1 class="title">Transfer ${escapeHtml(input.name)}</h1>`;
-  const failure = input.failure
-    ? `<p class="lead" role="alert">${escapeHtml(input.failure)}</p>`
-    : "";
-  if (input.owners === null || input.owners.length === 0)
-    return card({
-      head,
-      content: `${failure}${
-        input.owners === null
-          ? ""
-          : `<p class="lead">Only another owner can hold ${escapeHtml(input.name)}. Make someone an owner in the team, then come back.</p>`
-      }<a class="btn btn--block" href="/">Back</a>`,
-    });
-  const owners = input.owners
-    .map(
-      (owner, index) =>
-        `<li><label class="grant"><input type="radio" name="to" value="${escapeHtml(owner.accountId)}" required${index === 0 && input.owners!.length === 1 ? " checked" : ""}><span class="grant__who"><span>${escapeHtml(owner.displayName || owner.email)}</span><span class="grant__detail">${escapeHtml(owner.email)}</span></span></label></li>`,
-    )
-    .join("");
-  return card({
-    head,
-    content: `<p class="lead">The owner you choose holds it in Opensteer from now on. You stay an owner, and nothing in the team changes.</p>${failure}
-      <form class="form" method="post" action="${escapeHtml(input.action)}"><ul class="grants">${owners}</ul>
-        <div class="actions"><a class="btn" href="/">Cancel</a><button class="btn btn--primary" type="submit">Transfer</button></div>
-      </form>`,
-  });
-}
-
-export function hostedTeamsUnavailableBody(): string {
-  return statusPageBody({
-    action: { href: "/", label: "Back" },
-    detail: "Opensteer doesn’t host teams yet. You can run your own team server.",
-    mark: "server",
-    title: "Hosted teams aren’t available",
-    tone: "warn",
-  });
 }
 
 /**

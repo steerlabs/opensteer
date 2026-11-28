@@ -242,7 +242,7 @@ await page.getByRole('button',{name:'Shadow action',exact:true}).click();`);
       await kit.run(`for(const id of ['disabled','fieldset','aria-disabled'])
   await fails(()=>page.locator('#'+id).click({timeout:1500}),/element is disabled/);
 assert(Object.keys(await page.evaluate(()=>fixture.counts)).length===0,'disabled did not activate');
-const missing=await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:1500}),/element was not found/);
+const missing=await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:1500}),/no element matched/);
 assert(/Available action/.test(missing.message),'available role names');
 await page.evaluate(()=>enableButtons());
 for(const id of ['disabled','fieldset','aria-disabled']) await page.locator('#'+id).click();`);
@@ -578,7 +578,7 @@ assert(JSON.stringify(await page.locator('#multi').selectOption([]))==='[]','mul
 
 acceptance(
   "sleep-audio",
-  "native frame media and Web Audio keep a server tab awake until playback stops",
+  "native frame media and Web Audio keep a server tab awake until playback stops, and audio a minute after it was last heard",
   async (kit) => {
     const page = kit.ledger.binding(kit.surfaceId)!.page;
     await kit.read(`(async () => {
@@ -603,6 +603,11 @@ acceptance(
     expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(false);
     await kit.read(
       `document.querySelector('#audio-frame').contentWindow.testAudio.close().then(() => true)`,
+    );
+    // V1: Web Audio is heard for a minute after it stops, as an audio element is.
+    expect(await page.keepAwake?.()).toBe("recently-audible");
+    await kit.read(
+      `(() => { const frame = document.querySelector('#audio-frame').contentWindow; const now = frame.Date.now(); frame.Date.now = () => now + 61_000; return true; })()`,
     );
     expect(await page.keepAwake?.()).toBeNull();
     const wav = Buffer.alloc(44 + 16_000);
@@ -637,6 +642,12 @@ acceptance(
     expect(await page.keepAwake?.()).toBe("media");
     expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(false);
     await kit.read(`document.querySelector('#audio-frame').contentWindow.testMedia.pause();true`);
+    // TS16: as desktop Chrome (kRecentlyAudible), a minute after it was last heard.
+    expect(await page.keepAwake?.()).toBe("recently-audible");
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(false);
+    await kit.read(
+      `(() => { const frame = document.querySelector('#audio-frame').contentWindow; const now = frame.Date.now(); frame.Date.now = () => now + 61_000; return true; })()`,
+    );
     expect(await page.keepAwake?.()).toBeNull();
     expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
     await kit.ledger.wake(kit.surfaceId);

@@ -1,4 +1,5 @@
 import type { AdministrationCommandIdentity } from "./administration-command.js";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { createId, OpensteerError, type BrowserProfileId, type UserId } from "@opensteer/core";
 import {
   BrowserFaviconSchema,
@@ -149,6 +150,7 @@ export class BrowserHistoryStore {
   }): Promise<boolean> {
     const url = BrowserHistoryUrlSchema.parse(input.url);
     const now = input.now ?? new Date();
+    const title = outsideName(input.title, 200);
     return withDatabaseTransaction(this.#database, async (tx) => {
       if (!(await this.#profile(tx, input.profileId, input.ownerId))) return false;
       await lockBrowserHistory(tx, input.profileId);
@@ -158,14 +160,14 @@ export class BrowserHistoryStore {
           profileId: input.profileId,
           url,
           origin: new URL(url).origin,
-          title: input.title.slice(0, 200),
+          title,
           typedCount: input.typed ? 1 : 0,
           visitCount: 1,
           lastVisitAt: now,
         })
         .onConflict((conflict) =>
           conflict.columns(["profileId", "url"]).doUpdateSet((eb) => ({
-            title: input.title.slice(0, 200),
+            title,
             lastVisitAt: now,
             typedCount: eb("browserHistoryEntries.typedCount", "+", input.typed ? 1 : 0),
             visitCount: eb("browserHistoryEntries.visitCount", "+", 1),
@@ -186,7 +188,7 @@ export class BrowserHistoryStore {
     return withDatabaseTransaction(this.#database, async (tx) => {
       if (!(await this.#profile(tx, input.profileId))) return false;
       await lockBrowserHistory(tx, input.profileId);
-      const title = input.title.slice(0, 200);
+      const title = outsideName(input.title, 200);
       const result = await tx
         .updateTable("browserHistoryEntries")
         .set({ title })
@@ -364,6 +366,8 @@ export class BrowserHistoryStore {
     };
     return withDatabaseTransaction(this.#database, async (tx) => {
       await lockCommandIdempotency(tx, input.ownerId, input.idempotencyKey);
+      // An agent's erasure is admitted where it commits (G3, K2), under its own key.
+      await input.administration?.admit?.(tx);
       if (!(await this.#profile(tx, input.profileId, input.ownerId)))
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
       const previous = await findCommandByIdempotency(tx, input.ownerId, input.idempotencyKey);

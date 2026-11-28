@@ -1,8 +1,26 @@
-import type { RequestId, RequestResponse, UserId } from "@opensteer/core";
+import type {
+  RequestId,
+  RequestResponse,
+  RunId,
+  ThreadId,
+  TriggerOccurrenceId,
+  TriggerWatchActivationId,
+  UserId,
+} from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
-import type { OpensteerStore } from "@opensteer/database";
+import type { OpensteerStore, RequestOriginInput } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
+
+export type DeviceAccessRequester =
+  | RunToolScope
+  | {
+      readonly threadId: ThreadId;
+      readonly requestedBy: UserId;
+      readonly originatingRunId?: RunId;
+      readonly originatingOccurrenceId?: TriggerOccurrenceId;
+      readonly originatingWatchActivationId?: TriggerWatchActivationId;
+    };
 
 interface DeviceAccessServiceOptions {
   readonly store: Pick<OpensteerStore, "requests" | "getDeviceSelfRunnerId">;
@@ -22,10 +40,18 @@ export class DeviceAccessService {
     readonly machineId: string;
     readonly access: "browser" | "apps" | "files";
     readonly reason: string;
-    readonly claims: RunToolScope;
+    readonly claims: DeviceAccessRequester;
   }) {
     const machineId = DeviceIdSchema.parse(input.machineId);
     const self = await this.#options.store.getDeviceSelfRunnerId(machineId);
+    const origin: RequestOriginInput =
+      "runId" in input.claims
+        ? { originatingRunId: input.claims.runId }
+        : input.claims.originatingRunId !== undefined
+          ? { originatingRunId: input.claims.originatingRunId }
+          : input.claims.originatingOccurrenceId !== undefined
+            ? { originatingOccurrenceId: input.claims.originatingOccurrenceId }
+            : { originatingWatchActivationId: input.claims.originatingWatchActivationId! };
     const created = await this.#options.store.requests.createDeviceAccessRequest(
       {
         callId: input.callId,
@@ -33,7 +59,7 @@ export class DeviceAccessService {
         access: input.access,
         reason: input.reason,
         originatingThreadId: input.claims.threadId,
-        originatingRunId: input.claims.runId,
+        ...origin,
         requestedBy: input.claims.requestedBy,
       },
       () =>

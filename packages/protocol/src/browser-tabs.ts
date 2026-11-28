@@ -55,6 +55,7 @@ export const BrowserTabRecordSchema = z.strictObject({
   icon: BrowserIconKeySchema.nullable(),
   order: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   openerId: BrowserSurfaceIdSchema.nullable(),
+  creatorAttachmentId: z.uuid().optional(),
   documentId: z.string().min(1).max(255),
   geometryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   loading: z.boolean(),
@@ -62,6 +63,12 @@ export const BrowserTabRecordSchema = z.strictObject({
   canGoBack: z.boolean(),
   canGoForward: z.boolean(),
   sizedByAgent: z.boolean(),
+  /**
+   * The last wake opened this tab again at its address (ms since the epoch): its history, scroll
+   * and page state are gone, and the person is told so once. Absent for a tab that came back as
+   * it was.
+   */
+  reopenedAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 });
 export type BrowserTabRecord = z.infer<typeof BrowserTabRecordSchema>;
 export const BrowserTabStreamMetaSchema = z.strictObject({
@@ -81,5 +88,6 @@ export const BrowserViewerSurfaceSchema = BrowserTabRecordSchema.omit({
   icon: true,
   order: true,
   openerId: true,
+  creatorAttachmentId: true,
 }).extend({ favicon: BrowserFaviconSchema.nullable() });
 export type BrowserViewerSurface = z.infer<typeof BrowserViewerSurfaceSchema>;

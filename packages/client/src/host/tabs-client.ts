@@ -18,7 +18,10 @@ type ResultOf<Type extends TabsCommand["type"]> = Extract<
 
 export interface TabsClientPort {
   /** Sends one command under the given key; a transport retry reuses that key. */
-  dispatch(command: TabCommand | AppCommand): Promise<TabCommandResult | AppCommandResult>;
+  dispatch(
+    command: TabCommand | AppCommand,
+    signal?: AbortSignal,
+  ): Promise<TabCommandResult | AppCommandResult>;
   listApps(query?: string): Promise<App[]>;
   getApp(appId: AppId): Promise<App>;
   readonly store: TabStore;
@@ -37,10 +40,15 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
   let activation = 0;
   async function send<Command extends TabsCommand>(
     command: Command,
+    signal?: AbortSignal,
   ): Promise<ResultOf<Command["type"]>> {
     const key = `${command.type}:${globalThis.crypto.randomUUID()}`;
-    const result = await port.dispatch({ ...command, idempotencyKey: key } as
-      TabCommand | AppCommand);
+    signal?.throwIfAborted();
+    const result = await port.dispatch(
+      { ...command, idempotencyKey: key } as TabCommand | AppCommand,
+      signal,
+    );
+    signal?.throwIfAborted();
     if (result.type !== command.type) throw new Error(`Unexpected ${command.type} result.`);
     return result as ResultOf<Command["type"]>;
   }
@@ -68,9 +76,10 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
       const request = ++activation;
       activations.set(tabId, request);
       try {
-        const result = await send({ type: "tab.activate", tabId });
+        const result = await send({ type: "tab.activate", tabId }, options?.signal);
         if (activations.get(tabId) === request)
           port.activated?.(result.tab as Tab, result.viewer, options?.wake === true);
+        options?.answered?.(result.tab as Tab);
         return result.viewer;
       } finally {
         if (activations.get(tabId) === request) activations.delete(tabId);
@@ -92,6 +101,11 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
     async deleteTabGroup(groupId) {
       const result = await send({ type: "tab.group.delete", groupId });
       port.store.applyCommand({ layout: result.layout });
+    },
+    async closeTabGroup(groupId) {
+      const { type: _type, layout, ...result } = await send({ type: "tab.group.close", groupId });
+      port.store.applyCommand({ layout });
+      return result;
     },
     listApps: (query?: string) => port.listApps(query),
     getApp: (appId: AppId) => port.getApp(appId),

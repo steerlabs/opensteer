@@ -1,4 +1,5 @@
 import type { IntegrationConnectionSummary } from "@opensteer/client/integrations";
+import { deviceSwitchOn } from "@opensteer/client/computers";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
   computerUseAccessLabel,
@@ -67,7 +68,7 @@ export function PhoneSection({
   if (!view) return null;
   const currentView = view;
   const screen = phoneScreenStatus(machine);
-  const appsOn = machine.capabilities?.apps.enabled !== false;
+  const appsOn = deviceSwitchOn(machine, "apps") !== false;
 
   async function act(kind: "access" | "stop", action: () => Promise<void>) {
     setBusy(kind);

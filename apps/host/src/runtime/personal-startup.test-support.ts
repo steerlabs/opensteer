@@ -1,8 +1,15 @@
 import { readVerticalRunTools } from "../agents/vertical-stack.test-support.js";
 import type { VerticalTurn } from "../agents/vertical-stack.test-support.js";
-import { forkRunnerChild } from "../agents/runner-child.test-support.js";
+import { forkRunnerChild, type RunnerCrashOptions } from "../agents/runner-child.test-support.js";
+import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import { integrationBundleEntry } from "@opensteer/shared/test-support/integrationRunnerBuild";
-import { ExecutionContainment, executionScopeVariable } from "@opensteer/runner";
+import {
+  confirmRunnerShutdown,
+  ExecutionContainment,
+  executionScopeVariable,
+  RunnerShutdownProofSchema,
+  type RunnerShutdownProof,
+} from "@opensteer/runner";
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -25,7 +32,7 @@ import {
   type ComputerFolder,
 } from "@opensteer/core";
 import { parseHostConfig, parseRunnerConfig } from "@opensteer/config";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { FileRunnerIdentityStore, providerContinuationIdentityProjector } from "@opensteer/runner";
 import {
@@ -69,12 +76,12 @@ export interface PersonalRuntime {
     signal: AbortSignal,
     replacementRunId?: RunId,
   ): Promise<VerticalTurn>;
-  crashRunner(beforeRestart?: () => Promise<void>): Promise<void>;
+  crashRunner(beforeRestart?: () => Promise<void>, options?: RunnerCrashOptions): Promise<void>;
   restartHost(outage?: {
     readonly downForMs?: number;
     readonly whileDown?: () => Promise<void>;
   }): Promise<void>;
-  restartRunner(): Promise<void>;
+  restartRunner(agentsStoppedSince?: string | null): Promise<void>;
   close(): Promise<void>;
 }
 export async function startPersonalRuntime(input: {
@@ -145,64 +152,62 @@ export async function startPersonalRuntime(input: {
     closed = false;
   const events = new Set<() => void>();
   async function startHost() {
-    const runtime = await createHostRuntime(
-      { ...config, ...(vertical?.account ? { account: vertical.account } : {}) },
-      {
-        ...(hostLog
-          ? {
-              logger: {
-                level: "info",
-                redact: [
-                  "req.headers.authorization",
-                  "req.headers.cookie",
-                  "res.headers.set-cookie",
-                ],
-                stream: new Writable({
-                  write(chunk: Buffer | string, _encoding, done) {
-                    hostLog(chunk.toString().trimEnd());
-                    done();
-                  },
-                }),
-              },
-            }
-          : {}),
-        ...(vertical?.executionClock ? { executionClock: vertical.executionClock } : {}),
-        ...(vertical?.notificationTiming
-          ? { notificationTiming: vertical.notificationTiming }
-          : {}),
-        ...(vertical?.browserActivityClock
-          ? { browserActivityClock: vertical.browserActivityClock }
-          : {}),
-        ...(vertical?.runCapabilityLifetimeSeconds
-          ? { runCapabilityLifetimeSeconds: vertical.runCapabilityLifetimeSeconds }
-          : {}),
-        ...(vertical?.runCapabilityNow ? { runCapabilityNow: vertical.runCapabilityNow } : {}),
-        ...(vertical?.accountDirectoryFetch
-          ? { accountDirectoryFetch: vertical.accountDirectoryFetch }
-          : {}),
-        onRunnerCatalogsCommitted: (_identity, _environment, captured) => {
-          for (const notify of changes) notify();
-          catalogState = captured
-            .map((catalog) => `${catalog.status}: ${catalog.detail ?? ""}`)
-            .join("; ");
-          if (
-            captured.some((catalog) =>
-              accountIds.length
-                ? catalog.harnessInstanceId === accountIds[0] && catalog.status !== "preparing"
-                : catalog.status === "ready",
-            )
+    const runtime = await createHostRuntime(config, {
+      ...(hostLog
+        ? {
+            logger: {
+              level: "info",
+              redact: ["req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie"],
+              stream: new Writable({
+                write(chunk: Buffer | string, _encoding, done) {
+                  hostLog(chunk.toString().trimEnd());
+                  done();
+                },
+              }),
+            },
+          }
+        : {}),
+      ...(vertical?.executionClock ? { executionClock: vertical.executionClock } : {}),
+      ...(vertical?.notificationTiming ? { notificationTiming: vertical.notificationTiming } : {}),
+      ...(vertical?.browserActivityClock
+        ? { browserActivityClock: vertical.browserActivityClock }
+        : {}),
+      ...(vertical?.runCapabilityLifetimeSeconds
+        ? { runCapabilityLifetimeSeconds: vertical.runCapabilityLifetimeSeconds }
+        : {}),
+      ...(vertical?.runCapabilityNow ? { runCapabilityNow: vertical.runCapabilityNow } : {}),
+      ...(vertical?.accountDirectoryFetch
+        ? { accountDirectoryFetch: vertical.accountDirectoryFetch }
+        : {}),
+      onRunnerCatalogsCommitted: (
+        _identity,
+        _environment,
+        captured,
+        registrationMayResetCatalogs,
+      ) => {
+        for (const notify of changes) notify();
+        catalogState = captured
+          .map((catalog) => `${catalog.status}: ${catalog.detail ?? ""}`)
+          .join("; ");
+        if (
+          !registrationMayResetCatalogs &&
+          captured.some((catalog) =>
+            accountIds.length
+              ? catalog.harnessInstanceId === accountIds[0] && catalog.status !== "preparing"
+              : catalog.status === "ready",
           )
-            catalogs.resolve();
-        },
-        ...(input.onPersonalScopeCut ? { onPersonalScopeCut: input.onPersonalScopeCut } : {}),
-        onPersonalReaction: (reaction) => {
-          input.onPersonalReaction?.(reaction);
-          for (const listener of events) listener();
-          for (const notify of changes) notify();
-        },
+        )
+          catalogs.resolve();
       },
-    );
-    if (runtime.kind !== "personal") throw new Error("Personal fixture constructed a team Host");
+      ...(input.onPersonalScopeCut ? { onPersonalScopeCut: input.onPersonalScopeCut } : {}),
+      onPersonalReaction: (reaction) => {
+        input.onPersonalReaction?.(reaction);
+        for (const listener of events) listener();
+        for (const notify of changes) notify();
+      },
+    });
+    if (runtime.kind !== "personal")
+      throw new Error("Personal fixture constructed another kind of Host");
     host = runtime;
     await host.listen();
     const signedIn = await host.app.inject({
@@ -238,6 +243,7 @@ export async function startPersonalRuntime(input: {
       await runnerIntegrations?.close?.();
     }
   }
+  let bootMode = vertical?.agentsStoppedSince;
   async function startRunner() {
     lifetime.signal.throwIfAborted();
     catalogs = Promise.withResolvers<void>();
@@ -257,7 +263,8 @@ export async function startPersonalRuntime(input: {
       OPENSTEER_RUNNER_ENROLLMENT_TOKEN: enrollment,
       OPENSTEER_RUNNER_MODULES: [
         "agents",
-        ...(vertical?.integrations ? ["integrations"] : []),
+        ...(vertical?.runnerChild?.stopJourney ? ["shell"] : []),
+        ...(vertical?.integrations || vertical?.runnerChild?.stopJourney ? ["integrations"] : []),
         ...(browser ? ["browser"] : []),
       ].join(","),
       OPENSTEER_MAX_CONCURRENT_RUNS: String(
@@ -313,12 +320,6 @@ export async function startPersonalRuntime(input: {
         resolve("apps/runner/browser-harness/browser-harness.mjs"),
       deploymentShape: { kind: "personal" },
       harnesses: registry,
-      harnessRuntimeBoundary:
-        vertical?.harnessRuntimeBoundary ?? isolatedServiceHarnessRuntimeBoundary,
-      harnessSandbox: {
-        plan: async () => (launch) => launch,
-        planProgram: async () => (launch) => launch,
-      },
       modelServerHome: vertical?.modelServerHome ?? directory,
       plugins: async () => ({
         cleanup: async () => {},
@@ -334,6 +335,7 @@ export async function startPersonalRuntime(input: {
       privateStateDirectory: join(directory, "private", "harness-state"),
       projectContinuationIdentity: providerContinuationIdentityProjector(keys.privateKey),
       agentHome: {
+        ensure: (home, signal) => agentHome.ensure(home, signal),
         prepare: async (input) => {
           agentHomePreparations.push(input);
           return agentHome.prepare(input);
@@ -358,24 +360,48 @@ export async function startPersonalRuntime(input: {
         "recovery",
       );
       lifetime.signal.throwIfAborted();
+      const stopJourney = vertical.runnerChild.stopJourney;
+      let shutdownProof: RunnerShutdownProof | undefined;
+      const shutdownDiagnostics: string[] = [];
       const owned = forkRunnerChild(
         entry,
         {
           execArgv: [],
-          environment: { [executionScopeVariable]: containment.scope("fixture-runner") },
+          ...(stopJourney
+            ? {
+                beforeClose: () =>
+                  lifetime.signal.aborted ? Promise.resolve() : stopJourney.beforeSignal(),
+                closeMessage: "restart",
+                gracefulCloseMs: processStopTimeoutMs,
+              }
+            : {}),
+          environment: stopJourney
+            ? { SHELL: "/bin/sh" }
+            : { [executionScopeVariable]: containment.scope("fixture-runner") },
           afterStop: async () => {
-            if ((await containment.reapBoot()) !== "proven")
+            if (stopJourney) {
+              if (!(await confirmRunnerShutdown(config.dataDirectory, shutdownProof)))
+                throw new Error(
+                  `The desktop could not confirm the Runner stopped (${shutdownProof ? shutdownProof.termination : "no receipt"}): ${shutdownDiagnostics.join(" | ")}`,
+                );
+              if (!lifetime.signal.aborted) stopJourney.afterProof(owned.child.pid!);
+            } else if ((await containment.reapBoot()) !== "proven") {
               throw new Error("Runner child processes did not stop");
+            }
           },
         },
         (stop) => childStops.add(stop),
       );
       child = owned;
+      if (stopJourney)
+        owned.child.stderr?.on("data", (chunk) => shutdownDiagnostics.push(String(chunk).trim()));
       const ready = Promise.withResolvers<void>();
       owned.child.on("message", (message) => {
         if (message === "ready") ready.resolve();
         else if (message && typeof message === "object" && "error" in message)
           ready.reject(new Error(String(message.error)));
+        else if (message && typeof message === "object" && "shutdownProof" in message)
+          shutdownProof = RunnerShutdownProofSchema.parse(message.shutdownProof);
       });
       owned.child.once("error", (error) => ready.reject(error));
       const closed = owned.exited.then(() => {
@@ -387,7 +413,20 @@ export async function startPersonalRuntime(input: {
         nativeFsHelperBinary: resolve("apps/runner/native-fs-helper/opensteer-native-fs-test"),
         bootId,
         config: { ...config, hostUrl: config.hostUrl.toString() },
-        engine: vertical.runnerChild,
+        browser: browser
+          ? { ...browser, url: browser.url.toString(), signIn: false, personFill: false }
+          : undefined,
+        computerUseBridge: stopJourney
+          ? {
+              ...stopJourney.computerUseBridge,
+              url: stopJourney.computerUseBridge.url.toString(),
+            }
+          : undefined,
+        engine: {
+          fixture: vertical.runnerChild.fixture,
+          arguments: vertical.runnerChild.arguments,
+        },
+        agentsStoppedSince: bootMode,
         harnessInstance: vertical.harnessInstance,
         mountedWorkspacePath: input.agentHome.path,
         attachmentRoot: join(directory, "attachments"),
@@ -406,6 +445,7 @@ export async function startPersonalRuntime(input: {
       return;
     }
     connection = new ReconnectingHostConnection({
+      ...(bootMode === undefined ? {} : { agentsStoppedSince: bootMode }),
       ...(vertical?.executionClock ? { executionClock: vertical.executionClock } : {}),
       ...(runnerIntegrations ? { integrationsModule: runnerIntegrations } : {}),
       browserBridge: config.browserBridge,
@@ -567,7 +607,9 @@ export async function startPersonalRuntime(input: {
             }
           }
           const changed = wake.promise;
-          await withTimeout(changed, Math.max(1, 15000), {
+          // A held tool or a long command sends no event for a while: the Run's own
+          // deadline bounds the quiet, as it does for every other observation here.
+          await withTimeout(changed, vertical?.runTimeoutMs ?? 15000, {
             signal,
             timeoutError: () => new Error("Input never reached a terminal consuming Run"),
           });
@@ -607,9 +649,9 @@ export async function startPersonalRuntime(input: {
       get host() {
         return host!;
       },
-      async crashRunner(beforeRestart) {
+      async crashRunner(beforeRestart, options) {
         if (!child) throw new Error("A Runner crash requires runnerChild");
-        await child.crash();
+        await child.crash(options);
         await beforeRestart?.();
         await startRunner();
       },
@@ -626,8 +668,9 @@ export async function startPersonalRuntime(input: {
           timeoutError: () => new Error("Runner did not reattach after Host restart"),
         });
       },
-      async restartRunner() {
+      async restartRunner(mode) {
         await stopRunner(true);
+        if (mode !== undefined) bootMode = mode;
         await startRunner();
       },
       async close() {

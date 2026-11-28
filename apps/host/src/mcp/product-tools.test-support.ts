@@ -1,3 +1,5 @@
+import { dispatchCommand, type CommandAuthority } from "../commands/dispatch.js";
+import type { HostApiCommand } from "@opensteer/protocol";
 import {
   opensteer_task_read,
   opensteer_task_list,
@@ -35,6 +37,7 @@ import {
   ThreadIdSchema,
   ThreadInputPolicySchema,
   readableRequestList,
+  raisedBeforeEffect,
 } from "@opensteer/core";
 import { TriggerControlInputSchema } from "@opensteer/triggers";
 import { z } from "zod";
@@ -60,7 +63,6 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     ...requestBase,
     content: MessageContentSchema,
     delivery: ThreadInputPolicySchema,
-    observationId: z.string().trim().min(1).max(255).optional(),
     threadId: ThreadIdSchema,
     type: z.literal("thread.message"),
   }),
@@ -232,7 +234,8 @@ import { ProductToolHandlers } from "./handlers/product.js";
 import { TriggerToolHandlers } from "./handlers/triggers.js";
 import { agentToolHandlers } from "./handlers/index.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
-import { AgentCallerResolver } from "./agent-caller.js";
+import { AgentCallerResolver, type AgentCaller } from "./agent-caller.js";
+import { commandSubject } from "@opensteer/database";
 import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import type { WatchControlTokenService } from "../triggers/watch-capability.js";
@@ -305,6 +308,46 @@ export class ProductToolsTestClient {
       ...options,
       commands,
     });
+    // These tests are about the handlers: a door that admits, handing the handler the door's own
+    // authority as the real door does (the admission itself is the door's tests').
+    product.useDoor({
+      through: async (
+        caller: AgentCaller,
+        command: HostApiCommand,
+        act: (door: CommandAuthority) => Promise<unknown>,
+      ) => {
+        let value: unknown;
+        await dispatchCommand(caller, command, {
+          registry: {
+            [command.type]: {
+              accepts: "any",
+              run: async (
+                _actor: unknown,
+                _command: unknown,
+                on: { readonly authority: CommandAuthority | null },
+              ) => {
+                try {
+                  value = await act(on.authority!);
+                } catch (error) {
+                  // As the door's own: a refusal in the write's one transaction wrote nothing.
+                  throw error instanceof OpensteerError ? raisedBeforeEffect(error) : error;
+                }
+                return { type: command.type };
+              },
+            },
+          } as never,
+          admit: async (caller: AgentCaller) => ({
+            answer: "now",
+            face: 0,
+            // As the real door admits one of your own agents: as its credential says.
+            execution: { subject: commandSubject(caller.key) } as never,
+          }),
+          scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
+          secretDigestKey: Buffer.alloc(32, 0x33),
+        });
+        return value;
+      },
+    } as never);
     const unavailable = new Proxy(
       {},
       {
@@ -326,9 +369,25 @@ export class ProductToolsTestClient {
       product,
       devices: unavailable as never,
       apps: unavailable as never,
-      triggers: new TriggerToolHandlers(options.triggers ?? (unavailable as AgentTriggerManager)),
-      teamRequestForRun: async () => null,
-      personalContextForRun: async () => true,
+      triggers: new TriggerToolHandlers(
+        options.triggers ?? (unavailable as AgentTriggerManager),
+        options.store,
+        options.store.database
+          ? undefined
+          : {
+              door: (_caller, registry) => ({
+                registry,
+                scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
+                admit: async (caller: AgentCaller) => ({
+                  answer: "now",
+                  face: 0,
+                  // As the real door admits one of your own agents: as its credential says.
+                  execution: { subject: commandSubject(caller.key) } as never,
+                }),
+                secretDigestKey: Buffer.alloc(32, 0x33),
+              }),
+            },
+      ),
     });
     this.service = new OpensteerMcpService({
       store: options.store,
@@ -424,6 +483,15 @@ export class ProductToolsTestClient {
         input.taskId = input.anchorThreadId;
         delete input.anchorThreadId;
       }
+      if (
+        input.script &&
+        typeof input.script === "object" &&
+        "interpreter" in input.script &&
+        (input.script as { interpreter?: unknown }).interpreter === null
+      ) {
+        const { interpreter: _interpreter, ...rest } = input.script as Record<string, unknown>;
+        input.script = rest;
+      }
       if (input.action === "set_status") {
         input.action =
           input.status === "active" ? "resume" : input.status === "paused" ? "pause" : "archive";
@@ -471,7 +539,7 @@ export async function readToolRecords(
   result: {
     readonly taskId?: import("@opensteer/core").ThreadId;
     readonly runId: import("@opensteer/core").RunId | null;
-    readonly messageId?: import("@opensteer/core").MessageId;
+    readonly messageId?: import("@opensteer/core").MessageId | null;
     readonly delegationId?: import("@opensteer/core").AssignmentId | null;
   },
 ) {

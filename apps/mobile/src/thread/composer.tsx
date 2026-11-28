@@ -18,7 +18,7 @@ import {
   startReference,
 } from "../ui/composer-reference-picker.js";
 import { useCompactionOffer } from "@opensteer/client/react";
-import { compactionOfferText } from "@opensteer/client/host";
+import { commandRequestView, compactionOfferText } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
@@ -90,6 +90,7 @@ import {
   useDraftAttachments,
 } from "./draft-attachments.js";
 import { AnswerBar } from "./answer-bar.js";
+import { CommandRequestCard } from "./command-request-card.js";
 import { QuestionRequestCard } from "./question-card.js";
 import { RequestCard } from "./request-card.js";
 import type { ThreadMutationClaim, ThreadMutationGate } from "./thread-mutation-gate.js";
@@ -217,9 +218,10 @@ export function Composer(props: {
     {
       label: "stop this run",
       done: "stopped",
-      execute: async (runId) => {
+      // Stop ends the task's current work, whichever Run that is by the time it lands.
+      execute: async () => {
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-        await props.hostClient.stopRun(threadId, runId);
+        await props.hostClient.stopRun(threadId);
       },
       reconcile: async (runId) => {
         const detail = props.hostClient.getThreadTranscript(threadId)?.getSnapshot();
@@ -327,6 +329,8 @@ export function Composer(props: {
   // A question the viewer can answer turns this bar into its answer field,
   // unless a message is already being written here: that draft keeps the bar
   // until it is sent or emptied, or the person chooses to answer instead.
+  // A command an agent proposed is reviewed on its own card, whatever its form says.
+  const commandCard = surface === null ? null : commandRequestView(surface.request);
   const question = surface !== null && surface.textRole === "answer" && !readOnly ? surface : null;
   const holdsDraft = text.trim() !== "" || staged.items.length > 0 || quote !== null;
   const [answerInstead, setAnswerInstead] = useState<string | null>(null);
@@ -741,7 +745,7 @@ export function Composer(props: {
             </AppText>
           </Pressable>
         </View>
-        {reopenLine === null ? null : <ActionLine line={reopenLine} numberOfLines={2} />}
+        {reopenLine === null ? null : <ActionLine line={reopenLine} />}
       </View>
     );
   return (
@@ -751,7 +755,19 @@ export function Composer(props: {
           <AppText role="caption">Show more requests</AppText>
         </Pressable>
       ) : null}
-      {surface === null ? null : question !== null ? (
+      {surface === null ? null : commandCard !== null ? (
+        <Animated.View entering={appear}>
+          <CommandRequestCard
+            deploymentId={deploymentId}
+            disabled={!props.canRespond || requestDisabledReason !== null}
+            highlighted={surface.request.id === props.highlightRequestId}
+            hostClient={hostClient}
+            key={surface.request.id}
+            request={surface.request}
+            view={commandCard}
+          />
+        </Animated.View>
+      ) : question !== null ? (
         <Animated.View entering={appear}>
           <QuestionRequestCard
             canRespond={props.canRespond}
@@ -790,12 +806,12 @@ export function Composer(props: {
       )}
       {failure === null ? null : (
         <View style={styles.failure}>
-          <ActionLine line={failure} numberOfLines={2} onDismiss={() => setFailure(null)} />
+          <ActionLine line={failure} onDismiss={() => setFailure(null)} />
         </View>
       )}
       {stopAction.line === null ? null : (
         <View style={styles.failure}>
-          <ActionLine line={stopAction.line} numberOfLines={2} onDismiss={stopAction.dismiss} />
+          <ActionLine line={stopAction.line} onDismiss={stopAction.dismiss} />
         </View>
       )}
       {filesWait ? (
@@ -833,7 +849,6 @@ export function Composer(props: {
                 },
               },
             }}
-            numberOfLines={2}
           />
           <Pressable
             accessibilityRole="button"
@@ -1019,7 +1034,6 @@ export function Composer(props: {
                   paddingVertical={fieldPadding}
                   placeholder={pageInBar === null ? props.placeholder : "Ask about this page…"}
                   ref={input}
-                  scope="personal"
                   value={text}
                 />
               </Pressable>

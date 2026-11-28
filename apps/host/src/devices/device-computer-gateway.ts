@@ -1,3 +1,5 @@
+import type { KnownDevice } from "../administration/device-access.js";
+import type { ComputerInventoryAuthority } from "../computer-use/computer-use-service.js";
 import {
   DeviceIdSchema,
   androidPhoneDefinitionId,
@@ -70,12 +72,15 @@ export interface DeviceComputerUseGateway extends Pick<
     deviceId: DeviceId,
     owner: UserId,
     params: ComputerUseInstalledAppsParams,
+    definition?: undefined,
+    authority?: ComputerInventoryAuthority,
   ): Promise<z.infer<typeof ComputerUseInstalledAppsResultSchema>>;
   installedApps(
     deviceId: DeviceId,
     owner: UserId,
     params: PhoneDisplayInstalledAppsParams,
     definition: PhoneDisplayDefinitionId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<PhoneDisplayInstalledAppsResult>;
   holders(deviceId: DeviceId): Promise<ReturnType<ComputerUseService["holders"]>>;
   closeForConnection(deviceId: DeviceId, holding: ComputerUseHolding): Promise<void>;
@@ -131,7 +136,9 @@ export interface DeviceComputerAppsPort {
     definitionId: string,
   ): Promise<ReturnType<ComputerAppHub["reportsApp"]>>;
   compatibilityReason(deviceId: DeviceId): Promise<string | null>;
-  requireAgentAccess(deviceId: DeviceId): Promise<void>;
+  requireAgentAccess(deviceId: DeviceId, known?: KnownDevice): Promise<void>;
+  agentSessionGuardsSupported(deviceId: DeviceId): Promise<boolean>;
+  refuseOutdatedForAgentSession(deviceId: DeviceId, doing: string): Promise<string>;
 }
 export type ComputerUseGateway = Pick<
   ComputerUseService,
@@ -161,6 +168,8 @@ export function deviceComputerApps(
     | "compatibilityReason"
     | "requireDeviceAgentAccess"
     | "deviceStatus"
+    | "agentSessionGuardsSupported"
+    | "refuseOutdatedForAgentSession"
   >,
 ): DeviceComputerAppsPort {
   return {
@@ -171,7 +180,9 @@ export function deviceComputerApps(
     attached: async (id) => hub.attached(id),
     reportsApp: async (id, definition) => hub.reportsApp(id, definition),
     compatibilityReason: async (id) => hub.compatibilityReason(id),
-    requireAgentAccess: async (id) => hub.requireDeviceAgentAccess(id),
+    requireAgentAccess: async (id, known) => hub.requireDeviceAgentAccess(id, known),
+    agentSessionGuardsSupported: async (id) => hub.agentSessionGuardsSupported(id),
+    refuseOutdatedForAgentSession: (id, doing) => hub.refuseOutdatedForAgentSession(id, doing),
   };
 }
 
@@ -198,18 +209,22 @@ export function deviceComputerUse(service: ComputerUseGateway): DeviceComputerUs
     id: DeviceId,
     owner: UserId,
     params: ComputerUseInstalledAppsParams,
+    definition?: undefined,
+    authority?: ComputerInventoryAuthority,
   ): Promise<z.infer<typeof ComputerUseInstalledAppsResultSchema>>;
   async function installedApps(
     id: DeviceId,
     owner: UserId,
     params: PhoneDisplayInstalledAppsParams,
     definition: PhoneDisplayDefinitionId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<PhoneDisplayInstalledAppsResult>;
   async function installedApps(
     id: DeviceId,
     owner: UserId,
     params: ComputerUseInstalledAppsParams | PhoneDisplayInstalledAppsParams,
     definition?: PhoneDisplayDefinitionId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<
     z.infer<typeof ComputerUseInstalledAppsResultSchema> | PhoneDisplayInstalledAppsResult
   > {
@@ -219,8 +234,15 @@ export function deviceComputerUse(service: ComputerUseGateway): DeviceComputerUs
           owner,
           PhoneDisplayInstalledAppsParamsSchema.parse(params),
           definition,
+          authority,
         )
-      : service.installedApps(id, owner, ComputerUseInstalledAppsParamsSchema.parse(params));
+      : service.installedApps(
+          id,
+          owner,
+          ComputerUseInstalledAppsParamsSchema.parse(params),
+          undefined,
+          authority,
+        );
   }
 
   return {

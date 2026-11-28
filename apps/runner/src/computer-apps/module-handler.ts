@@ -67,8 +67,11 @@ import {
 } from "./provider.js";
 
 export const computerAppStatusIntervalMs = 30_000;
+/** How soon a Mac whose helper has not answered yet looks again. */
+const ownerViewPendingRetryMs = 1_000;
 
 export interface ComputerAppModuleHandlerOptions {
+  readonly stopped?: boolean;
   readonly files?: RunFiles;
   /**
    * This Mac's computer use, present only when the desktop app offers it. The
@@ -99,6 +102,7 @@ type IntegrationsStatus = Pick<
   | "captureSupported"
   | "displayAvailable"
   | "ownerViewVersion"
+  | "ownerViewPending"
   | "type"
   | "loginText"
   | "passwordSignIn"
@@ -159,6 +163,7 @@ const computerUseMessageMaxLength = 1_000;
 export class ComputerAppModuleHandler {
   readonly #files: RunFiles | undefined;
   readonly #computerUse: ComputerUseHandler | undefined;
+  readonly #stopped: boolean;
   readonly #phoneScreens: PhoneScreenDriver | undefined;
   #screenConnection: PhoneScreenDriverConnection | undefined;
   readonly #assignments = new Map<DeviceDriverTarget["deviceId"], DeviceScreenDriverAssignment>();
@@ -193,9 +198,12 @@ export class ComputerAppModuleHandler {
   #lastStatus: string | undefined;
   #publishedStatus: IntegrationsStatus | undefined;
   #statusTimer: ReturnType<typeof setInterval> | undefined;
+  /** While this Mac's helper has not answered, the next look comes this soon. */
+  #pendingTimer: ReturnType<typeof setTimeout> | undefined;
   #stream: RunnerModuleStream | undefined;
 
   constructor(options: ComputerAppModuleHandlerOptions) {
+    this.#stopped = options.stopped === true;
     this.#files = options.files;
     this.#computerUse = options.computerUse;
     this.#phoneScreens = options.phoneScreens;
@@ -207,6 +215,10 @@ export class ComputerAppModuleHandler {
       options.providers.map((provider) => [provider.definitionId, provider]),
     );
     this.#statusIntervalMs = options.statusIntervalMs ?? computerAppStatusIntervalMs;
+  }
+
+  get busy(): boolean {
+    return this.#executing > 0 || this.#inFlight.size > 0 || this.#screenInFlight.size > 0;
   }
 
   get maxPayloadBytes(): number {
@@ -271,6 +283,10 @@ export class ComputerAppModuleHandler {
       throw new Error("Computer app control message exceeds its size limit");
     }
     const message = HostToIntegrationsModuleMessageSchema.parse(JSON.parse(frame.toString("utf8")));
+    if (this.#stopped && !isPersonFrame(message)) {
+      await this.#refuseStopped(message);
+      return;
+    }
     if (message.type === "host.integrations.device-drivers") {
       this.#replaceScreenAssignments(message);
       return;
@@ -338,6 +354,34 @@ export class ComputerAppModuleHandler {
       case "host.auxiliary.rejected":
       case "host.auxiliary.lease-renewed":
         throw new Error("The integrations module received an out-of-sequence handshake message");
+    }
+  }
+
+  async #refuseStopped(message: HostToIntegrationsModuleMessage): Promise<void> {
+    const stream = this.#stream;
+    if (!stream) return;
+    const detail = "Agents are stopped. Resume them to continue.";
+    switch (message.type) {
+      case "host.integrations.computer-use":
+        await this.#sendComputerUseResult(
+          stream,
+          message.requestId,
+          { code: "stopped-by-user", kind: "error", message: detail },
+          message.operation,
+          messageTarget(message),
+        );
+        break;
+      case "host.integrations.invoke":
+        await this.#sendResult(
+          stream,
+          message.requestId,
+          { code: "failed", kind: "error", message: detail },
+          null,
+        );
+        break;
+      case "host.integrations.mcp.open":
+        await this.#refuseMcp(message.sessionId, detail);
+        break;
     }
   }
 
@@ -1025,6 +1069,15 @@ export class ComputerAppModuleHandler {
       });
   }
 
+  #lookAgainSoon(stream: RunnerModuleStream): void {
+    if (this.#pendingTimer) return;
+    this.#pendingTimer = setTimeout(() => {
+      this.#pendingTimer = undefined;
+      if (this.#stream === stream) this.#queueInspection(stream);
+    }, ownerViewPendingRetryMs);
+    this.#pendingTimer.unref();
+  }
+
   #invalidatePasswordStatus(stream: RunnerModuleStream): void {
     const current = this.#publishedStatus;
     if (!current || (!current.loginText && !current.passwordSignIn)) return;
@@ -1080,14 +1133,20 @@ export class ComputerAppModuleHandler {
         ? { passwordSignIn: 2 as const }
         : {}),
     };
-    const ownerViewVersion = this.#computerUse?.ownerViewVersion();
+    // After an app start the helper can take longer to launch than one readiness
+    // probe waits. Until it answers, owner view is not known: the status says so,
+    // and the next look comes soon rather than at the next interval.
+    const ownerViewPending = this.#computerUse ? !this.#computerUse.ownerViewKnown() : false;
+    const ownerViewVersion = ownerViewPending ? undefined : this.#computerUse?.ownerViewVersion();
     if (this.#stream !== stream) return;
-    const fingerprint = JSON.stringify({ apps, ownerViewVersion, ...passwords });
+    if (ownerViewPending) this.#lookAgainSoon(stream);
+    const fingerprint = JSON.stringify({ apps, ownerViewVersion, ownerViewPending, ...passwords });
     if (fingerprint === this.#lastStatus) return;
     const status: IntegrationsStatus = {
       apps,
       ...passwords,
       ...(ownerViewVersion === undefined ? {} : { ownerViewVersion }),
+      ...(ownerViewPending ? { ownerViewPending: true as const } : {}),
       // Desktop bundles this Runner with a helper that speaks the capture
       // method, and replaces any older helper before a session can open.
       ...(this.#computerUse ? { displayAvailable: ownerViewVersion === 3 } : {}),
@@ -1183,13 +1242,16 @@ export class ComputerAppModuleHandler {
   }
 
   /** This Runner was not prepared with a local MCP executor. */
-  async #refuseMcp(sessionId: string): Promise<void> {
+  async #refuseMcp(
+    sessionId: string,
+    message = "The selected computer does not offer an MCP executor.",
+  ): Promise<void> {
     const stream = this.#stream;
     if (!stream) return;
     await this.#send(stream, {
       error: {
         code: "failed",
-        message: "The selected computer does not offer an MCP executor.",
+        message,
       },
       sessionId,
       type: "runner.integrations.mcp.closed",
@@ -1225,6 +1287,8 @@ export class ComputerAppModuleHandler {
     this.#localMcp?.detach();
     if (this.#statusTimer) clearInterval(this.#statusTimer);
     this.#statusTimer = undefined;
+    if (this.#pendingTimer) clearTimeout(this.#pendingTimer);
+    this.#pendingTimer = undefined;
     this.#stream = undefined;
     this.#lastStatus = undefined;
     this.#publishedStatus = undefined;
@@ -1309,4 +1373,29 @@ function screenTargetKey(target: DeviceDriverTarget): string {
 }
 function screenRequestKey(target: DeviceDriverTarget, requestId: string): string {
   return JSON.stringify([target.deviceId, target.driverGeneration, requestId]);
+}
+
+function isPersonFrame(message: HostToIntegrationsModuleMessage): boolean {
+  switch (message.type) {
+    case "host.integrations.display.start":
+    case "host.integrations.display.demand":
+      return message.sources.every((source) => source.kind === "owner-view");
+    case "host.integrations.display.input":
+    case "host.integrations.display.input-reset":
+      return message.source?.kind === "owner-view";
+    case "host.integrations.device-drivers":
+    case "host.integrations.computer-view":
+    case "host.integrations.computer-app-windows":
+    case "host.integrations.window-resolve":
+    case "host.integrations.mac-owner.input":
+    case "host.integrations.mac-owner.input-reset":
+    case "host.integrations.display.resolve":
+    case "host.integrations.display.refresh":
+    case "host.integrations.display.stop":
+    case "host.integrations.password-sign-in":
+    case "host.integrations.cancel":
+      return true;
+    default:
+      return false;
+  }
 }

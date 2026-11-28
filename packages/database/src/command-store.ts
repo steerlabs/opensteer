@@ -1,9 +1,9 @@
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
-import { assignmentWasCancelled } from "./execution-authority.js";
+import { assignmentWasCancelled, lineageExecutionStanding } from "./execution-authority.js";
 import { assertRequestRevision, refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
-import { runDeliverySelection } from "./thread-row-mappers.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
+import { assertRequestOriginMayContinue } from "./resource-access.js";
 import { failNodeStop } from "./node-control.js";
 import {
   assertThreadCaller,
@@ -28,7 +28,11 @@ import {
   runWasStopped,
   type RevokedRunGrant,
 } from "./run-grants.js";
-import { pendingReplacementAttempt, type RunAttemptRow } from "./run-attempts.js";
+import {
+  attemptForBinding,
+  pendingReplacementAttempt,
+  type RunAttemptRow,
+} from "./run-attempts.js";
 import {
   type CommandRow,
   type DatabaseSchema,
@@ -39,6 +43,7 @@ import {
   type UserId,
   type RunId,
   type ThreadId,
+  type TriggerId,
   type RequestId,
   type RequestResponse,
   OpensteerError,
@@ -50,6 +55,7 @@ import {
   UserIdSchema,
   RequestResponseSchema,
   hasSecretRequestFields,
+  agentGrantAllowsTasks,
   requestFormAnswersProblem,
   requestOptionDeclines,
   createId,
@@ -59,6 +65,7 @@ import {
   type Run,
 } from "@opensteer/core";
 import { type InsertObject, type Transaction, sql, type Kysely } from "kysely";
+import { connectionState } from "./connection-liveness.js";
 import {
   jsonValue,
   threadExecutionIsAvailableToUser,
@@ -68,14 +75,11 @@ import {
   lockCommandIdempotency,
   findCommandByIdempotency,
   idempotencyConflict,
+  holdRunForAnotherRun,
   principalIdForUser,
   returnRunToQueue,
   safeError,
 } from "./store-primitives.js";
-import {
-  channelRunAuthorityIsCurrent,
-  channelInputAuthorityIsCurrent,
-} from "./channel-execution.js";
 import {
   claimConversationBatch,
   claimRunInputBatch,
@@ -100,6 +104,16 @@ import {
   endStoppedUnconfirmedRun,
   finalizeRunTransaction,
 } from "./run-finalization.js";
+import {
+  chatEndedMessage,
+  connectionIsWaiting,
+  liveAgentConnection,
+  meetsConnectionFloor,
+  sendEligible,
+} from "./resource-access.js";
+import { lockLineageConnection } from "./thread-caller.js";
+import { senderUnlinkedFailure } from "./bridge-admission.js";
+import { chatSenderMaySpeak } from "./thread-inbox.js";
 
 export type RunnerControlInput =
   | {
@@ -109,6 +123,8 @@ export type RunnerControlInput =
       readonly threadId: ThreadId;
       readonly type: "run.interrupt";
       readonly keepQueueRunning?: true;
+      readonly expectedBindingGeneration?: number | null;
+      readonly stop?: { readonly id: CommandRow["id"]; readonly bootId: string };
       readonly authority?: ThreadCallerAuthority;
       /** The teammate whose ask this task answers withdrew it; no one here stopped it. */
       readonly teamCancel?: { readonly teamId: string; readonly requestId: string };
@@ -131,6 +147,7 @@ export type RunnerControlInput =
       readonly type: "request.respond";
     };
 export interface ClaimedCommand {
+  readonly blocked?: undefined;
   readonly command: CommandRow;
 
   /**
@@ -141,14 +158,88 @@ export interface ClaimedCommand {
   /** External sender revocation cancels that input, not other people sharing its authority. */
   readonly terminalFailureInput?: "seed-input";
 }
+export interface BlockedCommandClaim {
+  readonly blocked: "firing-ahead";
+  readonly triggerId: TriggerId;
+}
 async function claimObservedCommand(
   transaction: Transaction<DatabaseSchema>,
   observed: Pick<
     CommandRow,
     "environmentId" | "id" | "payload" | "requestedBy" | "runId" | "threadId" | "type"
-  >,
+  > & { readonly connectionId: string | null },
   dispatcherId: string,
-): Promise<ClaimedCommand | null> {
+): Promise<ClaimedCommand | BlockedCommandClaim | null> {
+  const lineage =
+    observed.type === "run.execute" || observed.type === "run.steer" ? observed.connectionId : null;
+  await lockLineageConnection(transaction, lineage);
+  // A tick enqueued before its chat was paused, listed before the pause: held at its claim, as a
+  // queued Run is, and listed again when the chat is back.
+  // AA2 / Y11 / T10: Enforce one firing at a time (and FIFO webhook order) here at trigger claim,
+  // never on the shared listPendingCommands dispatch query.
+  let triggerAuthorityLost = false;
+  if (observed.type === "trigger.execute") {
+    if (await triggerCommandHeld(transaction, observed.id)) return null;
+    const candidate = await transaction
+      .selectFrom("triggerOccurrences")
+      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+      .select([
+        "triggerOccurrences.createdAt",
+        "triggerOccurrences.id",
+        "triggerOccurrences.triggerId",
+        "triggers.anchorThreadId",
+        "triggers.createdBy",
+        "triggers.originConnectionId",
+      ])
+      .where("triggerOccurrences.commandId", "=", observed.id)
+      .executeTakeFirst();
+    if (candidate) {
+      // Lock the anchor `threads` row (`FOR SHARE`, rank 186) before `triggers` (187)
+      // and check standing + anchor unconfirmed-stop hold in one statement.
+      const standing = await lineageExecutionStanding(
+        transaction,
+        {
+          threadId: candidate.anchorThreadId,
+          userId: candidate.createdBy,
+          agentConnectionId: candidate.originConnectionId,
+        },
+        { lockAnchor: true },
+      );
+      if (standing.kind === "waiting" || standing.kind === "held") return null;
+      if (standing.kind === "lost") {
+        triggerAuthorityLost = true;
+      } else {
+        await transaction
+          .selectFrom("triggers")
+          .select("id")
+          .where("id", "=", candidate.triggerId)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        const blocker = await transaction
+          .selectFrom("triggerOccurrences")
+          .select("id")
+          .where("triggerId", "=", candidate.triggerId)
+          .where("id", "!=", candidate.id)
+          .where((eb) =>
+            eb.or([
+              eb("status", "=", "running"),
+              eb.and([
+                eb("status", "=", "pending"),
+                sql<boolean>`(created_at, id) < (${candidate.createdAt}, ${candidate.id})`,
+              ]),
+            ]),
+          )
+          .limit(1)
+          .executeTakeFirst();
+        if (blocker) {
+          return {
+            blocked: "firing-ahead",
+            triggerId: candidate.triggerId,
+          };
+        }
+      }
+    }
+  }
   // Follow ./lock-order.ts: an ambiguous prior dispatch may requeue a command
   // just as the old Runner commits its terminal event.
   const run = observed.runId
@@ -163,6 +254,8 @@ async function claimObservedCommand(
           "seedInputId",
           "finishIntent",
           "assignmentId",
+          "admittedGrantRevision",
+          "admittedAccessMode",
         ])
         .where("id", "=", observed.runId)
         .forNoKeyUpdate()
@@ -268,15 +361,16 @@ async function claimObservedCommand(
       .executeTakeFirst();
     if (predecessor) return null;
   }
-  let terminalFailure =
-    (observed.type === "run.execute" || observed.type === "trigger.execute") &&
-    (!observed.threadId ||
-      !observed.environmentId ||
-      !(await threadExecutionIsAvailableToUser(
-        transaction,
-        observed.threadId,
-        observed.requestedBy,
-      )))
+  let terminalFailure = triggerAuthorityLost
+    ? "Automation execution authority is no longer active."
+    : (observed.type === "run.execute" || observed.type === "trigger.execute") &&
+        (!observed.threadId ||
+          !observed.environmentId ||
+          !(await threadExecutionIsAvailableToUser(
+            transaction,
+            observed.threadId,
+            observed.requestedBy,
+          )))
       ? "Execution authority for this Thread is no longer available."
       : undefined;
   if (observed.type === "run.execute") {
@@ -290,14 +384,60 @@ async function claimObservedCommand(
     if (queue.inputQueuePaused) return null;
   }
   let terminalFailureInput: "seed-input" | undefined;
-  if (
-    run &&
-    observed.type === "run.execute" &&
-    !terminalFailure &&
-    !(await channelRunAuthorityIsCurrent(transaction, run.id))
-  ) {
-    terminalFailure = "Messaging access changed before this Run could start.";
-    terminalFailureInput = "seed-input";
+  if (lineage && run && !terminalFailure) {
+    await lockThreadRow(transaction, run.threadId);
+    const thread = await transaction
+      .selectFrom("threads")
+      .select("originConnectionId")
+      .where("id", "=", run.threadId)
+      .executeTakeFirstOrThrow();
+    let waiting = false;
+    let chatEnded = false;
+    const connection = await liveAgentConnection(transaction, observed.requestedBy, lineage).catch(
+      (error: unknown) => {
+        if (error instanceof OpensteerError && error.code === "forbidden") {
+          waiting = connectionIsWaiting(error);
+          chatEnded = error.message === chatEndedMessage;
+          return null;
+        }
+        throw error;
+      },
+    );
+    // A chat paused after this command was listed: its Run, or a message steered into one, is
+    // held, pending, with its message kept, and is listed again when the chat is back. Only an
+    // end is terminal. The one read that found it not live said which.
+    if (
+      !connection &&
+      (observed.type === "run.execute" || observed.type === "run.steer") &&
+      waiting
+    )
+      return null;
+    if (
+      !connection ||
+      !agentGrantAllowsTasks(connection.grant) ||
+      !sendEligible(connection, thread.originConnectionId) ||
+      ((observed.type === "run.steer" || run.admittedGrantRevision !== null) &&
+        !meetsConnectionFloor(connection, run.admittedGrantRevision, run.admittedAccessMode))
+    ) {
+      terminalFailure = chatEnded
+        ? chatEndedMessage
+        : "The connected agent's access ended before this work could be delivered.";
+      if (observed.type === "run.execute") terminalFailureInput = "seed-input";
+    }
+  }
+  // A Run whose message's sender may no longer speak (the person linked "me" to another
+  // identity) ends at its claim, as a queued message is cancelled at its turn: its message is
+  // cancelled with it, and the chat hears nothing (run-finalization reads this failure).
+  if (lineage && run && observed.type === "run.execute" && !terminalFailure && workIsAvailable) {
+    const seed = await transaction
+      .selectFrom("threadInputs")
+      .select(["authoritySource", "connectionId", "requestedBy", "state"])
+      .where("messageId", "=", run.seedInputId)
+      .executeTakeFirst();
+    if (seed && seed.state === "pending" && !(await chatSenderMaySpeak(transaction, seed))) {
+      terminalFailure = senderUnlinkedFailure;
+      terminalFailureInput = "seed-input";
+    }
   }
   if (observed.type === "run.execute" && !terminalFailure && !workIsAvailable) {
     terminalFailure = "The queued work item is no longer available.";
@@ -309,9 +449,6 @@ async function claimObservedCommand(
       .select(["messageId", "runId", "state"])
       .where("steerCommandId", "=", observed.id)
       .executeTakeFirst();
-    if (steer && !(await channelInputAuthorityIsCurrent(transaction, steer.messageId))) {
-      terminalFailure = "Messaging access changed before this message could be delivered.";
-    }
     await lockThreadRow(transaction, run.threadId);
     const currentThread = await transaction
       .selectFrom("threads")
@@ -699,7 +836,11 @@ function canonicalRunnerControlInput(input: RunnerControlInput): Readonly<Record
       };
     case "run.interrupt":
       return {
+        ...(input.stop ? { stop: input.stop } : {}),
         ...(input.keepQueueRunning ? { keepQueueRunning: true } : {}),
+        ...(input.expectedBindingGeneration !== undefined
+          ? { expectedBindingGeneration: input.expectedBindingGeneration }
+          : {}),
         idempotencyKey: input.idempotencyKey,
         requestedBy: input.requestedBy,
         runId: input.runId,
@@ -828,20 +969,28 @@ export async function enqueueRunnerControlInTransaction(
   }
   const thread = await transaction
     .selectFrom("threads")
-    .select(["environmentId", "id", "purpose", "status"])
+    .select(["environmentId", "id", "originConnectionId", "purpose", "status"])
     .where("id", "=", input.threadId)
     .executeTakeFirst();
   if (!thread)
     throw new OpensteerError({
       code: "not_found",
-      message: "Thread not found",
+      message: "Task not found",
     });
   let targetRunStatus: RunRow["status"] | null = null;
-  let targetRunBound = false;
+  let targetRunMayHaveBeenSent = false;
   {
     const run = await transaction
       .selectFrom("runs")
-      .select(["bindingGeneration", "id", "requestedBy", "status", "threadId", "finishIntent"])
+      .select([
+        "bindingGeneration",
+        "connectionId",
+        "id",
+        "requestedBy",
+        "status",
+        "threadId",
+        "finishIntent",
+      ])
       .where("id", "=", input.runId)
       .forNoKeyUpdate()
       .executeTakeFirst();
@@ -851,6 +1000,12 @@ export async function enqueueRunnerControlInTransaction(
         message: "Run not found for thread",
       });
     }
+    if (
+      input.type === "run.interrupt" &&
+      input.expectedBindingGeneration !== undefined &&
+      run.bindingGeneration !== input.expectedBindingGeneration
+    )
+      throw new OpensteerError({ code: "conflict", message: "The Run execution changed" });
     if (run.finishIntent)
       throw new OpensteerError({
         code: "conflict",
@@ -864,7 +1019,22 @@ export async function enqueueRunnerControlInTransaction(
       });
     }
     targetRunStatus = run.status;
-    targetRunBound = run.bindingGeneration !== null;
+    targetRunMayHaveBeenSent = run.bindingGeneration !== null;
+    if (
+      input.type === "run.interrupt" &&
+      input.expectedBindingGeneration !== undefined &&
+      run.status === "starting" &&
+      run.connectionId &&
+      run.bindingGeneration !== null
+    ) {
+      const attempt = await attemptForBinding(transaction, run.id, run.bindingGeneration);
+      if (
+        attempt?.connectionId === run.connectionId &&
+        attempt.admittedGrantRevision === null &&
+        attempt.firstEventAt === null
+      )
+        targetRunMayHaveBeenSent = false;
+    }
     await requirePersonalOwner(transaction, input.requestedBy);
     if (input.type === "request.respond" && run.status !== "waiting") {
       throw new OpensteerError({
@@ -878,6 +1048,12 @@ export async function enqueueRunnerControlInTransaction(
         message: "This Run was stopped, so it no longer takes answers",
       });
     }
+    if (input.type === "request.respond") {
+      await assertRequestOriginMayContinue(transaction, run.requestedBy, {
+        connectionId: run.connectionId,
+        threadOriginConnectionId: thread.originConnectionId,
+      });
+    }
   }
   if (input.type === "run.interrupt")
     await assertThreadCaller(transaction, input.authority, {
@@ -885,13 +1061,10 @@ export async function enqueueRunnerControlInTransaction(
     });
   if (input.type === "request.respond" && input.agentResponder)
     await assertAgentRequestTarget(transaction, input.agentResponder.authority, input.threadId);
-  // A Run the dispatcher has not bound yet has never reached a Runner, and
-  // under this lock it never will: binding requires `starting`. It ends
-  // here, as a queued Run does, rather than waiting on an interrupt the
-  // Runner would answer for a Run it does not hold.
+  // Binding and stamping a connection handoff both require a starting Run under this lock.
   const endsHere =
     input.type === "run.interrupt" &&
-    (targetRunStatus === "queued" || (targetRunStatus === "starting" && !targetRunBound));
+    (targetRunStatus === "queued" || (targetRunStatus === "starting" && !targetRunMayHaveBeenSent));
   if (input.type === "run.interrupt") {
     await lockThreadRow(transaction, thread.id);
     if (thread.purpose === "voice") {
@@ -926,12 +1099,13 @@ export async function enqueueRunnerControlInTransaction(
     }
     // Finalizing a Run that ends here settles its Requests and Thread state.
     if (!endsHere) {
-      // Nothing a stopped Run asked for can be answered any more.
+      // Nothing a stopped Run asked for can be answered any more, nor any command it proposed.
       await cancelPending(transaction, {
         reason: "run-ended",
         resolvedAt: new Date(),
         runId: input.runId,
         cancelHandedOffPlugins: true,
+        cancelProposals: input.type === "run.interrupt",
       });
       // With nothing left to answer, the Run is running again until it stops.
       await transaction
@@ -1004,7 +1178,7 @@ export async function enqueueRunnerControlInTransaction(
     ),
     dispatcherId: null,
     environmentId: thread.environmentId,
-    id: createId("command"),
+    id: (input.type === "run.interrupt" ? input.stop?.id : undefined) ?? createId("command"),
     idempotencyKey: input.idempotencyKey,
     lastError: null,
     payload: jsonValue(
@@ -1117,7 +1291,9 @@ export async function claimNextCommand(
     const candidate = await transaction
       .selectFrom("commands")
       .leftJoin("threads", "threads.id", "commands.threadId")
+      .leftJoin("runs", "runs.id", "commands.runId")
       .select([
+        "runs.connectionId",
         "commands.environmentId as environmentId",
         "commands.id as id",
         "commands.payload as payload",
@@ -1128,6 +1304,7 @@ export async function claimNextCommand(
       ])
       .where("commands.environmentId", "=", environmentId)
       .where("commands.status", "=", "pending")
+      .where((expression) => expression.not(chatWorkHeld()))
       .where((expression) =>
         expression.or([
           expression("commands.type", "!=", "run.execute"),
@@ -1153,7 +1330,8 @@ export async function claimNextCommand(
       .orderBy("commands.createdAt", "asc")
       .executeTakeFirst();
     if (!candidate) return null;
-    return claimObservedCommand(transaction, candidate, dispatcherId);
+    const result = await claimObservedCommand(transaction, candidate, dispatcherId);
+    return result && !result.blocked ? result : null;
   });
 }
 
@@ -1338,99 +1516,6 @@ export async function dispatchRequestResponse(
   return result;
 }
 
-export async function dispatchChannelCommand(
-  database: Kysely<DatabaseSchema>,
-  commandId: CommandRow["id"],
-  send: (beforeAck: () => Promise<void>) => Promise<void>,
-): Promise<SucceededCommand> {
-  const lockIntent = async (transaction: Transaction<DatabaseSchema>) => {
-    const observed = await transaction
-      .selectFrom("commands")
-      .innerJoin("threads", "threads.id", "commands.threadId")
-      .select(["commands.runId", "commands.type", "commands.authoritySource"])
-      .where("commands.id", "=", commandId)
-      .where("commands.status", "=", "dispatched")
-      .executeTakeFirst();
-    if (
-      !observed?.runId ||
-      observed.authoritySource.kind !== "channel-ingress" ||
-      (observed.type !== "run.execute" && observed.type !== "run.steer")
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Messaging command is no longer dispatchable",
-      });
-    }
-    const run = await transaction
-      .selectFrom("runs")
-      .select(["status", "threadId", "requestedBy", "finishIntent"])
-      .where("id", "=", observed.runId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    if (
-      run.finishIntent !== null ||
-      (observed.type === "run.execute"
-        ? run.status !== "starting"
-        : !["running", "waiting"].includes(run.status))
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Messaging Run is no longer active",
-      });
-    }
-    const steer =
-      observed.type === "run.steer"
-        ? await transaction
-            .selectFrom("threadInputs")
-            .select("messageId")
-            .where("steerCommandId", "=", commandId)
-            .executeTakeFirst()
-        : null;
-    const authorized =
-      observed.type === "run.execute"
-        ? await channelRunAuthorityIsCurrent(transaction, observed.runId)
-        : steer !== undefined &&
-          steer !== null &&
-          (await channelInputAuthorityIsCurrent(transaction, steer.messageId));
-    if (
-      !authorized ||
-      !(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Messaging access changed before dispatch",
-      });
-    }
-    await lockThreadRow(transaction, run.threadId);
-    const command = await transaction
-      .selectFrom("commands")
-      .select("status")
-      .where("id", "=", commandId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    if (command.status !== "dispatched") {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Messaging command is no longer dispatchable",
-      });
-    }
-  };
-  await commitPersonalMutation(database, async (tx) => {
-    await lockIntent(tx);
-    await stampDispatchIntent(tx, commandId);
-  });
-  let result: SucceededCommand | undefined;
-  await send(async () => {
-    result = await commitPersonalMutation(database, async (tx) => {
-      await lockIntent(tx);
-      return succeedCommandInTransaction(tx, commandId);
-    });
-  });
-  if (!result)
-    throw new OpensteerError({ code: "conflict", message: "Messaging command was not accepted" });
-  return result;
-}
-
 async function stampDispatchIntent(
   transaction: Transaction<DatabaseSchema>,
   commandId: CommandRow["id"],
@@ -1447,57 +1532,157 @@ export async function listPendingCommands(
   database: Kysely<DatabaseSchema>,
   limit = 500,
 ): Promise<readonly PendingCommandRow[]> {
-  return database
-    .selectFrom("commands")
-    .leftJoin("threads", "threads.id", "commands.threadId")
-    .leftJoin("runs", "runs.id", "commands.runId")
-    .selectAll("commands")
-    .select("runs.harnessInstanceId as runHarnessInstanceId")
-    .where("commands.status", "=", "pending")
-    .where("runs.finishIntent", "is", null)
-    .where((expression) =>
-      expression.or([
-        expression("commands.type", "!=", "run.execute"),
-        expression.and([
-          expression("threads.inputQueuePaused", "=", false),
-          expression("runs.status", "=", "queued"),
+  return (
+    database
+      .selectFrom("commands")
+      .leftJoin("threads", "threads.id", "commands.threadId")
+      .leftJoin("runs", "runs.id", "commands.runId")
+      .selectAll("commands")
+      .select("runs.harnessInstanceId as runHarnessInstanceId")
+      .select("runs.startHoldReason as runStartHoldReason")
+      .where("commands.status", "=", "pending")
+      .where("runs.finishIntent", "is", null)
+      .where((expression) =>
+        expression.or([
+          expression("commands.type", "!=", "run.execute"),
+          expression.and([
+            expression("threads.inputQueuePaused", "=", false),
+            expression("threads.unconfirmedStopRunId", "is", null),
+            expression("runs.status", "=", "queued"),
+            // A Run waiting for another to end is offered again; an unconfirmed stop holds it.
+            expression.or([
+              expression("runs.startHoldReason", "is", null),
+              expression("runs.startHoldReason", "=", "waiting-for-run"),
+            ]),
+          ]),
         ]),
-      ]),
-    )
-    .where((expression) =>
-      expression.or([
-        expression("commands.type", "!=", "run.execute"),
-        expression.not(
+      )
+      .where((expression) =>
+        expression.or([
+          expression("commands.type", "!=", "trigger.execute"),
+          expression("threads.unconfirmedStopRunId", "is", null),
           expression.exists(
             expression
-              .selectFrom("runs as predecessor")
-              .innerJoin("runs as candidate", "candidate.threadId", "predecessor.threadId")
-              .select("predecessor.id")
-              .whereRef("candidate.id", "=", "commands.runId")
-              .whereRef("predecessor.runOrdinal", "<", "candidate.runOrdinal")
-              .where("predecessor.status", "in", nonTerminalRunStatuses),
+              .selectFrom("triggerOccurrences as ended_occurrence")
+              .innerJoin(
+                "triggers as ended_trigger",
+                "ended_trigger.id",
+                "ended_occurrence.triggerId",
+              )
+              .innerJoin("agentConnections", (join) =>
+                join.on(
+                  sql<boolean>`agent_connections.id = coalesce(ended_occurrence.connection_id, ended_trigger.origin_connection_id)`,
+                ),
+              )
+              .select("ended_occurrence.id")
+              .whereRef("ended_occurrence.commandId", "=", "commands.id")
+              .where(sql<boolean>`${connectionState()} = 'ended'`),
           ),
-        ),
-      ]),
-    )
-    .orderBy("commands.createdAt", "asc")
-    .limit(Math.min(Math.max(limit, 1), 20_000))
-    .execute();
+        ]),
+      )
+      .where((expression) =>
+        expression.or([
+          expression("commands.type", "!=", "run.execute"),
+          expression.not(
+            expression.exists(
+              expression
+                .selectFrom("runs as predecessor")
+                .innerJoin("runs as candidate", "candidate.threadId", "predecessor.threadId")
+                .select("predecessor.id")
+                .whereRef("candidate.id", "=", "commands.runId")
+                .whereRef("predecessor.runOrdinal", "<", "candidate.runOrdinal")
+                .where("predecessor.status", "in", nonTerminalRunStatuses),
+            ),
+          ),
+        ]),
+      )
+      // A paused chat's work waits for the chat, not for time: it is not listed until it is back.
+      .where((expression) => expression.not(chatWorkHeld()))
+      .orderBy("commands.createdAt", "asc")
+      .limit(Math.min(Math.max(limit, 1), 20_000))
+      .execute()
+  );
 }
+/**
+ * The command is a paused chat's work, held until the chat is back (asked of the one state
+ * function): a Run in the chat's lineage or a message steered into one, or an automation's run
+ * whose lineage is the chat
+ * (`triggers.origin_connection_id`, as authority and Disconnect read it). A paused chat's
+ * schedule fires nothing, so only a tick enqueued before the pause is held here. Reads `commands`
+ * and the left-joined `runs`.
+ */
+function chatWorkHeld() {
+  return sql<boolean>`((commands.type in ('run.execute', 'run.steer') and runs.connection_id is not null
+      and exists (
+        select 1 from agent_connections
+        where agent_connections.id = runs.connection_id
+          and agent_connections.bridge_account_id is not null
+          and ${connectionState()} = 'waiting'))
+    or (commands.type = 'trigger.execute' and exists (
+        select 1 from trigger_occurrences held_occurrence
+        join triggers held_trigger on held_trigger.id = held_occurrence.trigger_id
+        join agent_connections
+          on agent_connections.id = coalesce(held_occurrence.connection_id,
+            held_trigger.origin_connection_id)
+        where held_occurrence.command_id = commands.id
+          and agent_connections.bridge_account_id is not null
+          and ${connectionState()} = 'waiting')))`;
+}
+/** The automation tick belongs to a chat (its own lineage) that is paused. */
+async function triggerCommandHeld(
+  transaction: Transaction<DatabaseSchema>,
+  commandId: CommandRow["id"],
+): Promise<boolean> {
+  const { rows } = await sql<{ held: boolean }>`
+    select exists (
+      select 1 from trigger_occurrences held_occurrence
+      join triggers held_trigger on held_trigger.id = held_occurrence.trigger_id
+      join agent_connections
+        on agent_connections.id = coalesce(held_occurrence.connection_id,
+          held_trigger.origin_connection_id)
+      where held_occurrence.command_id = ${commandId}
+        and agent_connections.bridge_account_id is not null
+        and ${connectionState()} = 'waiting') as held`.execute(transaction);
+  return rows[0]?.held === true;
+}
+export function claimCommand(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+  dispatcherId: string,
+): Promise<ClaimedCommand | null>;
+export function claimCommand(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+  dispatcherId: string,
+  options: { readonly includeBlocked?: boolean },
+): Promise<ClaimedCommand | BlockedCommandClaim | null>;
 export async function claimCommand(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   dispatcherId: string,
-): Promise<ClaimedCommand | null> {
+  options?: { readonly includeBlocked?: boolean },
+): Promise<ClaimedCommand | BlockedCommandClaim | null> {
   return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
-      .select(["environmentId", "id", "payload", "requestedBy", "runId", "threadId", "type"])
-      .where("id", "=", commandId)
-      .where("status", "=", "pending")
+      .leftJoin("runs", "runs.id", "commands.runId")
+      .select([
+        "commands.environmentId",
+        "commands.id",
+        "commands.payload",
+        "commands.requestedBy",
+        "commands.runId",
+        "commands.threadId",
+        "commands.type",
+        "runs.connectionId",
+      ])
+      .where("commands.id", "=", commandId)
+      .where("commands.status", "=", "pending")
       .executeTakeFirst();
     if (!observed) return null;
-    return claimObservedCommand(transaction, observed, dispatcherId);
+    const result = await claimObservedCommand(transaction, observed, dispatcherId);
+    if (result?.blocked && !options?.includeBlocked) return null;
+    return result;
   });
 }
 export async function loadSteerDispatchInput(
@@ -1507,6 +1692,7 @@ export async function loadSteerDispatchInput(
   readonly message: Message;
   readonly origin: MessageOrigin | undefined;
   readonly run: Run;
+  readonly reauthorize?: () => Promise<void>;
   readonly runId: RunId;
   readonly threadId: ThreadId;
 }> {
@@ -1528,31 +1714,111 @@ export async function loadSteerDispatchInput(
   const runRow = await database
     .selectFrom("runs")
     .selectAll()
-    .select(runDeliverySelection)
     .where("id", "=", row.targetRunId)
     .executeTakeFirstOrThrow();
   return {
     message: messageFromRow(row),
     origin: messageOriginFromRow(row),
     run: runFromRow(runRow),
+    ...(runRow.connectionId
+      ? {
+          reauthorize: async () => {
+            const current = await database
+              .selectFrom("runs")
+              .innerJoin("threads", "threads.id", "runs.threadId")
+              .select([
+                "runs.bindingGeneration",
+                "runs.status",
+                "runs.admittedGrantRevision",
+                "runs.admittedAccessMode",
+                "threads.originConnectionId",
+              ])
+              .where("runs.id", "=", runRow.id)
+              .executeTakeFirst();
+            const connection = await liveAgentConnection(
+              database,
+              runRow.requestedBy,
+              runRow.connectionId!,
+            );
+            if (
+              !current ||
+              current.bindingGeneration !== runRow.bindingGeneration ||
+              !["running", "waiting"].includes(current.status) ||
+              !agentGrantAllowsTasks(connection.grant) ||
+              !sendEligible(connection, current.originConnectionId) ||
+              !meetsConnectionFloor(
+                connection,
+                current.admittedGrantRevision,
+                current.admittedAccessMode,
+              )
+            )
+              throw new OpensteerError({
+                code: "forbidden",
+                message: "The connected agent's access ended before this work could be delivered.",
+              });
+          },
+        }
+      : {}),
     runId: row.targetRunId,
     threadId: row.targetThreadId,
   };
+}
+export async function markCommandFrameSent(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+): Promise<void> {
+  await commitPersonalMutation(database, async (transaction) => {
+    const now = new Date();
+    // Follow lock-order.ts: trigger_occurrences (120) before commands (218).
+    await transaction
+      .updateTable("triggerOccurrences")
+      .set({ frameSentAt: now, provenNotStartedAt: null, updatedAt: now })
+      .where("commandId", "=", commandId)
+      .where("status", "=", "running")
+      .execute();
+    await transaction
+      .updateTable("commands")
+      .set({ frameSentAt: now, updatedAt: now })
+      .where("id", "=", commandId)
+      .where("status", "=", "dispatched")
+      .execute();
+  });
+}
+
+/** Holds a queued Run as waiting for another Run on its computer (the Home's capacity decision). */
+export async function holdQueuedRunForAnotherRun(
+  database: Kysely<DatabaseSchema>,
+  runId: RunId,
+): Promise<boolean> {
+  return commitPersonalMutation(database, (transaction) =>
+    holdRunForAnotherRun(transaction, runId),
+  );
 }
 export async function retryCommand(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
   commandId: CommandRow["id"],
   error: unknown,
+  options?: { readonly provenNotStarted?: boolean | undefined },
 ): Promise<void> {
   return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
-      .select(["id", "runId", "type"])
+      .select(["frameSentAt", "id", "runId", "type"])
       .where("id", "=", commandId)
       .where("status", "=", "dispatched")
       .executeTakeFirst();
     if (!observed) return;
+    if (
+      observed.type === "trigger.execute" &&
+      observed.frameSentAt !== null &&
+      !options?.provenNotStarted
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Cannot retry an automation firing after its dispatch frame was sent.",
+      });
+    }
     if (observed.type === "trigger.execute") {
       await transaction
         .selectFrom("triggerOccurrences")
@@ -1603,6 +1869,7 @@ export async function retryCommand(
       .updateTable("commands")
       .set({
         dispatcherId: null,
+        frameSentAt: null,
         lastError: safeError(error),
         status: "pending",
         updatedAt: new Date(),
@@ -1616,18 +1883,55 @@ export async function retryCommand(
     const command = await retry.executeTakeFirst();
     if (command?.type === "run.execute") {
       if (!run) throw new Error("Retry Run lock was not established");
+      const causeReason =
+        typeof error === "object" &&
+        error !== null &&
+        "cause" in error &&
+        typeof error.cause === "object" &&
+        error.cause !== null &&
+        "reason" in error.cause &&
+        typeof error.cause.reason === "string"
+          ? error.cause.reason
+          : error instanceof OpensteerError
+            ? error.reason
+            : undefined;
       return returnRunToQueue(transaction, {
         run,
+        startHoldReason:
+          causeReason === "previous-stop-unconfirmed"
+            ? "previous-stop-unconfirmed"
+            : // The Runner runs as many Runs as it may: this one waits for one of them to end.
+              causeReason === "run-concurrency-limit"
+              ? "waiting-for-run"
+              : null,
       });
     } else if (command?.type === "trigger.execute") {
+      await sql`
+        insert into trigger_occurrence_attempts (
+          occurrence_id, execution_generation, connection_id, runner_id, runner_boot_id,
+          admitted_grant_revision, admitted_access_mode, terminal_evidence_at, contact_lost_at
+        )
+        select id, execution_generation, connection_id, runner_id, runner_boot_id,
+          admitted_grant_revision, admitted_access_mode, terminal_evidence_at, contact_lost_at
+        from trigger_occurrences
+        where command_id = ${commandId} and status = 'running'
+          and connection_id is not null and runner_id is not null and runner_boot_id is not null
+          and (terminal_evidence_at is null or contact_lost_at is not null)
+      `.execute(transaction);
+      const now = new Date();
       await transaction
         .updateTable("triggerOccurrences")
         .set({
+          admittedGrantRevision: null,
+          admittedAccessMode: null,
+          terminalEvidenceAt: null,
+          contactLostAt: null,
+          ...(options?.provenNotStarted ? { frameSentAt: null, provenNotStartedAt: now } : {}),
           runnerBootId: null,
           runnerId: null,
           startedAt: null,
           status: "pending",
-          updatedAt: new Date(),
+          updatedAt: now,
         })
         .where("commandId", "=", commandId)
         .where("status", "=", "running")
@@ -1644,6 +1948,7 @@ export async function failCommand(
   queuedInputCancellation:
     "activation-input" | "authority-cohort" | "seed-input" = "activation-input",
   failureCode: "dispatch_failed" | "runner_restarted" = "dispatch_failed",
+  options?: { readonly provenNotStarted?: boolean | undefined },
 ): Promise<void> {
   const observed = await database
     .selectFrom("commands")
@@ -1699,12 +2004,14 @@ export async function failCommand(
           .set({
             completedAt: now,
             error: jsonValue(failure),
+            ...(options?.provenNotStarted ? { frameSentAt: null, provenNotStartedAt: now } : {}),
             status: "failed",
             updatedAt: now,
           })
           .where("commandId", "=", commandId)
           .where("status", "in", ["pending", "running"])
           .execute();
+        await wakeExecutionCommands(transaction);
       }
     });
     return;
@@ -1728,9 +2035,10 @@ export async function refuseSteer(
   commandId: CommandRow["id"],
   reason: string,
   reasonCode?: string,
+  pendingOnly = false,
 ): Promise<void> {
   return commitPersonalMutation(database, (transaction) =>
-    settleSteer(transaction, commandId, "failed", reason, reasonCode),
+    settleSteer(transaction, commandId, "failed", reason, reasonCode, pendingOnly),
   );
 }
 export async function markSteerUnknown(

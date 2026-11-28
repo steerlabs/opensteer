@@ -6,8 +6,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ModelSelectionSchema, createId, type HarnessInstanceId } from "@opensteer/core";
 import {
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
   type HarnessEvent,
   type HarnessInput,
   type HarnessRunInput,
@@ -15,7 +13,7 @@ import {
 } from "@opensteer/harness";
 import { afterEach, describe, expect, it } from "vitest";
 import { museModelDescriptors } from "./model-catalog.js";
-import { MuseHarnessDriver } from "./muse-driver.js";
+import { MuseHarnessDriver, museToolIdentity } from "./muse-driver.js";
 
 const fakeMuse = fileURLToPath(new URL("./test-fixtures/fake-muse.mjs", import.meta.url));
 const temporaryDirectories: string[] = [];
@@ -97,20 +95,6 @@ describe("Muse Code inspection", () => {
       status: "authentication-required",
     });
   });
-
-  it("refuses a shared isolated-service Runner before spawning Muse", async () => {
-    const fixture = await setup("happy");
-    expect(
-      await fixture.driver.inspect?.({
-        ...fixture.inspection,
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      }),
-    ).toEqual({
-      detail: "Muse Code runs only on a computer you own.",
-      status: "unavailable",
-    });
-    expect(await fixture.messages()).toEqual([]);
-  });
 });
 
 describe("Muse Code authentication", () => {
@@ -182,6 +166,27 @@ describe("Muse Code sessions", () => {
       }
     },
   );
+
+  it("refuses a task a connected agent or a chat started, before Muse Code starts", async () => {
+    const fixture = await setup("guidance-cancelled");
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    try {
+      await expect(
+        adapter.startSession({ ...fixture.context, personLineage: false }),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          "Muse Code starts with your own Muse Code settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
 
   it("resends guidance when the previous turn did not complete successfully", async () => {
     const fixture = await setup("guidance-cancelled");
@@ -402,6 +407,41 @@ describe("Muse Code sessions", () => {
     expect((await observer.waitFor("run.failed")).data.message).toContain("exited during the turn");
     await session.stop();
     await adapter.close();
+  });
+
+  it.each<{
+    name: string;
+    scenario: string;
+    environment: Readonly<Record<string, string>>;
+    message: string;
+  }>([
+    {
+      name: "proxy credentials",
+      scenario: "proxy-failure",
+      environment: { HTTPS_PROXY: "http://alice:p@ss-word@proxy.invalid:8080" },
+      message: "Connection failed via http://[REDACTED]@proxy.invalid:8080; password [REDACTED]",
+    },
+    {
+      name: "a refresh token",
+      scenario: "refresh-failure",
+      environment: { REFRESH_TOKEN: "fake-refresh-value" },
+      message: "Connection failed with refresh token [REDACTED]",
+    },
+  ])("scrubs $name from a Muse Code failure", async ({ scenario, environment, message }) => {
+    const fixture = await setup(scenario, environment);
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    try {
+      const session = await adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      await session.execute(fixture.turn("Hello"));
+      expect((await observer.waitFor("run.failed")).data.message).toBe(message);
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("maps quota failures to the usage-limit code with the latest valid reset", async () => {
@@ -671,7 +711,7 @@ describe("Muse Code sessions", () => {
   });
 });
 
-async function setup(scenario: string) {
+async function setup(scenario: string, supplied: Readonly<Record<string, string>> = {}) {
   const directory = await mkdtemp(join(tmpdir(), "osmuse-"));
   temporaryDirectories.push(directory);
   const capture = join(directory, "capture.jsonl");
@@ -683,6 +723,7 @@ async function setup(scenario: string) {
     FAKE_MUSE_SCENARIO: scenario,
     META_API_KEY: "inherited-must-not-pass",
     PATH: process.env.PATH ?? "",
+    ...supplied,
   };
   const providerState = {
     continuationKey: `muse:${directory}`,
@@ -708,9 +749,10 @@ async function setup(scenario: string) {
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: "Workspace instructions.",
+    // The person's own task: the only kind this engine runs.
+    personalContext: true,
+    personLineage: true,
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "muse-test",
       options: { effort: "high" },
@@ -718,7 +760,6 @@ async function setup(scenario: string) {
     }),
     platformGuide: "Opensteer platform guide.",
     providerState,
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: undefined,
     threadId: createId("thread"),
@@ -736,7 +777,6 @@ async function setup(scenario: string) {
       config: {},
       environment,
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "meta",
       workingDirectory: directory,
@@ -750,7 +790,6 @@ async function setup(scenario: string) {
     turn(text: string): HarnessRunInput {
       return {
         context: {
-          teamTurnContext: null,
           assignment: null,
           threadState: { previousAssignment: null, previousRun: null },
           startedAt: "2026-08-22T00:00:00.000Z",
@@ -880,4 +919,23 @@ it("delivers distinct full names for two plugins and a loose review skill", asyn
     expect(payload).toContain(skill.path);
   }
   await adapter.close();
+});
+
+describe("Muse tool identity", () => {
+  it("normalizes Opensteer MCP tool names to the canonical opensteer namespace", () => {
+    const tools = ["opensteer_command", "opensteer_task_read"];
+    for (const raw of [
+      "opensteer_command",
+      "mcp__opensteer__opensteer_command",
+      "opensteer__opensteer_command",
+      "opensteer:opensteer_command",
+      "opensteer/opensteer_command",
+    ]) {
+      expect(museToolIdentity(raw, tools), raw).toEqual({
+        namespace: "opensteer",
+        name: "opensteer_command",
+      });
+    }
+    expect(museToolIdentity("shell", tools)).toEqual({ namespace: "muse", name: "shell" });
+  });
 });

@@ -286,6 +286,7 @@ export class AccountDirectoryClient {
     label: string,
     handleFailure?: (status: number, reason: ControlPlaneErrorReason | null) => void,
     timeoutMs = 15_000,
+    signal?: AbortSignal,
   ): Promise<Response> {
     let response: Response;
     try {
@@ -298,7 +299,9 @@ export class AccountDirectoryClient {
         },
         method,
         redirect: "manual",
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       throw new OpensteerError({

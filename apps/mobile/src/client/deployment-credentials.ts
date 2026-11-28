@@ -1,5 +1,5 @@
 import type { NativeOAuthManager } from "@opensteer/client/auth";
-import type { DeploymentConnection } from "@opensteer/client/connections";
+import { usesHostNativeOAuth, type DeploymentConnection } from "@opensteer/client/connections";
 import type { PersonalSessionStore } from "./personal-session-store.js";
 
 /**
@@ -18,9 +18,9 @@ export interface DeploymentCredentials {
 }
 
 /**
- * The real answer: a team Host issues its own OAuth bearer, and a
- * Personal computer reached remotely presents the session its pairing code
- * established. A Deployment never carries both — the two credential families
+ * The real answer: a Home at its own address issues its own
+ * OAuth bearer, and a Mac reached remotely presents the session its pairing
+ * code established. A Deployment never carries both — the two credential families
  * are read by different parsers on the Host, and mixing them would let one
  * stand in for the other.
  */
@@ -32,11 +32,11 @@ export function createDeploymentCredentials(options: {
 }): DeploymentCredentials {
   return {
     async viewLoginId(connection) {
-      if (connection.kind === "team") return options.oauth.hostViewLoginId?.(connection);
+      if (usesHostNativeOAuth(connection)) return options.oauth.hostViewLoginId?.(connection);
       return (await options.sessions.load(connection.authority.document.deploymentId))?.viewLoginId;
     },
     async authorization(connection, expectedLoginId): Promise<string | null> {
-      if (connection.kind === "team") {
+      if (usesHostNativeOAuth(connection)) {
         const value = await options.oauth.authorizationHeader(connection);
         return expectedLoginId === undefined ||
           options.oauth.hostViewLoginId?.(connection) === expectedLoginId
@@ -51,7 +51,7 @@ export function createDeploymentCredentials(options: {
     },
 
     async held(connection): Promise<boolean> {
-      if (connection.kind === "team") {
+      if (usesHostNativeOAuth(connection)) {
         return options.oauth.hostCredentialState(connection).status === "signed-in";
       }
       return (

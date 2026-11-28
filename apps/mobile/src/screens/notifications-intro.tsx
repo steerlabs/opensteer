@@ -1,12 +1,13 @@
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { useIsFocused, useNavigation } from "@react-navigation/native";
 import { useEffect, type ReactNode } from "react";
-import { Image, Platform, Pressable, StyleSheet, View } from "react-native";
-import { color, controlFontScaleLimit, radius, space } from "../theme.js";
+import { Image, Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { color, controlFontScaleLimit, displayFontScaleLimit, radius, space } from "../theme.js";
 import { useHostValue } from "../ui/mobile-client-context.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
+import { useFitSheetHeight } from "../ui/fit-sheet.js";
 import { useContentInsets } from "../ui/pane.js";
-import { AppText, PrimaryButton } from "../ui/primitives.js";
+import { AppText, DisplayTitle, PrimaryButton } from "../ui/primitives.js";
 import { useGutter } from "../ui/screen.js";
 
 const selectConnected = (snapshot: HostSnapshot): boolean => snapshot.connection === "connected";
@@ -40,12 +41,19 @@ export function useNotificationsIntro(hostClient: HostClient | null): void {
  * Why to allow notifications, before the system asks. iOS gets one button that
  * leads to its own prompt and leaves by the sheet's dismissal; Android offers
  * both answers, and asks only after Enable.
+ *
+ * The sheet sizes to what it holds, but never past `useFitSheetHeight`: at the
+ * largest text sizes its words, the iOS caption among them, scroll, and its
+ * answers stay in view below them, sized as controls are. Its title
+ * grows as far as `displayFontScaleLimit`, where its widest word still fits the
+ * narrowest phone, so it never breaks inside a word.
  */
 export function NotificationsIntroScreen(): ReactNode {
   const navigation = useNavigation();
   const { registration } = useMobileNotifications();
   const insets = useContentInsets();
   const gutter = useGutter();
+  const tallest = useFitSheetHeight();
   const ios = Platform.OS === "ios";
   const enable = (): void => {
     // The system's prompt is its own window, so the sheet can leave as it opens.
@@ -57,32 +65,34 @@ export function NotificationsIntroScreen(): ReactNode {
       style={[
         styles.sheet,
         {
+          maxHeight: tallest,
           paddingBottom: insets.bottom + space[16],
           paddingLeft: gutter + insets.left,
           paddingRight: gutter + insets.right,
         },
       ]}
     >
-      <View style={styles.copy}>
-        <AppText role="displayLarge" style={styles.centred}>
-          Know when you’re needed
-        </AppText>
-        <AppText role="body" style={styles.centred} tone="soft">
-          Get notified when an agent finishes or needs your answer.
-        </AppText>
-      </View>
-      <NotificationPreview />
+      <ScrollView contentContainerStyle={styles.words} style={styles.scroll}>
+        <View style={styles.copy}>
+          <DisplayTitle style={styles.centred}>Know when you’re needed</DisplayTitle>
+          <AppText role="body" style={styles.centred} tone="soft">
+            Get notified when an agent finishes or needs your answer.
+          </AppText>
+        </View>
+        <NotificationPreview />
+        {ios ? (
+          <AppText role="caption" style={styles.centred} tone="muted">
+            Next, iOS asks to allow notifications.
+          </AppText>
+        ) : null}
+      </ScrollView>
       <View style={styles.actions}>
         <PrimaryButton
           label={ios ? "Continue" : "Enable notifications"}
           onPress={enable}
           prominent
         />
-        {ios ? (
-          <AppText role="caption" style={styles.centred} tone="muted">
-            Next, iOS asks to allow notifications.
-          </AppText>
-        ) : (
+        {ios ? null : (
           <Pressable
             accessibilityRole="button"
             onPress={() => navigation.goBack()}
@@ -98,7 +108,11 @@ export function NotificationsIntroScreen(): ReactNode {
   );
 }
 
-/** What one arriving looks like: the app's icon at banner size, a task and its ask. */
+/**
+ * What one arriving looks like: the app's icon at banner size, a task and its ask. It is a picture
+ * of a banner, read as one image by its label, so its words grow only as far as the title's: a
+ * person who needs them larger hears them whole.
+ */
 function NotificationPreview(): ReactNode {
   return (
     <View
@@ -109,14 +123,24 @@ function NotificationPreview(): ReactNode {
       <Image source={require("../../assets/icon.png") as number} style={styles.previewIcon} />
       <View style={styles.previewCopy}>
         <View style={styles.previewHead}>
-          <AppText numberOfLines={1} role="secondaryMedium" style={styles.previewTitle}>
+          <AppText
+            maxFontSizeMultiplier={displayFontScaleLimit}
+            numberOfLines={1}
+            role="secondaryMedium"
+            style={styles.previewTitle}
+          >
             Update the pricing page
           </AppText>
-          <AppText role="caption" tone="muted">
+          <AppText maxFontSizeMultiplier={displayFontScaleLimit} role="caption" tone="muted">
             now
           </AppText>
         </View>
-        <AppText numberOfLines={2} role="secondary" tone="soft">
+        <AppText
+          maxFontSizeMultiplier={displayFontScaleLimit}
+          numberOfLines={2}
+          role="secondary"
+          tone="soft"
+        >
           Needs your answer: publish the new prices today?
         </AppText>
       </View>
@@ -135,6 +159,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   pressed: { backgroundColor: color.surfacePressed },
+  scroll: { flexGrow: 0, flexShrink: 1 },
   preview: {
     alignItems: "center",
     backgroundColor: color.surfaceRaised,
@@ -152,4 +177,5 @@ const styles = StyleSheet.create({
     gap: space[24],
     paddingTop: space[32],
   },
+  words: { gap: space[24] },
 });

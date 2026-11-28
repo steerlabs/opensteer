@@ -13,7 +13,8 @@ A pass already running finishes its turn. The tasks the light pass opened for op
 they are ordinary tasks the person can finish or mark Done.
 
 Opensteer picks each pass's model from the person's background models below; an active pass
-with a `waitingReason` has no model it can use yet and resumes by itself, so tell the person the reason rather than pausing or resuming it.
+with a `waitingReason` has no model it can use yet and resumes by itself: tell the person the reason,
+and never pause or resume it to fix that. When the person asks to pause or resume, do it as above.
 
 ## Background models
 
@@ -61,16 +62,10 @@ If they still have not stopped, read the existing `opensteer:automations` remind
 (`references/reminders.md`), then call `opensteer_automation_create` for a one-shot reminder
 named `Reminder: finish deleting memory`,
 on this task, a few minutes later using the person's context time zone and an ISO-8601 instant
-with its date's offset. Declare `toolContractVersion: 5`; its program is:
+with its date's offset, using `interpreter: ["bash"]` and the script:
 
-```ts
-export default async function ({ event, opensteer }) {
-  await opensteer.callTool("opensteer_task_send", {
-    delivery: "queue",
-    message: "Finish deleting memory",
-    taskId: event.trigger.anchorThreadId,
-  });
-}
+```sh
+opensteer tool opensteer_task_send '{"delivery":"queue","message":"Finish deleting memory","taskId":"<this-task-id>"}'
 ```
 
 Confirm `nextFireAt` with `opensteer_automation_read`, then tell the person deletion is pending and

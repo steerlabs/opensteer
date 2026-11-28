@@ -105,6 +105,7 @@ function setup(
   >();
   const service = {
     state: vi.fn(() => ({ status: engineStatus, generation: 1 })),
+    installedInventoryEmpty: vi.fn(async () => false),
     installed: vi.fn(async (_input?: unknown, _context?: unknown) => {
       if (options.starting) {
         await options.starting;

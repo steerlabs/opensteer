@@ -7,6 +7,7 @@ import {
   spawnSupervised,
   type SupervisedProcess,
 } from "@opensteer/harness";
+import { warmWindowsPowerShell } from "@opensteer/harness/test-support/windows-powershell";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ExecutionContainment } from "./execution-containment.js";
 
@@ -61,17 +62,19 @@ async function supervisedTree(
 }
 
 const nodeDescendant = `process.execPath,["-e","console.log(1);setInterval(()=>{},1000)"],{stdio:["ignore","pipe","ignore"]}`;
+const powerShell = join(
+  process.env.SystemRoot ?? "C:\\Windows",
+  "System32",
+  "WindowsPowerShell",
+  "v1.0",
+  "powershell.exe",
+);
+const powerShellArgs = ["-NoProfile", "-NonInteractive"];
 
 // Gives itself an empty DACL, so the supervisor cannot open it to end it: a forced drain fails.
-const unopenableDescendant = `${JSON.stringify(
-  join(
-    process.env.SystemRoot ?? "C:\\Windows",
-    "System32",
-    "WindowsPowerShell",
-    "v1.0",
-    "powershell.exe",
-  ),
-)},["-NoProfile","-NonInteractive","-EncodedCommand",${JSON.stringify(
+const unopenableDescendant = `${JSON.stringify(powerShell)},${JSON.stringify([
+  ...powerShellArgs,
+  "-EncodedCommand",
   Buffer.from(
     `Add-Type -TypeDefinition @'
 using System;
@@ -97,9 +100,15 @@ if ([Unopenable]::Become() -ne 0) { exit 72 }
 Start-Sleep -Seconds 600`,
     "utf16le",
   ).toString("base64"),
-)}],{stdio:["ignore","pipe","ignore"]}`;
+])},{stdio:["ignore","pipe","ignore"]}`;
 
 describe("ExecutionContainment of supervised Job trees", () => {
+  warmWindowsPowerShell("the supervisor drain fixture", () => ({
+    executable: powerShell,
+    environment: { ...process.env } as Record<string, string>,
+    args: powerShellArgs,
+  }));
+
   it("proves a tree gone once its supervisor reports the drain, with the target's own status", async () => {
     const owner = await containment();
     const supervised = await supervisedTree(

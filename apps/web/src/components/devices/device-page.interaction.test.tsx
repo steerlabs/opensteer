@@ -145,3 +145,103 @@ it("sets a disconnected iPhone up again from its page in Opensteer on a Mac", as
   expect(port!.detach).not.toHaveBeenCalled();
   expect(client.getSnapshot().machines.find(({ id }) => id === phoneId)?.name).toBe("Work iPhone");
 });
+
+it("shows Asleep status and calm explanation on Devices list and device page", async () => {
+  const asleepSince = new Date(Date.now() - 20 * 60_000).toISOString();
+  let targetId = "";
+  const withSleepingMac = (source: HostClient) => {
+    const base = source.getSnapshot();
+    const candidate = base.machines.find((m) => m.kind === "computer" && m.status === "online");
+    if (!candidate) throw new Error("Expected a computer machine in mock snapshot");
+    targetId = candidate.id;
+    const cache = new WeakMap<
+      ReturnType<HostClient["getSnapshot"]>,
+      ReturnType<HostClient["getSnapshot"]>
+    >();
+    const patch = (snap: ReturnType<HostClient["getSnapshot"]>) => {
+      const cached = cache.get(snap);
+      if (cached) return cached;
+      const next = {
+        ...snap,
+        machines: snap.machines.map((m) =>
+          m.id === targetId
+            ? { ...m, asleepSince, lastSeenAt: asleepSince, status: "offline" as const }
+            : m,
+        ),
+      };
+      cache.set(snap, next);
+      return next;
+    };
+    return new Proxy(source, {
+      get(held, name) {
+        if (name === "getSnapshot") return () => patch(held.getSnapshot());
+        const value: unknown = Reflect.get(held, name, held);
+        return typeof value === "function" ? value.bind(held) : value;
+      },
+    }) as HostClient;
+  };
+
+  await mount(devicesRoute, { hostClient: withSleepingMac });
+  await vi.waitFor(() => {
+    if (!document.body.textContent?.includes("Asleep · seen 20m"))
+      throw new Error(`Devices list never showed Asleep: ${document.body.textContent}`);
+  });
+
+  await act(async () => goTo!(deviceRoute(targetId)));
+  await vi.waitFor(() => {
+    if (
+      !document.body.textContent?.includes(
+        "Its tabs and apps wait until it wakes. Agents can’t use it meanwhile.",
+      )
+    )
+      throw new Error(`Device page never showed asleep explanation: ${document.body.textContent}`);
+  });
+  expect(document.querySelector(".computer-status__dot--waiting")).not.toBeNull();
+});
+
+it("shows a Mac whose person stopped agents on it as stopped, on Devices and on its page", async () => {
+  const agentsStoppedSince = new Date().toISOString();
+  let targetId = "";
+  let targetName = "";
+  const withStoppedMac = (source: HostClient) => {
+    const base = source.getSnapshot();
+    const candidate = base.machines.find((m) => m.kind === "computer" && m.status === "online");
+    if (!candidate) throw new Error("Expected a computer machine in mock snapshot");
+    targetId = candidate.id;
+    targetName = candidate.name;
+    const cache = new WeakMap<
+      ReturnType<HostClient["getSnapshot"]>,
+      ReturnType<HostClient["getSnapshot"]>
+    >();
+    const patch = (snap: ReturnType<HostClient["getSnapshot"]>) => {
+      const cached = cache.get(snap);
+      if (cached) return cached;
+      const next = {
+        ...snap,
+        machines: snap.machines.map((m) => (m.id === targetId ? { ...m, agentsStoppedSince } : m)),
+      };
+      cache.set(snap, next);
+      return next;
+    };
+    return new Proxy(source, {
+      get(held, name) {
+        if (name === "getSnapshot") return () => patch(held.getSnapshot());
+        const value: unknown = Reflect.get(held, name, held);
+        return typeof value === "function" ? value.bind(held) : value;
+      },
+    }) as HostClient;
+  };
+  const line = () =>
+    `Stopped on ${targetName} · since ${new Date(agentsStoppedSince).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+
+  await mount(devicesRoute, { hostClient: withStoppedMac });
+  await vi.waitFor(() => {
+    if (!document.body.textContent?.includes(line()))
+      throw new Error(`Devices list never showed the Stop: ${document.body.textContent}`);
+  });
+  await act(async () => goTo!(deviceRoute(targetId)));
+  await vi.waitFor(() => {
+    if (!document.body.textContent?.includes(line()))
+      throw new Error(`Device page never showed the Stop: ${document.body.textContent}`);
+  });
+});

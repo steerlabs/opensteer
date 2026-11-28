@@ -22,7 +22,8 @@ vi.mock("@react-navigation/native", () => ({
   },
 }));
 
-const { openTopLevel, sidebarSwipes, topLevelIndex } = await import("./top-level.js");
+const { openTopLevel, showsSidebarMenu, sidebarSwipes, topLevelIndex } =
+  await import("./top-level.js");
 
 type Route = { readonly key: string; readonly name: string; readonly params?: object };
 
@@ -43,12 +44,6 @@ describe("the top-level screen", () => {
     expect(topLevelIndex(stack(home, { key: "needs-you", name: "NeedsYou" }))).toBe(1);
     expect(topLevelIndex(stack(home, { key: "apps", name: "Apps" }))).toBe(1);
     expect(topLevelIndex(stack(home, { key: "setup", name: "SetUpPhone" }))).toBe(0);
-    expect(
-      topLevelIndex(stack(home, { key: "reply", name: "TeamThread", params: { teamId: "a" } })),
-    ).toBe(1);
-    expect(
-      topLevelIndex(stack(home, { key: "join", name: "JoinTeam", params: { teamId: "a" } })),
-    ).toBe(0);
     expect(topLevelIndex(stack(home, { key: "sheet", name: "ThreadAround" }))).toBe(0);
     expect(topLevelIndex(stack(taskA))).toBeNull();
   });
@@ -58,6 +53,19 @@ describe("the top-level screen", () => {
     expect(sidebarSwipes(subagent, stack(home, taskA, subagent))).toBe(false);
     const page = { key: "page", name: "WorkspaceBrowser", params: { tabId: "t" } };
     expect(sidebarSwipes(page, stack(home, page))).toBe(false);
+  });
+
+  it("puts the sidebar Menu only on non-presented screens inside a Home", () => {
+    const deployments = { key: "deployments", name: "Deployments" };
+    const settings = { key: "settings", name: "Settings" };
+    expect(showsSidebarMenu(stack(deployments), "deployments")).toBe(false);
+    expect(showsSidebarMenu(stack(deployments, settings), "settings")).toBe(false);
+    expect(showsSidebarMenu(stack(home), "home")).toBe(true);
+    expect(showsSidebarMenu(stack(home, taskA), "a")).toBe(true);
+    expect(showsSidebarMenu(stack(home, taskA, subagent), "sub")).toBe(true);
+    expect(showsSidebarMenu(stack(home, taskA, settings), "a")).toBe(true);
+    expect(showsSidebarMenu(stack(home, taskA, settings), "settings")).toBe(false);
+    expect(showsSidebarMenu(stack(home, settings, subagent), "sub")).toBe(false);
   });
 });
 

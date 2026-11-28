@@ -1,4 +1,4 @@
-import { DeploymentKindSchema } from "../packages/core/src/index.js";
+import { z } from "zod";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { supervisedExitCode, writeProcessControl } from "@opensteer/shared/processControl";
@@ -80,8 +80,12 @@ export interface DevelopmentListener {
   readonly port: number;
 }
 
-export function developmentKind(environment: NodeJS.ProcessEnv): "personal" | "team" {
-  return DeploymentKindSchema.parse(environment.OPENSTEER_DEPLOYMENT_KIND?.trim() || "personal");
+/** Development runs a personal Home; no other kind starts. */
+const DevelopmentKindSchema = z.enum(["personal"], {
+  error: "Invalid option: development runs a personal Home",
+});
+export function developmentKind(environment: NodeJS.ProcessEnv): "personal" {
+  return DevelopmentKindSchema.parse(environment.OPENSTEER_DEPLOYMENT_KIND?.trim() || "personal");
 }
 export function assertDevelopmentEnvironment(environment: NodeJS.ProcessEnv): void {
   developmentKind(environment);

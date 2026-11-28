@@ -3,6 +3,7 @@ import { useClientRead, usePersonalRemoteAccess, useRemoteAccess } from "@openst
 import { createClientRead } from "@opensteer/client/reads";
 import { sessionActivityLine, settingsSessionRows } from "@opensteer/client/settings";
 import type { AuthSessionSummary } from "@opensteer/core";
+import { cloudComputerEntryDetail, cloudWords } from "@opensteer/client/computers";
 import { useNavigation } from "@react-navigation/native";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking } from "react-native";
@@ -23,7 +24,10 @@ import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { accountSettingsModel, signOutAccountInOrder } from "./settings-model.js";
 import { remoteAccessSections, type RemoteAccessRowAction } from "./settings-remote-access.js";
+import { homeAccountLinkSections, useHomeAccountLink } from "./settings-home-account-link.js";
 import { useSettingsHost } from "./use-settings-host.js";
+import { usePhoneHome } from "../computers/home-kind.js";
+import { isAddress } from "../ui/address-words.js";
 
 /** Account: who you are, using this computer from anywhere, and where you're signed in. */
 export function AccountSettingsController(props: { readonly sessionId?: string } = {}): ReactNode {
@@ -51,7 +55,15 @@ function AccountSettingsContent(props: {
     rows.find((row) => row.deploymentId === enrolledIn && row.accountManaged) ?? null;
   const host = selection.hostClient;
   const snapshot = useSettingsHost(host);
-  const remote = usePersonalRemoteAccess(snapshot !== null ? host : null);
+  // A Home on its own server has no Remote access: its Account link has its own card.
+  const networked = snapshot?.identityConfig?.exposure === "networked";
+  const home = usePhoneHome({
+    exposure: snapshot?.identityConfig?.exposure,
+    homeKind: snapshot?.identityConfig?.homeKind,
+    deploymentId: selection.deploymentId,
+  });
+  const homeLink = useHomeAccountLink(snapshot !== null ? host : null, networked);
+  const remote = usePersonalRemoteAccess(snapshot !== null && !networked ? host : null);
   const sessionsRead = useMemo(
     () =>
       host === null
@@ -116,7 +128,7 @@ function AccountSettingsContent(props: {
 
   const signOutAccount = () =>
     Alert.alert(
-      "Sign out of your Opensteer Account?",
+      "Sign out of your Opensteer account?",
       [
         enrolledVia === null ? null : phoneLeaves(thisPhoneNoun, enrolledVia.name),
         `Opensteers your Account lists leave this ${thisPhoneNoun}. Ones you added yourself stay.`,
@@ -251,7 +263,7 @@ function AccountSettingsContent(props: {
     return <NativeSettingsPage sections={sections} />;
   }
 
-  // The person's name first: what their agent calls them and, signed in, what teammates see.
+  // The person's name first: what their agent calls them.
   const owner = host?.getSnapshot().ownerProfile ?? null;
   if (owner !== null)
     sections.push({
@@ -263,7 +275,7 @@ function AccountSettingsContent(props: {
           kind: "button",
           label: owner.name ?? "Add your name",
           detail: owner.accountBacked
-            ? "Your name · teammates see it"
+            ? "Your name · kept with your Opensteer account"
             : "Your name · stays on your computer",
           opens: true,
           onPress: () => navigation.navigate("YourName", { target: "owner" }),
@@ -280,7 +292,9 @@ function AccountSettingsContent(props: {
           key: "identity",
           kind: "text",
           label: signedIn ? accountModel.title : "Not signed in",
-          detail: signedIn ? "Opensteer Account" : "Sign in to reach your computers",
+          detail: signedIn ? "Opensteer account" : "Sign in to reach your computers",
+          // The account's email, the same value the welcome draws: never hyphenated.
+          ...(signedIn && isAddress(accountModel.title) ? { addressIn: "label" as const } : {}),
           ...(accountModel.initial === null ? {} : { initial: accountModel.initial }),
         },
         ...(!signedIn && accountModel.action
@@ -302,7 +316,19 @@ function AccountSettingsContent(props: {
       ...(accountError ? { footer: { text: accountError, tone: "danger" as const } } : {}),
     });
   }
-  if (host && snapshot !== null)
+  if (homeLink)
+    sections.push(
+      ...homeAccountLinkSections(homeLink.state, {
+        link: () => void homeLink.client.link(() => client.linkSelectedPersonalAccount()),
+        unlink: () => void homeLink.client.unlink(),
+        confirm: (question, proceed) =>
+          Alert.alert(question, undefined, [
+            { style: "cancel", text: "Cancel" },
+            { style: "destructive", text: "Unlink", onPress: proceed },
+          ]),
+      }),
+    );
+  else if (host && snapshot !== null)
     sections.push(
       ...remoteAccessSections(
         {
@@ -314,6 +340,21 @@ function AccountSettingsContent(props: {
         act,
       ),
     );
+  sections.push({
+    key: "cloud-computer",
+    title: "",
+    rows: [
+      {
+        key: "cloud-computer",
+        kind: "button",
+        label: cloudWords("cloud.entry.title"),
+        detail: cloudComputerEntryDetail(home.kind.kind),
+        symbol: "cloud",
+        opens: true,
+        onPress: () => navigation.navigate("CloudComputer"),
+      },
+    ],
+  });
   if (host && (sessions === null || sessions.length > 0))
     sections.push({
       key: "sessions",

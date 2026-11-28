@@ -46,11 +46,11 @@ extension WireJourney {
         if !started { try await Task.sleep(nanoseconds: 10_000_000) }
       }
       guard started else {
-        helper.stopFromOverlay()
+        helper.stopFromOverlay(app: app.bundleId.lowercased())
         _ = try? await task.value
         throw JourneyFailure.failed("Batch did not establish partial input")
       }
-      helper.stopFromOverlay()
+      helper.stopFromOverlay(app: app.bundleId.lowercased())
     }
     let result = try await task.value
     let performed = result["performed"] as? [String] ?? []
@@ -85,7 +85,7 @@ extension WireJourney {
     try require(
       helper.registry.sessions[session]?.processIdentifiers[app.bundleId.lowercased()] == pid
         && helper.isMonitoring(pid), "Inventory did not register observer cleanup ownership")
-    helper.stopFromOverlay()
+    helper.stopFromOverlay(app: app.bundleId.lowercased())
     try require(!helper.isMonitoring(pid), "Inventory-only Stop leaked its observer")
     try Data("Inventory-only observer released\n".utf8).write(
       to: out.appendingPathComponent("inventory-cleanup-passed.txt"))

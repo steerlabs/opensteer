@@ -10,6 +10,7 @@ import {
   phoneDisplayDefinitionIds,
   iphoneScreenDefinitionId,
   type PhoneDisplayDefinitionId,
+  type AgentSessionId,
   type DeviceId,
   type DeviceDriverIdentity,
   OpensteerError,
@@ -29,6 +30,7 @@ import {
 } from "@opensteer/integration-core/computer-app";
 import { type IntegrationAccess } from "@opensteer/integration-core/access";
 import {
+  computerUseRequestMayHaveEffect,
   getPhoneDisplayCodec,
   PhoneDisplayActParamsSchema,
   PhoneDisplayDispatchActParamsSchema,
@@ -80,7 +82,12 @@ import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type { PasswordSignInService } from "../browser/password-sign-in-service.js";
-import type { RevokedRunGrant } from "@opensteer/database";
+import {
+  reserveAgentSessionDeviceHold,
+  settleAgentSessionDeviceHold,
+  settleOrphanedAgentSessionDeviceHolds,
+  type RevokedRunGrant,
+} from "@opensteer/database";
 import type {
   RunCapabilityBindingAuthorizer,
   RunCapabilityClaims,
@@ -261,8 +268,33 @@ export interface ComputerUseLease {
   readonly sessionId: ComputerUseSessionId;
 }
 
+/**
+ * A connected agent's session driving the one app or phone screen it was granted, through
+ * `computer_use`. It is no Run: `runId` is only the key this service and the frame keep their
+ * bookkeeping under, derived from the session the way Mac-wide operations use a runless one.
+ * Its authority is the session binding, which `assertActive` resolves on every check.
+ */
+export interface ComputerUseSessionAuthority {
+  readonly kind: "agent-session";
+  readonly runId: RunId;
+  readonly bindingGeneration: 0;
+  readonly threadId: ThreadId;
+  readonly sessionId?: AgentSessionId;
+  /** Throws a `forbidden` refusal once the session ended or no longer reaches this target. */
+  readonly assertActive: () => Promise<void>;
+  readonly assertDispatch?: () => Promise<void>;
+  readonly submitted?: (mayHaveEffect?: boolean) => void;
+  readonly driver?: DeviceDriverIdentity;
+}
+
 /** The authenticated attempt, including the executing Runner distinct from the target computer. */
-export type ComputerUseContext = RunCapabilityClaims<string>;
+export type ComputerUseContext = RunCapabilityClaims<string> | ComputerUseSessionAuthority;
+
+function agentSessionAuthority(
+  context: ComputerUseContext,
+): ComputerUseSessionAuthority | undefined {
+  return "kind" in context && context.kind === "agent-session" ? context : undefined;
+}
 
 /**
  * One frame that has left the Host, and the answer still to come.
@@ -329,7 +361,15 @@ export interface ComputerUseStopLedger {
 }
 
 /** Admission rechecks the surface grant in the same turn as session checks and send. */
-type ComputerUseAdmission = <Result>(send: () => Promise<Result>) => Promise<Result>;
+export type ComputerUseAdmission = <Result>(send: () => Promise<Result>) => Promise<Result>;
+
+export interface ComputerInventoryAuthority {
+  readonly admit: ComputerUseAdmission;
+  readonly assertCurrent: () => Promise<void>;
+  readonly signal: AbortSignal;
+  readonly driver?: DeviceDriverIdentity;
+  readonly submitted?: () => void;
+}
 
 export interface ComputerUseServiceOptions {
   readonly deploymentId: DeploymentId;
@@ -413,6 +453,7 @@ export interface ComputerUseServiceOptions {
   readonly expireSetupRequests?: () => Promise<void>;
   /** Where a person's Stops are kept so that they outlive this Host. */
   readonly stops: ComputerUseStopLedger;
+  readonly agentSessionDatabase?: Parameters<typeof reserveAgentSessionDeviceHold>[0];
   readonly activityNotifyIntervalMs?: number;
   readonly idleMs?: { readonly app: number; readonly display: number };
   readonly now?: () => number;
@@ -421,6 +462,7 @@ export interface ComputerUseServiceOptions {
 }
 
 interface Session {
+  agentHold?: { outcome?: "ended" | "unknown" };
   route?: DeviceDriverRoute | undefined;
   readonly cancellation: AbortController;
   readonly pending: Map<string, ComputerUseTarget>;
@@ -546,6 +588,8 @@ export class ComputerUseService {
   readonly #stopped: Set<string>;
   readonly #removedDevices = new Set<ComputerTargetId>();
   readonly #stops: ComputerUseStopLedger;
+  readonly #agentSessionDatabase: ComputerUseServiceOptions["agentSessionDatabase"];
+  readonly #homeProcessId = randomUUID();
   /** A Runner chooses reported IDs; only an exact Run/Runner/session tuple may share a write. */
   readonly #unrecordedStops = new Map<string, HeldStop>();
   readonly #stopWrites = new Map<string, Promise<void>>();
@@ -553,6 +597,7 @@ export class ComputerUseService {
   readonly #writes = new Set<Promise<unknown>>();
   /** Sessions the Host has let go whose close the Mac has not yet answered. */
   readonly #undeliveredCloses = new Set<Session>();
+  readonly #closingSessions = new Map<Session, Promise<void>>();
   readonly #onPlaceActivity: ComputerUseServiceOptions["onPlaceActivity"];
   readonly #resolveActor: ComputerUseServiceOptions["resolveActor"];
   readonly #threadTitle: ComputerUseServiceOptions["threadTitle"];
@@ -582,6 +627,7 @@ export class ComputerUseService {
     this.#actingWindowMs = options.actingWindowMs ?? computerUseActingWindowMs;
     this.#authorizer = options.authorizer;
     this.#stops = options.stops;
+    this.#agentSessionDatabase = options.agentSessionDatabase;
     this.#stopped = new Set(
       options.stops.initial.map((stop) =>
         stopKey(stop.runId, "deviceId" in stop ? stop.deviceId : stop.runnerId),
@@ -647,7 +693,7 @@ export class ComputerUseService {
     entry.spent = true;
     const session = entry.session;
     session.inFlight -= 1;
-    if (!session.dispatched && session.inFlight === 0) this.#forget(session);
+    if (!session.dispatched && session.inFlight === 0) void this.#forget(session);
   }
 
   #spend(lease: ComputerUseLease): {
@@ -815,6 +861,7 @@ export class ComputerUseService {
       }
     }
     let sent;
+    let mayHaveEffect = false;
     let timeoutMs: number = Math.max(
       1,
       Math.min(
@@ -971,6 +1018,7 @@ export class ComputerUseService {
         );
       }
       sent = await admit(async () => {
+        const connected = agentSessionAuthority(authority);
         await this.#authorizeSession(session, authority);
         checkSession();
         checkSaved();
@@ -978,6 +1026,8 @@ export class ComputerUseService {
           session.deviceId,
           target.kind === "display" ? target.definitionId : undefined,
         );
+        if (connected?.driver && !sameDriver(connected.driver, route))
+          throw sessionEndedBeforeSend(session.deviceName, target);
         if (
           session.route &&
           (!this.#hub.routeCurrent?.(session.route) || !sameDriver(session.route, route))
@@ -995,19 +1045,40 @@ export class ComputerUseService {
             ),
           );
         }
+        if (connected?.assertDispatch) await connected.assertDispatch();
+        checkSession();
+        if (connected?.sessionId && this.#agentSessionDatabase && !session.agentHold) {
+          await reserveAgentSessionDeviceHold(this.#agentSessionDatabase, {
+            id: session.sessionId,
+            sessionId: connected.sessionId,
+            deviceName: session.deviceName,
+            homeProcessId: this.#homeProcessId,
+          });
+          session.agentHold = {};
+          try {
+            checkSession();
+          } catch (error) {
+            // Stop or route loss won while the reservation was being written. Nothing left.
+            await this.#deliverClose(session);
+            throw error;
+          }
+        }
         if (target.kind === "app") addedApp = this.#rememberApp(session, target.app);
         else this.#reserveDisplay(session, target.definitionId);
         if (savedDeadline !== undefined) timeoutMs = Math.max(1, savedDeadline - this.#now());
         session.lastUsedAt = this.#now();
-        session.dispatched = true;
+        if (!session.agentHold) session.dispatched = true;
         if (target.kind === "app") this.#noteActing(session, computerAppIdentityKey(target.app));
 
+        const phoneHold = target.kind === "display" && !session.confirmed;
+        mayHaveEffect = computerUseRequestMayHaveEffect(operation, params, phoneHold);
         return this.#hub.sendComputerUse({
           access: target.access,
           app: target.kind === "app" ? target.app : null,
           // Only a display names its definition: a frame to a Mac stays the
           // frame every Mac already reads.
           ...(target.kind === "display" ? { definitionId: target.definitionId } : {}),
+          ...(phoneHold ? { phoneHold: true } : {}),
           operation,
           params,
           requestId,
@@ -1016,13 +1087,17 @@ export class ComputerUseService {
           route: session.route,
           sessionId: session.sessionId,
           signal: AbortSignal.any([session.cancellation.signal, ...(signal ? [signal] : [])]),
+          submitted: () => {
+            session.dispatched = true;
+            connected?.submitted?.(mayHaveEffect);
+          },
           threadTitle: session.threadTitle,
           timeoutMs,
         });
       });
     } catch (error) {
       session.inFlight -= 1;
-      if (!session.dispatched && session.inFlight === 0) this.#forget(session);
+      if (!session.dispatched && session.inFlight === 0) await this.#forget(session);
       throw error;
     } finally {
       session.pending.delete(requestId);
@@ -1035,7 +1110,7 @@ export class ComputerUseService {
     const audit = (sent.audit ?? sent.outcome).then((outcome) => {
       if (outcome.kind !== "ok") return [];
       return sanitizeReceipts(
-        parseComputerUseResult(target, operation, outcome.value).performed ?? [],
+        parseComputerUseResult(target, operation, outcome.value, mayHaveEffect).performed ?? [],
       );
     });
     // A malformed late result must remain an unknown audit, not an unhandled rejection.
@@ -1050,7 +1125,15 @@ export class ComputerUseService {
         } finally {
           session.inFlight -= 1;
         }
-        let result = this.#settle(session, target, operation, addedApp, outcome, params);
+        let result = this.#settle(
+          session,
+          target,
+          operation,
+          addedApp,
+          outcome,
+          params,
+          mayHaveEffect,
+        );
         if (saved.size > 0 && result.performed)
           result = {
             ...result,
@@ -1095,6 +1178,7 @@ export class ComputerUseService {
     addedApp: boolean,
     outcome: ComputerUseOutcome,
     params: ComputerUseFrameParams,
+    mayHaveEffect: boolean,
   ): ComputerUseDispatchResult {
     const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
     const words = scopeWords(target);
@@ -1115,16 +1199,13 @@ export class ComputerUseService {
         // deadline and its grace passed — so whatever the Mac is still doing
         // for it belongs to nobody. Only this session ends; the Run may use
         // the Mac again, which a Stop would not allow.
-        if (this.#sessions.get(key) === session) {
-          this.#forget(session);
-          void this.#deliverClose(session);
-        }
+        if (this.#sessions.get(key) === session) void this.#forget(session, { close: true });
         throw new ComputerUseError(
-          operation === "act" ? "outcome-unknown" : "failed",
-          operation === "act"
+          mayHaveEffect ? "outcome-unknown" : "failed",
+          mayHaveEffect
             ? outcome.message
             : `${outcome.message} Observe the ${words.subject} again before deciding what to do next.`,
-          operation !== "act",
+          !mayHaveEffect,
         );
       }
       if (outcome.code === "busy") releaseApp();
@@ -1139,12 +1220,11 @@ export class ComputerUseService {
       if (this.#stopped.has(stopKey(session.runId, session.deviceId)))
         throw stoppedByUser(session.deviceName);
       // The answer arrived after the session ended here, so its observation
-      // may already be stale and an act may or may not have happened.
-      // The gateway adds the outcome-unknown instructions to an act.
+      // may already be stale, and a request that could change something may have done so.
       throw new ComputerUseError(
-        operation === "act" ? "outcome-unknown" : "failed",
+        mayHaveEffect ? "outcome-unknown" : "failed",
         `Computer use for this task on ${session.deviceName} ended before this answer arrived.${
-          operation === "act"
+          mayHaveEffect
             ? ""
             : ` Observe the ${words.subject} again before deciding what to do next.`
         }`,
@@ -1152,7 +1232,7 @@ export class ComputerUseService {
     }
     let result: ComputerUseDispatchResult;
     try {
-      result = parseComputerUseResult(target, operation, outcome.value);
+      result = parseComputerUseResult(target, operation, outcome.value, mayHaveEffect);
       if (
         operation === "bind" &&
         !result.error &&
@@ -1273,7 +1353,10 @@ export class ComputerUseService {
         .then(
           async (title) => {
             session.threadTitle = title;
-            const actor = await this.#resolveActor?.(context.runId, machine.ownerUserId);
+            // A connected agent's session works for its own task; there is no Run to look up.
+            const actor = agentSessionAuthority(context)
+              ? { threadId: context.threadId }
+              : await this.#resolveActor?.(context.runId, machine.ownerUserId);
             session.actor = actor ? { threadId: actor.threadId } : null;
           },
           () => undefined,
@@ -1350,16 +1433,36 @@ export class ComputerUseService {
       void this.#holdStop(session).catch(this.#onError);
     }
     const mayBeOpen = session.dispatched && !noSessionOpened(code);
-    this.#forget(session);
-    if (mayBeOpen) void this.#deliverClose(session);
+    if (session.agentHold && !mayBeOpen) {
+      this.#loseSession(session);
+      return;
+    }
+    void this.#forget(session, { close: mayBeOpen });
   }
 
-  #forget(session: Session): void {
+  /** Remove local authority only after any recorded device hold has a close or receipt in flight. */
+  #forget(
+    session: Session,
+    options?: {
+      close?: boolean;
+      outcome?: "ended" | "unknown";
+      submitted?: (() => void) | undefined;
+    },
+  ): Promise<void> {
     const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
-    if (this.#sessions.get(key) !== session) return;
-    this.#sessions.delete(key);
+    const current = this.#sessions.get(key) === session;
+    if (current) {
+      this.#sessions.delete(key);
+      session.cancellation.abort();
+    }
+    if (options?.outcome && session.agentHold && !this.#closingSessions.has(session))
+      session.agentHold.outcome ??= session.dispatched ? options.outcome : "ended";
+    const closing =
+      session.agentHold || (options?.close && session.dispatched)
+        ? this.#deliverClose(session, options?.submitted)
+        : Promise.resolve();
+    if (!current) return closing;
     this.#scheduleSweep();
-    session.cancellation.abort();
     this.#onSessionEnded(session.sessionId);
     for (const app of session.apps)
       this.#publishPlaceActivity(session, computerAppIdentityKey(app), true);
@@ -1370,6 +1473,7 @@ export class ComputerUseService {
     if (session.activityTimer) clearTimeout(session.activityTimer);
     if (session.actingTimer) clearTimeout(session.actingTimer);
     if (session.confirmed) this.#onSessionsChanged();
+    return closing;
   }
 
   #sentence(
@@ -1389,23 +1493,27 @@ export class ComputerUseService {
 
   // ---- Mac operations --------------------------------------------------
 
-  /** Owned inventory needs no screen-control grant or session, including while paused. */
+  /** Owned inventory may run while paused. Connected inventory supplies its admission and signal. */
   async installedApps(
     deviceId: ComputerTargetId,
     actorUserId: UserId,
     params: ComputerUseInstalledAppsParams,
+    definitionId?: undefined,
+    authority?: ComputerInventoryAuthority,
   ): Promise<z.infer<typeof ComputerUseInstalledAppsResultSchema>>;
   async installedApps(
     deviceId: ComputerTargetId,
     actorUserId: UserId,
     params: AndroidPhoneInstalledAppsParams,
     definitionId: DisplayDefinitionId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<PhoneDisplayInstalledAppsResult>;
   async installedApps(
     deviceId: ComputerTargetId,
     actorUserId: UserId,
     params: ComputerUseInstalledAppsParams | AndroidPhoneInstalledAppsParams,
     definitionId?: DisplayDefinitionId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<
     z.infer<typeof ComputerUseInstalledAppsResultSchema> | PhoneDisplayInstalledAppsResult
   > {
@@ -1423,6 +1531,7 @@ export class ComputerUseService {
         timeoutMs: machineTimeoutMs,
       },
       actorUserId,
+      authority,
     );
     if (outcome.kind === "error")
       throw new ComputerUseError(outcome.code, outcome.message, outcome.retryable);
@@ -1572,9 +1681,8 @@ export class ComputerUseService {
   // ---- ending ----------------------------------------------------------
 
   /** Ends this exact record without requiring authority that cleanup has already withdrawn. */
-  async #closeSession(session: Session): Promise<void> {
-    this.#forget(session);
-    await this.#deliverClose(session);
+  #closeSession(session: Session): Promise<void> {
+    return this.#forget(session, { close: true });
   }
 
   /** Agent release is attempt-authorized; its cleanup never resolves another generation. */
@@ -1588,16 +1696,18 @@ export class ComputerUseService {
     if (session) await this.#authorizeSession(session, authority);
     else {
       try {
-        await this.#authorizer.assertActiveGrant(authority);
+        await this.#assertAuthority(authority);
       } catch (error) {
         throw authorityRefused(error) ? authorityEnded() : authorityUnchecked();
       }
     }
     if (!session) return false;
     if (!this.#holds(session)) return false;
-    this.#forget(session);
     // Do not wait for an admission turn from inside the turn releasing it.
-    void this.#deliverClose(session);
+    void this.#forget(session, {
+      close: true,
+      submitted: agentSessionAuthority(authority)?.submitted,
+    });
     return true;
   }
 
@@ -1617,25 +1727,43 @@ export class ComputerUseService {
   }
 
   /**
-   * Tells the Mac a forgotten session is over, and keeps telling it on the
-   * minute sweep until it answers. A close that is lost would otherwise leave
-   * the Mac's session, and the outline the person sees, up until its idle
-   * lease ends. A Mac that went offline ended its sessions with its
-   * connection, so there is nothing left to tell it.
+   * Shares the pending close with Stop, Disconnect and the minute sweep.
+   * For a tracked hold, a refusal can be retried but an unknown outcome
+   * only needs its evidence saved.
    */
-  async #deliverClose(session: Session): Promise<void> {
+  #deliverClose(session: Session, submitted?: () => void): Promise<void> {
+    const existing = this.#closingSessions.get(session);
+    if (existing) return existing;
+    const work = this.#sendClose(session, submitted);
+    const close = (session.agentHold ? this.#write(work) : work).finally(() => {
+      this.#closingSessions.delete(session);
+    });
+    this.#closingSessions.set(session, close);
+    return close;
+  }
+
+  async #sendClose(session: Session, submitted?: () => void): Promise<void> {
     try {
-      await this.#close(session);
+      const hold = session.agentHold;
+      if (hold) {
+        // A failed database write may retry its receipt, never the device call.
+        hold.outcome ??= await this.#close(session, submitted);
+        await settleAgentSessionDeviceHold(
+          this.#agentSessionDatabase!,
+          session.sessionId,
+          hold.outcome,
+        );
+      } else await this.#close(session, submitted);
       this.#undeliveredCloses.delete(session);
     } catch (error) {
-      if (error instanceof ComputerUseError && error.code === "offline") {
+      if (
+        !session.agentHold &&
+        ((error instanceof ComputerUseError && error.code === "offline") ||
+          this.#removedDevices.has(session.deviceId) ||
+          (session.route && !this.#hub.routeCurrent?.(session.route)))
+      )
         this.#undeliveredCloses.delete(session);
-      } else if (
-        !this.#removedDevices.has(session.deviceId) &&
-        (!session.route || this.#hub.routeCurrent?.(session.route))
-      ) {
-        this.#undeliveredCloses.add(session);
-      }
+      else this.#undeliveredCloses.add(session);
     } finally {
       this.#scheduleSweep();
     }
@@ -1648,13 +1776,13 @@ export class ComputerUseService {
    * a Run that ends while its first call is still in flight has a session the
    * helper may already hold, and nothing else would ever take it down.
    */
-  async #close(session: Session): Promise<void> {
+  async #close(session: Session, submitted?: () => void): Promise<"ended" | "unknown"> {
+    if (!session.dispatched) return "ended";
     if (
-      !session.dispatched ||
       this.#removedDevices.has(session.deviceId) ||
       (session.route && !this.#hub.routeCurrent?.(session.route))
     )
-      return;
+      return "unknown";
     const outcome = await this.#send({
       access: null,
       app: null,
@@ -1666,14 +1794,58 @@ export class ComputerUseService {
       route: session.route,
       sessionId: session.sessionId,
       timeoutMs: closeTimeoutMs,
+      ...(session.agentHold ? { trackClose: true } : {}),
+      ...(submitted ? { submitted } : {}),
     });
     if (outcome.kind === "error" && outcome.code !== "no-session") {
+      if (
+        session.agentHold &&
+        (outcome.abandoned ||
+          outcome.code === "offline" ||
+          outcome.code === "outcome-unknown" ||
+          outcome.code === "device-offline")
+      )
+        return "unknown";
       throw new ComputerUseError(outcome.code, outcome.message, outcome.retryable);
     }
+    return "ended";
   }
 
   /** A Run that has ended has no authority left, so its sessions end with it. */
   closeForRun(runId: RunId): void {
+    this.#clearStopsForRun(runId);
+    for (const session of this.#snapshot()) {
+      if (session.runId !== runId) continue;
+      void this.#closeSession(session).catch(() => undefined);
+    }
+  }
+
+  /** Disconnect waits for the device's close or loss of its route, including idle holds. */
+  async closeForAgentSession(runId: RunId, sessionId: AgentSessionId): Promise<void> {
+    this.#clearStopsForRun(runId);
+    const sessions = new Set(
+      [...this.#snapshot(), ...this.#closingSessions.keys(), ...this.#undeliveredCloses].filter(
+        (session) => session.runId === runId,
+      ),
+    );
+    // Withdraw this Home's places before the task is published. Device evidence settles
+    // independently, including holds left by a previous Home process.
+    await Promise.all([
+      ...[...sessions].map((session) => this.#closeSession(session)),
+      this.#agentSessionDatabase
+        ? settleOrphanedAgentSessionDeviceHolds(
+            this.#agentSessionDatabase,
+            sessionId,
+            this.#homeProcessId,
+          )
+        : undefined,
+    ]);
+    for (const session of sessions)
+      if (this.#undeliveredCloses.has(session))
+        throw new Error("The device has not confirmed that its computer use ended.");
+  }
+
+  #clearStopsForRun(runId: RunId): void {
     for (const key of this.#stopped) {
       if (key.startsWith(`${runId}|`)) this.#stopped.delete(key);
     }
@@ -1682,10 +1854,6 @@ export class ComputerUseService {
     }
     this.#scheduleSweep();
     void this.#write(this.#stops.clear(runId)).catch(this.#onError);
-    for (const session of this.#snapshot()) {
-      if (session.runId !== runId) continue;
-      void this.#closeSession(session).catch(() => undefined);
-    }
   }
 
   /**
@@ -1722,8 +1890,7 @@ export class ComputerUseService {
         session.route?.runnerId === runnerId ||
         (!session.route && session.deviceId === runnerId)
       ) {
-        this.#undeliveredCloses.delete(session);
-        this.#forget(session);
+        this.#loseSession(session);
       }
     }
     this.#scheduleSweep();
@@ -1732,9 +1899,8 @@ export class ComputerUseService {
   forgetDriver(binding: DeviceDriverIdentity): void {
     for (const session of [...this.#snapshot(), ...this.#undeliveredCloses])
       if (sameDeviceDriver(session.route, binding)) {
-        this.#undeliveredCloses.delete(session);
         this.#onAuthorityRevoked?.(session.authority);
-        this.#forget(session);
+        this.#loseSession(session);
       }
     this.#scheduleSweep();
   }
@@ -1742,9 +1908,8 @@ export class ComputerUseService {
   forgetDevice(deviceId: ComputerTargetId, removed = false): void {
     for (const session of [...this.#snapshot(), ...this.#undeliveredCloses])
       if (session.deviceId === deviceId) {
-        this.#undeliveredCloses.delete(session);
         this.#onAuthorityRevoked?.(session.authority);
-        this.#forget(session);
+        this.#loseSession(session);
       }
     if (removed) {
       this.#removedDevices.add(deviceId);
@@ -1755,6 +1920,11 @@ export class ComputerUseService {
     this.#scheduleSweep();
   }
 
+  #loseSession(session: Session): void {
+    if (!session.agentHold) this.#undeliveredCloses.delete(session);
+    void this.#forget(session, { outcome: "unknown" });
+  }
+
   /** Applies an unsolicited event from the current fenced Runner stream. */
   handleHelperEvent(
     deviceId: ComputerTargetId,
@@ -1763,11 +1933,14 @@ export class ComputerUseService {
   ): void {
     if (route && !this.#hub.routeCurrent?.(route)) return;
     if (event.event !== "session.stopped") return;
-    const named = this.#snapshot().find(
-      (candidate) => candidate.sessionId === event.params.sessionId,
-    );
+    const tracked = [
+      ...this.#snapshot(),
+      ...this.#undeliveredCloses,
+      ...this.#closingSessions.keys(),
+    ];
+    const named = tracked.find((candidate) => candidate.sessionId === event.params.sessionId);
     if (named && named.deviceId !== deviceId) return;
-    const session = this.#snapshot().find(
+    const session = tracked.find(
       (candidate) =>
         candidate.deviceId === deviceId &&
         candidate.sessionId === event.params.sessionId &&
@@ -1790,12 +1963,12 @@ export class ComputerUseService {
     }
     if (event.params.reason === "user")
       void this.#holdStop(session, event.params.runId === session.runId).catch(this.#onError);
-    this.#forget(session);
     // A phone may have received another old-session observe before its
     // Stop reached us. A matching Close drains that work on the same
     // admission queue, ahead of the next holder, without retiring IDs here.
     if (event.params.reason === "user" && session.display !== null)
-      void this.#deliverClose(session);
+      void this.#forget(session, { close: true });
+    else void this.#forget(session, { outcome: event.params.unconfirmed ? "unknown" : "ended" });
   }
 
   /**
@@ -1833,8 +2006,7 @@ export class ComputerUseService {
     if (heldMeanwhile) return this.#recordStop(heldMeanwhile);
     if (!this.#holds(session)) return;
     const recorded = this.#holdStop(session);
-    this.#forget(session);
-    void this.#deliverClose(session);
+    void this.#forget(session, { close: true });
     await recorded;
   }
 
@@ -1970,14 +2142,21 @@ export class ComputerUseService {
     session.lastUsedAt = this.#now();
   }
 
+  /** A Run's renewable live grant, or a connected agent's session binding. */
+  #assertAuthority(authority: ComputerUseContext): Promise<unknown> {
+    const session = agentSessionAuthority(authority);
+    return session
+      ? session.assertActive()
+      : this.#authorizer.assertActiveGrant(authority as RunCapabilityClaims<string>);
+  }
+
   async #authorizeSession(session: Session, authority: ComputerUseContext): Promise<void> {
     try {
       // Like reauthorize: validate the renewable live grant, not the original token expiry.
-      await this.#authorizer.assertActiveGrant(authority);
+      await this.#assertAuthority(authority);
     } catch (error) {
       if (!authorityRefused(error)) throw authorityUnchecked();
-      this.#forget(session);
-      if (session.dispatched) void this.#deliverClose(session);
+      void this.#forget(session, { close: true });
       throw authorityEnded();
     }
   }
@@ -2088,18 +2267,33 @@ export class ComputerUseService {
       readonly route?: DeviceDriverRoute | undefined;
       readonly sessionId?: ComputerUseSessionId;
       readonly timeoutMs: number;
+      readonly submitted?: () => void;
+      readonly trackClose?: boolean;
     },
     actorUserId?: UserId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<ComputerUseOutcome> {
     // The frame leaves inside the computer's admission turn, the same queue a
     // disconnect and an access change are decided in, and the answer is waited
     // for outside it so a slow app never holds up the turn that is trying to
     // stop it.
-    const sent = await (
-      this.#hub.withDeviceAdmission?.bind(this.#hub) ??
-      this.#hub.withRunnerAdmission.bind(this.#hub)
-    )(input.deviceId, async () => {
+    const admit: ComputerUseAdmission =
+      authority?.admit ??
+      ((send) =>
+        (
+          this.#hub.withDeviceAdmission?.bind(this.#hub) ??
+          this.#hub.withRunnerAdmission.bind(this.#hub)
+        )(input.deviceId, send));
+    const submitted = authority?.submitted ?? input.submitted;
+    const sent = await admit(async () => {
       if (actorUserId) await this.#assertMachineOwner(input.deviceId, actorUserId);
+      const route = authority?.driver
+        ? await this.#hub.captureRoute?.(input.deviceId, input.definitionId)
+        : input.route;
+      if (authority?.driver && !sameDriver(authority.driver, route))
+        throw new ComputerUseError("offline", "The device driver changed.");
+      if (authority) await authority.assertCurrent();
+      authority?.signal.throwIfAborted();
       return this.#hub.sendComputerUse({
         access: input.access,
         app: input.app,
@@ -2111,7 +2305,10 @@ export class ComputerUseService {
         // bridge connection's bookkeeping, not as authority over an app.
         runId: input.runId ?? runlessRunId(),
         runnerId: input.deviceId,
-        route: input.route,
+        route,
+        ...(authority ? { signal: authority.signal } : {}),
+        ...(submitted ? { submitted } : {}),
+        ...(input.trackClose ? { trackClose: true } : {}),
         sessionId: input.sessionId ?? mintComputerUseSessionId(),
         threadTitle: null,
         timeoutMs: input.timeoutMs,
@@ -2295,6 +2492,7 @@ function parseComputerUseResult(
   scope: ComputerUseScope,
   operation: "act" | ComputerReadOperation,
   value: ComputerUseValue,
+  mayHaveEffect: boolean,
 ): ComputerUseDispatchResult {
   if (scope.kind === "display") {
     if (operation === "observe") {
@@ -2303,7 +2501,7 @@ function parseComputerUseResult(
           ? IphoneScreenObservationResultSchema
           : PhoneDisplayObservationResultSchema;
       const parsed = schema.safeParse(decodePhoneResult(scope.definitionId, "observe", value));
-      if (!parsed.success) throw unreadableObservation("observe", scope);
+      if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
       return {
         error: null,
         kind: "display",
@@ -2317,7 +2515,7 @@ function parseComputerUseResult(
         ? IphoneScreenActResultSchema
         : PhoneDisplayActResultSchema;
     const parsed = schema.safeParse(decodePhoneResult(scope.definitionId, "act", value));
-    if (!parsed.success) throw unreadableObservation("act", scope);
+    if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
     const status =
       "status" in parsed.data
         ? IphoneScreenStatusSchema.optional().parse(parsed.data.status)
@@ -2334,7 +2532,7 @@ function parseComputerUseResult(
   }
   if (operation === "windows") {
     const parsed = ComputerUseWindowsResultSchema.safeParse(value);
-    if (!parsed.success) throw unreadableObservation(operation, scope);
+    if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
     return {
       kind: "app",
       error: null,
@@ -2345,7 +2543,7 @@ function parseComputerUseResult(
   }
   if (operation === "bind") {
     const parsed = ComputerUseBindResultSchema.safeParse(value);
-    if (!parsed.success) throw unreadableObservation(operation, scope);
+    if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
     return {
       kind: "app",
       error: null,
@@ -2356,11 +2554,11 @@ function parseComputerUseResult(
   }
   if (operation === "observe") {
     const parsed = ComputerUseObservationResultSchema.safeParse(value);
-    if (!parsed.success) throw unreadableObservation("observe", scope);
+    if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
     return { error: null, kind: "app", observation: parsed.data.observation, performed: null };
   }
   const parsed = ComputerUseActResultSchema.safeParse(value);
-  if (!parsed.success) throw unreadableObservation("act", scope);
+  if (!parsed.success) throw unreadableObservation(mayHaveEffect, scope);
   return {
     error: parsed.data.error
       ? new ComputerUseError(parsed.data.error.code, parsed.data.error.message)
@@ -2372,11 +2570,11 @@ function parseComputerUseResult(
 }
 
 function unreadableObservation(
-  operation: "act" | ComputerReadOperation,
+  mayHaveEffect: boolean,
   scope: Pick<ComputerUseScope, "kind">,
 ): ComputerUseError {
   return new ComputerUseError(
-    operation === "act" ? "outcome-unknown" : "failed",
+    mayHaveEffect ? "outcome-unknown" : "failed",
     scope.kind === "app"
       ? "That Mac answered with an observation this Host cannot read. Update Opensteer there."
       : "That phone answered with an observation this Host cannot read. Update the Opensteer Agent Phone app there.",
@@ -2460,10 +2658,11 @@ function normalizedMachine(machine: ComputerUseMachine): {
         deviceName: machine.runnerName,
       };
 }
-function sameDriver(left?: DeviceDriverRoute, right?: DeviceDriverRoute): boolean {
+function sameDriver(left?: DeviceDriverIdentity, right?: DeviceDriverIdentity): boolean {
   return (
     left?.deviceId === right?.deviceId &&
     left?.runnerId === right?.runnerId &&
+    left?.role === right?.role &&
     left?.generation === right?.generation
   );
 }

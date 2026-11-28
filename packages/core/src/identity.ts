@@ -52,7 +52,7 @@ export const IdentityProviderSummarySchema = z.strictObject({
 export const HostExposureSchema = z.enum(["loopback", "networked"]);
 export type HostExposure = z.infer<typeof HostExposureSchema>;
 
-export const DeploymentDisplayKindSchema = z.enum(["personal", "team"]);
+export const DeploymentDisplayKindSchema = z.enum(["personal"]);
 export type DeploymentDisplayKind = z.infer<typeof DeploymentDisplayKindSchema>;
 
 /**
@@ -68,6 +68,13 @@ export const DeploymentPresentationSchema = z.strictObject({
 });
 export type DeploymentPresentation = z.infer<typeof DeploymentPresentationSchema>;
 
+/**
+ * What kind of Home this is, as its own configuration says: a managed Home is
+ * a Cloud Computer, a networked one a server, a loopback one on macOS a Mac.
+ */
+export const HostHomeKindSchema = z.enum(["mac", "server", "cloud-computer"]);
+export type HostHomeKind = z.infer<typeof HostHomeKindSchema>;
+
 export const IdentityConfigSchema = z.strictObject({
   deployment: DeploymentPresentationSchema,
   emailDeliveryAvailable: z.boolean(),
@@ -82,6 +89,8 @@ export const IdentityConfigSchema = z.strictObject({
   oidcProviders: z.array(IdentityProviderSummarySchema).max(16),
   passkeysEnabled: z.boolean(),
   exposure: HostExposureSchema,
+  /** Absent from Homes before it, and from a Home that is none of these. */
+  homeKind: HostHomeKindSchema.optional(),
   /** Apex portal this Deployment belongs to, or null when it is self-hosted. */
   portalOrigin: z.url().nullable(),
   publicOrigin: z.url(),

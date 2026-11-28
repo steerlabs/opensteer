@@ -24,7 +24,13 @@ final class JourneyPresence: PresenceChecker, @unchecked Sendable {
     let presence = JourneyPresence()
     let activity = ActivityLog(url: paths.activity)
     let vault = VaultService(root: paths.vault, protectedStore: protected, keys: keys, deviceName: "Policy journey")
-    let broker = Broker(configuration: BrokerConfiguration(development: true, brokerVersion: "1.0.0-journey"), vault: vault, presence: presence, activity: activity)
+    let broker = Broker(
+      configuration: BrokerConfiguration(development: true, brokerVersion: "1.0.0-journey"),
+      vault: vault,
+      presence: presence,
+      activity: activity,
+      personActivity: PersonActivityLog(url: paths.personActivity),
+      personSaves: PersonSaveLog(url: paths.personSaves))
     await broker.load()
     try await broker.setUp()
     _ = try await broker.addLogin(ItemDraft(origins: [seed.site], loginURL: seed.site + "/login", username: seed.username, password: seed.password))

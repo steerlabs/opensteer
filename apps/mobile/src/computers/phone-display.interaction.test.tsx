@@ -1,20 +1,26 @@
 import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
-import { act, useEffect, type ReactNode } from "react";
+import { act, useEffect, useRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
-import { PlaceActivityStore, RunPlaceStore } from "@opensteer/client/host";
+import { HostClientRequestError, PlaceActivityStore, RunPlaceStore } from "@opensteer/client/host";
 import { mockDeviceMachine } from "@opensteer/client/mock";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { MachineSummary, TabViewer } from "@opensteer/protocol";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
 import { createId, TabIdSchema, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import { FoldedPage } from "../thread/folded-page.js";
-import { useRunPlacePicture } from "@opensteer/client/react";
-import type { HostClient, HostSnapshot, WebSocketClient } from "@opensteer/client/host";
+import { useHostSelector, useRunPlacePicture } from "@opensteer/client/react";
+import type {
+  ComputerViewRemovedListener,
+  HostClient,
+  HostSnapshot,
+  WebSocketClient,
+} from "@opensteer/client/host";
 import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/integrations";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
+import { useTabViewer } from "../tabs/use-tab-viewer.js";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
   closed: vi.fn(),
@@ -28,6 +34,10 @@ const state = vi.hoisted(() => ({
   retentionSupported: true,
   geometry: "side:display@0",
   epoch: "",
+  /** Whether the native view exists yet: a call by its tag before then reaches nothing. */
+  mounted: true,
+  /** Whether Expo's component has the view's tag yet: before, the adapter refuses the call. */
+  tagged: true,
   pixels: false,
   resets: [] as { epoch: string; keepPicture: boolean }[],
   ready: null as
@@ -102,6 +112,8 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("expo", async () => {
   const React = await import("react");
+  // Not view-functions.js, which imports this module.
+  const { ViewNotMountedError } = await import("../platform/view-not-mounted.js");
   return {
     requireOptionalNativeModule: (name: string) =>
       name === "PhoneDisplay"
@@ -115,31 +127,42 @@ vi.mock("expo", async () => {
         ) => {
           state.ready = props.onReady;
           state.needsKeyframe = props.onNeedsKeyframe;
-          React.useImperativeHandle(ref, () => ({
-            reset: async (epoch: string) => {
-              state.epoch = epoch;
-              state.pixels = false;
-              state.resets.push({ epoch, keepPicture: false });
-            },
-            ...(state.retentionSupported
-              ? {
-                  resetKeepingPicture: async (epoch: string) => {
-                    state.epoch = epoch;
-                    state.resets.push({ epoch, keepPicture: true });
-                  },
-                }
-              : {}),
-            decode: async (frame: { epoch: string; data: string }) => {
-              if (state.epoch !== frame.epoch) return false;
-              state.decoded.push({ epoch: frame.epoch, data: frame.data });
-              return state.decodeResult ? state.decodeResult() : true;
-            },
-            decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
-              if (state.epoch !== metadata.epoch) return false;
-              state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
-              return state.decodeResult ? state.decodeResult() : true;
-            },
-          }));
+          React.useImperativeHandle(
+            ref,
+            () => ({
+              // As resetForView answers: no view yet, nothing reset, and no refusal.
+              reset: async (epoch: string) => {
+                // As viewFunctionsOf answers on iOS before Expo's component has the view's tag.
+                if (!state.tagged) throw new ViewNotMountedError();
+                if (!state.mounted) return;
+                state.epoch = epoch;
+                state.pixels = false;
+                state.resets.push({ epoch, keepPicture: false });
+              },
+              ...(state.retentionSupported
+                ? {
+                    resetKeepingPicture: async (epoch: string) => {
+                      if (!state.tagged) throw new ViewNotMountedError();
+                      if (!state.mounted) return;
+                      state.epoch = epoch;
+                      state.resets.push({ epoch, keepPicture: true });
+                    },
+                  }
+                : {}),
+              decode: async (frame: { epoch: string; data: string }) => {
+                if (state.epoch !== frame.epoch) return false;
+                state.decoded.push({ epoch: frame.epoch, data: frame.data });
+                return state.decodeResult ? state.decodeResult() : true;
+              },
+              decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
+                if (state.epoch !== metadata.epoch) return false;
+                state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
+                return state.decodeResult ? state.decodeResult() : true;
+              },
+            }),
+            // Expo's component instance, the same object for the view's life.
+            [],
+          );
           return <div data-native-display />;
         },
       ),
@@ -219,12 +242,7 @@ vi.mock("../ui/primitives.js", () => ({
     </button>
   ),
 }));
-import {
-  ComputerDisplay,
-  ComputerTaskView,
-  ComputerOwnerView,
-  decodeDisplayFrame,
-} from "./phone-display.js";
+import { ComputerDisplay, ComputerOwnerView, decodeDisplayFrame } from "./phone-display.js";
 class Socket implements WebSocketClient {
   readyState = 0;
   binaryType: "arraybuffer" | "blob" = "arraybuffer";
@@ -270,6 +288,8 @@ afterEach(async () => {
   state.proxy = null;
   state.decoded = [];
   state.epoch = "";
+  state.mounted = true;
+  state.tagged = true;
   state.pixels = false;
   state.resets = [];
   state.decodeResult = null;
@@ -282,7 +302,7 @@ async function setup(
   os = "android",
   owner = false,
   interactive = true,
-  screen: "display" | "task" | "owner" | "live" = "display",
+  screen: "display" | "task" | "owner" | "live" | "reconnect" = "display",
 ) {
   state.os = os;
   socket = new Socket();
@@ -292,7 +312,7 @@ async function setup(
   const runId = createId("run"),
     threadId = createId("thread");
   const liveMachine = DeviceIdSchema.parse(createId("runner"));
-  const machineId = screen === "live" ? liveMachine : "machine";
+  const machineId = screen === "live" || screen === "reconnect" ? liveMachine : "machine";
   const runPlaces = new RunPlaceStore();
   // The phone's tab, which a live Run's place names.
   const phoneTab = tabFixture({
@@ -361,6 +381,8 @@ async function setup(
   };
   const connect = vi.fn((_source: unknown, _options?: unknown) => socket);
   const listeners = new Set<() => void>();
+  const removals = new Set<ComputerViewRemovedListener>();
+  const ownedView = snapshot.machines[0]!.computerUse!.ownerViews?.[0];
   const move = (patch: Partial<HostSnapshot>) => {
     snapshot = { ...snapshot, ...patch } as typeof snapshot;
     listeners.forEach((listener) => listener());
@@ -395,6 +417,10 @@ async function setup(
       return () => listeners.delete(listener);
     },
     subscribeLifecycle: () => () => undefined,
+    subscribeComputerViewRemoved: (listener: ComputerViewRemovedListener) => {
+      removals.add(listener);
+      return () => removals.delete(listener);
+    },
     connectComputerDisplay: connect,
     retainComputerView: () => ({ release: () => undefined }),
     listApprovedComputerApps: vi.fn(async () => [
@@ -408,9 +434,31 @@ async function setup(
             },
       },
     ]),
-    activateTab: vi.fn(async () => {
-      throw new Error("Only the tab's screen opens its view again.");
-    }),
+    activateTab: vi.fn(
+      async (_tabId: unknown, options?: { readonly signal?: AbortSignal }): Promise<TabViewer> => {
+        if (screen !== "reconnect" || !ownedView)
+          throw new Error("Only the tab's screen opens its view again.");
+        if (!options?.signal) return { kind: "window", view: ownedView };
+        if (snapshot.machines[0]?.status === "offline")
+          throw new HostClientRequestError({
+            code: "conflict",
+            reason: "computer-view-unavailable",
+            status: 409,
+            message: "This computer is offline.",
+          });
+        const view = { ...ownedView, generation: 2 };
+        socket = new Socket();
+        move({
+          machines: [
+            {
+              ...snapshot.machines[0]!,
+              computerUse: { ...machine.computerUse!, ownerViews: [view] },
+            },
+          ],
+        });
+        return { kind: "window", view };
+      },
+    ),
   } as unknown as HostClient;
   const pool = sharedDisplayStreams(client);
   const retain = pool.retain.bind(pool);
@@ -448,6 +496,34 @@ async function setup(
       editingVersion: 1,
     });
   };
+  function ReopeningWindow({ active }: { active: boolean }) {
+    const intent = useRef(phoneTab.tabId as typeof phoneTab.tabId | null);
+    const available = useHostSelector(
+      client,
+      (snapshot) => snapshot.machines[0]?.status === "online",
+    );
+    const {
+      state: answer,
+      reconnect,
+      retry,
+    } = useTabViewer(client, phoneTab.tabId, active, intent, available);
+    if (answer.status !== "ready" || answer.viewer.kind !== "window") return null;
+    const { view } = answer.viewer;
+    return (
+      <ComputerOwnerView
+        active={active}
+        hostClient={client}
+        appKey="com.apple.notes"
+        machineId={machineId}
+        key={view.generation}
+        viewId={view.viewId}
+        generation={view.generation}
+        onTyping={noop}
+        onReopen={retry}
+        reconnect={reconnect}
+      />
+    );
+  }
   const render = async (active = true) =>
     act(async () =>
       root!.render(
@@ -463,14 +539,23 @@ async function setup(
               threadId={threadId}
             />
           </>
+        ) : screen === "reconnect" ? (
+          <ReopeningWindow active={active} />
         ) : screen === "task" ? (
-          <ComputerTaskView
+          // A task's own session, as its live place shows it.
+          <ComputerDisplay
+            bar={{ title: phone ? "Phone" : "Notes", detail: null, menu: [], onTyping: noop }}
             active={active}
-            hostClient={client}
-            computerSessionId={sessionId}
+            interactive={phone}
             machineId="machine"
-            appKey={phone ? null : "com.apple.notes"}
-            onTyping={noop}
+            phone={phone}
+            label={phone ? "Phone" : "Notes"}
+            hostClient={client}
+            source={{
+              kind: "task-session",
+              sessionId,
+              ...(phone ? {} : { appKey: "com.apple.notes" }),
+            }}
           />
         ) : screen === "owner" ? (
           <ComputerOwnerView
@@ -517,45 +602,72 @@ async function setup(
       },
       client,
     };
-  await act(async () => {
-    socket.readyState = 1;
-    socket.emit("open", {});
-    socket.json({
-      type: "display.state",
-      state: "live",
-      generation: 1,
-      width: 200,
-      height: 400,
-      editingVersion: 1,
-      ...(owner ? {} : { sharedInput: 1 }),
+  const paint = async () => {
+    await act(async () => {
+      socket.readyState = 1;
+      socket.emit("open", {});
+      socket.json({
+        type: "display.state",
+        state: "live",
+        generation: 1,
+        width: 200,
+        height: 400,
+        editingVersion: 1,
+        ...(owner ? {} : { sharedInput: 1 }),
+      });
+      socket.emit("message", {
+        data: encodeDisplayViewerFrame(
+          {
+            generation: 1,
+            sequence: 1,
+            ptsUs: 1000,
+            width: 200,
+            height: 400,
+            key: true,
+            codec: "avc1.42C01F",
+          },
+          new Uint8Array([0, 0, 1, 0x65]),
+        ).slice().buffer,
+      });
     });
-    socket.emit("message", {
-      data: encodeDisplayViewerFrame(
-        {
-          generation: 1,
-          sequence: 1,
-          ptsUs: 1000,
-          width: 200,
-          height: 400,
-          key: true,
-          codec: "avc1.42C01F",
-        },
-        new Uint8Array([0, 0, 1, 0x65]),
-      ).slice().buffer,
-    });
-  });
-  if (state.decoded.length) {
-    state.pixels = true;
-    await act(async () =>
-      state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
-    );
-  }
+    if (state.decoded.length) {
+      state.pixels = true;
+      await act(async () =>
+        state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
+      );
+    }
+  };
+  await paint();
   return {
     connect,
     render,
     power,
     setDisplay,
     move,
+    paint,
+    restartOwner: () => {
+      if (!ownedView) throw new Error("No owner view");
+      for (const listener of removals)
+        listener({
+          type: "host.computer-view.removed",
+          generation: ownedView.generation,
+          viewId: ownedView.viewId,
+          machineId: liveMachine,
+          reason: "disconnected",
+          displayReason: "device-restarting",
+        });
+    },
+    ownerOffline: (offline: boolean) =>
+      move({
+        machines: [
+          {
+            ...machine,
+            status: offline ? "offline" : "online",
+            agentsStoppedSince: "2026-11-02T12:00:00.000Z",
+            computerUse: { ...machine.computerUse!, ownerViews: [] },
+          },
+        ],
+      }),
     endOwner: () => {
       snapshot.machines[0]!.computerUse!.ownerViews![0]!.state = "closed";
     },
@@ -572,6 +684,59 @@ async function press(label: string) {
 function input() {
   return socket.sent.filter((m) => m.type === "display.input");
 }
+async function ackInputs() {
+  await act(async () => {
+    let acked = 0;
+    while (acked < input().length) {
+      socket.json({
+        type: "display.input.result",
+        sequence: input()[acked]!.sequence,
+        outcome: "dispatched",
+      });
+      acked += 1;
+    }
+  });
+}
+it("reconnects a Mac window through the phone viewer while agent work stays stopped", async () => {
+  vi.useFakeTimers();
+  try {
+    const view = await setup(false, "android", true, true, "reconnect");
+    expect(state.pixels).toBe(true);
+    const original = view.connect.mock.calls[0]![0];
+    await act(async () => view.ownerOffline!(true));
+    expect(container.textContent).not.toContain("Reconnecting…");
+    await act(async () => view.restartOwner!()); // The owner removal can arrive before the display state.
+    expect(container.textContent).toContain("Reconnecting…");
+    expect(state.pixels).toBe(false);
+    expect(view.client.getSnapshot().machines[0]?.status).toBe("offline");
+    expect(view.client.activateTab).toHaveBeenCalledTimes(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(view.client.activateTab).toHaveBeenCalledTimes(2);
+    expect(view.connect).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Reconnecting…");
+    await act(async () => view.ownerOffline!(false));
+    expect(view.client.getSnapshot().machines[0]?.agentsStoppedSince).toBe(
+      "2026-11-02T12:00:00.000Z",
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(view.client.activateTab).toHaveBeenCalledTimes(3);
+    expect(view.client.activateTab).toHaveBeenLastCalledWith("tab_phone", {
+      signal: expect.any(AbortSignal),
+    });
+    expect(view.connect.mock.calls[1]![0]).toEqual({ ...(original as object), generation: 2 });
+    expect(container.textContent).toContain("Reconnecting…");
+    await view.paint!();
+
+    expect(view.client.getSnapshot().machines[0]?.agentsStoppedSince).toBe(
+      "2026-11-02T12:00:00.000Z",
+    );
+    expect(state.pixels).toBe(true);
+    expect(container.textContent).not.toContain("Reconnecting…");
+  } finally {
+    vi.useRealTimers();
+  }
+});
 it("accepts input without a button, maps touch, edits, reports receipts, copies and releases on hide through the real display transport", async () => {
   const { connect, render } = await setup();
   expect(connect.mock.calls[0]?.[1]).toEqual({ editing: 1 });
@@ -585,6 +750,7 @@ it("accepts input without a button, maps touch, edits, reports receipts, copies 
       nativeEvent: { ...touch.nativeEvent, timestamp: 20, touches: [] },
     });
   });
+  await ackInputs();
   expect(input().map((m) => m.events)).toEqual([
     [{ kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 10 }],
     [{ kind: "pointer", phase: "up", x: 0.5, y: 0.5, t: 20 }],
@@ -769,6 +935,7 @@ it("uses shared bounded paste batches and handles every split-frame receipt", as
       items: [{ type: "text/plain", bytes: new TextEncoder().encode(text) }],
     }),
   );
+  await ackInputs();
   const batches = input();
   const pieces = batches.flatMap((batch) =>
     (batch.events as { text: string }[]).map((event) => event.text),
@@ -780,14 +947,7 @@ it("uses shared bounded paste batches and handles every split-frame receipt", as
   );
   for (const batch of batches) {
     expect(new TextEncoder().encode(JSON.stringify(batch)).byteLength).toBeLessThanOrEqual(
-      256 * 1024,
-    );
-    await act(async () =>
-      socket.json({
-        type: "display.input.result",
-        sequence: batch.sequence,
-        outcome: "dispatched",
-      }),
+      128 * 1024,
     );
   }
 });
@@ -799,6 +959,42 @@ it("offers Mac input only where its video is available", async () => {
   root = null;
   await setup(false, "android");
   expect(container.textContent).not.toMatch(/Take over|Give back/);
+});
+
+it("cancels a held touch immediately on layout change even while touch-down receipt is outstanding", async () => {
+  await setup();
+  await act(async () => state.layout?.({ nativeEvent: { layout: { width: 400, height: 400 } } }));
+  const touch = { nativeEvent: { locationX: 200, locationY: 200, timestamp: 10, touches: [{}] } };
+  await act(async () => state.touch?.onTouchStart?.(touch));
+  // Do NOT acknowledge touch-down before layout changes: cancel + reset must still go out immediately.
+  await act(async () => state.layout?.({ nativeEvent: { layout: { width: 300, height: 400 } } }));
+  expect(input().at(-1)?.events).toEqual([
+    { kind: "pointer", phase: "cancel", x: 0.5, y: 0.5, t: 10 },
+  ]);
+  expect(socket.sent.at(-1)).toEqual({ type: "display.input-reset" });
+});
+
+it("routes phone navigation through the view queue so Home never overtakes a queued paste", async () => {
+  const { setDisplay } = await setup(true, "android", true, true, "owner");
+  await act(async () => setDisplay({ input: "available", power: "available" }));
+  await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
+  await press("Keyboard");
+  const payload = "p".repeat(160 * 1024);
+  await act(async () =>
+    state.proxy?.onEvent({
+      type: "paste",
+      items: [{ type: "text/plain", bytes: new TextEncoder().encode(payload) }],
+    }),
+  );
+  // First paste batch is in flight and second chunk is still queued; press Home now.
+  expect(input()).toHaveLength(1);
+  await press("Home");
+  // Home must wait in the queue behind the pending/queued paste rather than jumping ahead.
+  expect(input()).toHaveLength(1);
+  await ackInputs();
+  const events = input().flatMap((batch) => batch.events as { kind: string; to?: string }[]);
+  expect(events.at(-1)).toEqual({ kind: "nav", to: "home" });
+  expect(events.slice(0, -1).every((event) => event.kind === "paste")).toBe(true);
 });
 
 it("resets input when its keyboard blurs", async () => {
@@ -828,6 +1024,7 @@ it("cancels a held touch before the stage moves and refuses stale picture input"
   const touch = { nativeEvent: { locationX: 200, locationY: 200, timestamp: 10, touches: [{}] } };
   await act(async () => state.touch?.onTouchStart?.(touch));
   await act(async () => state.layout?.({ nativeEvent: { layout: { width: 300, height: 400 } } }));
+  await ackInputs();
   expect(input().at(-1)?.events).toEqual([
     { kind: "pointer", phase: "cancel", x: 0.5, y: 0.5, t: 10 },
   ]);
@@ -948,6 +1145,49 @@ it.each([0, 1])(
   },
 );
 
+// The review's note 9: a reset refused because the view has no tag yet waits for the view, which
+// reports its epoch when it joins its window; it never says video sharing is unavailable.
+it("waits for a display view that has no tag yet instead of calling video unavailable", async () => {
+  state.tagged = false;
+  await setup();
+  await act(async () => undefined);
+  expect(container!.textContent).not.toContain("Video sharing is unavailable");
+  state.tagged = true;
+  await act(async () => state.needsKeyframe?.({ nativeEvent: { epoch: "" } }));
+  expect(state.epoch).not.toBe("");
+  expect(container!.textContent).not.toContain("Video sharing is unavailable");
+});
+
+// The screen video's version of the page that never painted: its reset was made before the
+// native view existed, so the view stayed at its empty epoch and refused every frame while the
+// app kept asking for keys. The view says its epoch when it joins its window.
+it("resets a display view that missed its reset once it joins its window, so its picture appears", async () => {
+  state.mounted = false;
+  await setup();
+  expect(state.epoch).toBe("");
+  expect(state.decoded).toEqual([]);
+  state.mounted = true;
+  await act(async () => state.needsKeyframe?.({ nativeEvent: { epoch: "" } }));
+  expect(state.epoch).not.toBe("");
+  await act(async () => {
+    socket.emit("message", {
+      data: encodeDisplayViewerFrame(
+        {
+          generation: 1,
+          sequence: 2,
+          ptsUs: 2000,
+          width: 200,
+          height: 400,
+          key: true,
+          codec: "avc1.42C01F",
+        },
+        Uint8Array.of(0, 0, 1, 0x65),
+      ).slice().buffer,
+    });
+  });
+  expect(state.decoded).toEqual([{ epoch: state.epoch, bytes: [0, 0, 1, 0x65] }]);
+});
+
 it("holds every delta after a frame it had no room for until a key arrives", async () => {
   await setup();
   const finish: ((accepted: boolean) => void)[] = [];
@@ -1041,6 +1281,7 @@ it("cancels a held display stroke when its pane moves without resizing", async (
   await act(async () => state.touch?.onTouchStart?.(touch));
   state.geometry = "tabletop:display@1";
   await render();
+  await ackInputs();
   expect(input().at(-1)?.events).toEqual([
     { kind: "pointer", phase: "cancel", x: 0.5, y: 0.5, t: 10 },
   ]);
@@ -1076,6 +1317,7 @@ it.each(["android", "ios"])(
     ]) {
       await press(label!);
       expect(input().at(-1)?.events).toEqual([{ kind: "nav", to }]);
+      await ackInputs();
     }
     await press("Lock phone");
     expect(power).toHaveBeenLastCalledWith("lock");
@@ -1126,6 +1368,7 @@ it("coalesces moves while preserving the latest timestamp before lift and cancel
     state.touch?.onTouchMove?.(touch(12, 220));
     state.touch?.onTouchEnd?.(touch(13, 230));
   });
+  await ackInputs();
   expect(input().flatMap((m) => m.events)).toEqual([
     { kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 10 },
     { kind: "pointer", phase: "move", x: 0.5, y: 0.55, t: 12 },

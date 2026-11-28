@@ -9,7 +9,6 @@ import {
 import { AcpHarnessAdapter, type AcpSessionConfigOption } from "@opensteer/harness-acp";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
-  nativeUserHarnessRuntimeBoundary,
   spawnSupervised,
   type HarnessEvent,
   type HarnessRunInput,
@@ -21,6 +20,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AntigravityHarnessDriver,
   antigravityHarnessCapabilities,
   antigravityModelDescriptors,
   antigravityPermissionDisposition,
@@ -29,6 +29,7 @@ import {
   normalizeAntigravityUpdate,
   settleAntigravityHeldAssistant,
 } from "./driver.js";
+import * as antigravityRuntime from "./runtime.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -64,10 +65,11 @@ const initial: readonly AcpSessionConfigOption[] = [
 ];
 
 describe("Antigravity ACP policy", () => {
-  it("uses Opensteer identity, prompt steering, read-only files, resume, and explicit access-mode mappings", () => {
-    expect(antigravityHarnessCapabilities.steering).toBe(true);
-    expect(antigravityHarnessCapabilities.messageAttachments?.nativeImages?.steering).toBe(true);
-    expect(antigravitySessionPolicy(1)).toMatchObject({
+  it("uses Opensteer identity, restart steering (no native prompt steering), read-only files, resume, and explicit access-mode mappings", () => {
+    expect(antigravityHarnessCapabilities.steering).toBe(false);
+    expect(antigravityHarnessCapabilities.messageAttachments?.nativeImages?.steering).toBe(false);
+    const policyV1 = antigravitySessionPolicy(1);
+    expect(policyV1).toMatchObject({
       accessModeIds: {
         "approval-required": "default",
         "auto-accept-edits": "auto_edit",
@@ -84,8 +86,8 @@ describe("Antigravity ACP policy", () => {
         type: "config-options",
       },
       resume: { method: "resume", suppressReplay: false },
-      steering: "prompt",
     });
+    expect(policyV1.steering).toBeUndefined();
   });
 
   it("enforces access modes via permissionDisposition when the 1.5 CLI stays in default mode", async () => {
@@ -229,6 +231,76 @@ describe("Antigravity ACP policy", () => {
         writableRoots: [workspacePath],
       }),
     ).toBe("ask");
+    const readCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-read", kind: "read" },
+    };
+    const searchCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-search", kind: "search" },
+    };
+    const thinkCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-think", kind: "think" },
+    };
+    for (const invalidMode of [undefined, "unrecognized-mode"] as unknown as [
+      Parameters<typeof antigravityPermissionDisposition>[1]["accessMode"],
+      Parameters<typeof antigravityPermissionDisposition>[1]["accessMode"],
+    ]) {
+      for (const request of [readCall, searchCall, thinkCall, opensteerMcp, opensteerMetaMcp]) {
+        expect(
+          antigravityPermissionDisposition(request, {
+            accessMode: invalidMode,
+            workspacePath,
+            writableRoots: [workspacePath],
+          }),
+        ).toBe("ask");
+      }
+    }
+  });
+
+  it("disables native prompt steering for both ACP protocol versions so Antigravity steers by restart (X1)", async () => {
+    expect(antigravitySessionPolicy(1).steering).toBeUndefined();
+    expect(antigravitySessionPolicy(2).steering).toBeUndefined();
+
+    for (const protocolVersion of [1, 2] as const) {
+      const fixture = await setupTurn("skills");
+      const prepared = vi.spyOn(antigravityRuntime, "prepareAntigravityRuntime").mockResolvedValue({
+        directory: fixture.context.workspacePath,
+        executable: process.execPath,
+        protocolVersion,
+        version: "1.5.16",
+      });
+      const driver = new AntigravityHarnessDriver({
+        nodeExecutable: process.execPath,
+        runtimeCacheDirectory: fixture.context.workspacePath,
+      });
+      try {
+        expect(driver.capabilities.steering).toBe(false);
+        await driver.prepare({
+          config: {},
+          environment: fixture.context.environment,
+          providerState: fixture.context.providerState,
+          signal: AbortSignal.timeout(2_000),
+          sourceId: "google",
+          workingDirectory: fixture.context.workspacePath,
+        });
+        const adapter = await driver.create({
+          config: {},
+          instanceId: fixture.context.harnessInstanceId,
+          sourceId: "google",
+        });
+        try {
+          expect(adapter.capabilities.steering).toBe(false);
+          expect(adapter.capabilities.messageAttachments?.nativeImages?.steering).toBe(false);
+        } finally {
+          await adapter.close();
+        }
+      } finally {
+        prepared.mockRestore();
+        await fixture.adapter.close();
+      }
+    }
   });
 
   it("classifies missing Claude thinking signatures as harness_session_broken", () => {
@@ -658,9 +730,9 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
+    personalContext: true,
+    personLineage: true,
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gemini-test",
       options: {},
@@ -674,7 +746,6 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
       providerHomeDirectory: join(directory, "profile"),
       store: { directory, id: "test-store" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: undefined,
     threadId: createId("thread"),
@@ -692,7 +763,6 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
     turn(text: string): HarnessRunInput {
       return {
         context: {
-          teamTurnContext: null,
           assignment: null,
           threadState: { previousAssignment: null, previousRun: null },
           startedAt: "2026-08-22T00:00:00.000Z",
@@ -785,4 +855,48 @@ it("delivers two namespaced review skills and a loose review through Antigravity
     expect(payload).toContain(skill.path);
   }
   await fixture.adapter.close();
+});
+
+it("refuses a task that is not the person's own before starting Antigravity", async () => {
+  const fixture = await setupTurn("skills");
+  const prepared = vi.spyOn(antigravityRuntime, "prepareAntigravityRuntime").mockResolvedValue({
+    directory: fixture.context.workspacePath,
+    executable: process.execPath,
+    protocolVersion: 1,
+    version: "1.5.16",
+  });
+  const driver = new AntigravityHarnessDriver({
+    nodeExecutable: process.execPath,
+    runtimeCacheDirectory: fixture.context.workspacePath,
+  });
+  try {
+    await driver.prepare({
+      config: {},
+      environment: fixture.context.environment,
+      providerState: fixture.context.providerState,
+      signal: AbortSignal.timeout(2_000),
+      sourceId: "google",
+      workingDirectory: fixture.context.workspacePath,
+    });
+    const adapter = await driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "google",
+    });
+    try {
+      await expect(
+        adapter.startSession({ ...fixture.context, personLineage: false }),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          "Antigravity is not yet verified to keep your settings out of tasks a connected agent or chat started, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      });
+    } finally {
+      await adapter.close();
+    }
+  } finally {
+    prepared.mockRestore();
+    await fixture.adapter.close();
+  }
 });

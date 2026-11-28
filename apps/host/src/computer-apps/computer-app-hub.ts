@@ -1,10 +1,15 @@
+import type { KnownDevice } from "../administration/device-access.js";
 import type { DeviceDriverResolver, DeviceDriverRoute } from "../computer-use/device-drivers.js";
 import {
   HostIntegrationsWindowResolveSchema,
   ComputerUseWindowResolveResultSchema,
   type RunnerIntegrationsWindowResolved,
 } from "@opensteer/protocol";
-import { type DisplaySource, type MacWindowTarget } from "@opensteer/protocol";
+import {
+  agentSessionGuardsCapability,
+  type DisplaySource,
+  type MacWindowTarget,
+} from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import {
   DeviceIdSchema,
@@ -26,6 +31,7 @@ import { type IntegrationToolEffect } from "@opensteer/integration-core/effect";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import type { RunnerAuxiliaryStream, RunnerStreamLossReason } from "@opensteer/orchestration";
 import {
+  computerUseRequestMayHaveEffect,
   computerOwnerViewSupported,
   macOwnerViewVersion,
   macWindowVideoOwnerViewVersions,
@@ -220,6 +226,13 @@ export type ComputerUseOutcome =
  * unknown outcome.
  */
 export const computerUseAnswerGraceMs = 6_000;
+/**
+ * What a view request comes to: the computer's answer, or no answer before its
+ * time and grace ran out, which is the Home's own finding and never a frame.
+ */
+export type ComputerViewOutcome =
+  | RunnerIntegrationsComputerViewResult["result"]
+  | { readonly kind: "error"; readonly code: "no-answer"; readonly message: string };
 
 export type ComputerTargetId = DeviceId | RunnerId;
 
@@ -240,6 +253,9 @@ export interface ComputerUseSendInput {
   readonly threadTitle: string | null;
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
+  readonly submitted?: () => void;
+  readonly trackClose?: true;
+  readonly phoneHold?: true;
 }
 
 export interface ComputerUseSend {
@@ -264,7 +280,16 @@ export interface PhoneDisplayCapabilityDiagnostic {
 
 export interface ComputerAppHubOptions {
   readonly drivers?: DeviceDriverResolver;
-  readonly requireDeviceAgentAccess?: (deviceId: DeviceId) => Promise<void>;
+  /** Records a computer whose Runner is too old for an operation, as a refused admission does. */
+  readonly recordRunnerOutdated?: (runner: {
+    readonly runnerId: RunnerId;
+    readonly connectionGeneration: number;
+  }) => Promise<void>;
+  readonly requireDeviceAgentAccess?: (
+    deviceId: DeviceId,
+    /** What a listing already read of the device. */
+    known?: KnownDevice,
+  ) => Promise<void>;
   readonly onDeviceInvalidated?: (binding: DeviceDriverIdentity) => void;
   readonly onDeviceInputWithdrawn?: (deviceId: DeviceId) => void;
   readonly onDeviceRemoved?: (deviceId: DeviceId, removed: boolean) => void;
@@ -357,6 +382,8 @@ interface AttachedIntegrations {
   apps: readonly MachineAppStatus[];
   statusReceived: boolean;
   ownerViewVersion: number | undefined;
+  /** The Mac's helper had not answered when it reported: owner view is not known yet. */
+  ownerViewPending: boolean;
   displayAvailable: boolean;
   readonly displayResolutions: Map<
     RunnerAuxiliaryRequestId,
@@ -374,7 +401,7 @@ interface AttachedIntegrations {
     RunnerAuxiliaryRequestId,
     {
       readonly route?: DeviceDriverRoute | undefined;
-      settle(result: RunnerIntegrationsComputerViewResult["result"]): void;
+      settle(result: ComputerViewOutcome): void;
     }
   >;
   readonly mcpSessions: Map<string, McpSessionEntry>;
@@ -638,6 +665,7 @@ export class ComputerAppHub {
       passwordSignIn: false,
       pendingPasswords: new Map(),
       ownerViewVersion: undefined,
+      ownerViewPending: false,
       displayAvailable: false,
       pendingViews: new Map(),
       pendingOwnerWindows: new Map(),
@@ -776,7 +804,13 @@ export class ComputerAppHub {
         this.#emitPasswordSignIn(stream.identity.runnerId, { type: "authority-lost" });
       }
       entry.passwordSignIn = supported;
-      this.#applyStatus(entry, message.apps, message.ownerViewVersion, message.displayAvailable);
+      this.#applyStatus(
+        entry,
+        message.apps,
+        message.ownerViewVersion,
+        message.ownerViewPending === true,
+        message.displayAvailable,
+      );
       return;
     }
     if (message.type === "runner.integrations.computer-use-event") {
@@ -1042,6 +1076,30 @@ export class ComputerAppHub {
     );
   }
 
+  /**
+   * Whether this computer's Runner parses what a connected agent's session adds to a frame
+   * (`alwaysAsk`, `noLaunch`). One that does not is refused such an operation before any frame,
+   * named, and recorded as needing an update; the rest of what it does keeps working.
+   */
+  agentSessionGuardsSupported(target: ComputerTargetId): boolean {
+    return (
+      this.#targetEntry(target)?.stream.identity.capabilities?.includes(
+        agentSessionGuardsCapability,
+      ) === true
+    );
+  }
+
+  /** The refusal for an operation `agentSessionGuardsSupported` turns away, once recorded. */
+  async refuseOutdatedForAgentSession(target: ComputerTargetId, doing: string): Promise<string> {
+    const identity = this.#targetEntry(target)?.stream.identity;
+    if (identity)
+      await this.#options.recordRunnerOutdated?.({
+        runnerId: identity.runnerId,
+        connectionGeneration: identity.connectionGeneration,
+      });
+    return `Update Opensteer on ${identity?.name ?? "this computer"} to ${doing}.`;
+  }
+
   passwordSignInSupported(runnerId: RunnerId): boolean {
     return !this.#closed && this.#byRunner.get(runnerId)?.passwordSignIn === true;
   }
@@ -1096,6 +1154,17 @@ export class ComputerAppHub {
         })
         .catch(() => finish({ type: "unavailable" }));
     });
+  }
+
+  /**
+   * Whether this computer has said what it supports since it connected. Until a
+   * Mac's first status arrives, or while its status says its helper has not
+   * answered, its versions are unknown, which is not "unsupported".
+   */
+  ownerViewReported(runnerId: ComputerTargetId): boolean {
+    if (this.#isScreen(runnerId)) return true;
+    const entry = this.#targetEntry(runnerId);
+    return entry?.statusReceived === true && !entry.ownerViewPending;
   }
 
   ownerViewSupported(runnerId: ComputerTargetId): boolean {
@@ -1302,7 +1371,7 @@ export class ComputerAppHub {
       "viewId" | "generation" | "leaseDurationMs" | "target" | "operation" | "timeoutMs"
     >;
     readonly signal?: AbortSignal;
-  }): Promise<RunnerIntegrationsComputerViewResult["result"]> {
+  }): Promise<ComputerViewOutcome> {
     const route = input.route ?? (await this.captureRoute(input.runnerId, undefined));
     const entry = this.#targetEntry(input.runnerId);
     if (
@@ -1325,13 +1394,13 @@ export class ComputerAppHub {
     const requestId = RunnerAuxiliaryRequestIdSchema.parse(`cai:${randomUUID()}`);
     return new Promise((resolve) => {
       let answered = false;
-      const answer = (result: RunnerIntegrationsComputerViewResult["result"]) => {
+      const answer = (result: ComputerViewOutcome) => {
         if (answered) return;
         answered = true;
         input.signal?.removeEventListener("abort", abort);
         resolve(result);
       };
-      const finish = (result: RunnerIntegrationsComputerViewResult["result"]) => {
+      const finish = (result: ComputerViewOutcome) => {
         clearTimeout(timer);
         entry.pendingViews.delete(requestId);
         answer(result);
@@ -1344,7 +1413,7 @@ export class ComputerAppHub {
         () =>
           finish({
             kind: "error",
-            code: "unavailable",
+            code: "no-answer",
             message: "That computer did not answer in time.",
           }),
         input.request.timeoutMs + computerUseAnswerGraceMs,
@@ -1760,7 +1829,11 @@ export class ComputerAppHub {
       else if (!this.#options.drivers)
         await this.#options.requireAgentAccess?.(input.runnerId as RunnerId);
     }
-    const effect: IntegrationToolEffect = input.operation === "act" ? "write" : "read";
+    const effect: IntegrationToolEffect =
+      computerUseRequestMayHaveEffect(input.operation, input.params, input.phoneHold) ||
+      input.trackClose
+        ? "write"
+        : "read";
     if (this.#closed) return settledComputerUse(computerUseOffline("Opensteer is shutting down."));
     const entry = this.#byRunner.get(route?.runnerId ?? (input.runnerId as RunnerId));
     if (!entry) return settledComputerUse(computerUseOffline("That computer is offline."));
@@ -1849,6 +1922,8 @@ export class ComputerAppHub {
       route,
       settle: finish,
     });
+    // From this point a frame may reach the device, even if submission loses its reply.
+    input.submitted?.();
     const submission = await this.#submit(entry, {
       ...entry.stream.fence,
       module: "integrations",
@@ -1923,8 +1998,8 @@ export class ComputerAppHub {
     }
   }
 
-  async requireDeviceAgentAccess(deviceId: DeviceId): Promise<void> {
-    await this.#options.requireDeviceAgentAccess?.(deviceId);
+  async requireDeviceAgentAccess(deviceId: DeviceId, known?: KnownDevice): Promise<void> {
+    await this.#options.requireDeviceAgentAccess?.(deviceId, known);
   }
 
   async requireAgentAccess(runnerId: RunnerId): Promise<void> {
@@ -1979,9 +2054,12 @@ export class ComputerAppHub {
     entry: AttachedIntegrations,
     apps: readonly MachineAppStatus[],
     ownerViewVersion: number | undefined,
+    ownerViewPending: boolean,
     displayAvailable: boolean | undefined,
   ): void {
+    if (ownerViewPending) ownerViewVersion = undefined;
     if (entry.stream.identity.modules?.integrations?.platform === "ios") {
+      ownerViewPending = false;
       ownerViewVersion = undefined;
       displayAvailable = false;
     }
@@ -2004,12 +2082,14 @@ export class ComputerAppHub {
       entry.statusReceived &&
       sameAppStatus(entry.apps, next) &&
       entry.ownerViewVersion === ownerViewVersion &&
+      entry.ownerViewPending === ownerViewPending &&
       entry.displayAvailable === (displayAvailable === true)
     )
       return;
     entry.statusReceived = true;
     entry.apps = next;
     entry.ownerViewVersion = ownerViewVersion;
+    entry.ownerViewPending = ownerViewPending;
     entry.displayAvailable = displayAvailable === true;
     this.#reportPhoneDisplayCapability(entry, "reported");
     this.#options.onChanged(entry.stream.identity.runnerId);

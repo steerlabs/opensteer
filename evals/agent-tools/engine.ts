@@ -77,7 +77,6 @@ export async function prepareEngine(
       config: {},
       environment: isolation.environment,
       providerState: isolation.providerState,
-      runtimeBoundary: { kind: "isolated-service" },
       sourceId: driver.sources[0]!.sourceId,
       signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
       workingDirectory: isolation.workspace,
@@ -132,8 +131,6 @@ export async function runEngine(input: {
     kind: c.caller,
     ...(c.caller === "run" ? { capabilities } : {}),
     accessMode: c.accessMode,
-    teamsAvailable: c.teamBound || c.knowledge,
-    knowledge: c.knowledge,
   }).map(({ name }) => name);
   // Assembled as the Host plans it and the hosting Runner completes it.
   const guide =
@@ -142,8 +139,6 @@ export async function runEngine(input: {
           platformGuideForRun({
             purpose: c.purpose,
             capabilities,
-            teamsAvailable: c.teamBound || c.knowledge,
-            knowledge: c.knowledge,
           }) + (c.voice ? `\n\n${voiceGuide}` : ""),
           appHostingGuide({ platform: c.hostingPlatform, tools }),
         ]
@@ -197,10 +192,10 @@ export async function runEngine(input: {
     platformGuide: guide,
     modelSelection: ModelSelectionSchema.parse(input.selection),
     providerState: p.providerState,
-    runtimeBoundary: { kind: "isolated-service" },
+    // Every case is the person's own task, so the engine runs its own configuration.
+    personalContext: true,
+    personLineage: true,
     machineAccessNotice: c.machineAccessNotice ?? "No other computers are available to this Run.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     threadId: host.scope.threadId,
     threadStateDirectory,
     skills,
@@ -221,6 +216,8 @@ export async function runEngine(input: {
   const assignmentId = createId("delegation");
   let eventFailure: unknown;
   let failure: string | undefined;
+  // A case may expect the ask; the eval still never grants it.
+  let nativeApprovalRequested = false;
   try {
     session = await adapter.startSession(context);
     events = (async () => {
@@ -230,10 +227,14 @@ export async function runEngine(input: {
           finalText = event.data.content
             .flatMap((part) => (part.type === "text" ? [part.text] : []))
             .join("\n");
-        if (event.type === "run.failed" || event.type === "run.interrupted")
+        if (
+          (event.type === "run.failed" || event.type === "run.interrupted") &&
+          !(event.type === "run.interrupted" && nativeApprovalRequested)
+        )
           failure = JSON.stringify(event.data);
         if (event.type === "request.opened") {
-          failure = "Native tool requested approval; eval never grants new authority";
+          if (c.expect.nativeApproval === "requested") nativeApprovalRequested = true;
+          else failure = "Native tool requested approval; eval never grants new authority";
           await session!.interrupt();
         }
         if (["run.completed", "run.failed", "run.interrupted"].includes(event.type))
@@ -268,7 +269,6 @@ export async function runEngine(input: {
                   parentThreadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
                 }
               : null,
-          teamTurnContext: c.teamContext ?? null,
           threadState: { previousAssignment: null, previousRun: null },
           startedAt: new Date().toISOString(),
         },
@@ -285,7 +285,7 @@ export async function runEngine(input: {
       if (eventFailure) throw eventFailure;
       if (failure) throw new Error(failure);
     }
-    return { finalText, treatment };
+    return { finalText, nativeApprovalRequested, treatment };
   } finally {
     try {
       await session?.stop();

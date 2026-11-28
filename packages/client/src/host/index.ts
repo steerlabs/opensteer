@@ -1,9 +1,12 @@
 export * from "./access-modes.js";
+export * from "./window-tab-again.js";
 export * from "./assignment-presentation.js";
 export * from "./attachment-stage.js";
 export * from "./agent-activity-model.js";
 export * from "./conversation-presentation.js";
 export * from "./client.js";
+export * from "./failure-text.js";
+export * from "./sentence-parts.js";
 export * from "./deployment-policy.js";
 export * from "./browser-access.js";
 export * from "./browser-profile-settings.js";
@@ -83,13 +86,29 @@ export * from "./run-place-picture.js";
 
 export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";
+export * from "./home-account-link.js";
 export * from "./remote-access.js";
+export * from "./remote-access-activity.js";
 export * from "./browser-cursor.js";
 export * from "./connected-agents.js";
+export * from "./chat-screen-host.js";
+export * from "./connected-agents-copy.js";
+export * from "./connected-agent-view.js";
+export * from "./chat-view.js";
+export * from "./agent-identity.js";
+export * from "./agent-work.js";
+export * from "./connected-agents-now.js";
+export * from "./connected-agent-earlier.js";
+export * from "./agent-work-copy.js";
+export * from "./command-request.js";
+export * from "./connected-agent-options.js";
 
 export * from "./automatic-models.js";
 
 export * from "./browser-last-picture.js";
+export * from "./browser-sleep.js";
+export * from "./agent-place-links.js";
+export * from "./approved-app-names.js";
 export * from "./harness-authentication.js";
 export * from "./account-name.js";
 export * from "./ai-accounts.js";
@@ -98,7 +117,6 @@ export * from "./subagent-model.js";
 export * from "./subagent-now.js";
 export * from "./node-detail.js";
 
-export * from "./personal-team-links.js";
 export * from "./personal-stream-cache.js";
 export * from "./needs-you.js";
 

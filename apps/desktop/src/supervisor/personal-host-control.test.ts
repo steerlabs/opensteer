@@ -174,6 +174,41 @@ describe("NativePersonalHostControl bootstrap", () => {
     expect(requests).toBe(1);
   });
 
+  it("checks plugin Stop proof once per call, rejecting stale proof and permanent refusals", async () => {
+    const deployment = manifest();
+    const stoppedSince = "2026-11-20T09:00:00.000Z";
+    const responses = [
+      json({ ok: true, data: { ready: true } }),
+      json({
+        ok: true,
+        data: { ready: true, pluginAgentWorkStoppedSince: "2026-11-20T08:00:00.000Z" },
+      }),
+      json({ ok: true, data: { ready: true, pluginAgentWorkStoppedSince: stoppedSince } }),
+      rpcError({ code: "unauthorized", message: "Sign in required" }, 401),
+    ];
+    let index = 0;
+    const control = new NativePersonalHostControl({
+      fetch: async () => responses[index++]!,
+      pollIntervalMs: 1,
+    });
+    const check = () =>
+      control.checkPluginAgentWorkStopped(
+        hostOrigin,
+        deployment.deploymentId,
+        deployment.environmentId,
+        deployment.runnerId,
+        stoppedSince,
+        new AbortController().signal,
+      );
+    await expect(check()).resolves.toBe(false);
+    await expect(check()).resolves.toBe(false);
+    await expect(check()).resolves.toBe(true);
+    await expect(check()).rejects.toMatchObject({
+      code: "unauthorized",
+      name: "PersonalHostBootstrapRefusedError",
+    });
+  });
+
   it("keeps polling while a starting Host answers with a retryable fault", async () => {
     const deployment = manifest();
     let requests = 0;
@@ -199,6 +234,53 @@ describe("NativePersonalHostControl bootstrap", () => {
       ),
     ).resolves.toBeUndefined();
     expect(requests).toBe(2);
+  });
+
+  it("waits through a fresh Home that has not heard its Agent home yet, and says so", async () => {
+    const deployment = manifest();
+    const answers = [
+      () =>
+        json({
+          data: hostApi["personal.readiness.get"].success.parse({
+            ready: false,
+            pending: "agent-home",
+          }),
+          ok: true,
+        }),
+      // The owner check's own answer for a Home without Personal settings: not ready, retryable.
+      () =>
+        json(
+          {
+            error: {
+              code: "conflict",
+              message: "The hosting computer is not ready.",
+              retryable: true,
+            },
+            ok: false,
+          },
+          409,
+        ),
+      () => readiness(true),
+    ];
+    const pending: ("agent-home" | undefined)[] = [];
+    const control = new NativePersonalHostControl({
+      fetch: async () => answers.shift()!(),
+      pollIntervalMs: 1,
+      requestTimeoutMs: 1_000,
+    });
+
+    await expect(
+      control.waitForRunner(
+        hostOrigin,
+        deployment.deploymentId,
+        deployment.environmentId,
+        deployment.runnerId,
+        new AbortController().signal,
+        (value) => pending.push(value),
+      ),
+    ).resolves.toBeUndefined();
+    expect(answers).toEqual([]);
+    expect(pending).toEqual(["agent-home", undefined]);
   });
 
   it.each([
@@ -520,6 +602,29 @@ describe("NativePersonalRemoteHostControl Account-link failures", () => {
       .catch((error: unknown) => error);
     await expect(internal).resolves.not.toBeInstanceOf(PersonalHostRefusalError);
     await expect(internal).resolves.toMatchObject({ message: "Account-link completion failed." });
+  });
+
+  it.each([
+    [
+      "a validator's report",
+      {
+        code: "bad_request",
+        reason: "invalid-request",
+        message: "Request is invalid: expected string at input.grant",
+      },
+      400,
+    ],
+    [
+      "a code that is not a refusal written for a person",
+      { code: "harness_error", message: "spawn ENOENT /usr/local/bin/codex" },
+      409,
+    ],
+  ])("never passes on %s as the Home's words", async (_what, error, status) => {
+    const failed = control({ error }, status)
+      .consumeAccountLink(runtime, consumeInput)
+      .catch((reason: unknown) => reason);
+    await expect(failed).resolves.not.toBeInstanceOf(PersonalHostRefusalError);
+    await expect(failed).resolves.toMatchObject({ message: "Account-link completion failed." });
   });
 });
 

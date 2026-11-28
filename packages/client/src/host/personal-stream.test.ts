@@ -2,6 +2,7 @@ import { AppIdSchema, createId, SequenceSchema, TabSchema } from "@opensteer/cor
 import { afterEach, describe, expect, it, test, vi } from "vitest";
 import {
   personalChangesFrameMaxBytes,
+  type PersonalTaskExternalWork,
   type ScopedClientMessage,
 } from "@opensteer/protocol/personal-sync";
 import type { PersonalResourceRevisions } from "@opensteer/protocol/resources";
@@ -15,6 +16,8 @@ import { ScopedPersonalStream, type PersonalResourcePort } from "./scoped-person
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard } from "./transcript-item-view.js";
 import { detailThread } from "../test-support/scoped-transcript-fixture.js";
+import { mainDoneTasks } from "./client.js";
+import { doneTaskList, taskList } from "./task-list.js";
 
 const deploymentId = createId("deployment");
 const viewerId = createId("user");
@@ -2844,6 +2847,35 @@ test("shows a task's new return hint from its republished thread value, with no 
   }
 });
 
+test("an open task carries each republished revision, so its activity is read again when only that moves", async () => {
+  // Real Home: a connected agent's call refused before anything was sent republished its task,
+  // yet the open task kept showing the call "Running…": the open task's summary had no revision.
+  const host = scriptedHost({ tasks: [{ ...task, status: "idle" }] });
+  const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+    Response.json({
+      ok: false,
+      error: { code: "not_found", message: "Unavailable", retryable: false },
+    }),
+  );
+  const client = scriptedClient(host, fetch);
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await vi.waitFor(() =>
+      expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(true),
+    );
+    const revisionShown = () =>
+      client.getSnapshot().threads.find(({ id }) => id === threadId)?.revision;
+    for (const revision of ["2", "3"]) {
+      const value = detailThread({ ...task, status: "idle" as const, revision });
+      host.commit([], { threadId, changes: [upsert("thread", threadId, value)] });
+      expect(revisionShown()).toBe(revision);
+    }
+  } finally {
+    client.dispose();
+  }
+});
+
 test("opening a task reads each follow-up once, beside its snapshot, and the family's open work only when the newest page is not all of it", async () => {
   const calls: string[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
@@ -2939,6 +2971,119 @@ test("opening a task reads each follow-up once, beside its snapshot, and the fam
       "thread.browserUsage.get",
       "triggers.list",
     ]);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("a conversation's browsers that could not be read say so in the app's words, never the failure's text", async () => {
+  const calls: string[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const url = new URL(String(input));
+    const name = url.pathname.slice("/v1/rpc/".length);
+    calls.push(name);
+    if (name === "thread.assignments.list")
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    if (name === "thread.browserUsage.get")
+      return Response.json(
+        {
+          ok: false,
+          error: {
+            code: "bad_request",
+            message: "Request is invalid: runIds.0: Invalid string",
+            reason: "invalid-request",
+            retryable: false,
+          },
+        },
+        { status: 400 },
+      );
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket: MockPersonalSocket;
+  let detailSent = 0;
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      const deliverDetail = (
+        subscription: Pick<
+          Extract<ScopedClientMessage, { type: "client.subscribe" }>,
+          "scope" | "subscriptionId" | "generation"
+        >,
+      ) => {
+        const address = {
+          scope: subscription.scope,
+          subscriptionId: subscription.subscriptionId,
+          generation: subscription.generation,
+          throughSequence: "1",
+        };
+        detailSent++;
+        socket.deliver({
+          ...address,
+          type: "host.snapshot",
+          snapshot: {
+            thread: detailThread(task),
+            items: [item],
+            activeItems: [],
+            pendingRequests: [],
+            nextBefore: null,
+          },
+        } as never);
+        socket.deliver({ ...address, type: "host.synchronized" } as never);
+      };
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe") deliverDetail(message);
+        if (message.type !== "client.attach") return;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [task],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+    capabilities: ["task-family-v1"],
+  });
+  try {
+    await client.load();
+    calls.length = 0;
+    client.activateThread(threadId);
+    await vi.waitFor(() => expect(detailSent).toBe(1));
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().browserUsage?.[threadId]?.loading).toBe(false),
+    );
+    expect(client.getSnapshot().browserUsage?.[threadId]?.error).toBe(
+      "Could not load this conversation’s browsers.",
+    );
   } finally {
     client.dispose();
   }
@@ -3340,6 +3485,7 @@ function taskPageResponse(
     status?: "idle" | "running";
     doneReason?: "quiet";
     runQueued?: boolean;
+    externalWork?: PersonalTaskExternalWork;
   }[],
   window: { nextBefore: string | null; totalItems?: number },
 ) {
@@ -3365,6 +3511,7 @@ function taskPageResponse(
         lastReply: null,
         failure: null,
         ...(row.runQueued === undefined ? {} : { runQueued: row.runQueued }),
+        ...(row.externalWork ? { externalWork: row.externalWork } : {}),
       })),
       window: {
         nextBefore: window.nextBefore,
@@ -3381,6 +3528,86 @@ const minutesBefore = (minutes: number) =>
   new Date(Date.parse(time) - minutes * 60_000).toISOString();
 
 describe("task lists from the shell and its pages", () => {
+  it("keeps a direct session's own task out of the person's open and Done lists after paging", async () => {
+    const openId = createId("thread");
+    const doneId = createId("thread");
+    const ordinaryId = createId("thread");
+    const ownerDoneId = createId("thread");
+    const externalWork: PersonalTaskExternalWork = {
+      sessionId: createId("agentSession"),
+      status: "ended",
+      endReason: "idle",
+      connection: { id: "mcn_fixture", label: "Fixture", clientName: "Fixture" },
+    };
+    const recent = Array.from({ length: 25 }, (_, index) => ({
+      ...task,
+      id: createId("thread"),
+      askedAt: minutesBefore(index),
+      status: "idle" as const,
+    }));
+    const host = scriptedHost({
+      tasks: recent,
+      lists: { recentTaskIds: recent.map(({ id }) => id), nextBefore: "older" },
+    });
+    const requests: unknown[] = [];
+    const client = new HttpHostClient({
+      baseUrl: "http://scoped-host",
+      webSocketFactory: host.connect,
+      capabilities: ["quiet-tasks-v1"],
+      fetch: async (input) => {
+        const url = new URL(String(input));
+        if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+        const page = JSON.parse(url.searchParams.get("input") ?? "{}");
+        requests.push(page);
+        const done = page.done === true;
+        return taskPageResponse(
+          host,
+          [
+            {
+              id: done ? doneId : openId,
+              askedAt: minutesBefore(25),
+              doneAt: done ? time : null,
+              externalWork,
+            },
+            {
+              id: done ? ownerDoneId : ordinaryId,
+              askedAt: minutesBefore(26),
+              doneAt: done ? time : null,
+            },
+          ],
+          { nextBefore: null, totalItems: 2 },
+        );
+      },
+    });
+    try {
+      await client.load();
+      expect(requests).toEqual([]);
+      await client.loadEarlierTasks();
+      await client.loadDoneTasks();
+      expect(requests).toEqual([
+        expect.objectContaining({ before: "older" }),
+        expect.objectContaining({ done: true }),
+      ]);
+      const snapshot = client.getSnapshot();
+      expect(snapshot.tasks?.entries.map(({ thread }) => thread.id)).toContain(openId);
+      expect(snapshot.doneTasks[mainDoneTasks]?.entries.map(({ thread }) => thread.id)).toContain(
+        doneId,
+      );
+      const person = taskList(snapshot, { personTasksOnly: true });
+      expect(person.ready.map(({ threadId }) => threadId)).toEqual([
+        ...recent.map(({ id }) => id),
+        ordinaryId,
+      ]);
+      const doneRows = doneTaskList(snapshot)?.rows;
+      expect(doneRows?.find(({ threadId }) => threadId === doneId)?.connectedAgentTask).toBe(true);
+      expect(
+        doneRows?.filter((row) => !row.connectedAgentTask).map(({ threadId }) => threadId),
+      ).toEqual([ownerDoneId]);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("refills the settled list when synchronization arrives, counting settled tasks only", async () => {
     // 25 newer Runs at work, and the Host's settled window of only three.
     const active = Array.from({ length: 25 }, (_, index) => ({

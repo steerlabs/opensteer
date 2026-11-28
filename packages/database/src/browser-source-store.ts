@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   administrationCommand,
@@ -12,6 +13,7 @@ import {
   OpensteerError,
   createId,
   type BrowserSourceId,
+  type DeviceId,
   type RequestId,
   type UserId,
   type DeploymentId,
@@ -36,6 +38,8 @@ export interface BrowserSourceRecord {
   readonly createdAt: Date;
   readonly revokedAt: Date | null;
   readonly lastSeenAt: Date | null;
+  readonly liveTabsOnly?: boolean;
+  readonly deviceId?: DeviceId | null;
 }
 
 export interface BrowserSiteGrantRecord {
@@ -75,6 +79,8 @@ const sourceColumns = [
   "browserSources.createdAt",
   "browserSources.revokedAt",
   "browserSources.lastSeenAt",
+  "browserSources.liveTabsOnly",
+  "browserSources.deviceId",
 ] as const;
 const grantColumns = [
   "id",
@@ -116,6 +122,7 @@ export class BrowserSourceStore {
     readonly ownerId: UserId;
     readonly expiresAt: Date;
     readonly canonicalOrigin: string;
+    readonly deviceId?: DeviceId;
     readonly remoteOrigin: string | null;
     readonly remoteGeneration: number | null;
   }): Promise<void> {
@@ -148,6 +155,7 @@ export class BrowserSourceStore {
           expiresAt: input.expiresAt,
           consumedAt: null,
           canonicalOrigin: input.canonicalOrigin,
+          deviceId: input.deviceId ?? null,
           remoteOrigin: input.remoteOrigin,
           remoteGeneration: input.remoteGeneration,
         })
@@ -168,10 +176,14 @@ export class BrowserSourceStore {
     readonly name: string;
     readonly origin: string;
     readonly routeGeneration: number | null;
+    readonly liveTabsOnly?: boolean;
     readonly replaces: { readonly sourceId: BrowserSourceId; readonly tokenHash: string } | null;
   }): Promise<BrowserSourceRecord> {
     return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       const now = new Date();
+      // The extension's side of the person's `browser.source.pair` (AD10): it stands only on
+      // that pairing, unconsumed, unexpired and for this destination, consumed here as the new
+      // source is written. This is the one check; nothing else admits a source.
       const prospective = await transaction
         .selectFrom("browserSourcePairings")
         .select("ownerId")
@@ -195,7 +207,7 @@ export class BrowserSourceStore {
                 eb("remoteGeneration", "=", input.routeGeneration),
               ]),
         )
-        .returning(["ownerId"])
+        .returning(["ownerId", "deviceId"])
         .executeTakeFirst();
       if (!pairing) throw invalidPairing();
       if (pairing.ownerId !== prospective.ownerId) throw new Error("Pairing owner changed");
@@ -210,6 +222,7 @@ export class BrowserSourceStore {
             .where("id", "=", input.replaces.sourceId)
             .where("ownerId", "=", pairing.ownerId)
             .where("tokenHash", "=", input.replaces.tokenHash)
+            .where("liveTabsOnly", "=", input.liveTabsOnly ?? false)
             .forNoKeyUpdate()
             .executeTakeFirst()
         : undefined;
@@ -238,14 +251,27 @@ export class BrowserSourceStore {
         .values({
           id: createId("browserSource"),
           ownerId: pairing.ownerId,
-          name: input.name,
+          // The Chrome profile's name as the extension reports it: a name from outside.
+          name: outsideName(input.name, 120) || "Chrome",
           tokenHash: input.tokenHash,
           revokedAt: null,
           lastSeenAt: null,
           pairedOrigin: input.origin,
           pairedRouteGeneration: input.routeGeneration,
+          liveTabsOnly: input.liveTabsOnly ?? false,
+          deviceId: input.liveTabsOnly && input.routeGeneration === null ? pairing.deviceId : null,
         })
-        .returning(["id", "ownerId", "name", "generation", "createdAt", "revokedAt", "lastSeenAt"])
+        .returning([
+          "id",
+          "ownerId",
+          "name",
+          "generation",
+          "createdAt",
+          "revokedAt",
+          "lastSeenAt",
+          "liveTabsOnly",
+          "deviceId",
+        ])
         .executeTakeFirstOrThrow();
       if (replaced) {
         const preferring = await transaction
@@ -351,7 +377,7 @@ export class BrowserSourceStore {
       await assertPersonalOwner(tx, input.ownerId);
       const result = await tx
         .updateTable("browserSources")
-        .set({ name: input.name, updatedAt: new Date() })
+        .set({ name: outsideName(input.name, 120) || "Chrome", updatedAt: new Date() })
         .where("id", "=", input.sourceId)
         .where("ownerId", "=", input.ownerId)
         .where("revokedAt", "is", null)

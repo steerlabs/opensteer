@@ -4,7 +4,7 @@ import type { BrowserCdpBackend, CdpChannel, CdpParameters } from "@opensteer/br
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserAttachTicketClaimsSchema,
-  type BrowserAttachTicketClaims,
+  type RuntimeBrowserAttachTicketClaims as BrowserAttachTicketClaims,
   type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -117,6 +117,7 @@ export class FakeCdpSession implements CdpSession {
 export class FakePage implements BrowserPage {
   captureRestore?: () => Promise<unknown | null>;
   keepAwake: NonNullable<BrowserPage["keepAwake"]> = () => null;
+  activeTransfers?: NonNullable<BrowserPage["activeTransfers"]>;
   hasOpenerAccess(): boolean {
     return this.openerPage !== null;
   }
@@ -332,6 +333,7 @@ export class FakePage implements BrowserPage {
 
 export class FakeContext implements BrowserContext {
   connected = true;
+  beforeCreatePage: (() => Promise<() => void>) | undefined;
   isConnected(): boolean {
     return this.connected;
   }

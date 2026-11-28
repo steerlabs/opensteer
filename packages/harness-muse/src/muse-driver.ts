@@ -1,4 +1,5 @@
 import { createUuidV7Mint } from "@muse-code/sdk";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import {
   attachmentImageMaxPixels,
   attachmentMaxBytes,
@@ -17,6 +18,7 @@ import {
   type RequestResponse,
   type RunUsage,
   type ThreadAccessMode,
+  type ToolIdentity,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -68,6 +70,8 @@ import {
   type SupervisedProcess,
   GuidanceDelivery,
   type GuidanceTicket,
+  assertEngineMayRun,
+  opensteerToolIdentity,
 } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { copyFile, mkdir, realpath, rm } from "node:fs/promises";
@@ -108,8 +112,6 @@ const museApiKeyFileName = ".opensteer-meta-api-key";
 /** Muse's limit on a typed answer to one of its questions (msp `UserInputAnswer.freeText`). */
 const museFreeTextMaxLength = 500;
 const mintUuid = createUuidV7Mint();
-const nativeUserOnlyDetail = "Muse Code runs only on a computer you own.";
-
 const museSources = [
   {
     detail: "Meta models through Muse Code, using a subscription or Meta API key.",
@@ -192,9 +194,6 @@ export class MuseHarnessDriver implements HarnessDriver {
 
   async inspect(context: HarnessInspectionContext): Promise<HarnessInspectionResult> {
     const config = MuseHarnessConfigSchema.parse(context.config);
-    if (context.runtimeBoundary.kind !== "native-user") {
-      return { detail: nativeUserOnlyDetail, status: "unavailable" };
-    }
     if (context.sourceId !== museSourceId) {
       return {
         detail: `Muse Code does not offer the source ${context.sourceId}`,
@@ -307,7 +306,6 @@ export class MuseHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     selection: HarnessAuthenticationSelection,
   ): Promise<HarnessAuthenticationStart> {
-    assertNativeUser(context.runtimeBoundary.kind);
     MuseHarnessConfigSchema.parse(context.config);
     assertSelection(selection.connectionSlot);
     if (selection.methodId === museApiKeyMethodId) {
@@ -338,7 +336,6 @@ export class MuseHarnessDriver implements HarnessDriver {
     context: HarnessAuthenticationContext,
     selection: HarnessLogoutSelection = {},
   ): Promise<void> {
-    assertNativeUser(context.runtimeBoundary.kind);
     assertSelection(selection.connectionSlot);
     const key = await museApiKey(context.providerState);
     if (key && context.providerState.kind === "isolated") {
@@ -352,7 +349,6 @@ export class MuseHarnessDriver implements HarnessDriver {
   }
 
   async removeProfile(context: HarnessAuthenticationContext): Promise<void> {
-    assertNativeUser(context.runtimeBoundary.kind);
     if (context.providerState.kind !== "isolated") return;
     await museApiKeyFile(context.providerState).remove();
     const home = context.providerState.providerHomeDirectory;
@@ -426,7 +422,11 @@ export class MuseHarnessDriver implements HarnessDriver {
     if (!allowFailure && exit.code !== 0) {
       throw new OpensteerError({ code: "harness_error", message: "Muse Code command failed" });
     }
-    return { exitCode: exit.code, stderr, stdout };
+    return {
+      exitCode: exit.code,
+      stderr: redactNetworkCredentials(stderr, engineDiagnosticSecrets(environment)),
+      stdout,
+    };
   }
 }
 
@@ -453,8 +453,6 @@ class MuseHarnessAdapter implements HarnessAdapter {
     prompt,
     signal,
   }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
-    if (context.runtimeBoundary.kind !== "native-user")
-      return { ok: false, failure: "unavailable" };
     return backgroundTextResult(signal, async () => {
       return withBackgroundTextDirectory(context, signal, async (directory) => {
         signal.throwIfAborted();
@@ -558,7 +556,10 @@ class MuseHarnessAdapter implements HarnessAdapter {
           try {
             await done.promise;
             signal.throwIfAborted();
-            if (failure) throw new Error(failure);
+            if (failure)
+              throw new Error(
+                redactNetworkCredentials(failure, engineDiagnosticSecrets(environment)),
+              );
             if (!text.trim()) throw new Error("Muse Code did not return a title");
             return text.trim();
           } finally {
@@ -574,6 +575,9 @@ class MuseHarnessAdapter implements HarnessAdapter {
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertNativeSession(context);
+    // Muse Code starts no session without a sign-in, so what of the person's
+    // it loads cannot be shown here.
+    assertEngineMayRun("muse", context);
     assertFreshProviderSessionContext(context);
     const reference = mintUuid();
     return this.#sessions.open(reference, () => this.#open(reference, context, false));
@@ -582,6 +586,7 @@ class MuseHarnessAdapter implements HarnessAdapter {
   async resumeSession(reference: string, context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertNativeSession(context);
+    assertEngineMayRun("muse", context);
     if (!/^[0-9a-f-]{36}$/iu.test(reference)) {
       throw new OpensteerError({
         code: "bad_request",
@@ -653,6 +658,7 @@ class MuseHarnessSession implements HarnessSession {
   readonly #publisher: TurnPublisher;
   readonly #pending = new Map<RequestId, MusePending>();
   #host: MuseHost | undefined;
+  #diagnosticSecrets: readonly string[] = [];
   #active: ActiveTurn | undefined;
   #closed = false;
   #compacting = false;
@@ -777,7 +783,12 @@ class MuseHarnessSession implements HarnessSession {
       if (!active.terminal)
         this.#failure(
           active,
-          classifyMuseFailure(error, nativeModel(this.#context), this.#latestUsage),
+          classifyMuseFailure(
+            error,
+            nativeModel(this.#context),
+            this.#latestUsage,
+            this.#diagnosticSecrets,
+          ),
         );
     } finally {
       run.signal.removeEventListener("abort", abort);
@@ -971,7 +982,11 @@ class MuseHarnessSession implements HarnessSession {
       onServerRequest: (method, params) => this.#serverRequest(method, params),
       signal: this.#processLifetime.signal,
       startupTimeoutMs: this.#config.startupTimeoutMs,
-      wrapProcessLaunch: this.#context.wrapProcessLaunch,
+      wrapProcessLaunch: (launch) => {
+        const wrapped = this.#context.wrapProcessLaunch(launch);
+        this.#diagnosticSecrets = engineDiagnosticSecrets(wrapped.environment);
+        return wrapped;
+      },
     });
     if (!host.initializeResult.grantedCapabilities.includes("sessionMcp")) {
       await host.close();
@@ -1101,6 +1116,7 @@ class MuseHarnessSession implements HarnessSession {
             completed.error ?? completed.reason,
             nativeModel(this.#context),
             this.#latestUsage,
+            this.#diagnosticSecrets,
           ),
         );
       }
@@ -1316,7 +1332,7 @@ class MuseHarnessSession implements HarnessSession {
         data: {
           arguments: item.args ?? item.commandText ?? "",
           callId,
-          tool: { name: item.tool ?? item.kind, namespace: "muse" },
+          tool: museToolIdentity(item.tool ?? item.kind, this.#context.agentTools.tools),
         },
         type: "tool.started",
       });
@@ -1557,7 +1573,7 @@ class MuseHarnessSession implements HarnessSession {
     } else if (active && !active.terminal)
       this.#failure(active, {
         code: "muse_harness_error",
-        message: error.message,
+        message: redactNetworkCredentials(error.message, this.#diagnosticSecrets),
         retryable: false,
       });
   }
@@ -1668,13 +1684,7 @@ async function museApiKey(
   return state.kind === "isolated" ? museApiKeyFile(state).read() : undefined;
 }
 
-function assertNativeUser(kind: HarnessInspectionContext["runtimeBoundary"]["kind"]): void {
-  if (kind !== "native-user")
-    throw new OpensteerError({ code: "forbidden", message: nativeUserOnlyDetail });
-}
-
 function assertNativeSession(context: HarnessSessionContext): void {
-  assertNativeUser(context.runtimeBoundary.kind);
   context.signal.throwIfAborted();
 }
 
@@ -1789,6 +1799,7 @@ function classifyMuseFailure(
   error: unknown,
   model: string,
   usage: SubscriptionUsage | undefined,
+  secrets: readonly string[],
 ): { code: string; message: string; retryable: boolean } {
   const message =
     error instanceof Error
@@ -1824,7 +1835,7 @@ function classifyMuseFailure(
   }
   return {
     code: "muse_harness_error",
-    message: sanitizeFailure(message),
+    message: sanitizeFailure(redactNetworkCredentials(message, secrets)),
     retryable: isMuseMspError(error) && error.code === -32000,
   };
 }
@@ -1958,4 +1969,22 @@ async function waitForDeviceCode(
       cause: error,
     });
   }
+}
+
+const opensteerMusePrefixes = ["mcp__opensteer__", "opensteer__", "opensteer:", "opensteer/"];
+
+/**
+ * Normalizes Muse Code tool names so Opensteer MCP calls share the canonical `opensteer`
+ * namespace while Muse's own tools stay under `muse`.
+ */
+export function museToolIdentity(name: string, opensteerTools: readonly string[]): ToolIdentity {
+  for (const prefix of opensteerMusePrefixes) {
+    if (name.startsWith(prefix) && name.length > prefix.length) {
+      return opensteerToolIdentity("opensteer", name.slice(prefix.length));
+    }
+  }
+  if (opensteerTools.includes(name)) {
+    return opensteerToolIdentity("opensteer", name);
+  }
+  return { name, namespace: "muse" };
 }

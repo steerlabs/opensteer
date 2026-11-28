@@ -1,4 +1,10 @@
-import type { ExternalAgentGuide, guideAddress } from "@opensteer/client/host";
+import {
+  agentSentence,
+  agentText,
+  phoneSentence,
+  type ExternalAgentGuide,
+  type guideAddress,
+} from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { color, radius, space } from "../theme.js";
@@ -7,6 +13,7 @@ import { AppText, monoFontFamily, PrimaryButton, SecondaryButton } from "../ui/p
 import { Sheet } from "../ui/sheet.js";
 import { Symbol } from "../ui/symbol.js";
 import { ExternalAgentMark } from "./external-agent-mark.js";
+import { CopyableAddressText } from "../ui/copyable-address-text.js";
 
 /**
  * How to add one agent: three plain steps. The only thing that changes while
@@ -38,16 +45,15 @@ export function ExternalAgentSetupSheet(props: {
                 <AddressStep address={props.address} onRemoteAccess={props.onRemoteAccess} />
               </Step>
               <Step number={2} title={guide.step} />
-              <Step
-                number={3}
-                title={`Approve the request in Opensteer when ${guide.name} asks.`}
-              />
+              <Step number={3} title={agentText("agents.add.step3", { name: guide.name })} />
             </>
           ) : (
             <View accessibilityLiveRegion="polite" style={styles.done}>
               <Symbol name="checkmark.circle.fill" size={40} tint={color.green} />
               <AppText role="title" style={styles.center}>
-                {`${props.connected.label} is connected.`}
+                {phoneSentence(
+                  agentSentence("agents.add.connected", { agent: { name: props.connected.label } }),
+                )}
               </AppText>
               <PrimaryButton label="Done" onPress={props.onClose} />
             </View>
@@ -103,9 +109,13 @@ function AddressStep(props: {
     );
   return (
     <View style={styles.address}>
-      <AppText selectable role="caption" style={styles.url}>
-        {address.url}
-      </AppText>
+      {/* Copied whole by its button: drawn text holds joiners, so it is not selectable. */}
+      <CopyableAddressText
+        layoutStyle={styles.urlRoom}
+        role="caption"
+        style={styles.url}
+        value={address.url}
+      />
       <Pressable
         accessibilityLabel={copied ? "Copied" : "Copy address"}
         accessibilityRole="button"
@@ -150,5 +160,7 @@ const styles = StyleSheet.create({
   },
   step: { flexDirection: "row", gap: space[14] },
   stepBody: { flex: 1, gap: space[10], paddingTop: space[2] },
-  url: { color: color.text, flex: 1, fontFamily: monoFontFamily },
+  url: { color: color.text, fontFamily: monoFontFamily },
+  // Beside its Copy button, the address takes the rest of the row and wraps there.
+  urlRoom: { flex: 1 },
 });

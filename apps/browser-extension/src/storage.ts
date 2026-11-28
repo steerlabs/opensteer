@@ -11,6 +11,7 @@ import { z } from "zod";
 export const dailyNewSiteBudget = 20;
 export const budgetWindowMs = 24 * 60 * 60 * 1_000;
 const maximumConnections = 16;
+export const maxChromeDetachReceipts = 64;
 
 const SiteShareSchema = z.object({
   firstSharedAt: z.number().int().nonnegative(),
@@ -37,6 +38,7 @@ const ConnectionSchema = z.object({
     })
     .optional(),
   connectedAt: z.number().int().nonnegative(),
+  chromeDetachReceipts: z.array(z.uuid()).max(maxChromeDetachReceipts).optional(),
   deploymentName: z.string().trim().min(1).max(120),
   name: BrowserSourceNameSchema,
   /** When each newly shared site was first shared, for the rolling daily budget. */
@@ -50,22 +52,20 @@ const ConnectionSchema = z.object({
 export type Connection = z.infer<typeof ConnectionSchema>;
 
 const connectionsKey = "connections";
-let mutations = 0;
-export function storageBusy(): boolean {
-  return mutations > 0;
-}
 let mutationTail: Promise<void> = Promise.resolve();
 
 function serialize<T>(operation: () => Promise<T>): Promise<T> {
-  mutations += 1;
-  const next = mutationTail.then(operation, operation).finally(() => {
-    mutations -= 1;
-  });
+  const next = mutationTail.then(operation, operation);
   mutationTail = next.then(
     () => undefined,
     () => undefined,
   );
   return next;
+}
+
+/** Runs `step` once every storage operation queued before it has ended, before any queued after. */
+export function storageTurn<T>(step: () => T): Promise<T> {
+  return serialize(async () => step());
 }
 
 export async function restrictCredentialStorage(): Promise<void> {

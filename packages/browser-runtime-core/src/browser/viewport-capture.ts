@@ -20,6 +20,7 @@ export interface ViewportCaptureRequest {
   readonly pageScale: number;
   /** Only jpeg and webp have one. */
   readonly quality?: number;
+  readonly maxImageBytes?: number;
 }
 
 export interface ViewportCapture {
@@ -27,6 +28,16 @@ export interface ViewportCapture {
   readonly cropped?: { readonly page: PageSize; readonly visible: PageSize };
   /** The base64 image. */
   readonly data: string;
+}
+
+export function screenshotImageLimit(bytes: number, limit: number): BrowserRuntimeError {
+  const imageKiB = Math.ceil(bytes / 1024);
+  const limitKiB = Number((limit / 1024).toFixed(1));
+  return new BrowserRuntimeError(
+    "bad_message",
+    `Screenshot was ${imageKiB} KiB and the limit is ${limitKiB} KiB. Capture a smaller viewport clip or use JPEG via CDP.`,
+    { reason: "browser-screenshot-limit" },
+  );
 }
 
 interface BitmapRegion {
@@ -92,15 +103,20 @@ export function viewportCapturePlan(
 export function viewportImageScript(
   data: string,
   { output, source }: ViewportCapturePlan,
-  { format, quality }: Pick<ViewportCaptureRequest, "format" | "quality">,
+  {
+    format,
+    quality,
+    maxImageBytes,
+  }: Pick<ViewportCaptureRequest, "format" | "quality" | "maxImageBytes">,
 ): string {
-  return `(async ({ data, output, source, type, quality }) => {
+  return `(async ({ data, output, source, type, quality, maxImageBytes }) => {
     const bytes = Uint8Array.from(atob(data), (character) => character.charCodeAt(0));
     const bitmap = await createImageBitmap(new Blob([bytes]));
     const canvas = new OffscreenCanvas(output.width, output.height);
     canvas.getContext("2d").drawImage(bitmap, source.x, source.y, source.width, source.height, 0, 0, output.width, output.height);
     bitmap.close();
     const blob = await canvas.convertToBlob({ type, quality });
+    if (maxImageBytes !== undefined && blob.size > maxImageBytes) return blob.size;
     const encoded = new Uint8Array(await blob.arrayBuffer());
     let binary = "";
     for (let at = 0; at < encoded.length; at += 8192)
@@ -111,6 +127,7 @@ export function viewportImageScript(
     output,
     source,
     type: `image/${format}`,
+    ...(maxImageBytes === undefined ? {} : { maxImageBytes }),
     ...(quality === undefined ? {} : { quality: quality / 100 }),
   })})`;
 }

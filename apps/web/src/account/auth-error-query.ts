@@ -36,3 +36,30 @@ export function consumeOAuthErrorQuery(
     error,
   };
 }
+
+export interface AuthorizationErrorScreen {
+  /** Continue clears the screen; signing in as the owner asks the Account who is signing in. */
+  readonly action: "continue" | "sign-in-as-owner";
+  readonly message: string;
+  readonly title: string;
+}
+
+/**
+ * What the page says for a failed sign-in. A managed Home refuses an Opensteer
+ * account that is not its owner (`another_account`); signing in again with the
+ * same Account session would only be refused again, so that page offers
+ * signing in as the owner, which makes the Account ask who is signing in.
+ */
+export function authorizationErrorScreen(error: OAuthErrorQuery): AuthorizationErrorScreen {
+  if (error.error === "another_account")
+    return {
+      action: "sign-in-as-owner",
+      message: "Sign in with the Opensteer account that owns it.",
+      title: "This Home belongs to another Opensteer account",
+    };
+  return {
+    action: "continue",
+    message: error.description ?? "This deployment turned down the authorization request.",
+    title: "Sign-in couldn’t be completed",
+  };
+}

@@ -4,6 +4,7 @@ import {
   CompiledQuery,
   Kysely,
   PostgresDialect,
+  type ControlConnectionProvider,
   type IsolationLevel,
   type Transaction,
 } from "kysely";
@@ -108,10 +109,31 @@ export function createDatabase<Schema = DatabaseSchema>(
   // An idle client the server ends (restart, failover) is dropped by the pool; without a
   // listener the error would crash the process.
   pool.on("error", () => {});
+  const provideControlConnection: ControlConnectionProvider = async (consume) => {
+    const control = new Client(pool.options);
+    try {
+      await control.connect();
+      await consume({
+        async executeQuery(query) {
+          await control.query(query.sql, [...query.parameters]);
+          return { rows: [] };
+        },
+        streamQuery() {
+          throw new Error("A PostgreSQL control connection cannot stream rows");
+        },
+      });
+    } finally {
+      await control.end();
+    }
+  };
   const database = new Kysely<Schema>({
     dialect: new DrainingPostgresDialect({
-      controlClient: Client,
       onCreateConnection: async (connection) => {
+        // Kysely's provider path rechecks the query ID even when the query has already ended.
+        const cancel = connection.cancelQuery?.bind(connection);
+        const kill = connection.killSession?.bind(connection);
+        if (cancel) connection.cancelQuery = () => cancel(provideControlConnection);
+        if (kill) connection.killSession = () => kill(provideControlConnection);
         const execute = connection.executeQuery.bind(connection);
         connection.executeQuery = async <R>(query: CompiledQuery) => {
           const operation = databaseOperation();
@@ -253,26 +275,39 @@ export function withDatabaseTransaction<Schema, Result>(
   isolationLevel?: IsolationLevel,
   retryAdditional?: (error: unknown) => boolean,
 ): Promise<Result> {
-  return retryDatabaseTransaction(async () => {
-    const operation = databaseOperation();
-    const options = databaseOperationOptions();
-    const run = (connection: Kysely<Schema>) => {
-      const builder = connection.transaction();
-      return (isolationLevel ? builder.setIsolationLevel(isolationLevel) : builder).execute(
-        (transaction) =>
-          inDatabaseOperationTransaction(async () => {
-            operation?.signal.throwIfAborted();
-            const result = await action(transaction);
-            operation?.signal.throwIfAborted();
-            return result;
-          }),
-      );
-    };
-    try {
-      return await (operation ? database.connection().execute(run, options) : run(database));
-    } catch (error) {
-      if (operation?.signal.aborted) throw operation.signal.reason;
-      throw error;
-    }
-  }, retryAdditional);
+  return retryDatabaseTransaction(
+    () => runDatabaseTransactionOnce(database, action, isolationLevel),
+    retryAdditional,
+  );
+}
+
+/**
+ * One attempt of a transaction under the operation's budget (each statement's timeout and its
+ * cancel on the signal), never retried: what `withDatabaseTransaction` runs for each attempt.
+ */
+export async function runDatabaseTransactionOnce<Schema, Result>(
+  database: Kysely<Schema>,
+  action: (transaction: Transaction<Schema>) => Promise<Result>,
+  isolationLevel?: IsolationLevel,
+): Promise<Result> {
+  const operation = databaseOperation();
+  const options = databaseOperationOptions();
+  const run = (connection: Kysely<Schema>) => {
+    const builder = connection.transaction();
+    return (isolationLevel ? builder.setIsolationLevel(isolationLevel) : builder).execute(
+      (transaction) =>
+        inDatabaseOperationTransaction(async () => {
+          operation?.signal.throwIfAborted();
+          const result = await action(transaction);
+          operation?.signal.throwIfAborted();
+          return result;
+        }),
+    );
+  };
+  try {
+    return await (operation ? database.connection().execute(run, options) : run(database));
+  } catch (error) {
+    if (operation?.signal.aborted) throw operation.signal.reason;
+    throw error;
+  }
 }

@@ -1,24 +1,35 @@
-import type { MachineAppStatus, DeviceAvailability, PhoneDisplayView } from "@opensteer/protocol";
+import type { MachineAppStatus, DeviceAvailability } from "@opensteer/protocol";
 import type { PhoneDisplayDefinitionId } from "@opensteer/core";
 
 export function phoneDeviceUnavailableDetail(phone: {
   readonly name: string;
   readonly definitionId?: PhoneDisplayDefinitionId | undefined;
   readonly availability?: DeviceAvailability | undefined;
-  readonly setup?: PhoneDisplayView["setup"] | undefined;
+  readonly connectedMacName?: string | undefined;
+  /** A connected agent reads this, not one of the person's own agents. */
+  readonly connection?: boolean | undefined;
 }): string | null {
   const reason = phone.availability?.reason?.kind;
-  const location =
-    phone.setup?.location === "driver-mac" ? ` on ${phone.setup.driverRunnerName}` : "";
+  const mac = phone.connectedMacName;
+  const location = mac ? ` on ${mac}` : "";
+  const connectedMac = mac ?? `the Mac connected to ${phone.name}`;
+  const subject = phone.definitionId === "android-phone" ? phone.name : connectedMac;
+  const named = subject[0]!.toUpperCase() + subject.slice(1);
   switch (reason) {
     case "locked":
       return `Ask the person to unlock ${phone.name} physically, then observe again. Do not enter a passcode.`;
     case "not-connected":
-      return `${phone.name} is not connected. Set up its screen driver${location}.`;
+      return `${phone.name} is not connected. Set up its screen connection${location}.`;
     case "driver-offline":
-      return `${phone.name}'s screen driver is offline${location}. Continue other work until it returns.`;
+      return `${named} is offline. Continue other work until it returns.`;
+    case "driver-asleep":
+      return `${named} is asleep. Wait until it wakes or continue other work.`;
+    case "driver-stopped":
+      return `Agents are stopped on ${subject}. Wait until the person resumes them or continue other work.`;
     case "access-off":
-      return `Apps access is off on ${phone.name}. Use computer_access_request if needed.`;
+      return phone.connection
+        ? `Apps access is off on ${phone.name}. The person can turn it on in Opensteer.`
+        : `Apps access is off on ${phone.name}. Use computer_access_request if needed.`;
     case "trust-required":
     case "developer-mode-required":
     case "setup-required":
@@ -102,11 +113,12 @@ export function computerAppAvailabilityDetail(input: {
 export function phoneAvailabilityDetail(input: {
   readonly availability?: DeviceAvailability | undefined;
   readonly definitionId?: PhoneDisplayDefinitionId | undefined;
-  readonly setup?: PhoneDisplayView["setup"] | undefined;
+  readonly connectedMacName?: string | undefined;
   readonly attached: boolean;
   readonly phone: string;
   readonly runnerConnected: boolean;
   readonly status: MachineAppOperationStatus | readonly MachineAppOperationStatus[] | null;
+  readonly connection?: boolean | undefined;
 }): string | null {
   const unavailable = phoneDeviceUnavailableDetail({ ...input, name: input.phone });
   if (unavailable) return unavailable;
@@ -120,7 +132,7 @@ export function phoneAvailabilityDetail(input: {
   switch (blocked?.state) {
     case "permission-required":
       return input.definitionId === "iphone-screen"
-        ? `${input.phone} needs screen permission on its driver Mac.`
+        ? `${input.phone} needs screen permission on its connected Mac.`
         : `${input.phone} needs its Opensteer accessibility service turned back on in the phone's settings.`;
     case "unavailable":
       // The phone reports itself unavailable only while its owner paused it.

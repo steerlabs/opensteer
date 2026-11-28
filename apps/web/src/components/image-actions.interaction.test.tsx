@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
+import { MockHostClient } from "@opensteer/client/mock";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { useImageActions, type ImageRead } from "./image-actions.js";
+import { transcriptImageRead, useImageActions, type ImageRead } from "./image-actions.js";
 import { ToastProvider } from "./toast.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -82,4 +83,19 @@ it("offers only Download where the page has no clipboard for images", () => {
   expect(render(async () => new File([], "plot.png")).map((item) => item.textContent)).toEqual([
     "Download",
   ]);
+});
+
+it("tells the person to update the Device when the image original cannot be read", async () => {
+  vi.stubGlobal("ClipboardItem", undefined);
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    vi.spyOn(client.transcriptFiles, "original").mockResolvedValue({ status: "update-required" });
+    const items = render(transcriptImageRead(client, null, { kind: "path", path: "plot.png" }));
+    await act(async () => items[0]!.click());
+    expect(document.body.textContent).toContain(
+      "Update Opensteer on the device that holds this file.",
+    );
+  } finally {
+    client.dispose();
+  }
 });

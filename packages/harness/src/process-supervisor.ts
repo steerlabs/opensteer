@@ -13,8 +13,9 @@ import {
   writeProcessControl,
 } from "@opensteer/shared/processControl";
 import { delay } from "@opensteer/shared/delay";
+import { constants } from "node:os";
 import { isAbsolute } from "node:path";
-import type { Writable } from "node:stream";
+import type { Duplex, Writable } from "node:stream";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 type SupervisedProcessOptions = {
@@ -66,6 +67,21 @@ export interface RunningSupervisedProcess {
 }
 
 const running = new Set<RunningSupervisedProcess>();
+
+/**
+ * A supervised process whose target a SIGKILL ended that the supervisor did not send: the
+ * kernel's kill for memory looks so. Its own force does not, nor a target's own exit(137).
+ */
+export interface KilledSupervisedProcess {
+  readonly environment: Readonly<Record<string, string>>;
+}
+const killed: KilledSupervisedProcess[] = [];
+const killedKept = 64;
+
+/** The latest supervised processes a SIGKILL nobody stopping them sent ended, oldest first (at most 64). */
+export function killedSupervisedProcesses(): readonly KilledSupervisedProcess[] {
+  return killed;
+}
 
 /**
  * Every supervised process this process started whose tree is not proven gone:
@@ -132,6 +148,9 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
   control.on("error", (error: Error) => {
     controlError = error;
   });
+  // Windows has no signals to report; elsewhere the supervisor's one line back comes before its exit.
+  const targetSignal =
+    platform === "win32" ? Promise.resolve(undefined) : reportedTargetSignal(control as Duplex);
   const entry: RunningSupervisedProcess = {
     control: (mode) => {
       if (!controlError) void writeProcessControl(control as Writable, mode).catch(() => undefined);
@@ -157,7 +176,16 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
     child.once("exit", (code, signal) => {
       // Only Windows lists trees from here; elsewhere the process group does.
       if (platform !== "win32" || windowsSupervisorDrained(code)) running.delete(entry);
-      resolve({ code: supervisedExitCode(code, platform), signal });
+      const exitCode = supervisedExitCode(code, platform);
+      // The record is in place before anyone hears of the exit (whose kill it was, a Runner asks
+      // later). An exited supervisor's channel ends at once; one that does not end is no report.
+      void within(targetSignal, controlEndGraceMs).then((reported) => {
+        if (reported === constants.signals.SIGKILL) {
+          killed.push({ environment: options.environment });
+          if (killed.length > killedKept) killed.shift();
+        }
+        resolve({ code: exitCode, signal });
+      });
     });
   });
 
@@ -187,6 +215,39 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
       );
   }
   return { child, exited, stderr, stdout, terminate };
+}
+
+/** How long an exit waits for the control channel to end; an exited supervisor ends it at once. */
+const controlEndGraceMs = 1_000;
+
+/**
+ * The signal a supervisor reported, on its control channel just before it exited, as having
+ * ended its target without its sending it (`target-signalled <N>`), once the channel ends. A
+ * missing or malformed line is simply no report.
+ */
+function reportedTargetSignal(control: Duplex): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    let received = "";
+    control.setEncoding("utf8");
+    control.on("data", (chunk: string) => {
+      // One short line is all the supervisor ever sends; anything past it is dropped.
+      if (received.length < 64) received += chunk.slice(0, 64 - received.length);
+    });
+    control.once("close", () => {
+      const signal = /^target-signalled (\d{1,2})$/mu.exec(received)?.[1];
+      resolve(signal === undefined ? undefined : Number(signal));
+    });
+  });
+}
+
+/** What `promise` settles to within `ms`, else undefined; the bound keeps no process alive. */
+function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let bound: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<undefined>((resolve) => {
+    bound = setTimeout(() => resolve(undefined), ms);
+    bound.unref();
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(bound));
 }
 
 function plannedCommandLine(

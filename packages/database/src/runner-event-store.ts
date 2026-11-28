@@ -1,14 +1,21 @@
 import { lockRunProjectionRows } from "./run-projection-locks.js";
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { executionDate } from "./personal-transaction.js";
 import {
   projectThreadState,
+  publishRunQueue,
   publishThreadSummary,
   replyPreview,
   writeThreadSummary,
 } from "./thread-status.js";
-import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { refreshRequestState } from "./request-persistence.js";
-import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
+import {
+  commitPersonalMutation,
+  wakeTriggerSchedules,
+  wakeWatches,
+  type PersonalMutation,
+} from "./personal-mutation.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
 import { beginPersonalRunFinish, readFinishChildren } from "./personal-run-state.js";
 import { completePersonalToolCall, startPersonalToolCall } from "./personal-tool-calls.js";
@@ -24,7 +31,12 @@ import {
   transcriptPreview,
 } from "./transcript-store.js";
 import { completeRunReplacement, recoverLostRunTransaction } from "./run-recovery.js";
-import { contentSaysSomething, isPlaceContentPart } from "@opensteer/core";
+import { clearThreadStartHold } from "./execution-recovery.js";
+import {
+  contentSaysSomething,
+  isPlaceContentPart,
+  runTerminationUnprovenCode,
+} from "@opensteer/core";
 import { storableJson } from "./storable-json.js";
 export { storableText } from "./storable-json.js";
 import { isConstraintViolation } from "./connection.js";
@@ -135,12 +147,7 @@ function assertRunnerEventTransition(
 type StatementThread = Awaited<ReturnType<typeof lockStatementThread>>;
 
 /** lockThreadRow, also reading what a Runner message needs from the locked task. */
-async function lockStatementThread(
-  tx: Transaction<DatabaseSchema>,
-  threadId: ThreadId,
-  channelInputs: boolean,
-) {
-  if (channelInputs) await lockThreadChannelAuthorities(tx, [threadId]);
+async function lockStatementThread(tx: Transaction<DatabaseSchema>, threadId: ThreadId) {
   return tx
     .selectFrom("threads")
     .select((eb) => [
@@ -496,6 +503,8 @@ async function applyEventProjection(
         await transaction
           .updateTable("runs")
           .set({
+            // A Run that waited for another has started: the wait is over.
+            startHoldReason: null,
             startedAt: sql`coalesce(started_at, ${now})`,
             status: "running",
           })
@@ -618,9 +627,17 @@ async function applyEventProjection(
         !event.runId ||
         ((await runHasActiveGrant(transaction, event.runId)) &&
           (await runAssignmentAcceptsRequests(transaction, event.runId)));
+      const request = event.data.request;
+      const presentation =
+        request.kind === "harness.approval"
+          ? {
+              ...request.presentation,
+              title: outsideName(request.presentation.title, 240) || "Approval required",
+            }
+          : request.presentation;
       await transaction
         .insertInto("requests")
-        .values(requestInsert(event.data.request))
+        .values(requestInsert({ ...request, presentation }))
         .executeTakeFirstOrThrow();
       if (!accepted) {
         await transaction
@@ -654,7 +671,8 @@ async function applyEventProjection(
         if (replyTarget?.kind === "channel") {
           await enqueueChannelConversationStatus(transaction, {
             conversationId: replyTarget.conversationId,
-            text: `The agent has asked for your input. Open the Thread in Opensteer: ${links.threadUrl(event.threadId)}`,
+            // One line and a link: what is asked, and every answer, stay in Opensteer.
+            text: `This task needs you: ${links.threadUrl(event.threadId)}`,
           });
         }
       }
@@ -709,7 +727,7 @@ async function applyEventProjection(
           {
             ...key,
             tool: event.data.tool,
-            arguments: event.data.arguments,
+            arguments: redactToolArgumentsForStorage(event.data.arguments, event.data.tool),
             ...(integration ? { integration } : {}),
             ...(event.data.provisional ? { provisional: true } : {}),
           },
@@ -912,6 +930,7 @@ export async function commitRunnerEvent(
     readonly environmentId: EnvironmentId;
     readonly event: PendingAgentEvent;
     readonly integration?: IntegrationCallSubject;
+    readonly verifiedContainment?: boolean;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   },
@@ -923,8 +942,30 @@ export async function commitRunnerEvent(
   if (input.integration && event.type !== "tool.started")
     throw new Error("Only tool.started reports can have an integration subject");
   const integration = input.integration && IntegrationCallSubjectSchema.parse(input.integration);
+  const terminalReceipt =
+    event.type === "run.completed" ||
+    (event.type === "run.failed" && event.data.code !== runTerminationUnprovenCode) ||
+    event.type === "run.interrupted";
+  let connectionId: string | null = null;
+  const recordTerminalEvidence = async () => {
+    if (!terminalReceipt || !connectionId) return;
+    await database
+      .updateTable("runAttempts")
+      .set({
+        terminalEvidenceAt: new Date(),
+        contactLostAt: input.verifiedContainment ? null : new Date(),
+      })
+      .where("runId", "=", event.runId)
+      .where("bindingGeneration", "=", event.bindingGeneration)
+      .where("runnerId", "=", input.runnerId)
+      .where("runnerBootId", "=", input.runnerBootId)
+      .where((eb) => eb.or([eb("connectionId", "=", connectionId), eb("connectionId", "is", null)]))
+      .where("terminalEvidenceAt", "is", null)
+      .execute();
+  };
   let duplicateRunUsage = false;
   let revokedGrants: readonly RevokedRunGrant[] = [];
+  let clearHeldThreadId: ThreadId | null = null;
   const statement = { ...event, runnerId: input.runnerId, runnerBootId: input.runnerBootId };
   const accept = () =>
     commitPersonalMutation(database, async (tx, mutation) =>
@@ -933,6 +974,70 @@ export async function commitRunnerEvent(
         mutation,
         statement,
         async (digest, event, authority, { run, attempt, ...context }) => {
+          // Late confirmation from the Runner that an unproven stop has now settled:
+          // move the Run from failed/execution_termination_unproven to interrupted
+          // with stopConfirmedAt, lift any previous-stop-unconfirmed hold on queued
+          // Runs, and clear the failed task status. Never becomes completed.
+          if (
+            input.verifiedContainment !== false &&
+            run.status === "failed" &&
+            run.failure?.code === runTerminationUnprovenCode &&
+            event.type === "run.interrupted"
+          ) {
+            const confirmedAt = mutation.state.now;
+            clearHeldThreadId = run.threadId;
+            await lockStatementThread(tx, event.threadId);
+            await lockRunProjectionRows(tx, {
+              threadIds: [run.threadId],
+              runIds: [run.id],
+            });
+            await tx
+              .updateTable("runs")
+              .set({
+                status: "interrupted",
+                failure: null,
+                completedAt: confirmedAt,
+                stopConfirmedAt: confirmedAt,
+                runnerSafetyTerminal: true,
+                revision: mutation.sequence,
+              })
+              .where("id", "=", run.id)
+              .executeTakeFirstOrThrow();
+            await tx
+              .updateTable("threads")
+              .set({ unconfirmedStopRunId: null })
+              .where("id", "=", run.threadId)
+              .where("unconfirmedStopRunId", "=", run.id)
+              .execute();
+            if (run.providerSessionId) {
+              await tx
+                .updateTable("providerSessions")
+                .set({
+                  status: "ready",
+                  updatedAt: confirmedAt,
+                })
+                .where("id", "=", run.providerSessionId)
+                .where("status", "=", "broken")
+                .execute();
+            }
+            await tx
+              .updateTable("runAttempts")
+              .set({
+                outcome: "interrupted",
+                endedAt: confirmedAt,
+                terminalEvidenceAt: confirmedAt,
+                contactLostAt: null,
+              })
+              .where("runId", "=", run.id)
+              .where("bindingGeneration", "=", event.bindingGeneration)
+              .execute();
+            await projectThreadState(tx, run.threadId, confirmedAt, true);
+            await publishTranscriptRun(tx, mutation, run.id);
+            await publishRunQueue(tx, run.threadId);
+            await wakeTriggerSchedules(tx);
+            await wakeWatches(tx, run.environmentId);
+            return "applied";
+          }
           const lostExecution =
             event.type === "run.interrupted" && event.data.cause === "lease-lost";
           if (
@@ -953,7 +1058,7 @@ export async function commitRunnerEvent(
             (!lostExecution && !context.threadAdmitted)
           )
             refuseExecutionBinding();
-          const thread = await lockStatementThread(tx, event.threadId, context.channelInputs);
+          const thread = await lockStatementThread(tx, event.threadId);
           if (lostExecution) {
             assertRunnerEventTransition(run, event);
             const recovery = await recoverLostRunTransaction(tx, {
@@ -980,9 +1085,13 @@ export async function commitRunnerEvent(
             event.type === "run.completed" ||
             event.type === "run.failed" ||
             event.type === "run.interrupted";
+          // A restart waiting to interrupt this binding can still lose to its final reply.
+          const replyFromLiveAttempt =
+            event.type === "assistant.message" && attempt.endedAt === null;
           if (
             authority.kind === "superseded" &&
-            (!terminal || (event.type === "run.interrupted" && !(await runWasStopped(tx, run.id))))
+            ((!terminal && !replyFromLiveAttempt) ||
+              (event.type === "run.interrupted" && !(await runWasStopped(tx, run.id))))
           ) {
             if (event.type === "run.interrupted") {
               const scope = { attemptId: attempt.id, bindingGeneration: event.bindingGeneration };
@@ -1063,6 +1172,9 @@ export async function commitRunnerEvent(
                     ? "failed"
                     : "interrupted",
               ...(event.type === "run.failed" ? { failure: event.data } : {}),
+              ...(event.type === "run.interrupted" && event.data.cause
+                ? { interruptedCause: event.data.cause }
+                : {}),
               statement: {
                 ordinal: event.ordinal,
                 runnerId: input.runnerId,
@@ -1117,7 +1229,11 @@ export async function commitRunnerEvent(
         },
         {
           now: executionNow(),
+          onRunLoaded: (run) => {
+            connectionId = run.connectionId;
+          },
           allowExpiredLease: event.type === "run.interrupted" && event.data.cause === "lease-lost",
+          verifiedContainment: input.verifiedContainment,
         },
       ),
     );
@@ -1128,8 +1244,14 @@ export async function commitRunnerEvent(
       result = await accept();
       if ("finishing" in result) throw new Error("Run finish did not commit its Runner receipt");
     }
+    if (clearHeldThreadId) {
+      await clearThreadStartHold(database, clearHeldThreadId);
+    }
+    await recordTerminalEvidence();
     return { ...result, duplicateRunUsage, revokedGrants };
   } catch (error) {
+    // A former binding can prove that it stopped without changing the current Run.
+    await recordTerminalEvidence();
     if (!isConstraintViolation(error)) throw error;
     throw new OpensteerError({
       code: "conflict",

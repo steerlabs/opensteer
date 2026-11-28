@@ -2,6 +2,8 @@ import {
   AssignmentSummarySchema,
   AuthSessionIdSchema,
   DeploymentIdSchema,
+  AgentSessionEndReasonSchema,
+  AgentSessionIdSchema,
   EnvironmentIdSchema,
   ExecutionNodeIdSchema,
   HarnessInstanceIdSchema,
@@ -10,6 +12,7 @@ import {
   RunAttemptIdSchema,
   RunIdSchema,
   RunRetryViewSchema,
+  RunStartHoldReasonSchema,
   TaskPurposeSchema,
   ThreadIdSchema,
   ThreadStatusSchema,
@@ -18,6 +21,8 @@ import {
   UserIdSchema,
 } from "@opensteer/core";
 import { z } from "zod";
+import { AgentConnectionIdSchema } from "./agent-connections.js";
+import { AgentConnectionIdentityAtConsentViewSchema } from "@opensteer/control-plane-protocol";
 import {
   AuthenticatedUserViewSchema,
   PersonalCapabilitiesViewSchema,
@@ -35,7 +40,7 @@ import {
   TranscriptOrderCursorViewSchema,
 } from "./transcript.js";
 
-export const scopedPersonalApiVersion = 65;
+export const scopedPersonalApiVersion = 66;
 export const personalClientFrameMaxBytes = 32 * 1024;
 export const personalChangesFrameMaxBytes = 512 * 1024;
 export const personalLiveFrameMaxBytes = 16 * 1024;
@@ -172,7 +177,29 @@ export const ScopedClientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("client.ping"), nonce: z.string().min(1).max(256) }),
 ]);
 
+/** A connected agent's own task, with its session retained after it ends. */
+export const PersonalTaskExternalWorkSchema = z.object({
+  sessionId: AgentSessionIdSchema,
+  status: z.enum(["active", "ended"]),
+  endReason: AgentSessionEndReasonSchema.nullable(),
+  connection: z.object({
+    id: z.string().min(1).max(255),
+    label: z.string().max(200),
+    clientName: z.string().max(200),
+    client: z
+      .object({
+        fingerprint: z.string().max(128).nullable(),
+        redirectOrigin: z.string().max(2048).nullable(),
+      })
+      .optional(),
+    identityAtConsent: AgentConnectionIdentityAtConsentViewSchema.nullable().optional(),
+  }),
+});
+export type PersonalTaskExternalWork = z.infer<typeof PersonalTaskExternalWorkSchema>;
+
 const task = z.object({
+  /** A task's connection lineage, for the person's own task views. */
+  originConnectionId: AgentConnectionIdSchema.optional(),
   id: ThreadIdSchema,
   title: z.string().max(240),
   revision: PersonalRevisionSchema,
@@ -185,6 +212,7 @@ const task = z.object({
   doneReason: ThreadDoneReasonSchema.nullable(),
   pendingRequestCount: z.int().nonnegative(),
   lastReplyPreview: z.string().max(1120).nullable(),
+  failureCode: z.string().max(255).nullable().optional(),
   failurePreview: z.string().max(1120).nullable(),
   latestRunCompletedAt: z.iso.datetime().nullable(),
   /** Where it runs and on which account: a task list says when that account is getting ready. */
@@ -192,11 +220,20 @@ const task = z.object({
   harnessInstanceId: HarnessInstanceIdSchema,
   /** A Run waits to start and none is executing. */
   runQueued: z.boolean(),
+  /** Why a queued Run is being held back from starting on its device. */
+  runStartHoldReason: RunStartHoldReasonSchema.nullable().optional(),
+  /** A connected agent is working this task itself; Stop it with `agent.session.stop`. */
+  agentSessionId: AgentSessionIdSchema.nullable().optional(),
+  externalWork: PersonalTaskExternalWorkSchema.nullable().optional(),
   /** Active provider retry on the earliest executing Run, when retrying. */
   retry: RunRetryViewSchema.nullable().optional(),
 });
 /** A task row plus the full Thread detail view, return hint included. */
-export const PersonalDetailThreadSchema = task.extend({ thread: ThreadViewSchema });
+export const PersonalDetailThreadSchema = task.extend({
+  thread: ThreadViewSchema,
+  /** The chat or connected agent that started this task has ended, so it takes no new messages. */
+  endedOrigin: z.enum(["chat", "agent"]).nullable().optional(),
+});
 const visit = z.object({
   threadId: ThreadIdSchema,
   lastVisitedAt: z.iso.datetime(),
@@ -204,7 +241,7 @@ const visit = z.object({
 });
 const attention = z.object({
   id: z.string().min(1).max(600),
-  kind: z.enum(["request", "team-ask", "failed-ask"]),
+  kind: z.literal("request"),
   threadId: ThreadIdSchema.nullable(),
   revision: PersonalRevisionSchema,
   title: z.string().max(240),
@@ -228,6 +265,7 @@ const queue = z.object({
         revision: PersonalRevisionSchema,
         status: z.string().max(80),
         finishing: z.boolean(),
+        startHoldReason: RunStartHoldReasonSchema.nullable().optional(),
         createdAt: z.iso.datetime().optional(),
         runOrdinal: z.int().nonnegative().optional(),
       }),
@@ -293,6 +331,8 @@ export const PersonalShellSnapshotSchema = z.object({
     .object({
       sessionId: AuthSessionIdSchema,
       user: AuthenticatedUserViewSchema,
+      /** The signed-in person's relation to this Home, from the session. Absent from older Homes. */
+      role: z.enum(["owner", "member"]).optional(),
       sessionSurface: PersonalSessionSurfaceSchema,
       can: PersonalCapabilitiesViewSchema,
     })

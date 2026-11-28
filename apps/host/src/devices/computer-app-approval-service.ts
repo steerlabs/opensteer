@@ -1,3 +1,4 @@
+import type { ComputerInventoryAuthority } from "../computer-use/computer-use-service.js";
 import type { RemovedComputerApp as RemovedDeviceComputerApp } from "@opensteer/database";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import {
@@ -12,6 +13,8 @@ import {
   isPhoneDisplayDefinitionId,
   type PhoneDisplayDefinitionId,
   type ThreadId,
+  type TriggerOccurrenceId,
+  type TriggerWatchActivationId,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -787,7 +790,7 @@ export class ComputerAppApprovalService {
           async (machine) =>
             [
               machine.deviceId,
-              await this.#store.getDeviceComputerUsePolicy({
+              await this.#store.deviceComputerUseFacts({
                 deviceId: machine.deviceId,
                 ownerUserId,
               }),
@@ -806,12 +809,17 @@ export class ComputerAppApprovalService {
       machines: inventory.machines.map((machine) => ({
         ...machine,
         appApproval: policies.get(machine.deviceId)!.appApproval,
+        // Its Apps switch, from the same read: what the device's own refusal is decided from.
+        ...(policies.get(machine.deviceId)!.accessPolicy === undefined
+          ? {}
+          : { accessPolicy: policies.get(machine.deviceId)!.accessPolicy as unknown }),
         apps: (byRunner.get(machine.deviceId) ?? []).flatMap((connection) =>
           connection.definitionId === computerUseDefinitionId && connection.computer?.app
             ? [
                 {
                   name: connection.computer.app.displayName,
                   bundleId: connection.computer.app.bundleId,
+                  teamId: connection.computer.app.teamId,
                   access: connection.computer.access,
                   status: connection.computer.blockedAt
                     ? ("blocked" as const)
@@ -852,6 +860,7 @@ export class ComputerAppApprovalService {
       readonly runnerId?: RunnerId;
     } & Partial<ComputerUseInstalledAppsParams>,
     machines?: readonly DeviceComputerOption[],
+    authority?: ComputerInventoryAuthority,
   ): Promise<
     z.infer<typeof ComputerUseInstalledAppsResultSchema> & {
       readonly unavailableReason?: "offline" | "not-ready";
@@ -865,6 +874,7 @@ export class ComputerAppApprovalService {
       readonly definitionId: PhoneDisplayDefinitionId;
     } & Partial<PhoneDisplayInstalledAppsParams>,
     machines?: readonly DeviceComputerOption[],
+    authority?: ComputerInventoryAuthority,
   ): Promise<PhoneDisplayInstalledAppsResult>;
   async installedComputerApps(
     inputRaw: {
@@ -874,6 +884,7 @@ export class ComputerAppApprovalService {
       readonly definitionId?: PhoneDisplayDefinitionId;
     } & Partial<ComputerUseInstalledAppsParams>,
     machines?: readonly DeviceComputerOption[],
+    authority?: ComputerInventoryAuthority,
   ): Promise<
     | (z.infer<typeof ComputerUseInstalledAppsResultSchema> & {
         readonly unavailableReason?: "offline" | "not-ready";
@@ -888,7 +899,9 @@ export class ComputerAppApprovalService {
         message: "Computer use is unavailable on this Deployment.",
       });
     try {
-      const { actorUserId, deviceId, definitionId, ...params } = input;
+      // The Runner named the target (`#target` resolved it to `deviceId`); it is not a
+      // listing parameter, and the listing's strict schema refuses anything that is not.
+      const { actorUserId, deviceId, definitionId, runnerId: _runnerId, ...params } = input;
       const inventory =
         machines ??
         (await computerUse.eligibleMachines(actorUserId, definitionId ?? computerUseDefinitionId));
@@ -915,11 +928,14 @@ export class ComputerAppApprovalService {
             actorUserId,
             PhoneDisplayInstalledAppsParamsSchema.parse(params),
             definitionId,
+            authority,
           )
         : await computerUse.installedApps(
             deviceId,
             actorUserId,
             ComputerUseInstalledAppsParamsSchema.parse(params),
+            undefined,
+            authority,
           );
     } catch (error) {
       if (!(error instanceof ComputerUseError)) throw error;
@@ -985,7 +1001,9 @@ export class ComputerAppApprovalService {
     readonly callId?: string;
     readonly reason: string;
     readonly ownerUserId: UserId;
-    readonly originatingRunId: RunId;
+    readonly originatingRunId?: RunId | null;
+    readonly originatingOccurrenceId?: TriggerOccurrenceId | null;
+    readonly originatingWatchActivationId?: TriggerWatchActivationId | null;
     readonly deviceId?: DeviceId;
     readonly runnerId?: RunnerId;
     readonly threadId: ThreadId;
@@ -1040,7 +1058,7 @@ export class ComputerAppApprovalService {
     try {
       resolved = await computerUse.resolveApp({
         app: input.app,
-        runId: input.originatingRunId,
+        ...(input.originatingRunId ? { runId: input.originatingRunId } : {}),
         deviceId: input.deviceId,
       });
     } catch (error) {
@@ -1188,11 +1206,22 @@ export class ComputerAppApprovalService {
       return this.#store.requestDeviceComputerAppAccess({
         access: input.access,
         app: ask.app,
-        auditRequestId: input.callId ?? input.originatingRunId,
+        auditRequestId:
+          input.callId ??
+          input.originatingRunId ??
+          input.originatingOccurrenceId ??
+          input.originatingWatchActivationId ??
+          input.threadId,
         definitionDigest: integrationDefinitionDigest(definition),
         definitionId,
         ...(input.callId === undefined ? {} : { idempotencyKey: input.callId }),
-        originatingRunId: input.originatingRunId,
+        originatingRunId: input.originatingRunId ?? null,
+        ...(input.originatingOccurrenceId
+          ? { originatingOccurrenceId: input.originatingOccurrenceId }
+          : {}),
+        ...(input.originatingWatchActivationId
+          ? { originatingWatchActivationId: input.originatingWatchActivationId }
+          : {}),
         ownerUserId: input.ownerUserId,
         reason: input.reason,
         deviceId: input.deviceId,

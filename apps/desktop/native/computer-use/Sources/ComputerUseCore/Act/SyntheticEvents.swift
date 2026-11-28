@@ -310,6 +310,9 @@ public enum SyntheticEvents {
     stamp(event, for: target)
     try gate()
     try post(event, to: target.processIdentifier)
+    #if SAFARI_OWNER_STALL_FIXTURE
+    if !down && !modifier { OwnerSafariStall.afterFirstKeyUp(target.processIdentifier) }
+    #endif
   }
 
   static func ownerScroll(dx: Double, dy: Double, target: EventTarget,

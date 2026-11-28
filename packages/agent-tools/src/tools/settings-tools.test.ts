@@ -5,11 +5,7 @@ import { opensteer_plugin_list } from "./plugins.js";
 describe("settings tools", () => {
   it("shows every read below full-access and keeps changes behind it", () => {
     const shown = (accessMode: "approval-required" | "full-access") =>
-      new Set(
-        toolsFor({ kind: "run", accessMode, teamsAvailable: true, knowledge: true }).map(
-          ({ name }) => name,
-        ),
-      );
+      new Set(toolsFor({ kind: "run", accessMode }).map(({ name }) => name));
     const readOnly = shown("approval-required");
     for (const tool of agentTools.filter((tool) => tool.callers.some((kind) => kind === "run"))) {
       if (tool.access === "settings") {

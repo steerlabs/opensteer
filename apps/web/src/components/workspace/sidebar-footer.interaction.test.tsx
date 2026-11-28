@@ -34,15 +34,9 @@ function menuLabels() {
 function desktop(expired = false) {
   const id = createId("deployment");
   const secondId = createId("deployment");
-  const teamId = createId("deployment");
-  const facts = {
-    homeName: null,
-    needsYou: 3,
-    unread: false,
-    teams: [{ id: teamId, name: "Acme", mentions: 7 }],
-  };
+  const facts = { homeName: null, needsYou: 3, unread: false };
   readFacts.mockImplementation(async (computer) =>
-    computer.id === id ? { ...facts } : { homeName: null, needsYou: 0, unread: true, teams: [] },
+    computer.id === id ? { ...facts } : { homeName: null, needsYou: 0, unread: true },
   );
   const select = vi.fn(async () => undefined);
   const onAddPlace = vi.fn();
@@ -82,7 +76,6 @@ function desktop(expired = false) {
         },
         ...[
           { id: secondId, name: "Home Mac", kind: "personal", origin: "https://home.example.test" },
-          { id: teamId, name: "Acme server", kind: "team", origin: "https://acme.example.test" },
         ].map(({ origin, ...row }) => ({
           ...row,
           access: "native",
@@ -116,10 +109,10 @@ function desktop(expired = false) {
   return { id, secondId, select, onAddPlace, signIn, checkDeployments, facts };
 }
 
-it("web keeps only app pages and, outside any team, a way into one in the menu; ? still opens shortcuts", async () => {
+it("web keeps only app pages in the menu; ? still opens shortcuts", async () => {
   await mount("/");
   await openMenu();
-  expect(menuLabels()).toEqual(["Automations", "Apps", "Settings", "Create or join a team"]);
+  expect(menuLabels()).toEqual(["Automations", "Apps", "Settings"]);
   expect(document.body.textContent).not.toContain("Switch computer…");
   expect(document.body.textContent).not.toContain("Keyboard shortcuts");
   await act(async () =>
@@ -133,25 +126,21 @@ it("web keeps only app pages and, outside any team, a way into one in the menu; 
   );
   expect(element(".dialog__title").textContent).toBe("Keyboard shortcuts");
 });
-it("desktop shows computers with team and attention facts, then closes on selection or add", async () => {
+it("desktop shows computers with attention facts, then closes on selection or add", async () => {
   const fixture = desktop();
   await mount("/");
   expect(readFacts).not.toHaveBeenCalled();
   await openMenu();
-  expect(menuLabels()).toEqual(["Automations", "Apps", "Settings", "Create or join a team"]);
-  const computers = element('[aria-label="Your computers"]');
+  expect(menuLabels()).toEqual(["Automations", "Apps", "Settings"]);
+  const computers = element('[aria-label="Your Opensteers"]');
   expect([...computers.querySelectorAll(".place-row__name")].map((row) => row.textContent)).toEqual(
     ["Home Mac", "Lab Mac"],
   );
   const lab = [...computers.querySelectorAll<HTMLButtonElement>(".place-row")].find((row) =>
     row.textContent?.includes("Lab Mac"),
   )!;
-  expect(lab.textContent).toContain("Acme");
-  expect(lab.querySelector(".place-row__detail")?.textContent).toContain("Acme");
-  expect(lab.querySelector('[aria-label="7 mentions"]')).not.toBeNull();
   expect(lab.querySelector('[aria-label="3 need you"]')).not.toBeNull();
   expect(computers.querySelector('[aria-label="Unread task results"]')).not.toBeNull();
-  expect(document.body.textContent).not.toContain("Acme server");
   expect(document.body.textContent).not.toContain("Projects");
   expect(document.body.textContent).not.toContain("Switch computer…");
   expect(document.body.textContent).toContain("alex@example.test");
@@ -171,7 +160,6 @@ it("desktop shows computers with team and attention facts, then closes on select
   const reopened = [...document.querySelectorAll<HTMLButtonElement>(".popover .place-row")].find(
     (row) => row.textContent?.includes("Lab Mac"),
   )!;
-  expect(reopened.querySelector(".place-row__detail")?.textContent).toContain("Acme");
   expect(reopened.querySelector('[aria-label="1 need you"]')).not.toBeNull();
   const add = [...document.querySelectorAll<HTMLButtonElement>(".popover button")].find(
     (button) => button.textContent === "Add a computer or server",

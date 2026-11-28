@@ -1,13 +1,13 @@
 import type { IdentityConfig } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { shouldAutoStartOidc, type AutoOidcOptions } from "./auto-oidc.js";
+import { sessionEndedHere, shouldAutoStartOidc, type AutoOidcOptions } from "./auto-oidc.js";
 
 const config = {
-  deployment: { kind: "team" as const, name: null },
+  deployment: { kind: "personal" as const, name: null },
   emailDeliveryAvailable: false,
   localPasswordEnabled: false,
   machineOwner: false,
-  oidcProviders: [{ id: "opensteer-account", label: "Opensteer Account", type: "oidc" }],
+  oidcProviders: [{ id: "opensteer-account", label: "Opensteer account", type: "oidc" }],
   passkeysEnabled: false,
   exposure: "networked",
   portalOrigin: null,
@@ -64,5 +64,20 @@ describe("shouldAutoStartOidc", () => {
     expect(shouldAutoStartOidc({ ...config, setupState: "required" }, options)).toBe(false);
     expect(shouldAutoStartOidc(config, { ...options, setupInProgress: true })).toBe(false);
     expect(shouldAutoStartOidc(config, { ...options, recentAttempt: true })).toBe(false);
+  });
+});
+
+describe("a session ended while its page was open", () => {
+  // Real Home: the Mac signed "Browser on Windows" out; the open page started the account
+  // sign-in by itself, and a new "Browser on Windows" session stood in the Mac's Devices.
+  it("is signed out by choice: this page was signed in, and the Home ended it", () => {
+    expect(sessionEndedHere(true, "authentication-required")).toBe(true);
+    expect(shouldAutoStartOidc(config, { ...options, signedOut: true })).toBe(false);
+  });
+
+  it("is not a page that opened signed out, or one still signing in", () => {
+    expect(sessionEndedHere(false, "authentication-required")).toBe(false);
+    expect(sessionEndedHere(true, "authenticated")).toBe(false);
+    expect(sessionEndedHere(true, "checking")).toBe(false);
   });
 });

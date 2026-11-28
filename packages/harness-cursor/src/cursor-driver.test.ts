@@ -12,9 +12,7 @@ import {
   type HarnessInstanceId,
 } from "@opensteer/core";
 import {
-  isolatedServiceHarnessRuntimeBoundary,
   meetsMinimumVersion,
-  nativeUserHarnessRuntimeBoundary,
   threadTitlePrompt,
   type HarnessAdapter,
   type HarnessEvent,
@@ -42,7 +40,6 @@ import {
 // time zone is unknown: its thread context is one fixed line, so these turns
 // carry exactly that context and the inputs and reports each test names.
 const noThreadContext = {
-  teamTurnContext: null,
   assignment: null,
   threadState: { previousAssignment: null, previousRun: null },
   startedAt: "2026-08-22T00:00:00.000Z",
@@ -61,25 +58,28 @@ afterEach(async () => {
   );
 });
 
-describe("Cursor runtime boundary", () => {
+describe("Cursor and whose task it is", () => {
   it.each(["start", "resume"] as const)(
-    "refuses an isolated-service Runner on %s",
+    "refuses a task a connected agent or a chat started on %s",
     async (mode) => {
-      const fixture = await setup({ runtimeBoundary: isolatedServiceHarnessRuntimeBoundary });
+      const fixture = await setup({ personLineage: false });
       if (mode === "resume") await seedTranscript(fixture);
       const open =
         mode === "start"
           ? fixture.adapter.startSession(fixture.context)
           : fixture.adapter.resumeSession(fixture.reference, fixture.context);
-      await expect(open).rejects.toThrow("Cursor runs only on a computer you signed in on.");
-      await expect(open).rejects.toMatchObject({ code: "forbidden" });
-      // Nothing was launched and nothing was written for a Run that cannot run.
+      await expect(open).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          "Cursor starts with your own Cursor settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      });
+      // Nothing was launched: Cursor never read the person's configuration.
       expect(await fixture.invocations()).toEqual([]);
       await fixture.adapter.close();
     },
   );
 });
-
 describe("Cursor access-mode hooks", () => {
   it.each([
     ["approval-required", "Write", "file-change"],
@@ -108,8 +108,8 @@ describe("Cursor access-mode hooks", () => {
 
 describe("Cursor plugin materialisation", () => {
   it.each([
-    ["approval-required", ["beforeShellExecution", "beforeMCPExecution", "preToolUse"]],
-    ["auto-accept-edits", ["beforeShellExecution", "beforeMCPExecution", "preToolUse"]],
+    ["approval-required", ["beforeShellExecution", "preToolUse"]],
+    ["auto-accept-edits", ["beforeShellExecution", "preToolUse"]],
     ["full-access", []],
   ] as const)("writes the %s hook table and the MCP servers", async (accessMode, events) => {
     const fixture = await setup({ accessMode });
@@ -234,14 +234,6 @@ describe("Cursor inspection", () => {
     expect(result?.detail).toContain("2026.09.10");
   });
 
-  it("refuses the isolated-service boundary outright", async () => {
-    const result = await inspect({ runtimeBoundary: isolatedServiceHarnessRuntimeBoundary });
-    expect(result).toEqual({
-      detail: "Cursor runs only on a computer you signed in on.",
-      status: "unavailable",
-    });
-  });
-
   it("is unavailable rather than empty when the CLI lists no models", async () => {
     const result = await inspect({ scenario: "no-models" });
     expect(result).toMatchObject({ status: "unavailable" });
@@ -258,7 +250,6 @@ describe("Cursor inspection", () => {
       config: {},
       environment: { FAKE_CURSOR_CAPTURE_PATH: capturePath, PATH: process.env.PATH ?? "" },
       providerState: testProviderState(directory),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "cursor",
       workingDirectory: directory,
@@ -790,6 +781,24 @@ describe("Cursor turns", () => {
     expect(cursorExitFailure(1, "")).toMatchObject({ code: "cursor_harness_error" });
   });
 
+  it("scrubs configured proxy credentials from Cursor stderr", () => {
+    const proxy = "http://alice:p@ss-word@proxy.invalid:8080";
+    expect(
+      cursorExitFailure(1, `Connection failed via ${proxy}; password p@ss-word`, {
+        HTTPS_PROXY: proxy,
+      }).message,
+    ).toBe("Connection failed via http://[REDACTED]@proxy.invalid:8080; password [REDACTED]");
+  });
+
+  it("scrubs a configured refresh token from Cursor stderr", () => {
+    const token = "fake-refresh-value";
+    expect(
+      cursorExitFailure(1, `Connection failed with refresh token ${token}`, {
+        REFRESH_TOKEN: token,
+      }).message,
+    ).toBe("Connection failed with refresh token [REDACTED]");
+  });
+
   it("projects a tool kind it has never seen without failing the Run", async () => {
     const fixture = await setup({ scenario: "unknown-tool" });
     const session = await fixture.adapter.startSession(fixture.context);
@@ -911,20 +920,13 @@ describe("Cursor approvals", () => {
     await open.adapter.close();
   });
 
-  it("always allows Opensteer's own MCP servers and asks about everybody else's", async () => {
+  it("adds no prompt of Opensteer's to any MCP server, the person's own included", async () => {
     const fixture = await setup({ accessMode: "approval-required", scenario: "hook-mcp" });
     const session = await fixture.adapter.startSession(fixture.context);
     const observer = observe(session.events);
-    const turn = session.execute(fixture.turn("Call both servers"));
-    const request = await observer.waitFor("request.opened");
-    expect(request.data.request.presentation).toMatchObject({
-      detail: "plugin-probe-other · probe",
-      title: "Use this tool?",
-    });
-    await session.resolveRequest(request.data.request.id, { kind: "choice", optionId: "reject" });
-    await turn;
+    await session.execute(fixture.turn("Call both servers"));
     await session.stop();
-    expect(observer.events.filter((event) => event.type === "request.opened")).toHaveLength(1);
+    expect(observer.events.filter((event) => event.type === "request.opened")).toHaveLength(0);
     const started = observer.events.filter((event) => event.type === "tool.started");
     // An MCP call reports the tool's own arguments, not Cursor's wrapper
     // naming the server and tool.
@@ -1224,8 +1226,9 @@ describe("Cursor interruption and lifetime", () => {
 
 interface SetupOptions {
   readonly accessMode?: HarnessSessionContext["accessMode"];
+  /** The person's own task unless a test says otherwise: the only kind Cursor runs. */
+  readonly personLineage?: boolean;
   readonly config?: Record<string, unknown>;
-  readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly machineAccessNotice?: string;
   readonly modelSelection?: Record<string, unknown>;
   readonly scenario?: string;
@@ -1301,15 +1304,14 @@ async function setup(options: SetupOptions): Promise<Fixture> {
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: "Follow the workspace instructions.",
+    personalContext: true,
+    personLineage: options.personLineage ?? true,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse(
       options.modelSelection ?? { modelId: "composer-2.5", options: {}, providerId: "cursor" },
     ),
     platformGuide: "Opensteer platform guide.",
     providerState: testProviderState(directory),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: skills.length > 0 ? { skills } : undefined,
     threadId: createId("thread"),
@@ -1360,7 +1362,6 @@ async function seedTranscript(fixture: Fixture): Promise<void> {
 
 async function inspect(options: {
   readonly executable?: string;
-  readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly scenario?: string;
   readonly version?: string;
 }): Promise<HarnessInspectionResult | undefined> {
@@ -1377,7 +1378,6 @@ async function inspect(options: {
       ...(options.version ? { FAKE_CURSOR_VERSION: options.version } : {}),
     },
     providerState: testProviderState(directory),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId: "cursor",
     workingDirectory: directory,

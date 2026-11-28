@@ -171,7 +171,7 @@ export function accountSettingsModel(
       account.detail ?? "Sign in to sync the deployments your Account lists and get notifications.",
     initial: null,
     subtitle: null,
-    title: authorizing ? "Finish signing in in your browser" : "No Opensteer Account",
+    title: authorizing ? "Finish signing in in your browser" : "No Opensteer account",
   };
 }
 
@@ -193,7 +193,7 @@ function accountInitial(identity: string): string | null {
  * than repeated in every state above it: the Account is the only thing that
  * can reach this phone, so a deployment it does not list cannot notify at all.
  */
-const notificationFooter = "Only deployments your Opensteer Account lists can notify this phone.";
+const notificationFooter = "Only deployments your Opensteer account lists can notify this phone.";
 
 /**
  * The notification state machine translated into the one useful next action,
@@ -217,7 +217,7 @@ export function notificationSettingsModel(
     case "signed-out":
       return {
         action: null,
-        detail: "Sign in to your Opensteer Account to receive notifications on this phone.",
+        detail: "Sign in to your Opensteer account to receive notifications on this phone.",
         disabled: working,
         footer: notificationFooter,
         preferences: null,
@@ -245,7 +245,7 @@ export function notificationSettingsModel(
     case "push-not-configured":
       return {
         action: null,
-        detail: "Your Opensteer Account service is not configured to send notifications.",
+        detail: "Your Opensteer account service is not configured to send notifications.",
         disabled: working,
         footer: notificationFooter,
         preferences: null,
@@ -330,21 +330,26 @@ export function passwordsSettingsModel(input: {
   /** A Personal Opensteer is named after its Mac until that Mac reports itself. */
   readonly deploymentName: string;
   readonly machines: readonly MachineSummary[];
+  /** What the Home says it is, and how it is reached: only a Home on a Mac has Passwords. */
+  readonly homeKind?: "mac" | "server" | "cloud-computer" | undefined;
+  readonly exposure?: "loopback" | "networked" | undefined;
 }): PasswordsSettingsModel {
   const personal = true;
+  const onMac = input.homeKind ? input.homeKind === "mac" : input.exposure !== "networked";
   const homeName = input.machines.find(hostsDeployment)?.name ?? input.deploymentName;
   return {
-    body: passwordsElsewhere({ homeName, personal }),
-    detail: passwordsSettingsSubtitle({ homeName, personal }),
-    facts: personal
-      ? [
-          passwordsHowItWorks[0],
-          passwordsCardsFact,
-          "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
-          `In Opensteer’s browser, tap a sign-in field to fill your own saved login. ${homeName} types it; it never comes to this phone.`,
-          `When you sign in by hand there, Opensteer offers to save that login on ${homeName}. The password stays there.`,
-        ]
-      : [],
+    body: passwordsElsewhere({ homeName, personal, onMac }),
+    detail: passwordsSettingsSubtitle({ homeName, personal, onMac }),
+    facts:
+      personal && onMac
+        ? [
+            passwordsHowItWorks[0],
+            passwordsCardsFact,
+            "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
+            `In Opensteer’s browser, tap a sign-in field to fill your own saved login. ${homeName} types it; it never comes to this phone.`,
+            `When you sign in by hand there, Opensteer offers to save that login on ${homeName}. The password stays there.`,
+          ]
+        : [],
     title: passwordsSettingsLabel,
   };
 }

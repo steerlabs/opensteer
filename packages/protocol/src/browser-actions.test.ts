@@ -402,17 +402,22 @@ describe("typed browser agent wire", () => {
 
   it("admits only the fixed basic input subset", () => {
     const allowed = [
-      { type: "input.command", command: "selectAll" },
-      { type: "input.command", command: "deleteBackward" },
+      { type: "input.command", command: "selectAll", contextId: uuid },
+      { type: "input.command", command: "deleteBackward", contextId: uuid },
       { type: "input.key", action: "down", key: "Enter", code: "Enter", modifiers: [] },
       { type: "input.text", edit: { contextId: uuid, text: "Hello", before: "", after: "" } },
       {
         type: "input.compose",
         composition: { contextId: uuid, text: "字", selectionStart: 1, selectionEnd: 1 },
       },
-      { type: "clipboard.copy", operationId: uuid },
-      { type: "clipboard.paste", text: "Hello" },
-      { type: "clipboard.paste-data", operationId: uuid, items: [{ type: "text/plain", size: 2 }] },
+      { type: "clipboard.copy", operationId: uuid, contextId: uuid },
+      { type: "clipboard.paste", text: "Hello", contextId: uuid },
+      {
+        type: "clipboard.paste-data",
+        operationId: uuid,
+        items: [{ type: "text/plain", size: 2 }],
+        contextId: uuid,
+      },
     ];
     const denied = [
       { type: "input.key", action: "down", key: "Enter", code: "KeyV", modifiers: [] },
@@ -424,8 +429,8 @@ describe("typed browser agent wire", () => {
         text: "paste",
         modifiers: [],
       },
-      { type: "input.command", command: "undo" },
-      { type: "input.command", command: "deleteForward" },
+      { type: "input.command", command: "undo", contextId: uuid },
+      { type: "input.command", command: "deleteForward", contextId: uuid },
       { type: "input.key", action: "down", key: "Tab", code: "Tab", modifiers: [] },
       { type: "input.key", action: "down", key: "v", code: "KeyV", modifiers: ["primary"] },
       { type: "input.text", edit: { contextId: uuid, text: "Hi", before: "Hello", after: "" } },
@@ -439,8 +444,13 @@ describe("typed browser agent wire", () => {
           before: "x",
         },
       },
-      { type: "clipboard.cut", operationId: uuid },
-      { type: "clipboard.paste-data", operationId: uuid, items: [{ type: "text/html", size: 2 }] },
+      { type: "clipboard.cut", operationId: uuid, contextId: uuid },
+      {
+        type: "clipboard.paste-data",
+        operationId: uuid,
+        items: [{ type: "text/html", size: 2 }],
+        contextId: uuid,
+      },
     ];
     for (const message of allowed)
       expect(

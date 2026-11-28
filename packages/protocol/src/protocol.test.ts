@@ -305,7 +305,6 @@ describe("wire protocol", () => {
       ],
 
       maxConcurrentRuns: 2,
-      providerStateModes: ["isolated"],
     } as const;
     const descriptor = {
       bootId: `rbt_${randomUUID()}`,
@@ -638,6 +637,7 @@ describe("wire protocol", () => {
       commandId: createId("command"),
       context: {
         personalContext: true,
+        personLineage: true,
         accessMode: "full-access",
         assignment: null,
         taskPurpose: "task",
@@ -860,7 +860,6 @@ describe("wire protocol", () => {
             environmentIds: [createId("environment")],
 
             maxConcurrentRuns: 1,
-            providerStateModes: ["isolated"],
           },
         },
         name: "Main runner",

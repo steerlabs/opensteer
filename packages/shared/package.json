@@ -5,10 +5,12 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./teamMentions": "./src/teamMentions.ts",
+    "./mentionHandles": "./src/mentionHandles.ts",
+    "./outsideName": "./src/outsideName.ts",
     "./requestGuidance": "./src/requestGuidance.ts",
     "./sessionDevice": "./src/sessionDevice.ts",
     "./plist": "./src/plist.ts",
+    "./poolRelay": "./src/poolRelay.ts",
     "./advertisedJsonSchema": "./src/advertisedJsonSchema.ts",
     "./atomicPrivateFile": "./src/atomicPrivateFile.ts",
     "./base64url": "./src/base64url.ts",
@@ -74,7 +76,10 @@
     "./fileHref": "./src/fileHref.ts",
     "./markdownLinks": "./src/markdownLinks.ts",
     "./stripRefs": "./src/stripRefs.ts",
-    "./personMarkdown": "./src/personMarkdown.ts"
+    "./personMarkdown": "./src/personMarkdown.ts",
+    "./extensionUrl": "./src/extensionUrl.ts",
+    "./homeAddress": "./src/homeAddress.ts",
+    "./heartbeat": "./src/heartbeat.ts"
   },
   "scripts": {
     "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",

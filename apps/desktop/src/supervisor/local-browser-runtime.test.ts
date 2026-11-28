@@ -11,6 +11,11 @@ const fakes = vi.hoisted(() => ({
   launcher: vi.fn(),
   start: vi.fn(async () => ({ host: "127.0.0.1", port: 1 })),
   serverClose: vi.fn(async () => undefined),
+  server: vi.fn(),
+  attachStandardCdp: vi.fn(async (..._args: unknown[]) => ({
+    signal: new AbortController().signal,
+    close: vi.fn(),
+  })),
 }));
 vi.mock("../browser/electron-browser-launcher.js", () => ({
   ElectronBrowserLauncher: class {
@@ -30,8 +35,14 @@ vi.mock("@opensteer/browser-runtime-core", async (importOriginal) => ({
     constructor(options: unknown) {
       fakes.runtime(options);
     }
+    attachStandardCdp(...args: unknown[]) {
+      return fakes.attachStandardCdp(...args);
+    }
   },
   BrowserRuntimeServer: class {
+    constructor(options: unknown) {
+      fakes.server(options);
+    }
     start = fakes.start;
     close = fakes.serverClose;
   },

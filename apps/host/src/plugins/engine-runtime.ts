@@ -19,7 +19,7 @@ import {
   scheduledRunPage,
   workflowRunPage,
 } from "./engine-storage.js";
-import { pluginNamespace } from "./provider-names.js";
+import { isLocalProviderId, pluginNamespace } from "./provider-names.js";
 import { holdEngineDirectory } from "./engine-ownership.js";
 import { folderSkills } from "apps/skills";
 import { oauthReviewDigest } from "./oauth-review.js";
@@ -114,6 +114,7 @@ import {
   callTools,
   searchCatalog,
   describeCatalog,
+  resolveCatalogTools,
   skills,
   SearchInput,
   SkillsInput,
@@ -121,12 +122,18 @@ import {
   type McpExecutionResult,
 } from "@opensteer/plugin-engine-mcp";
 import { engineAccounts, InstallAuthor, migrateEngineProduct } from "./engine-accounts.js";
-import { compositeBackend, type EngineHostCallbacks } from "./engine-backend.js";
+import {
+  accountSelectionDigest,
+  compositeBackend,
+  type EngineHostCallbacks,
+} from "./engine-backend.js";
 import { catalogPage } from "./catalog-page.js";
 import { pluginIconReader, readPluginIcons } from "./plugin-icon-reader.js";
 import { pluginIconSources } from "./plugin-icons.js";
 import { enginePages } from "./engine-pages.js";
 import {
+  pluginComputerStoppedMessage,
+  pluginComputerStoppedReason,
   operations,
   callbackOperations,
   PluginServiceError,
@@ -140,8 +147,10 @@ import {
   type EngineInit,
   type PluginCaller,
   type PluginExecution,
+  type PluginExecutionTarget,
   type PluginOperation,
   type PluginCallback,
+  type PluginHostProvider,
 } from "./engine-protocol.js";
 import { z } from "zod";
 import {
@@ -287,6 +296,8 @@ export async function startEngine(
         });
         phase("sdk");
         const hostScope = yield* Scope.Scope;
+        let backgroundScope: Scope.Closeable | undefined;
+        let scheduler: Effect.Success<ReturnType<typeof startScheduleWorker>> | undefined;
         const repositories = filesystemRepositories(join(config.directory, "repositories"));
         let oauthConfiguration = {
           clients: [],
@@ -385,9 +396,19 @@ export async function startEngine(
             Effect.flatMap(({ allowed }) => (allowed ? Effect.void : Effect.fail(refusal()))),
           );
         const standing = (plugin: string, refusal?: () => Error) =>
-          check(
-            { caller: config.owner, mode: "automatic", operation: "background", plugin },
-            refusal,
+          Effect.flatMap(CurrentPluginRequest, (request) =>
+            check(
+              {
+                caller: config.owner,
+                mode: "automatic",
+                operation:
+                  request?.context.caller === config.owner && request.operation !== "webhook"
+                    ? "personWorkflow"
+                    : "background",
+                plugin,
+              },
+              refusal,
+            ),
           );
         const beforeResourceWrite = (
           plugin: string,
@@ -501,10 +522,18 @@ export async function startEngine(
           registry: memoryRegistry(),
           cache: { durable: local.declarations },
           background: (work) =>
-            Effect.forkIn(
-              work.pipe(Effect.provideService(CurrentPluginRequest, undefined)),
-              hostScope,
-            ).pipe(Effect.as(true)),
+            Effect.flatMap(CurrentPluginRequest, (request) => {
+              const target =
+                request?.context.caller === config.owner && request.operation !== "webhook"
+                  ? hostScope
+                  : backgroundScope;
+              return request?.connected || !target
+                ? Effect.succeed(false)
+                : Effect.forkIn(
+                    work.pipe(Effect.provideService(CurrentPluginRequest, undefined)),
+                    target,
+                  ).pipe(Effect.as(true));
+            }),
           oauth,
           events: {
             sender: httpEventSender(egress),
@@ -528,10 +557,26 @@ export async function startEngine(
             Effect.repeat(Schedule.spaced("5 seconds")),
           ),
         );
-        const scheduler = yield* startScheduleWorker(
-          engine,
-          ({ app }) => standing(app, () => new ScheduleAccessRevoked()),
-          { runner: "host", concurrency: 2, pollMilliseconds: 1000 },
+        const setAgentWorkStopped = (stopped: boolean) =>
+          Effect.gen(function* () {
+            if (stopped) {
+              const current = backgroundScope;
+              backgroundScope = undefined;
+              scheduler = undefined;
+              if (current) yield* Scope.close(current, Exit.void);
+            } else if (!backgroundScope) {
+              backgroundScope = yield* Scope.fork(hostScope);
+              scheduler = yield* startScheduleWorker(
+                engine,
+                ({ app }) => standing(app, () => new ScheduleAccessRevoked()),
+                { runner: "host", concurrency: 2, pollMilliseconds: 1000 },
+              ).pipe(Effect.provideService(Scope.Scope, backgroundScope));
+            }
+            return true;
+          });
+        yield* setAgentWorkStopped(config.agentWorkStopped ?? false);
+        const wakeWebhookSources = Effect.suspend(
+          () => scheduler?.wakeWebhookSources ?? Effect.void,
         );
         yield* Effect.forkScoped(deliverEvents(engine));
         phase("catalog");
@@ -548,9 +593,13 @@ export async function startEngine(
             context: PluginCaller;
             controller: AbortController;
             driving: boolean;
+            driverDone: ReturnType<typeof Promise.withResolvers<void>>;
             direct: boolean;
+            targets: Map<string, PluginExecutionTarget>;
+            drain?: PromiseWithResolvers<void>;
           }
         >();
+        const stoppedExecutions = new Map<string, string>();
         const manager = yield* makeExecutions(
           {
             timeoutMs: config.limits.timeoutMs,
@@ -573,7 +622,7 @@ export async function startEngine(
                   reason: "Interaction expired",
                 };
                 report(record.view);
-                executions.delete(record.view.id);
+                if (!record.drain) executions.delete(record.view.id);
               }
             },
           },
@@ -586,18 +635,29 @@ export async function startEngine(
           engine,
           owner,
           accountAdapter,
-          scheduler,
+          setAgentWorkStopped,
+          wakeWebhookSources,
           catalog,
           readIcon,
           manager,
           executions,
+          stoppedExecutions,
           pages,
           blobs,
         };
       }),
     );
-    const { engine, owner, accountAdapter, catalog, readIcon, manager, executions, blobs } =
-      composed;
+    const {
+      engine,
+      owner,
+      accountAdapter,
+      catalog,
+      readIcon,
+      manager,
+      executions,
+      stoppedExecutions,
+      blobs,
+    } = composed;
     /** The icons of the catalog as last read, so reading them never reads the feed again. */
     let catalogIcons: readonly unknown[] | undefined;
     const listedCatalog = (listing: Effect.Success<typeof catalog.list>) => {
@@ -631,7 +691,13 @@ export async function startEngine(
           result.allowed
             ? Effect.succeed(result)
             : Effect.fail(
-                new PluginServiceError("forbidden", "Plugin operation is not authorized"),
+                result.reason === pluginComputerStoppedReason
+                  ? new PluginServiceError(
+                      "unavailable",
+                      pluginComputerStoppedMessage,
+                      result.reason,
+                    )
+                  : new PluginServiceError("forbidden", "Plugin operation is not authorized"),
               ),
         ),
       );
@@ -640,6 +706,8 @@ export async function startEngine(
       execution?: string,
       direct = false,
       providers: EngineHostCallbacks["providers"] = () => callback("providers", context),
+      publishedOnly = false,
+      targets?: Map<string, PluginExecutionTarget>,
     ) =>
       compositeBackend(
         engine,
@@ -666,22 +734,46 @@ export async function startEngine(
             ),
         },
         direct,
+        publishedOnly,
+        targets && ((target) => targets.set(JSON.stringify(target), target)),
       );
-    const update = (record: { view: PluginExecution }, value: Partial<PluginExecution>) => {
+    const update = (
+      record: { view: PluginExecution; drain?: PromiseWithResolvers<void>; scopeDrained?: boolean },
+      value: Partial<PluginExecution>,
+    ) => {
       record.view = { ...record.view, ...value };
       if (!["running", "waiting", "answered", "completed"].includes(record.view.state))
         delete record.view.result;
+      if (record.scopeDrained && !["running", "waiting", "answered"].includes(record.view.state)) {
+        stoppedExecutions.set(record.view.id, record.view.caller);
+        record.view.drained = true;
+      }
       report(record.view);
-      if (!["running", "waiting", "answered"].includes(record.view.state))
+      if (
+        (!record.drain || record.view.drained) &&
+        !["running", "waiting", "answered"].includes(record.view.state)
+      )
         executions.delete(record.view.id);
       return record.view;
     };
     const completed = (
-      record: { view: PluginExecution; direct: boolean },
+      record: {
+        view: PluginExecution;
+        direct: boolean;
+        targets: Map<string, PluginExecutionTarget>;
+      },
       result: McpExecutionResult,
       catalog: ReturnType<typeof backend>,
     ) =>
       Effect.gen(function* () {
+        if (
+          (result.status === "completed" &&
+            result.execution.toolCalls.some(({ outcome }) => outcome === "interrupted")) ||
+          (result.status === "unavailable" && ["lost", "ended", "answered"].includes(result.reason))
+        )
+          return update(record, { state: "interrupted", interaction: null });
+        if (result.status === "unavailable" && result.reason === "expired")
+          return update(record, { state: "expired", interaction: null });
         const pending = result.status === "approval-required" || result.status === "input-required";
         const presented =
           record.direct && !pending
@@ -706,12 +798,18 @@ export async function startEngine(
         }
         return update(record, {
           state: pending ? "waiting" : "completed",
+          targets: [...record.targets.values()],
           interaction: pending ? JSON.parse(JSON.stringify(result)) : null,
           result: operations.execute.output.shape.result.parse(
             JSON.parse(JSON.stringify(presented)),
           ),
         });
       });
+    const publishTools = (app: AppId) =>
+      Effect.gen(function* () {
+        const accounts = yield* accountAdapter.accounts(app);
+        yield* engine.tools.index({ app, accounts });
+      }).pipe(Effect.timeoutOption("5 seconds"), Effect.ignore);
     const perform = (
       operation: PluginOperation,
       raw: unknown,
@@ -736,6 +834,13 @@ export async function startEngine(
         (change?.action === "schedule.configure" && !change.enabled);
       const authorityOperation = stop ? "resourcesStop" : operation;
       return Effect.gen(function* () {
+        if (operation === "agentWork") {
+          if (context.caller !== config.owner)
+            return yield* Effect.fail(
+              new PluginServiceError("forbidden", "Plugin operation is not authorized"),
+            );
+          return yield* composed.setAgentWorkStopped(operations.agentWork.input.parse(raw).stopped);
+        }
         const permission = yield* authorize(context, authorityOperation, plugin, fields.execution);
         switch (operation) {
           case "health":
@@ -867,26 +972,32 @@ export async function startEngine(
                       new PluginServiceError("invalid", disallowedOpenapiAddress),
                     );
                   const client = yield* safeHttpClient(defaultUrlPolicy);
-                  const response = yield* client
-                    .get(url)
-                    .pipe(
-                      Effect.mapError((error) =>
-                        error.cause instanceof DestinationRefused
-                          ? new PluginServiceError("invalid", disallowedOpenapiAddress)
-                          : error,
-                      ),
+                  const sourceError = (message: string) => ({
+                    status: "build-error" as const,
+                    error: { code: "invalid-openapi", message },
+                  });
+                  const fetched = yield* client.get(url).pipe(Effect.result);
+                  const document = `The OpenAPI document at ${url.origin}`;
+                  if (Result.isFailure(fetched))
+                    return sourceError(
+                      fetched.failure.cause instanceof DestinationRefused
+                        ? disallowedOpenapiAddress
+                        : `${document} could not be fetched.`,
                     );
-                  const imported = yield* openapiImport(
-                    input.name,
-                    url.origin,
-                    yield* response.json,
-                    signal,
-                  );
-                  if ("error" in imported)
-                    return {
-                      status: "build-error" as const,
-                      error: { code: "invalid-openapi", message: imported.error },
-                    };
+                  const response = fetched.success;
+                  if (response.status < 200 || response.status >= 300)
+                    return sourceError(
+                      `${document} could not be fetched (HTTP ${response.status}).`,
+                    );
+                  const body = yield* response.json.pipe(Effect.result);
+                  if (Result.isFailure(body))
+                    return sourceError(
+                      body.failure.cause instanceof SyntaxError
+                        ? `The document at ${url.origin} is not an OpenAPI document.`
+                        : `${document} could not be read.`,
+                    );
+                  const imported = yield* openapiImport(input.name, url, body.success, signal);
+                  if ("error" in imported) return sourceError(imported.error);
                   files = imported.files;
                   warnings = imported.warnings;
                   name = input.name;
@@ -952,6 +1063,7 @@ export async function startEngine(
               input.kind,
             );
             const result = operations.install.output.parse(JSON.parse(JSON.stringify(installed)));
+            if (result.status === "installed") yield* publishTools(AppId.make(result.plugin.id));
             return result.status === "installed"
               ? {
                   ...result,
@@ -1085,11 +1197,14 @@ export async function startEngine(
             });
           case "activate": {
             const input = operations.activate.input.parse(raw);
-            return yield* engine.apps.activate({
-              app: AppId.make(input.plugin),
+            const app = AppId.make(input.plugin);
+            const activated = yield* engine.apps.activate({
+              app,
               version: VersionId.make(input.version),
               owner,
             });
+            yield* publishTools(app);
+            return activated;
           }
           case "remove":
             return yield* engine.apps.remove({
@@ -1123,13 +1238,17 @@ export async function startEngine(
           case "reviewAccountLink":
             return yield* accountAdapter.review(operations.reviewAccountLink.input.parse(raw));
           case "linkAccount": {
-            const result = yield* accountAdapter.link(operations.linkAccount.input.parse(raw));
-            yield* composed.scheduler.wakeWebhookSources;
+            const input = operations.linkAccount.input.parse(raw);
+            const result = yield* accountAdapter.link(input);
+            yield* publishTools(AppId.make(input.plugin));
+            yield* composed.wakeWebhookSources;
             return result;
           }
           case "unlinkAccount":
-            yield* accountAdapter.unlink(operations.unlinkAccount.input.parse(raw));
-            yield* composed.scheduler.wakeWebhookSources;
+            const input = operations.unlinkAccount.input.parse(raw);
+            yield* accountAdapter.unlink(input);
+            yield* publishTools(AppId.make(input.plugin));
+            yield* composed.wakeWebhookSources;
             return null;
           case "pinOAuth":
             return yield* accountAdapter.pinConnection(operations.pinOAuth.input.parse(raw));
@@ -1293,11 +1412,31 @@ export async function startEngine(
               client: OAuthClientId.make(operations.removeOAuthApp.input.parse(raw).client),
               owner,
             });
+          case "resolveTools":
           case "search":
           case "describe": {
             // This response's inventory, which the backend marks each blocked app and tool from.
             const providers = yield* Effect.cached(callback("providers", context));
-            const discovery = backend(context, undefined, false, () => providers);
+            const discovery = backend(
+              context,
+              undefined,
+              false,
+              () => providers,
+              permission.connected,
+            );
+            if (operation === "resolveTools")
+              return yield* resolveCatalogTools(
+                // A call is about one operation: each tool of a local provider carries its own
+                // reason here, its app's when it has none, where a listing says the app's once.
+                backend(
+                  context,
+                  undefined,
+                  false,
+                  () => Effect.map(providers, (listed) => listed.map(eachToolSaysWhy)),
+                  permission.connected,
+                ),
+                operations.resolveTools.input.parse(raw).paths,
+              );
             const result =
               operation === "search"
                 ? yield* searchCatalog(discovery, Schema.decodeUnknownSync(SearchInput)(raw))
@@ -1305,7 +1444,10 @@ export async function startEngine(
             return result;
           }
           case "skills":
-            return yield* skills(Schema.decodeUnknownSync(SkillsInput)(raw), backend(context));
+            return yield* skills(
+              Schema.decodeUnknownSync(SkillsInput)(raw),
+              backend(context, undefined, false, undefined, permission.connected),
+            );
           case "skillFiles": {
             const app = AppId.make(operations.skillFiles.input.parse(raw).plugin);
             const plugin = yield* engine.apps.get({ app, owner });
@@ -1335,8 +1477,18 @@ export async function startEngine(
           }
           case "call":
           case "execute": {
-            const id = randomUUID();
+            const executionId =
+              operation === "call"
+                ? operations.call.input.parse(raw).executionId
+                : operations.execute.input.parse(raw).executionId;
+            const id = executionId ?? randomUUID();
+            if (stoppedExecutions.has(id) || executions.has(id))
+              return yield* Effect.fail(
+                new PluginServiceError("invalid", "Execution already stopped or running"),
+              );
             const controller = new AbortController();
+            const drain = executionId ? Promise.withResolvers<void>() : undefined;
+            let managerStarted = false;
             const record = {
               view: {
                 id,
@@ -1347,8 +1499,18 @@ export async function startEngine(
               context,
               controller,
               driving: true,
+              driverDone: Promise.withResolvers<void>(),
               direct: operation === "call",
+              targets: new Map<string, PluginExecutionTarget>(),
+              scopeDrained: false,
+              ...(drain ? { drain } : {}),
             };
+            if (drain)
+              void drain.promise.then(() => {
+                record.scopeDrained = true;
+                if (["running", "waiting", "answered"].includes(record.view.state)) return;
+                update(record, { drained: true });
+              });
             executions.set(id, record);
             report(record.view);
             const abort = () => controller.abort();
@@ -1358,7 +1520,7 @@ export async function startEngine(
                 operation === "call"
                   ? callTools(operations.call.input.parse(raw))
                   : executeProgram(operations.execute.input.parse(raw).code);
-              const catalog = backend(context, id, record.direct);
+              const catalog = backend(context, id, record.direct, undefined, false, record.targets);
               const result = yield* Effect.tryPromise({
                 try: () =>
                   run(
@@ -1369,12 +1531,22 @@ export async function startEngine(
                         program,
                         "result",
                         context.mode === "automatic" ? "client" : "ask",
+                        drain
+                          ? {
+                              id,
+                              onAdmitted: () => {
+                                managerStarted = true;
+                              },
+                              onDrained: drain.resolve,
+                            }
+                          : undefined,
                       )
                       .pipe(
                         Effect.provideService(CurrentPluginRequest, {
                           context,
                           operation: "call",
                           execution: id,
+                          ...(permission.connected ? { connected: true as const } : {}),
                         }),
                       ),
                     controller.signal,
@@ -1399,9 +1571,43 @@ export async function startEngine(
               );
               return yield* completed(record, result, catalog);
             } finally {
+              if (!managerStarted) drain?.resolve();
               record.driving = false;
+              record.driverDone.resolve();
               signal.removeEventListener("abort", abort);
             }
+          }
+          case "resultAccess": {
+            const { targets } = operations.resultAccess.input.parse(raw);
+            for (const target of targets) {
+              const permission = yield* callback("authorize", {
+                ...context,
+                operation: "resultAccess",
+                plugin: target.plugin,
+                write: target.write,
+              });
+              if (!permission.allowed) return false;
+              if (isLocalProviderId(target.plugin)) {
+                const providers = yield* callback("providers", context);
+                if (
+                  !providers.some(
+                    ({ id, version, blocked }) =>
+                      id === target.plugin && version === target.version && !blocked,
+                  )
+                )
+                  return false;
+              } else {
+                const app = AppId.make(target.plugin);
+                if ((yield* engine.apps.get({ app, owner })).activeVersion !== target.version)
+                  return false;
+                if (
+                  accountSelectionDigest(yield* accountAdapter.accounts(app)) !==
+                  target.accountSelection
+                )
+                  return false;
+              }
+            }
+            return true;
           }
           case "executions":
             return [...executions.values()]
@@ -1415,6 +1621,19 @@ export async function startEngine(
                 ? operations.answer.input.parse(raw)
                 : operations.resume.input.parse(raw);
             const record = executions.get(input.execution);
+            if (!record && operation === "cancel") {
+              const prior = stoppedExecutions.get(input.execution);
+              if (!prior || prior === context.caller) {
+                stoppedExecutions.set(input.execution, context.caller);
+                return {
+                  id: input.execution,
+                  caller: context.caller,
+                  state: "cancelled",
+                  interaction: null,
+                  drained: true,
+                };
+              }
+            }
             if (
               !record ||
               record.context.caller !== context.caller ||
@@ -1425,6 +1644,20 @@ export async function startEngine(
               );
             if (operation === "cancel") {
               record.controller.abort();
+              yield* Effect.promise(() => record.driverDone.promise);
+              if (record.drain) {
+                yield* manager.drain(context.caller, record.view.id);
+                yield* Effect.promise(() => record.drain!.promise);
+                stoppedExecutions.set(record.view.id, context.caller);
+                executions.delete(record.view.id);
+                return {
+                  id: record.view.id,
+                  caller: context.caller,
+                  state: "cancelled",
+                  interaction: null,
+                  drained: true,
+                };
+              }
               if (record.view.interaction)
                 yield* manager.discard(
                   context.caller,
@@ -1467,10 +1700,18 @@ export async function startEngine(
                 new PluginServiceError("invalid", "The interaction has not been answered"),
               );
             record.driving = true;
+            record.driverDone = Promise.withResolvers<void>();
             const abort = () => record.controller.abort();
             signal.addEventListener("abort", abort, { once: true });
             try {
-              const catalog = backend(context, record.view.id, record.direct);
+              const catalog = backend(
+                context,
+                record.view.id,
+                record.direct,
+                undefined,
+                false,
+                record.targets,
+              );
               return yield* completed(
                 record,
                 yield* Effect.tryPromise({
@@ -1486,6 +1727,7 @@ export async function startEngine(
                             context,
                             operation: "resume",
                             execution: record.view.id,
+                            ...(permission.connected ? { connected: true as const } : {}),
                           }),
                         ),
                       record.controller.signal,
@@ -1497,6 +1739,7 @@ export async function startEngine(
               );
             } finally {
               record.driving = false;
+              record.driverDone.resolve();
               signal.removeEventListener("abort", abort);
             }
           }
@@ -1508,15 +1751,18 @@ export async function startEngine(
             const definitions = (operation: "workflows.list" | "schedules.definitions") =>
               input.cursor
                 ? Effect.succeed({})
-                : manage({ operation, input: { app } }).pipe(
-                    Effect.map((value) => ({ definitions: agentDefinitions(value) })),
-                    Effect.catch(() => Effect.succeed({ definitions: null })),
-                  );
+                : permission.connected
+                  ? Effect.succeed({ definitions: null })
+                  : manage({ operation, input: { app } }).pipe(
+                      Effect.map((value) => ({ definitions: agentDefinitions(value) })),
+                      Effect.catch(() => Effect.succeed({ definitions: null })),
+                    );
             const cursor = input.cursor ? { cursor: input.cursor } : {};
             if (input.resource === "workflows") {
               const page = yield* workflowRunPage(composed.sql, { app, limit: 10, ...cursor });
               return {
                 items: yield* Effect.forEach(page.runs, (run) =>
+                  !permission.connected &&
                   input.outputs &&
                   permission.grants?.[app] !== "off" &&
                   (run.status === "complete" || run.status === "errored")
@@ -1754,7 +2000,7 @@ export async function startEngine(
         case "webhookSetup.complete":
           return decode(CompleteWebhookSetup).pipe(
             Effect.flatMap(engine.webhookSetup.complete),
-            Effect.tap(() => composed.scheduler.wakeWebhookSources),
+            Effect.tap(() => composed.wakeWebhookSources),
           );
       }
     };
@@ -1773,4 +2019,16 @@ export async function startEngine(
     await close();
     throw error;
   }
+}
+
+/** A local provider as a call to one of its tools reads it: every tool with its own reason. */
+function eachToolSaysWhy(provider: PluginHostProvider): PluginHostProvider {
+  if (!provider.blocked) return provider;
+  const { blocked, ...rest } = provider;
+  return {
+    ...rest,
+    toolBlockers: Object.fromEntries(
+      provider.tools.map(({ name }) => [name, provider.toolBlockers?.[name] ?? blocked]),
+    ),
+  };
 }

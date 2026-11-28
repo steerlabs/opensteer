@@ -1,3 +1,4 @@
+import { isLoopbackUrl } from "@opensteer/shared/homeAddress";
 import { browserSiteDomain } from "@opensteer/browser-source-wire/site";
 import {
   StatusSchema,
@@ -5,8 +6,10 @@ import {
   type ConnectionState,
   type ConnectionView,
   type Status,
+  type TabShareProblemCode,
   type UiRequest,
 } from "./messages.js";
+import { liveTabsOnly } from "./variant.js";
 import { h, hostOf, icon, relativeTime, requireElement } from "./ui.js";
 
 const root = requireElement<HTMLElement>("#popup");
@@ -26,6 +29,23 @@ const stateLabels: Record<ConnectionState, { label: string; tone: string }> = {
   "host-outdated": { label: "Opensteer update needed", tone: "warn" },
 };
 
+const tabShareProblems: Record<TabShareProblemCode, string> = {
+  "untrusted-request": "Open the Opensteer tab sharing toolbar button to share this tab.",
+  "invalid-request": "Chrome couldn’t read this share request. Open the toolbar button again.",
+  "worker-unavailable": "Opensteer tab sharing couldn’t answer. Open the toolbar button again.",
+  "invalid-response": "Opensteer tab sharing couldn’t confirm whether the tab was shared.",
+  unsupported: "Use the Opensteer tab sharing extension to share this tab.",
+  "home-offline": "This Home is offline in Chrome. Wait until it’s available to share the tab.",
+  "tab-unavailable": "Chrome couldn’t find the tab to share.",
+  "unsupported-page": "Chrome doesn’t allow sharing this page.",
+  "shared-elsewhere": "This tab is shared with another Home. Stop sharing it there first.",
+  "detach-unconfirmed":
+    "Chrome couldn’t confirm that the previous debugger detached. Close and reopen the tab before sharing it again.",
+  capacity: "Too many Chrome tabs are shared. Stop sharing a tab and try again.",
+  "target-unavailable": "Chrome couldn’t open this tab for sharing. Reload the tab and try again.",
+  unexpected: "Chrome couldn’t share the tab. Check whether it appears under Shared Chrome tabs.",
+};
+
 function settingsUrl(connection: ConnectionView): string {
   return new URL("/settings/chrome", connection.origin).href;
 }
@@ -43,7 +63,9 @@ async function act(request: UiRequest): Promise<void> {
     current = result.value;
     problem = null;
   } else {
-    problem = "Chrome couldn't make that change. Try again.";
+    problem = result.tabShareReason
+      ? tabShareProblems[result.tabShareReason]
+      : "Chrome couldn't make that change. Try again.";
   }
   render(true);
 }
@@ -124,7 +146,10 @@ function fix(connection: ConnectionView): HTMLElement | null {
             h(
               "a.btn.btn--small.btn--primary",
               {
-                href: new URL("/browser-extension.zip", connection.origin).href,
+                href: new URL(
+                  liveTabsOnly ? "/browser-live-tabs-extension.zip" : "/browser-extension.zip",
+                  connection.origin,
+                ).href,
                 target: "_blank",
                 "data-key": `download:${key}`,
               },
@@ -190,8 +215,8 @@ function fix(connection: ConnectionView): HTMLElement | null {
             "p",
             {},
             connection.state === "ended"
-              ? `${name} disconnected this Chrome. To use it again, open Settings → Chrome in Opensteer and choose Connect Chrome.`
-              : `${name} moved to a new address. Open Settings → Chrome in Opensteer and choose Connect Chrome.`,
+              ? `${name} disconnected this Chrome. ${reconnectInstructions()}`
+              : `${name} moved to a new address. ${reconnectInstructions()}`,
           ),
           h(
             "div.notice__actions",
@@ -293,9 +318,11 @@ function actions(connection: ConnectionView): HTMLElement {
         "p",
         {},
         h("strong", {}, `Disconnect Chrome from ${connection.deploymentName}?`),
-        connection.state === "connected"
-          ? ` ${connection.deploymentName} removes this Chrome too. Agents there can't use your Chrome sign-ins until you connect again.`
-          : " Agents there can't use your Chrome sign-ins until you connect again. Opensteer will show this Chrome as offline until you remove it there.",
+        liveTabsOnly
+          ? " This stops sharing tabs with that Home."
+          : connection.state === "connected"
+            ? ` ${connection.deploymentName} removes this Chrome too. Agents there can't use your Chrome sign-ins until you connect again.`
+            : " Agents there can't use your Chrome sign-ins until you connect again. Opensteer will show this Chrome as offline until you remove it there.",
       ),
       h(
         "div.confirm__actions",
@@ -348,6 +375,69 @@ function actions(connection: ConnectionView): HTMLElement {
   );
 }
 
+async function shareCurrentTab(connection: ConnectionView): Promise<void> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id !== undefined) {
+    await act({ sourceId: connection.sourceId, type: "ui.tab.share", tabId: tab.id });
+  } else {
+    problem = "Chrome couldn't find the tab to share.";
+    render(true);
+  }
+}
+
+function sharedTabs(connection: ConnectionView): HTMLElement | null {
+  if (!connection.canShareTab) return null;
+  return h(
+    "section.sites",
+    { "aria-label": "Shared Chrome tabs" },
+    h("h3.sites__title", {}, "Shared tabs"),
+    h(
+      "p",
+      {},
+      "The agent can act as you, in this tab, on any site this Chrome is signed in to, until you stop. It can read cookies from this Chrome profile.",
+    ),
+    // A Home on this computer's loopback signs out of this Chrome while an agent is attached (G3).
+    isLoopbackUrl(connection.origin)
+      ? h(
+          "p",
+          {},
+          "While an agent is attached to a tab in this Chrome profile, your Home's own page is signed out here. The Opensteer app and your phone are not affected.",
+        )
+      : null,
+    button(
+      "btn.btn--small",
+      "Share this tab with Opensteer",
+      () => void shareCurrentTab(connection),
+      { "data-key": `tab-share:${connection.sourceId}` },
+    ),
+    h(
+      "ul.sites__list",
+      {},
+      ...connection.sharedTabs.map((tab) =>
+        h(
+          "li.site",
+          {},
+          h("span", { title: tab.url }, tab.title || tab.url),
+          button(
+            "site__action",
+            "Stop sharing",
+            () =>
+              void act({
+                sourceId: connection.sourceId,
+                shareId: tab.shareId,
+                type: "ui.tab.stop",
+              }),
+            {
+              "aria-label": `Stop sharing ${tab.title || tab.url}`,
+              "data-key": `tab-stop:${tab.shareId}`,
+            },
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 function deployment(connection: ConnectionView): HTMLElement {
   const sharing = connection.sites.filter((site) => !site.stopped).length;
   return h(
@@ -361,36 +451,62 @@ function deployment(connection: ConnectionView): HTMLElement {
       statusLabel(connection.state),
     ),
     fix(connection),
-    budgetNotice(connection),
-    h(
-      "div.sites",
-      {},
-      h(
-        "div.sites__head",
-        {},
-        h("h3.sites__title", {}, "Shared sites"),
-        connection.sites.length ? h("span", {}, `${sharing} sharing`) : null,
-      ),
-      connection.sites.length
-        ? h(
-            "ul.sites__list",
-            {
-              tabindex: connection.sites.length > 6 ? "0" : undefined,
-              "aria-label": "Shared sites",
-            },
-            ...connection.sites.map((site) => siteRow(connection, site)),
-          )
-        : h(
-            "p.sites__empty",
+    liveTabsOnly ? null : budgetNotice(connection),
+    liveTabsOnly
+      ? null
+      : h(
+          "div.sites",
+          {},
+          h(
+            "div.sites__head",
             {},
-            `None yet. A site appears here the first time ${connection.deploymentName} uses your sign-in for it.`,
+            h("h3.sites__title", {}, "Shared sites"),
+            connection.sites.length ? h("span", {}, `${sharing} sharing`) : null,
           ),
-    ),
+          connection.sites.length
+            ? h(
+                "ul.sites__list",
+                {
+                  tabindex: connection.sites.length > 6 ? "0" : undefined,
+                  "aria-label": "Shared sites",
+                },
+                ...connection.sites.map((site) => siteRow(connection, site)),
+              )
+            : h(
+                "p.sites__empty",
+                {},
+                `None yet. A site appears here the first time ${connection.deploymentName} uses your sign-in for it.`,
+              ),
+        ),
+    sharedTabs(connection),
     actions(connection),
   );
 }
 
+function reconnectInstructions(): string {
+  return liveTabsOnly
+    ? "Open a fresh Chrome pairing link from Opensteer and choose Pair Chrome tab sharing."
+    : "Open Settings → Chrome in Opensteer and choose Connect Chrome.";
+}
+
 function empty(): HTMLElement {
+  if (liveTabsOnly) {
+    return h(
+      "section.empty",
+      {},
+      h("p.empty__lead", {}, "Pair Chrome tab sharing with your Home"),
+      h(
+        "p.empty__text",
+        {},
+        "Open a Chrome pairing link from your Home and choose Pair Chrome tab sharing.",
+      ),
+      h(
+        "p.empty__text",
+        {},
+        "The agent can act as you, in a tab you share, on any site this Chrome is signed in to, until you stop. Chrome shows a banner while a tab is shared.",
+      ),
+    );
+  }
   return h(
     "section.empty",
     {},

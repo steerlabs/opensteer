@@ -74,7 +74,7 @@ export type ProtectedAuthState = z.infer<typeof ProtectedAuthStateSchema>;
  * storage that is unusable from an identity that is merely signed out.
  */
 export interface ProtectedAuthStore {
-  setTeamSignOutSuppression?(
+  setHostSignOutSuppression?(
     deploymentId: DeploymentId,
     suppressed: boolean,
   ): Promise<ProtectedAuthState>;

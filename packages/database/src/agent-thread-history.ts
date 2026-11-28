@@ -25,8 +25,10 @@ import type { PlaceView } from "./personal-state-schema.js";
 import { authorizedDetail, authorizedSyncState } from "./personal-sync-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { requestFromRow } from "./request-persistence.js";
+import { connectionRequests } from "./request-agent-response.js";
 import type { DatabaseSchema } from "./schema.js";
-import { executionNodeFromRow, messageFromRow } from "./thread-row-mappers.js";
+import type { ThreadCallerAuthority } from "./thread-caller.js";
+import { executionNodeFromRow, keptMessageSql, messagesFromRows } from "./thread-row-mappers.js";
 
 type Database = Kysely<DatabaseSchema>;
 type Tx = Transaction<DatabaseSchema>;
@@ -67,13 +69,21 @@ export type AgentThreadActivityItem = ActivityBase &
 
 export async function readAgentThreadRecent(
   database: Database,
-  input: { threadId: ThreadId; ownerId: UserId; runLimit: number },
+  input: {
+    threadId: ThreadId;
+    ownerId: UserId;
+    runLimit: number;
+    connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+  },
 ) {
   return withPersonalReadTransaction(database, async (tx) => {
     await authorizedSyncState(tx, input.ownerId);
     if (!(await authorizedDetail(tx, input.ownerId, { kind: "thread", threadId: input.threadId })))
       return null;
-    const [runs, pendingRequestRows] = await Promise.all([
+    const visibleRequests = input.connectionAuthority
+      ? await connectionRequests(tx, input.connectionAuthority, { ownerVerified: true })
+      : null;
+    const [runs, pending] = await Promise.all([
       tx
         .selectFrom("runs")
         .select([
@@ -89,15 +99,31 @@ export async function readAgentThreadRecent(
         .orderBy("runOrdinal", "desc")
         .limit(Math.max(25, Math.min(50, input.runLimit)))
         .execute(),
-      tx
-        .selectFrom("requests")
-        .selectAll()
-        .where("originatingThreadId", "=", input.threadId)
-        .where("status", "=", "pending")
-        .orderBy("createdAt", "asc")
-        .orderBy("id", "asc")
-        .limit(25)
-        .execute(),
+      visibleRequests
+        ? tx
+            .selectFrom(visibleRequests.as("visible_requests"))
+            .selectAll("visible_requests")
+            .select(sql<number>`count(*) over ()::int`.as("totalPending"))
+            .where("visible_requests.originatingThreadId", "=", input.threadId)
+            .where("visible_requests.status", "=", "pending")
+            .orderBy("visible_requests.createdAt", "asc")
+            .orderBy("visible_requests.id", "asc")
+            .limit(25)
+            .execute()
+            .then((rows) => ({
+              rows: rows.map(({ totalPending: _totalPending, ...row }) => row),
+              count: Number(rows[0]?.totalPending ?? 0),
+            }))
+        : tx
+            .selectFrom("requests")
+            .selectAll()
+            .where("originatingThreadId", "=", input.threadId)
+            .where("status", "=", "pending")
+            .orderBy("createdAt", "asc")
+            .orderBy("id", "asc")
+            .limit(25)
+            .execute()
+            .then((rows) => ({ rows, count: undefined })),
     ]);
     const recent = runs.slice(0, 25).map(({ runId }) => runId);
     const places = recent.length
@@ -122,7 +148,8 @@ export async function readAgentThreadRecent(
         completedAt: run.completedAt?.toISOString() ?? null,
       })),
       places,
-      pendingRequests: pendingRequestRows.map(requestFromRow),
+      pendingRequests: pending.rows.map(requestFromRow),
+      ...(pending.count !== undefined ? { pendingRequestCount: pending.count } : {}),
     };
   });
 }
@@ -149,11 +176,19 @@ function activityMetadata(
     nodeId?: ExecutionNodeId;
     messagesOnly?: boolean;
   },
+  visibleRequests?: Awaited<ReturnType<typeof connectionRequests>>,
 ) {
   const query = tx
     .selectFrom("transcriptItems as item")
     .leftJoin("messages as message", "message.id", "item.messageId")
-    .leftJoin("requests as request", "request.id", "item.requestId")
+    .$if(visibleRequests !== undefined, (q) =>
+      q.leftJoin(visibleRequests!.as("request"), (join) =>
+        join.onRef("request.id", "=", "item.requestId"),
+      ),
+    )
+    .$if(visibleRequests === undefined, (q) =>
+      q.leftJoin("requests as request", "request.id", "item.requestId"),
+    )
     .select(["item.id", "item.position"])
     .select(
       sql<number>`coalesce(octet_length(jsonb_build_array(message.content,message.author,message.quote,message.origin)::text),0)
@@ -176,12 +211,17 @@ function activityMetadata(
     return query
       .where("item.nodeId", "is", null)
       .where(
-        sql<boolean>`((item.kind='message' and message.published) or (item.kind='request' and request.kind='person.question'))`,
+        sql<boolean>`((item.kind='message' and message.published and ${keptMessageSql("message")}) or (item.kind='request' and request.kind='person.question'))`,
       );
   return query
     .where("item.nodeId", "is", null)
     .where(sql<boolean>`item.kind in ('message','tool','place','app','request','node')`)
-    .where(sql<boolean>`(item.kind <> 'message' or message.published)`);
+    .where(
+      sql<boolean>`(item.kind <> 'message' or (message.published and ${keptMessageSql("message")}))`,
+    )
+    .$if(visibleRequests !== undefined, (q) =>
+      q.where(sql<boolean>`(item.kind <> 'request' or request.id is not null)`),
+    );
 }
 
 async function activityItems(
@@ -275,7 +315,7 @@ async function activityItems(
         .where(sql<boolean>`published`)
         .execute()
     : [];
-  const byId = new Map(messages.map((row) => [row.id, messageFromRow(row)]));
+  const byId = new Map(messagesFromRows(messages).map((message) => [message.id, message]));
   return rows.flatMap<AgentThreadActivityItem>((row) => {
     if (row.position === null) return [];
     const base = {
@@ -378,6 +418,7 @@ export async function readAgentThreadActivity(
     limit: number;
     before?: string;
     itemId?: string;
+    connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   },
 ) {
   return withPersonalReadTransaction(database, async (tx) => {
@@ -387,6 +428,10 @@ export async function readAgentThreadActivity(
       : { kind: "thread" as const, threadId: input.threadId };
     const thread = await authorizedDetail(tx, input.ownerId, scope);
     if (!thread) return null;
+    const visibleRequests =
+      input.connectionAuthority && !input.nodeId
+        ? await connectionRequests(tx, input.connectionAuthority, { ownerVerified: true })
+        : undefined;
     const address = {
       deploymentId: state.deploymentId,
       epoch: state.epoch,
@@ -412,7 +457,7 @@ export async function readAgentThreadActivity(
     const encodeCursor = (key: ActivityKey) =>
       Buffer.from(JSON.stringify({ ...address, ...key })).toString("base64url");
     const limit = Math.min(100, Math.max(1, input.limit));
-    let query = activityMetadata(tx, input);
+    let query = activityMetadata(tx, input, visibleRequests);
     if (input.itemId) query = query.where("item.id", "=", input.itemId);
     else if (before)
       query = query.where(

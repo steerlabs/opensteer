@@ -18,6 +18,7 @@ import {
   computerUseHelperResults,
   computerUseRequestMayHaveEffect,
   computerUseMaxTimeoutMs,
+  macOwnerInputHelperReplyMs,
   computerUseOutOfTimeSentence,
   type LoginReceiverKey,
   type ComputerUseErrorCode,
@@ -87,6 +88,35 @@ export class ComputerUseHelperFailure extends Error {
 
 function outOfTime(): ComputerUseHelperFailure {
   return new ComputerUseHelperFailure("failed", computerUseOutOfTimeSentence);
+}
+
+/** No helper holds the socket, so there is nothing to ask; it is never launched for this. */
+class HelperNotRunning extends Error {
+  constructor() {
+    super("The Computer use helper is not running.");
+    this.name = "HelperNotRunning";
+  }
+}
+
+/**
+ * What asking the helper to exit came to: it is going, it stays because
+ * another Opensteer app on this Mac still holds a connection to it, or there
+ * was no helper running to ask.
+ */
+export type ComputerUseHelperExit = "exiting" | "staying" | "not-running";
+
+/**
+ * The one protocol rule: the app and its helper are one release, so a helper
+ * speaks exactly this app's protocol and serves no other.
+ */
+export function helperSpeaksThisProtocol(hello: {
+  readonly minProtocolVersion: number;
+  readonly protocolVersion: number;
+}): boolean {
+  return (
+    hello.protocolVersion === computerUseHelperProtocolVersion &&
+    hello.minProtocolVersion === computerUseHelperProtocolVersion
+  );
 }
 
 /** A helper that cannot speak this app's protocol, said for whichever side is older. */
@@ -214,7 +244,14 @@ export interface ComputerUseHelperRequestOptions {
    * none left the frame is never written.
    */
   readonly deadline?: number;
+  /** The local monotonic deadline for a relayed owner-input batch. */
+  readonly ownerInputDeadline?: number;
   readonly signal?: AbortSignal;
+  /**
+   * Read in the same turn as the frame's write: false means it is never
+   * written, and the request fails as stopped by the person.
+   */
+  readonly admitted?: () => boolean;
 }
 
 type HelperResults = typeof computerUseHelperResults;
@@ -320,8 +357,17 @@ export class ComputerUseHelperClient {
     if (options.signal?.aborted) {
       throw new ComputerUseHelperFailure("failed", "The computer use request was cancelled.");
     }
-    const deadline = options.deadline ?? this.#defaultDeadline();
-    const connection = await this.#connect(deadline);
+    const inputDeadline = options.ownerInputDeadline;
+    const now = inputDeadline === undefined ? this.#now : () => performance.now();
+    const deadline = inputDeadline ?? options.deadline ?? this.#defaultDeadline();
+    const connection =
+      inputDeadline === undefined
+        ? await this.#connect(deadline)
+        : await untilComputerUseDeadline(
+            this.#connect(this.#now() + deadline - now()),
+            deadline,
+            now,
+          );
     if (connection.videoProfile !== 1 && method === "display.start") {
       const { maxBitrate: _cap, ...start } = macWindowVideoParams["display.start"].parse(params);
       params = { ...start, maxFps: Math.min(30, start.maxFps) };
@@ -353,6 +399,8 @@ export class ComputerUseHelperClient {
       params,
       { at: deadline },
       options.signal,
+      options.admitted,
+      now,
     )) as ComputerUseHelperResult<Method>;
   }
 
@@ -427,11 +475,7 @@ export class ComputerUseHelperClient {
               const response = ComputerUseHelperResponseSchema.parse(value);
               if (phase === 0) {
                 const hello = ComputerUseHelloResultSchema.parse(response.result);
-                if (
-                  response.id !== 0 ||
-                  hello.protocolVersion !== computerUseHelperProtocolVersion ||
-                  hello.minProtocolVersion !== computerUseHelperProtocolVersion
-                )
+                if (response.id !== 0 || !helperSpeaksThisProtocol(hello))
                   throw new Error("Video helper protocol mismatch");
                 phase = 1;
                 socket.write(
@@ -468,6 +512,35 @@ export class ComputerUseHelperClient {
       socket.destroy();
       throw error;
     }
+  }
+
+  /**
+   * Asks the helper to exit because this app is quitting. It ends this
+   * connection's sessions exactly as a dropped connection does, and exits
+   * unless another Opensteer app still holds a connection to it.
+   *
+   * It never launches a helper to ask it, and never waits out a reconnect
+   * pause: a live connection is used as it is, and a connect still in flight,
+   * which could launch one, is torn down and replaced by one that only finds a
+   * helper already running. The caller bounds the wait; this method adds none
+   * of its own beyond `deadline`.
+   */
+  async requestExit(deadline: number): Promise<ComputerUseHelperExit> {
+    if (this.#closed) return "not-running";
+    if (this.#establishing) await this.disconnect();
+    let connection: HelperConnection;
+    try {
+      connection = await this.#connect(deadline, false);
+    } catch (error) {
+      if (error instanceof HelperNotRunning) return "not-running";
+      throw error;
+    }
+    const answer = await untilComputerUseDeadline(
+      this.#send(connection, "helper.exit", {}, { at: deadline }),
+      deadline,
+      this.#now,
+    );
+    return (answer as ComputerUseHelperResult<"helper.exit">).exiting ? "exiting" : "staying";
   }
 
   /** The permissions the last handshake reported, without asking again. */
@@ -512,7 +585,8 @@ export class ComputerUseHelperClient {
     await Promise.all(Array.from(sockets, (socket) => destroySignedHelperSocket(socket)));
   }
 
-  async #connect(deadline: number): Promise<HelperConnection> {
+  /** `launch` false never starts a helper: an absent one is `HelperNotRunning`. */
+  async #connect(deadline: number, launch = true): Promise<HelperConnection> {
     if (deadline - this.#now() <= 0) throw outOfTime();
     let attempt = this.#connection;
     if (attempt) {
@@ -521,7 +595,7 @@ export class ComputerUseHelperClient {
       }
     } else {
       const due = { at: deadline };
-      const established = this.#establish(due);
+      const established = this.#establish(due, launch);
       attempt = established;
       this.#connection = established;
       this.#establishing = due;
@@ -548,9 +622,12 @@ export class ComputerUseHelperClient {
     throw outOfTime();
   }
 
-  async #establish(due: ComputerUseDeadline): Promise<HelperConnection> {
+  async #establish(due: ComputerUseDeadline, launch: boolean): Promise<HelperConnection> {
     const generation = this.#generation;
-    const backoff = reconnectBackoffMs[Math.min(this.#attempt, reconnectBackoffMs.length - 1)] ?? 0;
+    // A connect that only looks for a running helper hammers nothing.
+    const backoff = launch
+      ? (reconnectBackoffMs[Math.min(this.#attempt, reconnectBackoffMs.length - 1)] ?? 0)
+      : 0;
     if (backoff > 0) await delay(Math.max(0, Math.min(backoff, due.at - this.#now())));
     this.#requireTime(due);
     const socket = await withComputerUseHelperLifecycleLock(
@@ -560,6 +637,9 @@ export class ComputerUseHelperClient {
         this.#requireGeneration(generation);
         this.#requireTime(due);
         const fresh = this.#launchFresh;
+        // Whatever holds the socket after an unverifiable replacement is not
+        // a helper to talk to, and nothing is launched just to stop it.
+        if (fresh && !launch) throw new HelperNotRunning();
         if (fresh) {
           // The socket belongs to a process this app could not verify. The
           // new instance binds the path again on start, and polling before it
@@ -571,6 +651,7 @@ export class ComputerUseHelperClient {
             return null;
           });
           if (existing) return existing;
+          if (!launch) throw new HelperNotRunning();
         }
         await this.#launchHelper(fresh);
         this.#requireGeneration(generation);
@@ -638,10 +719,7 @@ export class ComputerUseHelperClient {
     });
     const result = ComputerUseHelloResultSchema.parse(hello);
     this.#requireGeneration(generation, socket);
-    if (
-      computerUseHelperProtocolVersion < result.minProtocolVersion ||
-      computerUseHelperProtocolVersion > result.protocolVersion
-    ) {
+    if (!helperSpeaksThisProtocol(result)) {
       socket.destroy();
       throw incompatibleHelper(result.protocolVersion);
     }
@@ -766,6 +844,8 @@ export class ComputerUseHelperClient {
     params: unknown,
     due: ComputerUseDeadline,
     signal?: AbortSignal,
+    admitted?: () => boolean,
+    now = this.#now,
   ): Promise<unknown> {
     if (signal?.aborted) {
       throw new ComputerUseHelperFailure("failed", "The computer use request was cancelled.");
@@ -786,9 +866,23 @@ export class ComputerUseHelperClient {
       }
       // Read in the same turn as the write below, so the frame carries the
       // time the request has left as it leaves, and none left means no frame.
-      const timeoutMs = Math.min(computerUseMaxTimeoutMs, Math.floor(due.at - this.#now()));
+      const left = Math.floor(due.at - now());
+      const ownerInput = method === "display.input";
+      const timeoutMs = Math.min(
+        computerUseMaxTimeoutMs,
+        left - (ownerInput ? macOwnerInputHelperReplyMs : 0),
+      );
       if (timeoutMs <= 0) {
         rejectPromise(outOfTime());
+        return;
+      }
+      if (admitted && !admitted()) {
+        rejectPromise(
+          new ComputerUseHelperFailure(
+            "stopped-by-user",
+            "Agents were stopped on this Mac from the Opensteer menu bar.",
+          ),
+        );
         return;
       }
       let settled = false;
@@ -796,11 +890,14 @@ export class ComputerUseHelperClient {
       // Past its deadline the helper owes an answer, so a wait longer than the
       // grace means it is wedged on this one request. The request is given up
       // and the connection kept: every other session on it is healthy.
-      const timer = setTimeout(() => {
-        this.#pending.delete(id);
-        settle();
-        rejectPromise(new ComputerUseHelperDeadlineFailure(method, params));
-      }, timeoutMs + computerUseHelperAnswerGraceMs);
+      const timer = setTimeout(
+        () => {
+          this.#pending.delete(id);
+          settle();
+          rejectPromise(new ComputerUseHelperDeadlineFailure(method, params));
+        },
+        ownerInput ? left : timeoutMs + computerUseHelperAnswerGraceMs,
+      );
       timer.unref?.();
       const abort = (): void => {
         this.#pending.delete(id);
@@ -824,10 +921,19 @@ export class ComputerUseHelperClient {
       this.#pending.set(id, {
         mayHaveEffect,
         method,
-        reject: rejectPromise,
+        reject: (error) =>
+          rejectPromise(
+            ownerInput && now() >= due.at
+              ? new ComputerUseHelperDeadlineFailure(method, params)
+              : error,
+          ),
         resolve: (value) => {
           if (method === "hello") {
             resolvePromise(value);
+            return;
+          }
+          if (ownerInput && now() >= due.at) {
+            rejectPromise(new ComputerUseHelperDeadlineFailure(method, params));
             return;
           }
           const parsed = computerUseHelperResults[method].safeParse(value);
@@ -870,7 +976,7 @@ export class ComputerUseHelperClient {
   /**
    * Starts the helper through LaunchServices, never as a child of this app:
    * `-g` leaves the person's foreground alone while allowing the helper's
-   * pill and cursor windows to appear. Going through `open` makes the helper
+   * window chips to appear. Going through `open` makes the helper
    * its own responsible process, so macOS attributes the two grants to it
    * rather than to Opensteer.
    */

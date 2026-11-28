@@ -134,8 +134,8 @@ export function settingsFooter(line: ActionLineValue | null): NativeSettingsFoot
 }
 
 /**
- * Known before anything is sent: this session can't reach its computer or
- * team right now, so `done` ("opened") won't happen. Null when it can.
+ * Known before anything is sent: this session can't reach its Home right
+ * now, so `done` ("opened") won't happen. Null when it can.
  */
 export function unreadyIssue(session: ClientSession, done: string): ClientIssue | null {
   const state = session.connection.getSnapshot();
@@ -162,6 +162,17 @@ export function refusal(reason: string, message: string): ClientOperationError {
     reason,
     retryable: false,
   });
+}
+
+/**
+ * The sentence this phone's sign-in storage wrote when it couldn't keep a sign-in the account
+ * gave (`signInStorage`); null for any other failure, which a screen never reads as text.
+ */
+export function signInStorageWords(error: unknown): string | null {
+  return error instanceof ClientOperationError &&
+    error.failure.reason === "login-storage-unavailable"
+    ? error.message
+    : null;
 }
 
 /** An action as the presenter says it: "close this tab", "closed", "this tab closed". */

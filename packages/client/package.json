@@ -11,7 +11,6 @@
     "./connections": "./src/connections/index.ts",
     "./dictation": "./src/dictation/index.ts",
     "./editing": "./src/editing/index.ts",
-    "./team": "./src/team/index.ts",
     "./host": "./src/host/index.ts",
     "./host-api": "./src/host/host-api-client.ts",
     "./integrations": "./src/integrations/index.ts",
@@ -24,6 +23,7 @@
     "./ai-sharing": "./src/ai-sharing/index.ts",
     "./references": "./src/references/index.ts",
     "./feedback": "./src/feedback/client-issue.ts",
+    "./failure-text": "./src/host/failure-text.ts",
     "./reads": "./src/reads/client-read.ts",
     "./actions": "./src/actions/client-action.ts"
   },

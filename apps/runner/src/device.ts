@@ -21,14 +21,21 @@ export interface RunnerDeviceProbe {
  * VM, a container or a board without a screen, which is what "server" draws.
  */
 export async function describeRunnerDevice(input: {
+  /**
+   * The app this Runner runs inside, as the app that started it says: the Opensteer desktop
+   * app's Runner is that app on its computer, which the Home names a computer, not a server.
+   */
+  readonly app?: "opensteer";
   readonly platform: NodeJS.Platform;
   readonly probe?: RunnerDeviceProbe;
   readonly runnerKind: RunnerDescriptor["runnerKind"];
 }): Promise<RunnerDevice | undefined> {
   const probe = input.probe ?? systemProbe;
+  const app = input.app ? { app: input.app } : {};
   switch (input.platform) {
     case "darwin":
       return {
+        ...app,
         form:
           input.runnerKind === "managed"
             ? "server"
@@ -37,6 +44,7 @@ export async function describeRunnerDevice(input: {
       };
     case "linux":
       return {
+        ...app,
         form:
           input.runnerKind === "managed" || (await probe.insideContainer().catch(() => false))
             ? "server"
@@ -44,7 +52,7 @@ export async function describeRunnerDevice(input: {
         platform: "linux",
       };
     case "win32":
-      return { form: null, platform: "windows" };
+      return { ...app, form: null, platform: "windows" };
     default:
       return undefined;
   }
@@ -55,7 +63,8 @@ function macForm(machineName: string | null): RunnerDeviceForm | null {
   if (name.startsWith("MacBook")) return "laptop";
   if (name.startsWith("iMac") || name === "Mac Pro") return "desktop";
   if (name === "Mac mini" || name === "Mac Studio") return "compact";
-  if (name.startsWith("Apple Virtual Machine")) return "server";
+  // A Mac in a virtual machine is still a Mac, with no shape of its own to draw. A Cloud
+  // Computer's own Runner is drawn as a server before this is asked.
   return null;
 }
 

@@ -1,6 +1,7 @@
 import {
   Box,
   Button,
+  Checkbox,
   CircularProgressIndicator,
   Column,
   DropdownMenu,
@@ -12,6 +13,7 @@ import {
   LazyColumn,
   ListItem,
   OutlinedTextField,
+  RadioButton,
   Row,
   Switch,
   Text,
@@ -27,6 +29,7 @@ import {
   fillMaxWidth,
   imePadding,
   padding,
+  selectable,
   semantics,
   selectableGroup,
   Shapes,
@@ -35,8 +38,11 @@ import {
   weight,
 } from "@expo/ui/jetpack-compose/modifiers";
 import { useEffect, useState, type ReactNode } from "react";
+import { useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { color } from "../theme.js";
+import { addressWords, isAddress } from "../ui/address-words.js";
+import { plainSentence, type SentencePart } from "../ui/sentence-parts.js";
 import type { NativeSettingsStep, NativeSettingsTone } from "./native-settings-page.types.js";
 import type { SettingsActionModel } from "./settings-model.js";
 
@@ -184,15 +190,16 @@ export function Footer(props: {
   );
   if (!props.link) return text;
   const link = props.link;
+  // The sentence above its link: at the largest text size it wraps, and the link stays on screen.
   return (
-    <Row verticalAlignment="center" modifiers={[padding(gutter, 4, gutter, 8)]}>
+    <Column modifiers={[padding(gutter, 4, gutter, 8)]}>
       {text}
       <TextButton onClick={link.onPress}>
         <Text color={color.ember} style={{ typography: "labelMedium" }}>
           {link.label}
         </Text>
       </TextButton>
-    </Row>
+    </Column>
   );
 }
 
@@ -242,38 +249,101 @@ export function UnknownToggleRow(props: {
 }
 
 /** A name and the line under it, optionally opening or doing something. */
+/**
+ * A line of a row as drawn: an email address, a host or a URL in the characters that keep it whole
+ * (`address-text.tsx`); anything else as it is. Every row that holds one is a ListItem, which
+ * TalkBack hears as one node, so the row says the line, plainly, and the line says nothing itself.
+ */
+function drawnLine(value: string, address: boolean): string {
+  return address ? addressWords(value) : value;
+}
+
 export function LinkRow(props: {
+  /** Which line is an email address, a host or a URL (`isAddress`). */
+  readonly addressIn?: "title" | "detail" | undefined;
+  /** The title as a sentence holding addresses among its words: each drawn as one. */
+  readonly titleParts?: readonly SentencePart[] | undefined;
   readonly detail?: string | null | undefined;
+  /** Amber for a thing that needs the person. */
+  readonly detailTone?: "attention" | undefined;
   readonly destructive?: boolean | undefined;
   readonly disabled?: boolean | undefined;
   readonly lead?: ReactNode;
+  /** The lead on a line of its own above the title, so the lines have the row's width. */
+  readonly leadAbove?: boolean | undefined;
   readonly onPress?: (() => void) | null | undefined;
   readonly title: string;
   /** A short word on the right, such as the current choice or an action. */
   readonly trailing?: ReactNode;
 }): ReactNode {
   const enabled = props.onPress && props.disabled !== true;
+  // A ListItem is one node to TalkBack, pressable or not: Compose merges its lines, and a merged
+  // node with a description is spoken as that alone. A row with an address says itself whole, as
+  // written, and its lines have none of their own (the address line's would be all that is heard).
+  // A button of its own in `trailing` (MenuRow's "…") is a node apart, with its own name.
+  const merged = props.addressIn !== undefined || props.titleParts !== undefined;
+  const title = props.titleParts
+    ? props.titleParts
+        .map((part) =>
+          typeof part === "string"
+            ? part
+            : isAddress(part.address)
+              ? addressWords(part.address)
+              : part.address,
+        )
+        .join("")
+    : drawnLine(props.title, props.addressIn === "title");
+  const detail = props.detail ? drawnLine(props.detail, props.addressIn === "detail") : null;
+  const spoken = [
+    props.titleParts ? plainSentence(props.titleParts) : props.title,
+    props.detail,
+    typeof props.trailing === "string" ? props.trailing : null,
+  ]
+    .filter((line): line is string => typeof line === "string" && line !== "")
+    .join(", ");
   return (
-    <ListItem colors={rowColors} modifiers={enabled ? [clickable(props.onPress!)] : []}>
+    <ListItem
+      colors={rowColors}
+      modifiers={[
+        ...(enabled ? [clickable(props.onPress!)] : []),
+        ...(merged ? [semantics({ contentDescription: spoken })] : []),
+      ]}
+    >
       <ListItem.HeadlineContent>
-        <Text
-          color={
-            props.disabled === true
-              ? color.mutedDim
-              : props.destructive === true
-                ? color.red
-                : color.text
-          }
-        >
-          {props.title}
-        </Text>
+        {(() => {
+          const line = (
+            <Text
+              color={
+                props.disabled === true
+                  ? color.mutedDim
+                  : props.destructive === true
+                    ? color.red
+                    : color.text
+              }
+            >
+              {title}
+            </Text>
+          );
+          // Material lays a slot's children over one another: a mark above the title is a
+          // Column's first child, the title its second.
+          return props.leadAbove === true && props.lead ? (
+            <Column verticalArrangement={{ spacedBy: 8 }}>
+              {props.lead}
+              {line}
+            </Column>
+          ) : (
+            line
+          );
+        })()}
       </ListItem.HeadlineContent>
-      {props.detail ? (
+      {detail ? (
         <ListItem.SupportingContent>
-          <Text color={color.muted}>{props.detail}</Text>
+          <Text color={props.detailTone === "attention" ? color.amber : color.muted}>{detail}</Text>
         </ListItem.SupportingContent>
       ) : null}
-      {props.lead ? <ListItem.LeadingContent>{props.lead}</ListItem.LeadingContent> : null}
+      {props.lead && props.leadAbove !== true ? (
+        <ListItem.LeadingContent>{props.lead}</ListItem.LeadingContent>
+      ) : null}
       {props.trailing === undefined || props.trailing === null ? null : (
         <ListItem.TrailingContent>
           {typeof props.trailing === "string" ? (
@@ -349,12 +419,14 @@ export function ToggleRow(props: {
  */
 export function ChoiceRow(props: {
   readonly choices: readonly { readonly value: string; readonly label: string }[];
+  /** Always a menu from the row naming the choice. */
+  readonly menu?: boolean | undefined;
   readonly onChange: (value: string) => void;
   readonly title: string;
   readonly value: string;
 }): ReactNode {
   const [open, setOpen] = useState(false);
-  if (props.choices.length <= 3)
+  if (props.choices.length <= 3 && props.menu !== true)
     return (
       <Column modifiers={[padding(gutter, 8, gutter, 8)]}>
         <Text color={color.text} modifiers={[padding(0, 0, 0, 8)]}>
@@ -410,8 +482,60 @@ export function ChoiceRow(props: {
   );
 }
 
+/**
+ * One choice among several, each with its own line: a radio button, or a checkbox
+ * where several may be chosen. The whole row selects.
+ */
+export function SelectRow(props: {
+  readonly detail?: string | undefined;
+  readonly disabled?: boolean | undefined;
+  readonly multiple?: boolean | undefined;
+  readonly onPress: () => void;
+  readonly selected: boolean;
+  readonly title: string;
+}): ReactNode {
+  const enabled = props.disabled !== true;
+  return (
+    <ListItem
+      colors={rowColors}
+      modifiers={
+        enabled
+          ? [
+              selectable(
+                props.selected,
+                props.onPress,
+                props.multiple === true ? "checkbox" : "radioButton",
+              ),
+            ]
+          : []
+      }
+    >
+      <ListItem.LeadingContent>
+        {props.multiple === true ? (
+          <Checkbox
+            colors={{ checkedColor: color.ember, checkmarkColor: color.inkOnEmber }}
+            enabled={enabled}
+            value={props.selected}
+          />
+        ) : (
+          <RadioButton enabled={enabled} selected={props.selected} />
+        )}
+      </ListItem.LeadingContent>
+      <ListItem.HeadlineContent>
+        <Text color={enabled ? color.text : color.mutedDim}>{props.title}</Text>
+      </ListItem.HeadlineContent>
+      {props.detail ? (
+        <ListItem.SupportingContent>
+          <Text color={color.muted}>{props.detail}</Text>
+        </ListItem.SupportingContent>
+      ) : null}
+    </ListItem>
+  );
+}
+
 /** A row with secondary actions behind Android's overflow button. */
 export function MenuRow(props: {
+  readonly addressIn?: "title" | "detail" | undefined;
   readonly actions: readonly {
     readonly label: string;
     readonly destructive?: boolean | undefined;
@@ -430,6 +554,7 @@ export function MenuRow(props: {
   const [open, setOpen] = useState(false);
   return (
     <LinkRow
+      addressIn={props.addressIn}
       detail={props.detail}
       destructive={props.destructive}
       disabled={props.disabled}
@@ -548,12 +673,18 @@ export function ErrorText(props: { readonly detail: string | null }): ReactNode 
   );
 }
 
-/** A person's round initial, leading their identity row. */
+/**
+ * A person's round initial, leading their identity row. The circle grows with the reader's text
+ * size rather than the initial being held small: it is their own account's mark, beside their own
+ * address, and the circle clips whatever does not fit it. 40 dp at the default size; beyond that,
+ * the initial's line (titleMedium's 24 sp) and 8 dp around it.
+ */
 export function Avatar(props: { readonly initial: string }): ReactNode {
+  const diameter = Math.max(40, Math.ceil(24 * useWindowDimensions().fontScale) + 8);
   return (
     <Box
       contentAlignment="center"
-      modifiers={[size(40, 40), clip(Shapes.Circle), background(color.surfaceRaised)]}
+      modifiers={[size(diameter, diameter), clip(Shapes.Circle), background(color.surfaceRaised)]}
     >
       <Text color={color.textSoft} style={{ typography: "titleMedium", fontWeight: "600" }}>
         {props.initial}
@@ -564,30 +695,48 @@ export function Avatar(props: { readonly initial: string }): ReactNode {
 
 /** A coloured dot, one short state, and while something is under way its steps. */
 export function StatusRow(props: {
+  /** The detail is an email address, a host or a URL (`isAddress`). */
+  readonly addressIn?: "label" | "detail" | undefined;
   readonly detail?: string | undefined;
   readonly label: string;
   readonly steps?: readonly NativeSettingsStep[] | undefined;
   readonly tone: NativeSettingsTone;
 }): ReactNode {
   const hasSupport = props.detail !== undefined || (props.steps?.length ?? 0) > 0;
+  // As LinkRow: the row, one node to TalkBack, says itself whole, steps and all.
+  const spoken = [
+    props.label,
+    props.detail,
+    ...(props.steps ?? []).map((step) => `${step.label}, ${stepWord[step.state]}`),
+  ]
+    .filter((line): line is string => typeof line === "string" && line !== "")
+    .join(", ");
   return (
-    <ListItem colors={rowColors}>
+    <ListItem
+      colors={rowColors}
+      modifiers={props.addressIn === undefined ? [] : [semantics({ contentDescription: spoken })]}
+    >
       <ListItem.LeadingContent>
         <Box modifiers={[size(10, 10), clip(Shapes.Circle), background(toneColor[props.tone])]} />
       </ListItem.LeadingContent>
       <ListItem.HeadlineContent>
         <Text color={color.text} style={{ fontWeight: "600" }}>
-          {props.label}
+          {drawnLine(props.label, props.addressIn === "label")}
         </Text>
       </ListItem.HeadlineContent>
       {hasSupport ? (
         <ListItem.SupportingContent>
           <Column verticalArrangement={{ spacedBy: 8 }} modifiers={[padding(0, 4, 0, 0)]}>
-            {props.detail === undefined ? null : (
-              <Text color={color.textSoft} style={{ fontFamily: "monospace", fontSize: 13 }}>
-                {props.detail}
-              </Text>
-            )}
+            {props.detail === undefined
+              ? null
+              : (() => {
+                  const detail = drawnLine(props.detail, props.addressIn === "detail");
+                  return (
+                    <Text color={color.textSoft} style={{ fontFamily: "monospace", fontSize: 13 }}>
+                      {detail}
+                    </Text>
+                  );
+                })()}
             {props.steps?.map((step) => (
               <Step key={step.label} step={step} />
             ))}
@@ -597,6 +746,14 @@ export function StatusRow(props: {
     </ListItem>
   );
 }
+
+/** A step's state in words: its mark is a glyph, and the row says it aloud. */
+const stepWord: Record<NativeSettingsStep["state"], string> = {
+  current: "under way",
+  done: "done",
+  failed: "failed",
+  pending: "not yet",
+};
 
 function Step({ step }: { readonly step: NativeSettingsStep }): ReactNode {
   return (

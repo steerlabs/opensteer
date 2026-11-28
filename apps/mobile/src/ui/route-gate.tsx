@@ -54,6 +54,8 @@ export function ConnectionRouteGate(props: {
   readonly secondary?: ConnectionGateButton | null;
   /** What the last tap on the gate's own button came to, in place of its detail. */
   readonly line?: string | null;
+  /** Shown under the explanation only while the computer can't be reached. */
+  readonly unreachable?: ReactNode;
 }): ReactNode {
   const { connection } = props;
   const read = useCallback(() => connection?.getSnapshot() ?? unstarted, [connection]);
@@ -64,8 +66,10 @@ export function ConnectionRouteGate(props: {
   const words = presentConnectionGate({ ...state, issue, name, showInterruption: issue !== null });
   if (issue === null)
     return <ConnectionGate detail={words.title} stateKey="connecting" symbol={null} title={null} />;
+  const unreachable = issue.code === "connection" && issue.reason === "unreachable";
   return (
     <ConnectionGate
+      below={unreachable ? (props.unreachable ?? null) : null}
       detail={props.line ?? words.detail ?? ""}
       primary={primaryButton(issue, words.action, connection, state.trying, props.signIn ?? null)}
       secondary={props.secondary ?? null}

@@ -1,7 +1,7 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   createId,
   DeviceIdSchema,
-  deploymentPolicy,
   OpensteerError,
   type AuthSessionId,
   type DeviceId,
@@ -67,7 +67,6 @@ async function requirePerson(transaction: Transaction<DatabaseSchema>, input: Ip
     .where("authSessions.id", "=", input.sessionId)
     .executeTakeFirst();
   if (
-    !deploymentPolicy(deployment.deploymentShape).services.personal ||
     !session ||
     session.userId !== input.userId ||
     session.disabledAt !== null ||
@@ -199,7 +198,7 @@ export async function attachIphoneScreen(
               deploymentId,
               ownerKind: "user",
               ownerUserId: input.userId,
-              name: target.name,
+              name: outsideName(target.name, 120) || "Device",
               kind: "phone",
               platform: "ios",
               form: "phone",

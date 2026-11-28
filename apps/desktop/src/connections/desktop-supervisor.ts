@@ -110,7 +110,7 @@ export class DesktopSupervisor {
         canonicalOrigin: runtime.discovery.canonicalOrigin,
         requestOrigin: runtime.localOrigin,
         authorization: this.#options.authorization(runtime),
-        headers: apiVersionHeaders("personal"),
+        headers: apiVersionHeaders(),
       },
       {
         open: () =>

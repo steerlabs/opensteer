@@ -203,6 +203,18 @@ export const ComputerUseTargetSchema = z.union([
 ]);
 export type ComputerUseTarget = z.infer<typeof ComputerUseTargetSchema>;
 
+/**
+ * How far one scroll goes: steps of the device's own scrolling, three lines each in a Mac app and
+ * one bounded swipe each on a phone. A refusal says so, so a model can correct the number.
+ */
+const scrollAmountWords =
+  "a scroll's amount is how many steps it scrolls (three lines each in a Mac app, one swipe each on a phone), a whole number from 1 to 20";
+export const ScrollAmountSchema = z
+  .number(scrollAmountWords)
+  .int(scrollAmountWords)
+  .min(1, scrollAmountWords)
+  .max(20, scrollAmountWords);
+
 const computerUseActionVariants = [
   z.strictObject({
     button: z.enum(["left", "right", "middle"]).default("left"),
@@ -238,7 +250,7 @@ const computerUseActionVariants = [
     value: z.string().max(100_000),
   }),
   z.strictObject({
-    amount: z.number().int().min(1).max(20),
+    amount: ScrollAmountSchema,
     direction: z.enum(["up", "down", "left", "right"]),
     target: ComputerUseTargetSchema,
     type: z.literal("scroll"),
@@ -436,9 +448,12 @@ export const ComputerUseOperationSchema = z.enum([
 ]);
 export type ComputerUseOperation = z.infer<typeof ComputerUseOperationSchema>;
 
-export const ComputerUseWindowsParamsSchema = z.strictObject({});
+export const ComputerUseWindowsParamsSchema = z.strictObject({
+  noLaunch: z.literal(true).optional(),
+});
 export type ComputerUseWindowsParams = z.infer<typeof ComputerUseWindowsParamsSchema>;
 export const ComputerUseBindParamsSchema = z.strictObject({
+  noLaunch: z.literal(true).optional(),
   windowId: WindowIdSchema.nullable(),
 });
 export type ComputerUseBindParams = z.infer<typeof ComputerUseBindParamsSchema>;
@@ -588,7 +603,7 @@ export type MachineComputerUse = z.infer<typeof MachineComputerUseSchema>;
  * Unix socket framed by a 4-byte big-endian length. The Swift side reads these
  * names and fields as its own contract, so this file decides them.
  */
-export const computerUseHelperProtocolVersion = 10;
+export const computerUseHelperProtocolVersion = 11;
 export const computerUseHelperMaxFrameBytes = 4 * 1_024 * 1_024;
 
 export const ComputerUseHelperMethodSchema = z.enum([
@@ -614,7 +629,9 @@ export const ComputerUseHelperMethodSchema = z.enum([
   "session.open",
   "session.close",
   "session.windows",
+  "session.windowsExisting",
   "session.bind",
+  "session.bindExisting",
   "session.observe",
   "session.act",
   "data.status",
@@ -623,6 +640,7 @@ export const ComputerUseHelperMethodSchema = z.enum([
   "imessage.account",
   "imessage.poll",
   "imessage.send",
+  "helper.exit",
 ]);
 export type ComputerUseHelperMethod = z.infer<typeof ComputerUseHelperMethodSchema>;
 
@@ -662,6 +680,14 @@ export const ComputerUseHelloResultSchema = z.strictObject({
     .object({ windowLocation: z.boolean(), windowGroups: z.boolean().optional() })
     .optional(),
 });
+
+/**
+ * `helper.exit`, which this app sends as it quits: the helper ends this
+ * connection as if it had dropped, then exits unless another Opensteer app on
+ * this Mac still holds a connection to it. Desktop main's own business, like
+ * `hello`: no Runner can send it. New in protocol 11.
+ */
+export const ComputerUseHelperExitResultSchema = z.strictObject({ exiting: z.boolean() });
 
 export const ComputerUsePermissionsResultSchema = z.strictObject({
   /** Desktop bridge advertisement derived from its authenticated helper handshake. */
@@ -896,11 +922,15 @@ export const ComputerUseSessionParamsSchema = z.strictObject({
   sessionId: ComputerUseSessionIdSchema,
 });
 
-export const ComputerUseSessionWindowsParamsSchema = ComputerUseWindowsParamsSchema.extend({
+export const ComputerUseSessionWindowsParamsSchema = ComputerUseWindowsParamsSchema.omit({
+  noLaunch: true,
+}).extend({
   app: ComputerUseSessionAppSchema,
   sessionId: ComputerUseSessionIdSchema,
 });
-export const ComputerUseSessionBindParamsSchema = ComputerUseBindParamsSchema.extend({
+export const ComputerUseSessionBindParamsSchema = ComputerUseBindParamsSchema.omit({
+  noLaunch: true,
+}).extend({
   app: ComputerUseSessionAppSchema,
   sessionId: ComputerUseSessionIdSchema,
 });
@@ -1052,7 +1082,19 @@ export const ComputerUseHelperRequestSchema = z.discriminatedUnion("method", [
   z.strictObject({
     id: helperRequestIdSchema,
     timeoutMs: ComputerUseTimeoutMsSchema.optional(),
+    method: z.literal("session.windowsExisting"),
+    params: ComputerUseSessionWindowsParamsSchema,
+  }),
+  z.strictObject({
+    id: helperRequestIdSchema,
+    timeoutMs: ComputerUseTimeoutMsSchema.optional(),
     method: z.literal("session.bind"),
+    params: ComputerUseSessionBindParamsSchema,
+  }),
+  z.strictObject({
+    id: helperRequestIdSchema,
+    timeoutMs: ComputerUseTimeoutMsSchema.optional(),
+    method: z.literal("session.bindExisting"),
     params: ComputerUseSessionBindParamsSchema,
   }),
   z.strictObject({
@@ -1140,9 +1182,12 @@ export const computerUseHelperResults = {
   "session.act": ComputerUseActResultSchema,
   "session.close": EmptyParamsSchema,
   "session.windows": ComputerUseWindowsResultSchema,
+  "session.windowsExisting": ComputerUseWindowsResultSchema,
   "session.bind": ComputerUseBindResultSchema,
+  "session.bindExisting": ComputerUseBindResultSchema,
   "session.observe": ComputerUseObservationResultSchema,
   "session.open": ComputerUseSessionOpenResultSchema,
+  "helper.exit": ComputerUseHelperExitResultSchema,
 } satisfies Readonly<Record<ComputerUseHelperMethod, z.ZodType>>;
 
 export const ComputerUseHelperResponseSchema = z.strictObject({
@@ -1178,6 +1223,8 @@ const computerUseEventVariants = [
     event: z.literal("session.stopped"),
     params: z.strictObject({
       reason: ComputerUseStopReasonSchema,
+      /** A local fence announced without a receipt from the helper. */
+      unconfirmed: z.literal(true).optional(),
       /**
        * The Run the stopped session belonged to. A phone names it, because
        * its owner's Stop can reach the Host only on a later stream, after the
@@ -1214,8 +1261,8 @@ function helperFrameFits(value: unknown): boolean {
 /**
  * The bridge protocol: the Runner's `integrations` handler to desktop main,
  * over a loopback WebSocket minted per slot. It carries the helper's methods
- * minus the handshake, which is desktop main's business with the helper and
- * never a Runner's.
+ * minus the handshake and `helper.exit`, which are desktop main's business
+ * with the helper and never a Runner's.
  *
  * Authentication is `Authorization: Bearer <token>` on the upgrade. The token
  * is minted per slot and never enters the Runner's environment: desktop main
@@ -1237,7 +1284,7 @@ export const ComputerUseBridgeTokenSchema = z.string().min(32).max(4_096);
  */
 
 export const ComputerUseBridgeMethodSchema = z.enum([
-  ...ComputerUseHelperMethodSchema.exclude(["hello"]).options,
+  ...ComputerUseHelperMethodSchema.exclude(["hello", "helper.exit"]).options,
   "passwords.control",
   "passwords.capabilities",
   ...iphoneRunnerMethodSchema.options,
@@ -1247,18 +1294,43 @@ export type ComputerUseBridgeMethod = z.infer<typeof ComputerUseBridgeMethodSche
 const WritingDataInvokeSchema = z.object({ effect: z.literal("write") });
 
 /**
- * Whether a request may have changed something on the Mac, which decides what
- * a lost, late or unreadable answer is at every hop: `outcome-unknown` rather
- * than `failed`, because a caller told "failed" asks again and the change
- * happens twice. An action batch and an iMessage reply always may; a data
- * operation when it writes.
+ * Whether a request may change something, and a lost, late or unreadable answer
+ * must stay unknown. A phone observation can take an exclusive hold when the
+ * Host has not yet confirmed that session.
  */
-export function computerUseRequestMayHaveEffect(method: string, params: unknown): boolean {
+export function computerUseRequestMayHaveEffect(
+  method: string,
+  params: unknown,
+  phoneHold = false,
+): boolean {
   if (
+    method === "windows" ||
+    method === "bind" ||
+    method === "session.windows" ||
+    method === "session.bind"
+  )
+    return !(
+      typeof params === "object" &&
+      params !== null &&
+      "noLaunch" in params &&
+      params.noLaunch === true
+    );
+  if (
+    (method === "observe" && phoneHold) ||
+    method === "act" ||
+    method === "click" ||
+    method === "type" ||
+    method === "key" ||
+    method === "setValue" ||
+    method === "scroll" ||
     method === "display.input" ||
     method === "display.input-reset" ||
     method === "session.act" ||
+    method === "session.close" ||
     method === "iphone.perform" ||
+    method === "iphone.session.open" ||
+    method === "iphone.session.close" ||
+    method === "iphone.cancel" ||
     method === "imessage.send" ||
     method === "view.open" ||
     method === "view.activate"

@@ -1,3 +1,9 @@
+import { commandActivity } from "./commands/activity.js";
+import type { CommandProposal } from "./commands/actor.js";
+import { runnerRestartingCloseCode } from "@opensteer/protocol";
+import { registerStandardCdpRoute } from "./browser/standard-cdp-route.js";
+import { standardCdpConnectPrefix } from "./browser/standard-cdp-tickets.js";
+import { standardCdpMessageMaxBytes } from "@opensteer/protocol/standard-cdp";
 import { registerPluginWebhookRoutes } from "./plugins/plugin-webhook-routes.js";
 import { registerPluginOAuthRoutes } from "./plugins/plugin-oauth-routes.js";
 import { withClientSendKeys } from "./threads/client-send-keys.js";
@@ -15,11 +21,14 @@ import { personalClientFrameMaxBytes } from "@opensteer/protocol/personal-sync";
 import { attachPersonalSocket } from "./server/personal-socket.js";
 import { readThreadHistory } from "@opensteer/database";
 import type { AuthenticatedHostSession } from "./identity/auth.js";
-import { isPhoneDisplayDefinitionId } from "@opensteer/core";
+import { isLoopbackHostname, isPhoneDisplayDefinitionId } from "@opensteer/core";
 import type { TabService } from "./tabs/tab-service.js";
 import type { AgentToolActivityStore } from "@opensteer/database";
 import { registerAgentToolRoute } from "./mcp/agent-tool-route.js";
-import { registerAgentPageBindingRoute } from "./browser/trigger-cdp-bridge.js";
+import {
+  registerAgentPageBindingRoute,
+  runBrowserCapability,
+} from "./browser/trigger-cdp-bridge.js";
 import { handleAppCommand } from "./apps/app-routes.js";
 import { createAssetUrlHandlers } from "./assets/asset-service.js";
 import { createReferenceHandlers, createThreadRequestHandler } from "./references/resolve.js";
@@ -30,6 +39,8 @@ import type { AssetService } from "./assets/asset-service.js";
 import type { DeviceAccessService } from "./administration/device-access-service.js";
 import type { DeviceDriverManagementPort } from "./administration/device-driver-service.js";
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
+import { installClientAddress, installTrustedProxy } from "./identity/anonymous-client-address.js";
+import { registerManagedHomeClaimRoute } from "./identity/managed-home-claim.js";
 import { deviceAccess } from "@opensteer/protocol";
 import {
   deviceMembershipTurn,
@@ -37,9 +48,8 @@ import {
   signOutDeviceSession,
 } from "./administration/device-removal.js";
 import { RunnerLeaveRequestSchema, RunnerLeaveResponseSchema } from "@opensteer/protocol";
-import { requirePersonalOwner, needsYouPage } from "@opensteer/database";
+import { requirePersonalOwner, needsYouPage, personTaskReader } from "@opensteer/database";
 import type { PersonalExecution } from "./runtime/personal-execution.js";
-import type { PersonalTeamLinks } from "./team-links/service.js";
 
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
@@ -55,6 +65,8 @@ import {
   registerConnectionRoutes,
   createConnectionRpcHandlers,
   handleConnectionCommand,
+  isConnectionCommand,
+  type ConnectionCommandEffects,
   type ConnectionOAuth,
 } from "./mcp/connections/index.js";
 import { afterResponse } from "./server/after-response.js";
@@ -111,6 +123,7 @@ import {
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
   OpensteerError,
+  threadAccessModeAtMost,
   TriggerRevisionIdSchema,
   type AuthenticatedSession,
   type EnvironmentId,
@@ -127,6 +140,8 @@ import {
 } from "@opensteer/database";
 import {
   HostDescriptorSchema,
+  HostIdentityProofSchema,
+  hostIdentityProofBytes,
   hostApiVersion,
   minimumHostApiVersion,
   type HostBootstrapMethod,
@@ -147,9 +162,11 @@ import {
   AgentPhoneHostTargetSchema,
   ApprovePersonalHostAccountLinkRequestSchema,
   BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
   ConfigurePersonalRemoteAccessRequestSchema,
   ConsumePersonalHostAccountLinkRequestSchema,
   CorrelationIdSchema,
+  ResumePersonalHostAccountLinkRequestSchema,
   HostToIntegrationsModuleMessageSchema,
   HostToShellModuleMessageSchema,
   IntegrationsModuleEventSchema,
@@ -173,6 +190,8 @@ import {
   type ComputerUseSessionSummary,
   type HarnessAuthenticationState,
   type HarnessSourceDescriptor,
+  type HostApiCommand,
+  type HostApiCommandOutput,
   type HostApiHandlers,
   type HostApiServerContext,
   type HostToIntegrationsModuleMessage,
@@ -189,6 +208,7 @@ import {
   type ShellModuleEvent,
   runFileMaxBytes,
   runFileNameHeader,
+  runFileProofHeader,
   runFileTransferContentType,
 } from "@opensteer/protocol";
 import {
@@ -202,7 +222,12 @@ import { BoundedAsyncInbox } from "@opensteer/shared/boundedAsyncInbox";
 import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
 import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
-import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, {
+  LogController,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type WebSocket from "ws";
@@ -266,6 +291,7 @@ import type { ComputerUseService } from "./computer-use/computer-use-service.js"
 import type { DisplayStreamHub } from "./computer-use/display-stream-hub.js";
 import type { CredentialService } from "./identity/credential-service.js";
 import type { HarnessAuthenticationCoordinator } from "./identity/harness-authentication-coordinator.js";
+import { HarnessSignInBrowser } from "./identity/harness-sign-in-browser.js";
 import { createIdentityRpcHandlers, registerIdentityRoutes } from "./identity/identity-routes.js";
 import {
   sealRequestResponse,
@@ -293,7 +319,11 @@ import {
 import { closeWebSocketsWithin } from "./server/connection-drain.js";
 import type { EgressService } from "./server/egress-service.js";
 import { createHostApiHandlers, type CoreCommand } from "./server/host-api-handlers.js";
-import { installPersonalVersionGate, registerHostApi } from "./server/host-api-registration.js";
+import {
+  createContext as createHostApiContext,
+  installPersonalVersionGate,
+  registerHostApi,
+} from "./server/host-api-registration.js";
 import { unversionedRoute } from "./server/unversioned-route.js";
 import { normalizeHostError } from "./server/http-errors.js";
 import { installHostHttpBoundary } from "./server/host-http-boundary.js";
@@ -310,7 +340,7 @@ import type { TriggerControlTokenService } from "./triggers/trigger-control-serv
 import { createTriggerRpcHandlers, registerTriggerRoutes } from "./triggers/trigger-routes.js";
 import type { TriggerService } from "./triggers/trigger-service.js";
 import type { WatchCapabilityTokenService } from "./triggers/watch-capability.js";
-import type { WatchProgramService } from "./triggers/watch-program-service.js";
+import type { WatchScriptService } from "./triggers/watch-script-service.js";
 
 export { hostInternalRoutePatterns } from "./server/internal-routes.js";
 
@@ -348,8 +378,15 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  /** This Home's problems and the report it sends; see problems/home-problems.ts. */
+  readonly problems?: Pick<import("./problems/home-problems.js").HomeProblems, "view">;
+  /** The person's Requests for Home commands agents propose. */
+  readonly commandRequests?: import("./commands/requests.js").CommandRequestService;
+  /** Hands the agents' state tool the person's read handlers once they are built. */
+  readonly personReads?: (handlers: Readonly<Record<string, unknown>>) => void;
   /** The owner's plugin API; personal Hosts only. */
   readonly plugins?: import("./plugins/plugin-owner-api.js").PluginOwnerApi;
+  readonly pluginAgentWorkStoppedSince?: (runnerId: RunnerId) => string | undefined;
   readonly pluginOAuth?: import("./plugins/plugin-oauth-service.js").PluginOAuthService;
   readonly pluginRequests?: Pick<
     import("./plugins/plugin-executions.js").PluginExecutions,
@@ -358,9 +395,40 @@ export interface HostServerDependencies {
   readonly deviceDrivers?: DeviceDriverManagementPort;
   readonly assets?: AssetService;
   readonly transcriptFiles?: TranscriptFiles;
-  readonly execution: Pick<PersonalExecution, "canExecute">;
-  readonly teamLinks: () => Promise<PersonalTeamLinks>;
+  readonly execution: Pick<PersonalExecution, "canExecute"> & {
+    /**
+     * The Home has its owner, hosting computer and Personal settings in place, so it can
+     * answer the owner's reads. False while it waits for the hosting Runner's agent home.
+     */
+    readonly initialized: () => boolean;
+  };
   readonly connections?: ConnectionOAuth;
+  readonly connectionEffects?: ConnectionCommandEffects;
+  /** Settles a person's answer to a Request about an external agent's direct operation. */
+  readonly agentOperations?: {
+    lowerTaskMode?(
+      threadId: import("@opensteer/core").ThreadId,
+      mode: import("@opensteer/core").ThreadAccessMode,
+    ): Promise<void>;
+    respond(input: {
+      readonly requestId: import("@opensteer/core").RequestId;
+      readonly expectedRevision: string;
+      readonly resolvedBy: import("@opensteer/core").UserId;
+      readonly settlementSessionId: string;
+      readonly response: import("@opensteer/core").RequestResponse;
+    }): Promise<void>;
+    /** The person's Stop on a connected agent's own task. */
+    stopSession(input: {
+      readonly ownerUserId: import("@opensteer/core").UserId;
+      readonly threadId: import("@opensteer/core").ThreadId;
+      readonly sessionId: import("@opensteer/core").AgentSessionId;
+    }): Promise<{ readonly ended: boolean }>;
+    /** Where each connected agent's session is working now, in memory, for its owner only. */
+    readonly workingIn?: Pick<
+      import("./agent-sessions/agent-working-in.js").AgentWorkingInRegistry,
+      "note" | "current"
+    >;
+  };
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
@@ -369,10 +437,11 @@ export interface HostServerDependencies {
   readonly apps: AppService;
   readonly appOriginSigningKey: Uint8Array;
   readonly appRealOrigins: boolean;
+  /** This Home's own origins (canonical, current route): the only ones its web app runs at. */
+  readonly homeOrigins?: () => readonly string[];
+  /** Which forwarding headers to believe; absent keeps the loopback tunnel connector's. */
+  readonly trustedProxy?: import("@opensteer/config").TrustedProxy;
   readonly requestResponseVault: RequestResponseVault;
-  /** Present when account attachment uses adoption. */
-  readonly accountAdoption?:
-    { readonly acknowledge: (proofId: string) => Promise<void> } | undefined;
   readonly runToolTokens: import("./agents/run-tool-tokens.js").RunToolTokenService;
   readonly agentTools: OpensteerMcpService;
   readonly authenticator: HostAuthenticator;
@@ -381,6 +450,7 @@ export interface HostServerDependencies {
   readonly browser: BrowserService;
   readonly tabs: TabService;
   readonly toolActivity: AgentToolActivityStore;
+  readonly secretDigestKey: Buffer;
   readonly browserSources: BrowserSourceService;
   readonly passwordSignIns: Pick<PasswordSignInService, "get" | "respond">;
   readonly signBrowserSourceInvitation: (bytes: Uint8Array) => string;
@@ -405,6 +475,8 @@ export interface HostServerDependencies {
   readonly placeContext: Pick<PlaceContextService, "assertIncludable">;
   readonly credentials: CredentialService;
   readonly discovery: HostDiscoveryEnvelope;
+  /** Signs with this Host's key, so a client can prove an address still answers as this Home. */
+  readonly signHostProof?: (bytes: Uint8Array) => string;
   readonly egress: EgressService;
   readonly integrations: {
     readonly access: AccessRequests;
@@ -423,7 +495,18 @@ export interface HostServerDependencies {
   readonly localBootstrap?: { readonly service: LocalBootstrapService } | undefined;
   /** Present when reachability is routed personal. */
   readonly personalRemoteAccess?: { readonly service: PersonalRemoteAccessService } | undefined;
-  /** The personal owner's name; absent on a team Host. */
+  /** A Cloud Computer's Home: where its Account claims it, once. */
+  readonly managedHomeClaim?: Pick<
+    import("./identity/managed-home-claim.js").ManagedHomeClaimService,
+    "claim"
+  >;
+  /** Present only on a Cloud Computer with a managed pooled browser; reported on /healthz. */
+  readonly browserPoolStatus?: () => import("./browser/managed-pool-home.js").ManagedBrowserPoolStatus;
+  /** Refuse any local Runner browser auxiliary stream for the main computer on a pooled Home. */
+  readonly refuseLocalMainBrowserRelay?: boolean;
+  /** The Opensteer Account link, on every Personal Host whether or not it has Remote access. */
+  readonly personalAccountLink?: { readonly service: PersonalRemoteAccessService } | undefined;
+  /** The personal owner's name; absent before the Home has an owner. */
   readonly ownerProfile?: OwnerProfileService;
   /** What active Runs are streaming, for readers that open a Thread mid-turn. */
   readonly onPersonalScopeCut?: (
@@ -443,15 +526,39 @@ export interface HostServerDependencies {
   readonly triggers: {
     readonly controlTokens: TriggerControlTokenService;
     readonly service: TriggerService;
-    readonly watchPrograms: WatchProgramService;
+    readonly watchScripts: WatchScriptService;
     readonly watchBrowserTokens: WatchCapabilityTokenService<"opensteer-watch-browser-cdp">;
   };
+}
+
+const hostRoutes = new WeakMap<
+  FastifyInstance,
+  { readonly method: string; readonly url: string }[]
+>();
+
+/** Every route a Host server registers, as it registers it: what the door's route test reads. */
+function recordHostRoutes(app: FastifyInstance): void {
+  const routes: { readonly method: string; readonly url: string }[] = [];
+  hostRoutes.set(app, routes);
+  app.addHook("onRoute", (route) => {
+    for (const method of [route.method].flat()) routes.push({ method, url: route.url });
+  });
+}
+
+/** The routes this Host server registered: none if it was not made by `createHostServer`. */
+export function registeredHostRoutes(
+  app: FastifyInstance,
+): readonly { readonly method: string; readonly url: string }[] {
+  return hostRoutes.get(app) ?? [];
 }
 
 export async function createHostServer(
   dependencies: HostServerDependencies,
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
+  if (dependencies.secretDigestKey.byteLength === 0) {
+    throw new Error("createHostServer requires a non-empty secretDigestKey.");
+  }
   const threadService = new ThreadService(dependencies);
   const app = Fastify({
     routerOptions: { maxParamLength: 8192 },
@@ -464,13 +571,17 @@ export async function createHostServer(
         return (
           hasAppAuthority(request.headers) ||
           path.startsWith("/media/") ||
-          path.startsWith("/hooks/v1/plugins/") ||
+          path.startsWith(standardCdpConnectPrefix) ||
+          path.startsWith("/hooks/v1/") ||
           path.startsWith("/v1/integration-authorizations/") ||
           path === "/v1/plugin-oauth/callback"
         );
       },
     }),
   });
+  installTrustedProxy(app, dependencies.trustedProxy ?? "loopback-cloudflared");
+  installClientAddress(app);
+  recordHostRoutes(app);
   const noSendKeys: ReadonlyMap<string, string> = new Map();
   const readSendKeys =
     (session: AuthenticatedHostSession["session"]) => async (ids: readonly MessageId[]) => {
@@ -516,12 +627,32 @@ export async function createHostServer(
     (fields, message) => app.log.warn(fields, message),
   );
   const harnessAuthenticationCoordinator = dependencies.harnessAuthenticationCoordinator;
+  const harnessSignInBrowser = new HarnessSignInBrowser({
+    browserAvailable: (runnerId) =>
+      dependencies.browser.resourcePlacements([runnerId]).some((placement) => placement.available),
+    closeTab: async (ownerId, tabId, idempotencyKey) => {
+      await dependencies.tabs.close({ kind: "person", ownerId }, [tabId], idempotencyKey);
+      await dependencies.browser.closeEngineSignInPage(ownerId, tabId, idempotencyKey);
+    },
+    createProfile: (input) => dependencies.browser.createProfile(input),
+    hasTab: (ownerId, tabId) =>
+      dependencies.tabs.get(ownerId, tabId).then(
+        () => true,
+        () => false,
+      ),
+    listProfiles: (ownerId) => dependencies.browser.listProfiles(ownerId),
+    onError: (error) => app.log.warn({ err: error }, "An AI engine sign-in tab did not close"),
+    openTab: async (ownerId, target, idempotencyKey) =>
+      (await dependencies.tabs.open({ kind: "person", ownerId }, target, idempotencyKey)).tab.tabId,
+  });
+  const stopFollowingSignIns = harnessSignInBrowser.follow(harnessAuthenticationCoordinator);
+  app.addHook("onClose", async () => stopFollowingSignIns());
   await app.register(websocket, {
     options: {
       maxPayload: maxBrowserRelayFrameBytes,
       perMessageDeflate: false,
     },
-    preClose: closeWebSocketsWithin(webSocketShutdownGraceMs, httpShutdownGraceMs),
+    preClose: closeWebSocketsWithin(webSocketShutdownGraceMs, httpShutdownGraceMs, app.server),
   });
   app.addContentTypeParser(
     ["application/octet-stream", "application/x-www-form-urlencoded", "text/plain"],
@@ -560,11 +691,15 @@ export async function createHostServer(
   const socketServer = app.websocketServer;
   const upgradeSocket = socketServer.handleUpgrade.bind(socketServer);
   socketServer.handleUpgrade = (request, socket, head, callback) => {
-    if (!realtimeSocketSessions.has(request)) return upgradeSocket(request, socket, head, callback);
+    const standardCdp = request.url?.startsWith(standardCdpConnectPrefix);
+    if (!standardCdp && !realtimeSocketSessions.has(request))
+      return upgradeSocket(request, socket, head, callback);
     // This server has no asynchronous verifyClient hook. ws copies the limit
     // into the connection's receiver synchronously during handleUpgrade.
     const limit = socketServer.options.maxPayload;
-    socketServer.options.maxPayload = personalClientFrameMaxBytes;
+    socketServer.options.maxPayload = standardCdp
+      ? standardCdpMessageMaxBytes
+      : personalClientFrameMaxBytes;
     try {
       upgradeSocket(request, socket, head, callback);
     } finally {
@@ -572,7 +707,12 @@ export async function createHostServer(
       else socketServer.options.maxPayload = limit;
     }
   };
-  registerAppRoutes(app, dependencies.apps, dependencies.plugins?.pages);
+  registerAppRoutes(
+    app,
+    dependencies.apps,
+    dependencies.plugins?.pages,
+    () => dependencies.homeOrigins?.() ?? [dependencies.discovery.document.canonicalOrigin],
+  );
   if (dependencies.plugins?.webhooks)
     registerPluginWebhookRoutes(app, {
       ...dependencies.plugins.webhooks,
@@ -585,52 +725,54 @@ export async function createHostServer(
         ),
     });
   registerIdentityRoutes(app, dependencies.authenticator, {
-    ...(dependencies.accountAdoption
-      ? { acknowledgeAccountAdoption: dependencies.accountAdoption.acknowledge }
-      : {}),
     assertOwner: (userId) => requirePersonalOwner(dependencies.store.database, userId),
   });
   const connectionRoutes = dependencies.connections
     ? {
         oauth: dependencies.connections,
         canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
-        loopbackOriginAliases: true,
+        // A networked Home answers agents at its public origin alone.
+        loopbackOriginAliases: isLoopbackHostname(
+          new URL(dependencies.discovery.document.canonicalOrigin).hostname,
+        ),
         remoteOrigin: async () =>
           (await dependencies.personalRemoteAccess?.service.status())?.route?.document.route
             .origin ?? null,
       }
     : undefined;
   if (connectionRoutes) registerConnectionRoutes(app, connectionRoutes);
+  if (dependencies.managedHomeClaim)
+    registerManagedHomeClaimRoute(app, dependencies.managedHomeClaim, (address) =>
+      consumeAnonymousRateLimit(
+        dependencies.store.database,
+        `managed-home-claim:${address}`,
+        30,
+        new Date(),
+      ),
+    );
   registerSessionExchangeRoute(app, {
     personalRemoteAccess: dependencies.personalRemoteAccess?.service,
   });
   registerAgentCdpBridge(app, dependencies.browser, dependencies.runToolTokens);
+  registerStandardCdpRoute(
+    app,
+    dependencies.browser,
+    dependencies.browserSources.liveTabs,
+    dependencies.agentOperations?.workingIn,
+  );
   registerAgentToolRoute(app, {
     callers: dependencies.agentTools.options.callers,
     service: dependencies.agentTools,
     activity: dependencies.toolActivity,
     realtime: dependencies.realtime,
+    secretDigestKey: dependencies.secretDigestKey,
   });
   registerAgentPageBindingRoute(
     app,
     dependencies.runToolTokens,
     dependencies.tabs,
     dependencies.agentTools.options.callers,
-    async (claims) => {
-      const run = await dependencies.store.database
-        .selectFrom("runs")
-        .innerJoin("harnessInstances", "harnessInstances.id", "runs.harnessInstanceId")
-        .select(["harnessInstances.driverKind", "runs.accessMode"])
-        .where("runs.id", "=", claims.runId)
-        .where("runs.requestedBy", "=", claims.requestedBy)
-        .executeTakeFirst();
-      if (!run)
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "This Run's browser access has ended.",
-        });
-      return run;
-    },
+    (claims) => runBrowserCapability(dependencies.store, claims),
   );
   registerBrowserSourceWire(
     app,
@@ -684,9 +826,25 @@ export async function createHostServer(
   registerWatchCdpBridge(app, dependencies.browser, dependencies.triggers.watchBrowserTokens);
 
   app.get("/healthz", async () => ({ ok: true }));
+  app.get("/ready", async (request, reply) => {
+    const remote = request.socket.remoteAddress ?? "";
+    const isDirectLoopback =
+      (remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1") &&
+      request.headers["x-forwarded-for"] === undefined &&
+      request.headers["x-forwarded-host"] === undefined &&
+      request.headers["x-forwarded-proto"] === undefined &&
+      request.headers.forwarded === undefined;
+    if (!isDirectLoopback) return reply.code(404).send({ error: "Not found" });
+    return dependencies.browserPoolStatus
+      ? { ok: true, browserPool: dependencies.browserPoolStatus() }
+      : { ok: true };
+  });
   app.get("/.well-known/opensteer", async (request, reply) => {
     setBrowserSourceExtensionCors(reply, request.headers.origin);
     void reply.header("cache-control", "no-store");
+    const proof = HostIdentityProofSchema.shape.nonce.safeParse(
+      (request.query as { readonly proof?: unknown }).proof,
+    );
     return HostDescriptorSchema.parse({
       kind: "personal",
       apiVersion: minimumHostApiVersion,
@@ -694,6 +852,19 @@ export async function createHostServer(
       authority: dependencies.discovery,
       bootstrapMethods: await advertisedBootstrapMethods(dependencies),
       capabilities: advertisedCapabilities(dependencies),
+      ...(proof.success && dependencies.signHostProof
+        ? {
+            identityProof: {
+              nonce: proof.data,
+              signature: dependencies.signHostProof(
+                hostIdentityProofBytes({
+                  nonce: proof.data,
+                  document: dependencies.discovery.document,
+                }),
+              ),
+            },
+          }
+        : {}),
     });
   });
   registerDesktopUpdateMaintenance(
@@ -702,6 +873,67 @@ export async function createHostServer(
     dependencies.personalRemoteAccess?.service.desktopUpdates ?? null,
     dependencies.store.database,
   );
+  /**
+   * A route that sends one of the person's commands: signed in as for any change, then the one
+   * door, `commands.dispatch`, with the same context a Host API call has (AD10).
+   */
+  const personCommand = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    command: HostApiCommand,
+  ): Promise<HostApiCommandOutput> => {
+    const authenticated = await dependencies.authenticator.authenticateSessionContext(
+      request.headers,
+      { mutation: true },
+    );
+    const answer = await hostApiHandlers["commands.dispatch"]!(
+      command as never,
+      createHostApiContext(authenticated, request, reply, false),
+    );
+    return (answer as { readonly data: HostApiCommandOutput }).data;
+  };
+  // The Account link is its own subsystem: a Home on its own server links to an
+  // Opensteer Account with no Remote access at all.
+  if (dependencies.personalAccountLink) {
+    // The Mac app's account-link steps are the person's commands: through the one door (AD10),
+    // as the same table types the person's other apps send, each answered as this route always was.
+    app.post("/v1/personal-remote-access/account-link/proof", async (request, reply) => {
+      const output = (await personCommand(request, reply, {
+        type: "personal.accountLink.approve",
+        idempotencyKey: randomUUID(),
+        challenge: ApprovePersonalHostAccountLinkRequestSchema.parse(request.body),
+      })) as Extract<HostApiCommandOutput, { type: "personal.accountLink.approve" }>;
+      return reply.header("cache-control", "no-store").send(output.proof);
+    });
+    app.post("/v1/personal-remote-access/account-link/consume", async (request, reply) => {
+      const output = (await personCommand(request, reply, {
+        type: "personal.accountLink.complete",
+        idempotencyKey: randomUUID(),
+        completion: ConsumePersonalHostAccountLinkRequestSchema.parse(request.body),
+      })) as Extract<HostApiCommandOutput, { type: "personal.accountLink.complete" }>;
+      return reply.header("cache-control", "no-store").send(output.access);
+    });
+    app.post("/v1/personal-remote-access/account-link/resume", async (request, reply) => {
+      ResumePersonalHostAccountLinkRequestSchema.parse(request.body);
+      const output = (await personCommand(request, reply, {
+        type: "personal.accountLink.resume",
+        idempotencyKey: randomUUID(),
+      })) as Extract<HostApiCommandOutput, { type: "personal.accountLink.resume" }>;
+      return reply.header("cache-control", "no-store").send(output.access);
+    });
+    // The Mac app's two unlink steps: the table's `personal.accountLink.unlink`, one step each,
+    // through the door (AD10).
+    for (const step of ["revoke-sessions", "remove-link"] as const)
+      app.post(`/v1/personal-remote-access/account-unlink/${step}`, async (request, reply) => {
+        PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
+        await personCommand(request, reply, {
+          type: "personal.accountLink.unlink",
+          idempotencyKey: randomUUID(),
+          step,
+        });
+        return reply.code(204).send();
+      });
+  }
   // One optional subsystem, one registration decision. A Deployment without
   // Personal reachability does not answer on these paths at all, so no handler
   // repeats an availability check the router already made.
@@ -748,70 +980,12 @@ export async function createHostServer(
         );
     });
     app.post("/v1/personal-remote-access/pairing-codes", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(await personalRemoteAccess.issuePairingCode(caller));
-    });
-    app.post("/v1/personal-remote-access/account-link/proof", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(
-          await personalRemoteAccess.approveAccountLink(
-            caller,
-            ApprovePersonalHostAccountLinkRequestSchema.parse(request.body),
-          ),
-        );
-    });
-    app.post("/v1/personal-remote-access/account-link/consume", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(
-          await personalRemoteAccess.consumeAccountLink(
-            caller,
-            ConsumePersonalHostAccountLinkRequestSchema.parse(request.body),
-          ),
-        );
-    });
-    app.post("/v1/personal-remote-access/account-link/resume", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(await personalRemoteAccess.resumeAccountLink(caller, request.body));
-    });
-    app.post(
-      "/v1/personal-remote-access/account-unlink/revoke-sessions",
-      async (request, reply) => {
-        PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
-        const caller = await dependencies.authenticator.authenticateSessionContext(
-          request.headers,
-          { mutation: true },
-        );
-        await personalRemoteAccess.revokeAccountSessions(caller, (effect) =>
-          afterResponse(reply, effect),
-        );
-        return reply.code(204).send();
-      },
-    );
-    app.post("/v1/personal-remote-access/account-unlink/remove-link", async (request, reply) => {
-      PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      await personalRemoteAccess.removeAccountLink(caller, (effect) =>
-        afterResponse(reply, effect),
-      );
-      return reply.code(204).send();
+      // The person's command, through the door (AD10).
+      const output = (await personCommand(request, reply, {
+        type: "personal.remoteAccess.pairing.create",
+        idempotencyKey: randomUUID(),
+      })) as Extract<HostApiCommandOutput, { type: "personal.remoteAccess.pairing.create" }>;
+      return reply.header("cache-control", "no-store").send(output.pairing);
     });
     app.put("/v1/personal-remote-access/connect-projection", async (request, reply) => {
       const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
@@ -1103,6 +1277,12 @@ export async function createHostServer(
           updateRequired: runner.updateRequired,
           phoneUpdate: phoneUpdates.projection(runner.id, runner.connectionGeneration, !!live),
           allowedModules: runner.allowedModules,
+          asleepSince: runner.revokedAt
+            ? null
+            : dependencies.runners.asleepSince(runner.id, runner.connectionGeneration),
+          agentsStoppedSince: runner.revokedAt
+            ? null
+            : dependencies.runners.agentsStoppedSince(runner.id, runner.connectionGeneration),
           connected: !!live,
           device: runner.device,
           enrollmentId: runner.enrollmentId,
@@ -1190,16 +1370,28 @@ export async function createHostServer(
     const computerViews = new Map(registry.computerViews);
     const computerUseSessions = new Map(registry.computerUseSessions);
     const computerUseDisplayStreamSupported = new Map(registry.computerUseDisplayStreamSupported);
-    const driverIds = [...new Set(drivers.map(({ runnerId }) => runnerId))];
+    const visibleDeviceIds = new Set(devices.devices.map(({ id }) => id));
+    const driverIds = [
+      ...new Set(
+        drivers
+          .filter(({ deviceId }) => visibleDeviceIds.has(deviceId))
+          .map(({ runnerId }) => runnerId),
+      ),
+    ];
     const named =
-      page && driverIds.length
+      driverIds.length > 0
         ? await store.database
             .selectFrom("runners")
-            .select(["id", "name"])
+            .select(["id", "name", "revokedAt", "connectionGeneration"])
             .where("id", "in", driverIds)
             .execute()
-        : registry.runners;
+        : [];
     const runnerNames = new Map(named.map((runner) => [runner.id, runner.name]));
+    const activeDrivers = new Map(
+      named
+        .filter((runner) => !runner.revokedAt)
+        .map((runner) => [runner.id, Number(runner.connectionGeneration)]),
+    );
     const inputs = await Promise.all(
       devices.devices.map(async (device) => {
         const bindings = drivers.filter((binding) => binding.deviceId === device.id);
@@ -1238,6 +1430,10 @@ export async function createHostServer(
             !entry.computer.blockedAt &&
             isPhoneDisplayDefinitionId(entry.definitionId),
         );
+        const screenDriver = bindings.find(
+          (binding) => binding.role === "screen" && !binding.detachedAt,
+        );
+        const screenGeneration = screenDriver && activeDrivers.get(screenDriver.runnerId);
         return {
           device,
           selfRunnerId,
@@ -1248,8 +1444,20 @@ export async function createHostServer(
             attached: binding.detachedAt === null,
             runnerName: runnerNames.get(binding.runnerId) ?? "Computer",
           })),
+          screenAsleep:
+            !!screenDriver &&
+            screenGeneration !== undefined &&
+            dependencies.runners.asleepSince(screenDriver.runnerId, screenGeneration) !== null,
+          screenStopped:
+            !!screenDriver &&
+            dependencies.runners.agentsStoppedSince(screenDriver.runnerId) !== null,
           screenStatus: dependencies.computerApps.deviceStatus(device.id),
-          screenConnected: dependencies.computerApps.attached(device.id),
+          screenConnected:
+            !!screenDriver &&
+            screenGeneration !== undefined &&
+            dependencies.runners.identityForRunner(screenDriver.runnerId)?.connectionGeneration ===
+              screenGeneration &&
+            dependencies.computerApps.attached(device.id),
           phoneAccess: connection?.computer?.access ?? null,
         };
       }),
@@ -1395,6 +1603,12 @@ export async function createHostServer(
         }),
       );
     },
+    "problems.get": async (_input, context) => {
+      requireRpcSession(context);
+      if (!dependencies.problems)
+        throw new OpensteerError({ code: "not_found", message: "This Home has no problem view" });
+      return rpcSuccess(hostApi["problems.get"].success.parse(await dependencies.problems.view()));
+    },
     "machines.list": async (_input, context) => {
       const session = requireRpcSession(context);
       return rpcSuccess(
@@ -1412,7 +1626,7 @@ export async function createHostServer(
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
         maxItems: input.limit ?? 100,
       });
-      if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!page) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess({
         ...page,
         messages: await withClientSendKeys(page.messages, readSendKeys(requireRpcSession(context))),
@@ -1437,7 +1651,7 @@ export async function createHostServer(
     "thread.browserUsage.get": async (input, context) => {
       const ownerId = requireRpcSession(context).user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, ownerId);
-      if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess(
         hostApi["thread.browserUsage.get"].success.parse({
           threadId: thread.id,
@@ -1469,7 +1683,7 @@ export async function createHostServer(
       const session = requireRpcSession(context);
       const requestedBy = session.user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, requestedBy);
-      if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       const queue = await dependencies.store.getThreadInputQueue({
         threadId: thread.id,
         requestedBy,
@@ -1493,6 +1707,7 @@ export async function createHostServer(
       const assignment = await dependencies.store.getAssignmentForOwner({
         assignmentId: input.assignmentId,
         ownerId: requireRpcSession(context).user.id,
+        reader: personTaskReader,
       });
       if (!assignment) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess(assignment);
@@ -1506,7 +1721,7 @@ export async function createHostServer(
         ...(input.before ? { before: input.before } : {}),
         ...(input.open ? { open: true } : {}),
       });
-      if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!page) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess(
         hostApi["thread.assignments.list"].success.parse({ ...page, threadId: input.threadId }),
       );
@@ -1538,18 +1753,6 @@ export async function createHostServer(
           userId: requireRpcSession(context).user.id,
         }),
       ),
-    "teams.links.list": async (_input, context) => {
-      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
-      return rpcSuccess({ links: await (await dependencies.teamLinks()).list() });
-    },
-    "teams.threadTask.get": async (input, context) => {
-      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
-      return rpcSuccess({ taskId: await (await dependencies.teamLinks()).task(input) });
-    },
-    "teams.replyTask.get": async (input, context) => {
-      const ownerId = requireRpcSession(context).user.id;
-      return rpcSuccess(await (await dependencies.teamLinks()).replyTask(ownerId, input));
-    },
     "tasks.list": async ({ active: _active, deviceAccessRequests: _requests, ...input }, context) =>
       personalReads.handlers["tasks.page"](input, context),
     ...personalReads.handlers,
@@ -1575,9 +1778,6 @@ export async function createHostServer(
     | "attachment.content"
     | "attention.get"
     | "needsYou.get"
-    | "teams.links.list"
-    | "teams.threadTask.get"
-    | "teams.replyTask.get"
     | "harness.authentication.get"
     | "automaticModels.get"
     | "harness.catalog.refresh"
@@ -1590,6 +1790,7 @@ export async function createHostServer(
     | "voice.stop"
     | "machine.access.history"
     | "machines.list"
+    | "problems.get"
     | "requests.list"
     | "run.attempts.list"
     | "tasks.list"
@@ -1601,14 +1802,23 @@ export async function createHostServer(
     | "references.resolve"
   >;
 
-  const executeCoreCommand = async (command: CoreCommand, context: HostApiServerContext) => {
-    if (command.type === "connection.authorize" || command.type === "connection.revoke") {
+  const executeCoreCommand = async (
+    command: CoreCommand,
+    context: HostApiServerContext,
+    readmit?: CommandProposal["readmit"],
+  ) => {
+    if (isConnectionCommand(command)) {
       if (!dependencies.connections)
         throw new OpensteerError({
           code: "not_found",
           message: "Agent connections are unavailable.",
         });
-      const result = await handleConnectionCommand(dependencies.connections, command, context);
+      const result = await handleConnectionCommand(
+        dependencies.connections,
+        command,
+        context,
+        dependencies.connectionEffects,
+      );
       // The person's other devices may be showing the list.
       if (context.session) dependencies.realtime.publishConnectionsChanged(context.session.user.id);
       return result;
@@ -1617,7 +1827,7 @@ export async function createHostServer(
     const userId = session.user.id;
     if (isAdministrationCommand(command))
       return administration.execute(
-        { kind: "person", userId, sessionId: session.id },
+        { kind: "person", userId, sessionId: session.id, ...(readmit ? { readmit } : {}) },
         command,
         context.afterResponse,
       );
@@ -1629,27 +1839,6 @@ export async function createHostServer(
         );
         return result;
       }
-      case "teams.link.join":
-        return {
-          type: command.type,
-          link: await (await dependencies.teamLinks()).join(command.link),
-        };
-      case "teams.ask.decide":
-        await requirePersonalOwner(dependencies.store.database, userId);
-        await (
-          await dependencies.teamLinks()
-        ).options.requests.decide(
-          userId,
-          command.teamId,
-          command.requestId,
-          command.decision,
-          command.expectedRevision,
-          session.id,
-        );
-        return { type: command.type };
-      case "teams.link.leave":
-        await (await dependencies.teamLinks()).leave(command.teamId);
-        return { type: command.type };
       case "thread.visit": {
         const visit = await dependencies.store.notificationState.visit({
           threadId: command.threadId,
@@ -1733,6 +1922,16 @@ export async function createHostServer(
           type: command.type,
         };
 
+      case "thread.stop.recheck":
+        return {
+          ...(await threadService.recheckThreadStop(
+            { kind: "person", userId },
+            command,
+            AbortSignal.timeout(35_000),
+          )),
+          type: command.type,
+        };
+
       case "thread.input.lease.take":
       case "thread.input.lease.renew":
       case "thread.input.lease.release":
@@ -1779,7 +1978,7 @@ export async function createHostServer(
 
       case "thread.rename": {
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+        if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
         return {
           ...(await dependencies.commands.renameThread({
             idempotencyKey: command.idempotencyKey,
@@ -1792,7 +1991,7 @@ export async function createHostServer(
       }
       case "thread.icon.set": {
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+        if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
         return {
           ...(await dependencies.commands.setThreadIcon({
             idempotencyKey: command.idempotencyKey,
@@ -1805,7 +2004,7 @@ export async function createHostServer(
       }
       case "thread.access.update": {
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+        if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
         const harness = await dependencies.store.getHarnessInstance(thread.harnessInstanceId);
         if (harness) {
           assertAccessModeEnforceable(
@@ -1815,14 +2014,19 @@ export async function createHostServer(
             command.accessMode,
           );
         }
-        return {
-          ...(await dependencies.commands.updateThreadAccessMode({
-            accessMode: command.accessMode,
-            requestedBy: userId,
-            threadId: command.threadId,
-          })),
-          type: command.type,
-        };
+        const result = await dependencies.commands.updateThreadAccessMode({
+          accessMode: command.accessMode,
+          requestedBy: userId,
+          threadId: command.threadId,
+        });
+        if (!threadAccessModeAtMost(thread.accessMode, result.thread.accessMode)) {
+          dependencies.browser.lowerStandardCdpTaskMode(command.threadId, result.thread.accessMode);
+          await dependencies.agentOperations?.lowerTaskMode?.(
+            command.threadId,
+            result.thread.accessMode,
+          );
+        }
+        return { ...result, type: command.type };
       }
       case "node.stop": {
         const result = await dependencies.commands.stopNode({ ...command, requestedBy: userId });
@@ -1833,6 +2037,19 @@ export async function createHostServer(
           ...(await threadService.interrupt({ kind: "person", userId }, command)),
           type: command.type,
         };
+      case "agent.session.stop": {
+        if (!dependencies.agentOperations)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Connected agents' direct work is unavailable on this Home.",
+          });
+        const result = await dependencies.agentOperations.stopSession({
+          ownerUserId: userId,
+          threadId: command.threadId,
+          sessionId: command.agentSessionId,
+        });
+        return { ended: result.ended, type: command.type };
+      }
 
       case "request.respond": {
         const expectedRevision = command.expectedRevision;
@@ -1855,6 +2072,24 @@ export async function createHostServer(
             response: command.response,
           };
           await (async (): Promise<void> => {
+            // A command an agent proposed: approving is `request.command.approve`, never a form
+            // answer, so anything an app sends here declines it, its words handed to the agent.
+            if (pending.command) {
+              if (!dependencies.commandRequests)
+                throw new OpensteerError({ code: "not_found", message: "Request not found" });
+              await dependencies.commandRequests.decline(input);
+              return;
+            }
+            // A connected agent's direct operation: the answer settles it, with no Runner.
+            if (pending.originatingAgentSessionId && pending.kind === "person.question") {
+              if (!dependencies.agentOperations)
+                throw new OpensteerError({
+                  code: "conflict",
+                  message: "Connected agents' direct work is unavailable on this Home.",
+                });
+              await dependencies.agentOperations.respond(input);
+              return;
+            }
             switch (pending.kind) {
               case "plugin.account":
               case "plugin.approval":
@@ -1965,10 +2200,10 @@ export async function createHostServer(
           });
         }
         const agents = runner.modules.agents;
-        if (!agents?.providerStateModes.includes(command.stateKind)) {
+        if (!agents) {
           throw new OpensteerError({
             code: "conflict",
-            message: `This work location does not support ${command.stateKind} AI engine state`,
+            message: "This work location does not run AI engines",
           });
         }
         const driver = agents.harnessDrivers.find(
@@ -2161,6 +2396,22 @@ export async function createHostServer(
           type: command.type,
         };
       }
+      case "harness.authentication.browse": {
+        const target = await admitHarnessAuthentication(session, {
+          environmentId: command.environmentId,
+          harnessInstanceId: command.harnessInstanceId,
+        });
+        return {
+          tabId: await harnessSignInBrowser.browse({
+            coordinator: harnessAuthenticationCoordinator,
+            ownerId: userId,
+            runnerId: dependencies.runners.identityForEnvironment(target.environment.id)?.runnerId,
+            signal: AbortSignal.timeout(30_000),
+            target,
+          }),
+          type: command.type,
+        };
+      }
       case "harness.authentication.logout": {
         const target = await admitHarnessAuthentication(session, {
           environmentId: command.environmentId,
@@ -2261,19 +2512,41 @@ export async function createHostServer(
         context.afterResponse?.(() => administration.release(operation.id));
         return { type: command.type, operation };
       }
-      case "personal.remoteAccess.pairing.create":
-      case "personal.accountLink.approve":
-      case "personal.accountLink.complete":
-      case "personal.accountLink.resume": {
+      case "personal.remoteAccess.pairing.create": {
         const service = dependencies.personalRemoteAccess?.service;
         if (!service)
           throw new OpensteerError({
             code: "not_found",
             message: "Personal remote access is unavailable",
           });
+        return { type: command.type, pairing: await service.issuePairingCode({ session }) };
+      }
+      case "personal.accountLink.unlink": {
+        const service = dependencies.personalAccountLink?.service;
+        if (!service)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Opensteer Account linking is unavailable",
+          });
+        // The Mac app's two steps, or both at once as the person's other apps send it.
+        if (command.step === "revoke-sessions")
+          await service.revokeAccountSessions({ session }, context.afterResponse);
+        else if (command.step === "remove-link")
+          await service.removeAccountLink({ session }, context.afterResponse);
+        else await service.unlinkAccount({ session }, context.afterResponse);
+        service.administration.changed();
+        return { type: command.type };
+      }
+      case "personal.accountLink.approve":
+      case "personal.accountLink.complete":
+      case "personal.accountLink.resume": {
+        const service = dependencies.personalAccountLink?.service;
+        if (!service)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Opensteer Account linking is unavailable",
+          });
         const caller = { session };
-        if (command.type === "personal.remoteAccess.pairing.create")
-          return { type: command.type, pairing: await service.issuePairingCode(caller) };
         if (command.type === "personal.accountLink.approve")
           return {
             type: command.type,
@@ -2368,18 +2641,6 @@ export async function createHostServer(
         );
         return { ...result, type: command.type };
       }
-      case "browser.profile.create":
-        return {
-          profile: await dependencies.browser.createProfile({
-            ...(command.input.homeRunnerId !== undefined
-              ? { homeRunnerId: command.input.homeRunnerId }
-              : {}),
-            name: command.input.name,
-            idempotencyKey: command.idempotencyKey,
-            ownerId: userId,
-          }),
-          type: command.type,
-        };
       case "tab.open":
       case "tab.reopen":
       case "tab.close":
@@ -2387,7 +2648,8 @@ export async function createHostServer(
       case "tab.organize":
       case "tab.group.update":
       case "tab.group.delete":
-        return dependencies.tabs.executeCommand(userId, command);
+      case "tab.group.close":
+        return dependencies.tabs.executeCommand(userId, command, readmit);
       case "app.rename":
       case "app.start":
       case "app.stop":
@@ -2396,6 +2658,26 @@ export async function createHostServer(
       case "browser.session.close":
         await dependencies.browser.stop(userId, BrowserSessionIdSchema.parse(command.sessionId));
         return { type: command.type };
+      case "browser.session.dismiss":
+        await dependencies.browser.dismissUnconfirmedSession(
+          userId,
+          BrowserSessionIdSchema.parse(command.sessionId),
+        );
+        return { type: command.type };
+      case "browser.pool.notice.seen":
+        await dependencies.browser.poolNoticeSeen(
+          userId,
+          BrowserSurfaceIdSchema.parse(command.surfaceId),
+          command.noticeId,
+        );
+        return { type: command.type };
+      case "browser.pool.restart":
+        await dependencies.browser.restartPooledBrowser(
+          userId,
+          command.runnerId as RunnerId,
+          command.idempotencyKey,
+        );
+        return { type: command.type };
     }
     throw new OpensteerError({
       code: "not_found",
@@ -2403,8 +2685,12 @@ export async function createHostServer(
     });
   };
 
-  const handleCoreCommand = async (command: CoreCommand, context: HostApiServerContext) =>
-    hostApi["commands.dispatch"].success.parse(await executeCoreCommand(command, context));
+  const handleCoreCommand = async (
+    command: CoreCommand,
+    context: HostApiServerContext,
+    readmit?: CommandProposal["readmit"],
+  ) =>
+    hostApi["commands.dispatch"].success.parse(await executeCoreCommand(command, context, readmit));
 
   const identityRpcHandlers = createIdentityRpcHandlers(
     dependencies.authenticator,
@@ -2412,65 +2698,92 @@ export async function createHostServer(
       signOutDeviceSession(dependencies, session, sessionId, afterResponse),
   );
 
-  registerHostApi(
-    app,
-    dependencies.authenticator,
-    {
-      ...createHostApiHandlers(
-        identityRpcHandlers,
-        createTriggerRpcHandlers(dependencies.triggers.service),
-        dependencies.triggers.service,
-        createDeviceRpcHandlers(deviceRpcOptions),
-        deviceRpcOptions,
-        createChannelRpcHandlers(dependencies.channels.service),
-        dependencies.channels.service,
-        createBrowserSourceRpcHandlers(browserSourceRpcOptions),
-        browserSourceRpcOptions,
-        coreRpcHandlers,
-        handleCoreCommand,
-        dependencies.computerViews,
-        dependencies.plugins,
-        dependencies.pluginOAuth,
-      ),
-      ...(dependencies.connections
-        ? createConnectionRpcHandlers(dependencies.connections)
-        : {
-            "connections.list": async () => {
-              throw new OpensteerError({
-                code: "not_found",
-                message: "Agent connections are unavailable.",
-              });
-            },
-            "connections.authorization.get": async () => {
-              throw new OpensteerError({
-                code: "not_found",
-                message: "Agent connections are unavailable.",
-              });
-            },
-          }),
-      "personal.remoteAccess.get": async (_input, context) => {
-        const service = dependencies.personalRemoteAccess?.service;
-        if (!service)
-          throw new OpensteerError({
-            code: "not_found",
-            message: "Personal remote access is unavailable",
-          });
-        return rpcSuccess(await service.administration.status(context.session!));
-      },
+  const hostApiHandlers: Parameters<typeof registerHostApi>[2] = {
+    ...createHostApiHandlers(
+      identityRpcHandlers,
+      createTriggerRpcHandlers(dependencies.triggers.service),
+      dependencies.triggers.service,
+      createDeviceRpcHandlers(deviceRpcOptions),
+      deviceRpcOptions,
+      createChannelRpcHandlers(dependencies.channels.service),
+      dependencies.channels.service,
+      createBrowserSourceRpcHandlers(browserSourceRpcOptions),
+      browserSourceRpcOptions,
+      coreRpcHandlers,
+      handleCoreCommand,
+      dependencies.computerViews,
+      dependencies.plugins,
+      dependencies.pluginOAuth,
+      dependencies.commandRequests,
+      dependencies.secretDigestKey,
+    ),
+    ...(dependencies.connections
+      ? createConnectionRpcHandlers(
+          dependencies.connections,
+          (ownerId) => dependencies.browserSources.chromeTabGrantCatalog(ownerId),
+          dependencies.commandRequests
+            ? (input) =>
+                commandActivity(dependencies.store.database, dependencies.commandRequests!, input)
+            : undefined,
+        )
+      : {
+          "connections.list": async () => {
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Agent connections are unavailable.",
+            });
+          },
+          "connections.authorization.get": async () => {
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Agent connections are unavailable.",
+            });
+          },
+          "connections.activity": async () => {
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Agent connections are unavailable.",
+            });
+          },
+          "threads.activity": async () => {
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Agent connections are unavailable.",
+            });
+          },
+        }),
+    "personal.accountLink.get": async (_input, context) => {
+      const service = dependencies.personalAccountLink?.service;
+      if (!service)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Opensteer Account linking is unavailable",
+        });
+      return rpcSuccess(await service.accountLinkStatus(context.session!));
     },
-    {
-      kind: "personal",
-      guardResponse: (input, context) => {
-        return dependencies.realtime.guardRead(personalResponseScopes(input, context.session?.id));
-      },
-      revalidateResponse: async (context) => {
-        if (!context.session) return;
-        const current = await dependencies.authenticator.authenticateSession(context.headers);
-        if (current.id !== context.session.id || current.user.id !== context.session.user.id)
-          throw new OpensteerError({ code: "unauthorized", message: "This session ended." });
-      },
+    "personal.remoteAccess.get": async (_input, context) => {
+      const service = dependencies.personalRemoteAccess?.service;
+      if (!service)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Personal remote access is unavailable",
+        });
+      return rpcSuccess(await service.administration.status(context.session!));
     },
-  );
+  };
+  // The agents' state tool reads what the person's apps read: these same handlers (AC1).
+  dependencies.personReads?.(hostApiHandlers as never);
+  registerHostApi(app, dependencies.authenticator, hostApiHandlers, {
+    guardResponse: (input, context) => {
+      return dependencies.realtime.guardRead(personalResponseScopes(input, context.session?.id));
+    },
+    revalidateResponse: async (context) => {
+      if (!context.session) return;
+      const current = await dependencies.authenticator.authenticateSession(context.headers);
+      if (current.id !== context.session.id || current.user.id !== context.session.user.id)
+        throw new OpensteerError({ code: "unauthorized", message: "This session ended." });
+    },
+  });
 
   app.post(
     "/v1/runner/leave",
@@ -2495,32 +2808,38 @@ export async function createHostServer(
         .send(RunnerLeaveResponseSchema.parse({ outcome: "removed" }));
     },
   );
-  app.get("/v1/runner/attachments", async (request, reply) => {
+  // A Runner's own file routes: its run token authenticates them and its admission by
+  // capabilities decides compatibility, so a Runner of another API epoch is served too.
+  app.get("/v1/runner/attachments", { config: unversionedRoute }, async (request, reply) => {
     const token = requireBearerToken(request);
     const query = z.strictObject({ after: AttachmentIdSchema.optional() }).parse(request.query);
     const page = await dependencies.attachments.listForRun(token, query.after ?? null);
     return reply.header("cache-control", "no-store").send(page);
   });
 
-  app.get("/v1/runner/attachments/:attachmentId/content", async (request, reply) => {
-    const token = requireBearerToken(request);
-    const { attachmentId } = z
-      .strictObject({ attachmentId: AttachmentIdSchema })
-      .parse(request.params);
-    const content = await dependencies.attachments.contentForRun(token, attachmentId);
-    return reply
-      .header("cache-control", "no-store")
-      .header("content-disposition", "attachment")
-      .header("content-security-policy", "default-src 'none'; sandbox")
-      .header("x-content-type-options", "nosniff")
-      .header("etag", content.metadata.etag)
-      .type(content.metadata.contentType)
-      .send(Buffer.from(content.bytes));
-  });
+  app.get(
+    "/v1/runner/attachments/:attachmentId/content",
+    { config: unversionedRoute },
+    async (request, reply) => {
+      const token = requireBearerToken(request);
+      const { attachmentId } = z
+        .strictObject({ attachmentId: AttachmentIdSchema })
+        .parse(request.params);
+      const content = await dependencies.attachments.contentForRun(token, attachmentId);
+      return reply
+        .header("cache-control", "no-store")
+        .header("content-disposition", "attachment")
+        .header("content-security-policy", "default-src 'none'; sandbox")
+        .header("x-content-type-options", "nosniff")
+        .header("etag", content.metadata.etag)
+        .type(content.metadata.contentType)
+        .send(Buffer.from(content.bytes));
+    },
+  );
 
   app.put(
     "/v1/runner/file-transfers/:id",
-    { bodyLimit: runFileMaxBytes },
+    { config: unversionedRoute, bodyLimit: runFileMaxBytes },
     async (request, reply) => {
       const token = requireBearerToken(request);
       const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
@@ -2531,22 +2850,45 @@ export async function createHostServer(
           code: "bad_request",
           message: "This file has no size or name.",
         });
-      await dependencies.runFiles.upload(id, token, {
-        name: decodeURIComponent(name),
-        sizeBytes,
-        stream: request.body as Readable,
-      });
+      const peer = new AbortController();
+      reply.raw.once("close", () => peer.abort());
+      if (reply.raw.destroyed) peer.abort();
+      await dependencies.runFiles.uploadHttp(
+        id,
+        token,
+        {
+          name: decodeURIComponent(name),
+          sizeBytes,
+          stream: request.body as Readable,
+        },
+        peer.signal,
+        request.headers[runFileProofHeader],
+      );
       return reply.code(204).send();
     },
   );
 
-  app.get("/v1/runner/file-transfers/:id", async (request, reply) => {
+  app.get("/v1/runner/file-transfers/:id", { config: unversionedRoute }, async (request, reply) => {
     const token = requireBearerToken(request);
     const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
-    const file = await dependencies.runFiles.download(id, token);
-    reply.raw.once("close", () =>
-      file.settled(reply.raw.writableFinished ? undefined : new Error("The download stopped.")),
+    const peer = new AbortController();
+    const stopped = new Error("The download stopped.");
+    const onClose = () => {
+      if (!reply.raw.writableFinished) peer.abort(stopped);
+    };
+    reply.raw.once("close", onClose);
+    if (reply.raw.destroyed) onClose();
+    const file = await dependencies.runFiles.downloadHttp(
+      id,
+      token,
+      peer.signal,
+      request.headers[runFileProofHeader],
     );
+    if (peer.signal.aborted) {
+      file.settled(stopped);
+      peer.signal.throwIfAborted();
+    }
+    reply.raw.once("close", () => file.settled(peer.signal.aborted ? stopped : undefined));
     return reply
       .header("cache-control", "no-store")
       .header("content-length", file.sizeBytes)
@@ -2555,12 +2897,12 @@ export async function createHostServer(
       .send(file.stream);
   });
 
-  app.get(hostInternalRoutePaths.triggerRevisionProgram, async (request, reply) => {
+  app.get(hostInternalRoutePaths.triggerRevisionScript, async (request, reply) => {
     const token = requireBearerToken(request);
     const params = z.strictObject({ revisionId: TriggerRevisionIdSchema }).parse(request.params);
     return reply
-      .header("cache-control", "private, immutable")
-      .send(await dependencies.triggers.watchPrograms.get(token, params.revisionId));
+      .header("cache-control", "no-store")
+      .send(await dependencies.triggers.watchScripts.get(token, params.revisionId));
   });
 
   app.route({
@@ -2674,6 +3016,7 @@ export async function createHostServer(
         log: app.log,
         browserAttachPublicKeys: dependencies.browserAttachPublicKeys,
         browserRelay: dependencies.browserRelay,
+        ...(dependencies.refuseLocalMainBrowserRelay ? { refuseLocalMainBrowserRelay: true } : {}),
         channels: dependencies.channels.service,
         computerApps: dependencies.computerApps,
         module: module.data,
@@ -2729,6 +3072,12 @@ export async function createHostServer(
         ...(dependencies.liveText ? { liveText: dependencies.liveText } : {}),
         refreshOwner: () => dependencies.ownerProfile?.refreshSoon(),
         probeMachines: () => dependencies.runners.probeFullDiskAccess(),
+        // Where each of the owner's connected agents works now, as this socket attaches.
+        attachedNotices: (userId) =>
+          (dependencies.agentOperations?.workingIn?.current(userId) ?? []).map((notice) => ({
+            type: "host.agent-working-in" as const,
+            ...notice,
+          })),
         reauthenticate: async () =>
           (
             await dependencies.authenticator.authenticateSessionContext(request.headers, {
@@ -2989,10 +3338,10 @@ function attachBrowserSocket(
     } finally {
       attachment.close();
     }
-  })().catch((error) => closeProtocolSocket(socket, error));
+  })().catch((error) => closeBrowserViewerSocket(socket, error));
 }
 
-function attachRunnerSocket(
+export function attachRunnerSocket(
   socket: WebSocket,
   authenticator: RunnerAuthenticator,
   runners: RunnerRegistry,
@@ -3043,14 +3392,14 @@ function attachRunnerSocket(
       if (socket.readyState === socket.OPEN) socket.close(1009, "runner input queue exceeded");
     }
   });
-  const disconnected = () => {
+  const disconnected = (restarting = false) => {
     releaseChallenge();
     clearTimeout(challengeTimeout);
     inbox.close();
-    runners.disconnect(peer);
+    runners.disconnect(peer, restarting);
   };
-  socket.once("close", disconnected);
-  socket.once("error", disconnected);
+  socket.once("close", (code) => disconnected(code === runnerRestartingCloseCode));
+  socket.once("error", () => disconnected());
   let failed = false;
   const fail = (error: unknown) => {
     if (failed) return;
@@ -3064,6 +3413,10 @@ function attachRunnerSocket(
     );
     releaseChallenge();
     inbox.close(error);
+    // A socket already closing ends with its own close, whose code says whether the Runner is
+    // restarting: a send that failed on it cannot know, and a restart taken for a loss ends the
+    // person's tabs that were reattaching to it.
+    if (socket.readyState !== socket.OPEN) return;
     runners.disconnect(peer);
     closeProtocolSocket(socket, error);
   };
@@ -3282,6 +3635,8 @@ function runnerMessageLane(message: Parameters<RunnerRegistry["handle"]>[1]): st
       return `run:${message.progress.runId}`;
     case "runner.session-bound":
       return `run:${message.runId}`;
+    case "runner.output-image.publish":
+      return "output-images";
     case "runner.command-accepted":
     case "runner.command-rejected":
     case "runner.command-uncertain":
@@ -3310,6 +3665,7 @@ function attachRunnerAuxiliarySocket(options: {
     readonly publicKeyPem: string;
   }[];
   readonly browserRelay: RunnerBrowserHub;
+  readonly refuseLocalMainBrowserRelay?: boolean;
   readonly channels: ChannelService;
   readonly computerApps: ComputerAppHub;
   readonly messagingRelay: MessagingRelayHub;
@@ -3374,17 +3730,18 @@ function attachRunnerAuxiliarySocket(options: {
       if (socket.readyState === socket.OPEN) socket.close(1009, "module input queue exceeded");
     }
   });
-  const disconnected = () => {
+  const disconnected = (restarting = false) => {
     outcome(false, "disconnected-before-authentication");
     release();
     clearTimeout(challengeTimeout);
     inbox.close();
     if (!stream) return;
-    options.runners.detachAuxiliary(peer);
-    dispatch.onDetach("transport-disconnected");
+    const reason = restarting ? "device-restarting" : "transport-disconnected";
+    options.runners.detachAuxiliary(peer, reason);
+    dispatch.onDetach(reason);
   };
-  socket.once("close", disconnected);
-  socket.once("error", disconnected);
+  socket.once("close", (code) => disconnected(code === runnerRestartingCloseCode));
+  socket.once("error", () => disconnected());
   void (async () => {
     await dispatch.send(challenge);
     for await (const item of inbox) {
@@ -3418,6 +3775,25 @@ function attachRunnerAuxiliarySocket(options: {
             return null;
           });
         if (!claims) return;
+        if (
+          module === "browser" &&
+          options.refuseLocalMainBrowserRelay &&
+          options.runners.identityForRunner(claims.runnerId)?.runnerKind === "main"
+        ) {
+          outcome(false, "managed-browser-pool-refuses-local-browser");
+          await dispatch.send({
+            error: {
+              code: "forbidden",
+              message: "This Cloud Computer has its own browser.",
+              retryable: false,
+            },
+            type: "host.auxiliary.rejected",
+          });
+          if (socket.readyState === socket.OPEN) {
+            socket.close(4003, "Managed browser pool refuses local browser relay");
+          }
+          return;
+        }
         stream = options.runners.admitAuxiliary({ claims, module, peer });
         dispatch.onAttach(stream);
         release();
@@ -3463,6 +3839,9 @@ function attachRunnerAuxiliarySocket(options: {
     );
     release();
     inbox.close(error);
+    // As for the Runner's own socket: one already closing ends with its close, whose code says
+    // whether the Runner is restarting.
+    if (socket.readyState !== socket.OPEN) return;
     if (stream) {
       options.runners.detachAuxiliary(peer);
       dispatch.onDetach("transport-disconnected");
@@ -3521,6 +3900,7 @@ function runnerAuxiliaryModuleDispatch(options: {
     readonly publicKeyPem: string;
   }[];
   readonly browserRelay: RunnerBrowserHub;
+  readonly refuseLocalMainBrowserRelay?: boolean;
   readonly channels: ChannelService;
   readonly computerApps: ComputerAppHub;
   readonly messagingRelay: MessagingRelayHub;
@@ -3800,6 +4180,20 @@ function parseFrame(frame: RawData): unknown {
   } catch {
     throw badMessage("WebSocket frame is not valid JSON");
   }
+}
+
+function closeBrowserViewerSocket(socket: WebSocket, error: unknown): void {
+  if (socket.readyState !== socket.OPEN) return;
+  const message = error instanceof Error ? error.message : "Protocol error";
+  // A viewer that arrived while the browser computer was restarting or the
+  // Host was temporarily unavailable did nothing wrong: ask it to try again
+  // rather than ending the watch permanently with a protocol violation.
+  const code =
+    error instanceof OpensteerError &&
+    (error.retryable === true || error.code === "runner_offline" || error.code === "timeout")
+      ? browserViewerCloseCodes.tryAgain
+      : browserViewerCloseCodes.protocolViolation;
+  socket.close(code, message.slice(0, 123));
 }
 
 function closeProtocolSocket(socket: WebSocket, error: unknown): void {

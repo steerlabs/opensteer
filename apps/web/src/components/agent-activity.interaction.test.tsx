@@ -1189,22 +1189,6 @@ it("keeps an edited message's history a click away after a Run took it", async (
     messageKind: "input",
     runId: "run-a",
   } as MessageEntry;
-  const asked: MessageEntry = {
-    author: {
-      actor: "human",
-      displayName: "Maya Chen",
-      kind: "team-member",
-      teamId: "dep_00000000-0000-4000-8000-000000000001",
-      teamUserId: "usr_maya",
-    },
-    body: "Is CI green on main?",
-    createdAt: "2026-08-16T10:00:00.000Z",
-    edit: { ...edit, ownerEdited: true },
-    id: "message-asked",
-    kind: "message",
-    messageKind: "input",
-    runId: "run-a",
-  } as MessageEntry;
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -1214,7 +1198,7 @@ it("keeps an edited message's history a click away after a Run took it", async (
       <MemoryRouter>
         <AgentTranscript
           attachmentReader={client}
-          entries={[own, asked]}
+          entries={[own]}
           threadId="thread-1"
           viewerUserId="me"
         />
@@ -1222,12 +1206,10 @@ it("keeps an edited message's history a click away after a Run took it", async (
     ),
   );
   const marks = [...container.querySelectorAll<HTMLButtonElement>(".waiting__edited")];
-  expect(marks.map((mark) => mark.textContent)).toEqual(["Edited", "edited by you"]);
+  expect(marks.map((mark) => mark.textContent)).toEqual(["Edited"]);
   await act(async () => click(marks[0]));
   expect(listMessageRevisions).toHaveBeenCalledWith("thread-1", "message-own", undefined);
   expect(document.body.textContent).toContain("Check the shard");
-  await act(async () => click(marks[1]));
-  expect(listMessageRevisions).toHaveBeenLastCalledWith("thread-1", "message-asked", undefined);
 });
 
 describe("a message's pages", () => {

@@ -15,6 +15,7 @@ export const smokeConfig = {
     "scripts/editing-engine-journey.ts",
     "scripts/electron-attachment-smoke.ts",
     "scripts/electron-host-transport-smoke.ts",
+    "scripts/electron-leave-home-smoke.ts",
     "scripts/electron-browser-cookie-smoke.ts",
     "scripts/electron-profile-restore-smoke.ts",
     "scripts/electron-browser-focus-smoke.ts",
@@ -26,9 +27,11 @@ export const smokeConfig = {
     "scripts/electron-display-smoke.ts",
     "scripts/electron-passwords-smoke.ts",
     "scripts/electron-quit-smoke.ts",
+    "scripts/electron-menu-bar-smoke.ts",
     "scripts/quit-runner-worker.ts",
     "scripts/harness-owner-smoke.ts",
     "scripts/electron-usb-smoke.ts",
+    "scripts/electron-system-ca-smoke.ts",
   ],
   external: ["electron"],
   banner: {
@@ -36,6 +39,8 @@ export const smokeConfig = {
   },
   format: ["esm"],
   noExternal: [/^@opensteer\//],
+  // Prefix-only builtins (node:sqlite) stop resolving if tsup removes node:.
+  removeNodeProtocol: false,
   // Browser pages load the page policy preload in a sandboxed renderer, which
   // runs CommonJS only; built after the clean so it sits beside the smokes.
   onSuccess: async () => {

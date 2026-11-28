@@ -1,4 +1,3 @@
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,7 +77,6 @@ process.stdin.on("end", () => {
       providerHomeDirectory: join(directory, "profile"),
       store: { directory: join(directory, "store"), id: "test-login" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: AbortSignal.timeout(5_000),
     sourceId: "google",
     workingDirectory: directory,

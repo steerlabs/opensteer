@@ -834,6 +834,56 @@ describe("iPhone screen driver", () => {
     expect(f.bridge.sessions.has(context.sessionId)).toBe(false);
   });
 
+  it.each(["failed", "outcome-unknown", "no-session"] as const)(
+    "reports an iPhone close that returned %s",
+    async (code) => {
+      const f = fixture();
+      const context = f.context();
+      await f.observe(context, observeParams);
+      const reply = vi.fn(async () => {
+        throw new ComputerUseBridgeError(code, "Native close did not answer successfully");
+      });
+      f.bridge.replies.set("iphone.session.close", reply);
+      const close = () => f.connection.close(context, {});
+      if (code === "no-session") await expect(close()).resolves.toEqual({});
+      else await expect(close()).rejects.toMatchObject({ code });
+      expect(reply).toHaveBeenCalledOnce();
+      if (code === "failed") {
+        f.bridge.replies.delete("iphone.session.close");
+        await expect(close()).resolves.toEqual({});
+      } else if (code === "outcome-unknown") {
+        await expect(close()).rejects.toMatchObject({ code });
+        expect(reply).toHaveBeenCalledOnce();
+        const reopen = vi.fn(async () => ({ nativeEpoch: 1 }));
+        f.bridge.replies.set("iphone.session.open", reopen);
+        await expect(f.observe(context, observeParams)).rejects.toMatchObject({
+          code: "no-session",
+        });
+        expect(reopen).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(["failed", "outcome-unknown"] as const)(
+    "preserves %s from the iPhone cancellation that started closing a session",
+    async (code) => {
+      const f = fixture();
+      const context = f.context();
+      await f.observe(context, observeParams);
+      f.bridge.replies.set("iphone.cancel", async () => {
+        throw new ComputerUseBridgeError(code, "Native close did not answer successfully");
+      });
+      const followUp = vi.fn(async () => ({}));
+      f.bridge.replies.set("iphone.session.close", followUp);
+      await expect(f.connection.close(context, {})).rejects.toMatchObject({ code });
+      expect(followUp).not.toHaveBeenCalled();
+      if (code === "outcome-unknown") {
+        await expect(f.connection.close(context, {})).rejects.toMatchObject({ code });
+        expect(followUp).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("orders replacement assignments and withdraws them on detach", async () => {
     const f = fixture();
     const context = f.context();

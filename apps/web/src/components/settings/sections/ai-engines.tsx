@@ -153,6 +153,22 @@ export function installationUpdateLabel(update: HarnessInstallation["update"]): 
   }
 }
 
+/**
+ * The line under an installed engine: how to update one Opensteer cannot
+ * update or whose update failed, and otherwise the Runner's own sentence, such
+ * as Opensteer's own copy running while every copy here is too old.
+ */
+export function installationDetailLine(installation: HarnessInstallation): string | null {
+  const { detail, manualCommand, update } = installation;
+  if (update === "failed" || update === "manual") {
+    const sentence =
+      detail ??
+      (update === "manual" ? "Update this agent on its computer." : "The update did not finish.");
+    return manualCommand ? `${sentence} Run ${manualCommand}.` : sentence;
+  }
+  return update === "succeeded" || update === "updating" ? null : (detail ?? null);
+}
+
 function authKindLabel(authKind: HarnessAuthKind): string {
   switch (authKind) {
     case "subscription":
@@ -308,7 +324,7 @@ export function AiEngineSettings({
       return;
     }
     onError(
-      `${signInAfterCreate.name} isn’t ready: ${placement?.detail ?? "AI engine is unavailable"}`,
+      `${signInAfterCreate.name} isn’t ready: ${placement?.detail ?? "This agent is unavailable"}`,
     );
   }, [client, environments, onAuthenticate, onError, placements, signInAfterCreate]);
 
@@ -882,17 +898,9 @@ export function AiEngineSettings({
                   </button>
                 ) : null}
               </header>
-              {engine.installation &&
-              (engine.installation.update === "failed" ||
-                engine.installation.update === "manual") ? (
+              {engine.installation && installationDetailLine(engine.installation) ? (
                 <p className="settings-engine__update-detail" role="status">
-                  {engine.installation.detail ??
-                    (engine.installation.update === "manual"
-                      ? "Update this engine on its computer."
-                      : "The update did not finish.")}
-                  {engine.installation.manualCommand
-                    ? ` Run ${engine.installation.manualCommand}.`
-                    : ""}
+                  {installationDetailLine(engine.installation)}
                 </p>
               ) : null}
               {engine.profiles.map((profile) =>
@@ -910,8 +918,8 @@ export function AiEngineSettings({
           <div className="card">
             <p className="card__empty">
               {environment.connected
-                ? "This work location has no AI engines installed."
-                : "Reconnect this work location to see its AI engines."}
+                ? "This work location has no agents installed."
+                : "Reconnect this work location to see its agents."}
             </p>
           </div>
         ) : null}
@@ -946,7 +954,7 @@ export function aiEngineAccountFacts({
         // gives; only a source an available engine dropped is worth naming.
         unavailableReason !== null
         ? null
-        : "A source this engine no longer offers here"
+        : "A source this agent no longer offers here"
       : source.kind === "first-party"
         ? null
         : source.kind === "compatible-endpoint" && connection

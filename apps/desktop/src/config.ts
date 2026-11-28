@@ -1,8 +1,8 @@
 import { PasskeysEnvironmentSchema } from "@opensteer/config/passkeys";
 import type { NativeOAuthIdentity } from "@opensteer/client/auth";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
-import { arch as hostArchitecture, platform as hostPlatform } from "node:os";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { arch as hostArchitecture, homedir, platform as hostPlatform } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -31,9 +31,22 @@ export interface DesktopBrowserRuntimeConfig {
 }
 
 export interface DesktopConfiguration {
+  /**
+   * In a development launch only: the one public key (base64 SHA-256 of its SubjectPublicKeyInfo)
+   * the session that talks to the account service accepts for the account host, for a stand-in
+   * account service such as the first-run journey's (`electron-service-network.ts`). Null in a
+   * released app, whatever its environment says.
+   */
+  readonly accountCertificateKey: string | null;
   readonly accountUrl: URL | null;
   readonly browser: DesktopBrowserRuntimeConfig | null;
   readonly dataDirectory: string;
+  /**
+   * Certificate authorities added for Node (`NODE_EXTRA_CA_CERTS`), handed to this Mac's Home and
+   * to nothing else, in a development launch only (the first-run journey's account service is
+   * one). A released app takes none from its environment. Null unless someone set it on purpose.
+   */
+  readonly extraCertificateAuthorities: string | null;
   /** Optional source-build bootstrap Host. Signed installs begin with an empty catalog. */
   readonly hostUrl: URL | null;
   readonly localExecution: DesktopLocalExecutionConfiguration;
@@ -44,6 +57,21 @@ export interface DesktopConfiguration {
   readonly portalUrl: URL | null;
   readonly updates?: DesktopUpdates;
   readonly release: DesktopReleaseIdentity;
+  /** A development launch kept to one folder of its own; null for every other launch. */
+  readonly trial: DesktopTrial | null;
+}
+
+/**
+ * `OPENSTEER_DESKTOP_TRIAL_ROOT`: a source build tried by hand beside an installed Opensteer on
+ * the same Mac. Everything it keeps is under `root`; it uses nothing the installed app owns: not
+ * its data folder or Agent home, not its callback scheme (`oauth-protocol-client.ts`), not the
+ * helpers every Opensteer on a Mac shares with their macOS grants (`desktopNativeHelperPlatform`),
+ * and not the Opensteer account. A released app never reads it.
+ */
+export interface DesktopTrial {
+  readonly agentHome: string;
+  readonly downloads: string;
+  readonly root: string;
 }
 
 export interface DesktopReleaseIdentity {
@@ -65,12 +93,16 @@ export interface DesktopPersonalDeploymentConfiguration {
 
 export interface LoadedDesktopConfiguration {
   readonly config: DesktopConfiguration;
+  /** Values in the environment that the app does not use, each said once in its log. */
+  readonly ignored: readonly { readonly name: string; readonly reason: string }[];
 }
 
 interface ReadDesktopConfigurationOptions {
   readonly appDataDirectory: string;
   readonly defaultMode: DesktopMode;
   readonly environment?: NodeJS.ProcessEnv;
+  /** Where an installed Opensteer keeps its Agent home; the person's home folder by default. */
+  readonly homeDirectory?: string;
   readonly packaged: boolean;
   /** Integrity-protected app code path containing the embedded release policy. */
   readonly releaseManifestPath?: string;
@@ -87,7 +119,10 @@ const EnvironmentSchema = z.object({
   OPENSTEER_DESKTOP_NATIVE_FS_HELPER: z.string().optional(),
   OPENSTEER_DESKTOP_PORTAL_URL: z.string().optional(),
   OPENSTEER_DESKTOP_RUNNER_WORKER: z.string().optional(),
+  OPENSTEER_DESKTOP_TRIAL_ROOT: z.string().optional(),
   OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: z.string().optional(),
+  NODE_EXTRA_CA_CERTS: z.string().optional(),
+  OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY: z.string().optional(),
 });
 
 export function readDesktopConfiguration(
@@ -123,12 +158,20 @@ export function readDesktopConfiguration(
       )
     : undefined;
   const release = packagedDesktop?.release ?? defaultDesktopReleaseIdentity;
-  const dataDirectory = desktopDataDirectory(
-    parsed.OPENSTEER_DESKTOP_DATA_DIR,
-    options.appDataDirectory,
-    mode,
-    release.name,
-  );
+  const trial = options.packaged
+    ? null
+    : desktopTrial(parsed, mode, {
+        appDataDirectory: options.appDataDirectory,
+        homeDirectory: options.homeDirectory ?? homedir(),
+      });
+  const dataDirectory = trial
+    ? path.join(trial.root, "Data")
+    : desktopDataDirectory(
+        parsed.OPENSTEER_DESKTOP_DATA_DIR,
+        options.appDataDirectory,
+        mode,
+        release.name,
+      );
   const configuredHostUrl = optional(parsed.OPENSTEER_DESKTOP_HOST_URL);
   const hostUrl = configuredHostUrl ? hostPageUrl(configuredHostUrl, mode) : null;
   const accountUrlValue = packagedDesktop
@@ -197,20 +240,140 @@ export function readDesktopConfiguration(
     ),
   };
 
+  // Node's own variable: one the app will not pass on is ignored, never a reason not to open. A
+  // released app takes none: any process of the same person can set it (`launchctl setenv`), and
+  // the Home would then trust that authority for every outbound call. As the launch policy refuses
+  // SSLKEYLOGFILE, so this is not a trust input of a released app.
+  const extraAuthoritiesValue = optional(parsed.NODE_EXTRA_CA_CERTS);
+  const extraAuthoritiesIgnored = !extraAuthoritiesValue
+    ? null
+    : options.packaged
+      ? "a released app takes no certificate authority from its environment"
+      : path.isAbsolute(extraAuthoritiesValue)
+        ? null
+        : "not an absolute path, so not passed to this Mac's Home";
+  const extraAuthorities =
+    extraAuthoritiesValue && extraAuthoritiesIgnored === null ? extraAuthoritiesValue : null;
+  const accountKeyValue = optional(parsed.OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY);
+  if (accountKeyValue && !options.packaged && !/^[A-Za-z0-9+/]{43}=$/u.test(accountKeyValue))
+    throw new Error(
+      "OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY must be the base64 SHA-256 of a certificate's public key.",
+    );
+  const accountCertificateKey = accountKeyValue && !options.packaged ? accountKeyValue : null;
+  const ignored = [
+    ...(extraAuthoritiesIgnored === null
+      ? []
+      : [{ name: "NODE_EXTRA_CA_CERTS", reason: extraAuthoritiesIgnored }]),
+    ...(accountKeyValue && options.packaged
+      ? [
+          {
+            name: "OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY",
+            reason: "a released app takes no certificate trust from its environment",
+          },
+        ]
+      : []),
+  ];
   return {
+    ignored,
     config: {
+      accountCertificateKey,
       accountUrl,
       browser,
       dataDirectory,
+      extraCertificateAuthorities: extraAuthorities,
       hostUrl,
       localExecution,
       mode,
       personal,
       portalUrl,
       release,
+      trial,
       ...(packagedDesktop?.updates ? { updates: packagedDesktop.updates } : {}),
     },
   };
+}
+
+function desktopTrial(
+  parsed: z.infer<typeof EnvironmentSchema>,
+  mode: DesktopMode,
+  installed: { readonly appDataDirectory: string; readonly homeDirectory: string },
+): DesktopTrial | null {
+  const value = optional(parsed.OPENSTEER_DESKTOP_TRIAL_ROOT);
+  if (!value) return null;
+  const root = absolutePath(value, "OPENSTEER_DESKTOP_TRIAL_ROOT");
+  if (mode !== "development") {
+    throw new Error("OPENSTEER_DESKTOP_TRIAL_ROOT is for a development launch only.");
+  }
+  for (const name of [
+    "OPENSTEER_DESKTOP_ACCOUNT_URL",
+    "OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY",
+    "OPENSTEER_DESKTOP_DATA_DIR",
+    "OPENSTEER_DESKTOP_HOST_URL",
+    "OPENSTEER_DESKTOP_PORTAL_URL",
+  ] as const) {
+    if (optional(parsed[name])) {
+      throw new Error(
+        `A trial keeps its data under OPENSTEER_DESKTOP_TRIAL_ROOT and the Opensteer account off, so it takes no ${name}.`,
+      );
+    }
+  }
+  const trial: DesktopTrial = {
+    agentHome: path.join(root, "Agent home"),
+    downloads: path.join(root, "Downloads"),
+    root,
+  };
+  // Every folder an installed Opensteer keeps: its data (Beta's name too), its helpers' shared
+  // install roots inside it, and its Agent home.
+  const installedFolders = [
+    path.join(installed.appDataDirectory, "Opensteer"),
+    path.join(installed.appDataDirectory, "Opensteer Beta"),
+    path.join(installed.homeDirectory, "Opensteer"),
+  ].map(resolvedPath);
+  for (const folder of [root, path.join(root, "Data"), trial.agentHome, trial.downloads]) {
+    const resolved = resolvedPath(folder);
+    const shared = installedFolders.find(
+      (installedFolder) => within(resolved, installedFolder) || within(installedFolder, resolved),
+    );
+    if (shared) {
+      throw new Error(
+        `OPENSTEER_DESKTOP_TRIAL_ROOT must not be in, or hold, an installed Opensteer's folder (${folder} meets ${shared}).`,
+      );
+    }
+  }
+  return trial;
+}
+
+/**
+ * The real path, through every link of the part that exists. On a Mac the volume ignores case, so
+ * `~/opensteer` is `~/Opensteer`: paths compare in one case there.
+ */
+function resolvedPath(value: string): string {
+  let existing = path.resolve(value);
+  const rest: string[] = [];
+  while (!existsSync(existing) && path.dirname(existing) !== existing) {
+    rest.unshift(path.basename(existing));
+    existing = path.dirname(existing);
+  }
+  const resolved = path.join(realpathSync.native(existing), ...rest);
+  return hostPlatform() === "darwin" ? resolved.toLowerCase() : resolved;
+}
+
+function within(child: string, parent: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/**
+ * The platform the native helpers are told they run on. A trial runs none of them: the computer
+ * use helper, Opensteer Passwords and Opensteer Dictation each install, listen and keep their
+ * macOS grants inside the installed Opensteer's folder, at paths their Swift code fixes
+ * (`helper-paths.ts`), so a trial must meet them as a computer without them does.
+ */
+export function desktopNativeHelperPlatform(
+  config: Pick<DesktopConfiguration, "trial">,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.Platform {
+  return config.trial ? "linux" : platform;
 }
 
 const NativeOAuthCallbackSchema = z.string().superRefine((value, context) => {
@@ -378,13 +541,19 @@ export function desktopDataDirectory(
   return path.join(appData, name);
 }
 
-/** Source builds must never share Chromium or Keychain identity with a distributable app. */
+/**
+ * Source builds must never share Chromium or Keychain identity with a distributable app, and a
+ * trial not with an ordinary source run either, so what it keeps can be removed on its own.
+ */
 export function desktopApplicationName(
   packaged: boolean,
   releaseName: string,
   mode: DesktopMode = "development",
+  trial = false,
 ): string {
-  return packaged ? releaseName : mode === "test" ? "Opensteer Test" : "Opensteer Development";
+  if (packaged) return releaseName;
+  if (trial) return "Opensteer Trial";
+  return mode === "test" ? "Opensteer Test" : "Opensteer Development";
 }
 
 function nativeCallbackIdentity(url: URL): string {

@@ -31,7 +31,7 @@ type Entry = {
   pending?: Promise<AssetUrl>;
   resolve?: (value: AssetUrl) => void;
 };
-const unavailable: AssetUrl = { status: "unavailable", reason: "missing" };
+const unavailable = { status: "unavailable", reason: "missing" } satisfies AssetUrl;
 const margin = 5 * 60_000;
 const revalidateAfter = 30_000;
 const remountAfter = 2_000;
@@ -174,18 +174,29 @@ export class AssetUrlStore {
     variant: AssetVariant,
     options: AssetReadOptions = {},
   ): Promise<AssetImage | null> {
+    const result = await this.imageResult(deploymentId, threadId, source, variant, options);
+    return result.status === "ok" ? result : null;
+  }
+  async imageResult(
+    deploymentId: string,
+    threadId: string | null,
+    source: AssetSource | string,
+    variant: AssetVariant,
+    options: AssetReadOptions = {},
+  ): Promise<AssetImage | Extract<AssetUrl, { status: "unavailable" }>> {
     const generation = this.#generation;
     const value = await this.get(deploymentId, threadId, source, variant, false, options);
     if (
-      value.status !== "ok" ||
       options.enabled === false ||
       options.signal?.aborted ||
       this.#disposed ||
       generation !== this.#generation
     )
-      return null;
+      return unavailable;
+    if (value.status !== "ok") return value;
     const origin = this.desktop ? "" : await this.route.origin(deploymentId);
-    if (options.signal?.aborted || this.#disposed || generation !== this.#generation) return null;
+    if (options.signal?.aborted || this.#disposed || generation !== this.#generation)
+      return unavailable;
     return { ...value, source: assetImageUrl(deploymentId, value.url, origin, this.desktop) };
   }
   get(

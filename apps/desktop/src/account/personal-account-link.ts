@@ -130,7 +130,7 @@ export class DesktopPersonalAccountLinkCoordinator {
       hostStatus.accountLink,
     );
     if (reconciliation.status === "needs-repair") {
-      throw new Error("This Personal Host's Account link needs repair before it can be changed.");
+      throw new Error("This Home’s account link needs repair before it can be changed.");
     }
     let state = reconciliation.journal ?? emptyPersonalAccountLinkJournal(runtime);
 
@@ -143,7 +143,7 @@ export class DesktopPersonalAccountLinkCoordinator {
         (currentAccount.issuer !== hostStatus.accountLink.issuer ||
           currentAccount.subject !== hostStatus.accountLink.subject)
       ) {
-        throw new Error("Unlink this Personal Host before linking it to another Account.");
+        throw new Error("Unlink this Home before linking it to another Opensteer account.");
       }
       if (hostStatus.accountLink.state === "activating") {
         // The Host resumes activation from its own row, so the journal that
@@ -167,7 +167,9 @@ export class DesktopPersonalAccountLinkCoordinator {
     if (!operation) {
       const accountOrigin = this.#account.accountOrigin;
       if (!accountOrigin) {
-        throw new Error("Opensteer Account linking is unavailable in this Desktop build.");
+        throw new Error(
+          "Linking to an Opensteer account isn’t available in this version of Opensteer.",
+        );
       }
       const operationId =
         state.issueOperationId ??
@@ -235,7 +237,7 @@ export class DesktopPersonalAccountLinkCoordinator {
           refreshed.challengeId !== completion.challengeId ||
           refreshed.linkGeneration !== completion.linkGeneration
         ) {
-          throw new Error("Opensteer Account changed the Host link during recovery.");
+          throw new Error("This Home’s account link changed while Opensteer was repairing it.");
         }
         completion = refreshed;
       }
@@ -297,7 +299,7 @@ export class DesktopPersonalAccountLinkCoordinator {
       status.accountLink,
     );
     if (reconciliation.status === "needs-repair") {
-      throw new Error("This Personal Host's Account link needs repair.");
+      throw new Error("This Home’s account link needs repair.");
     }
     const state = reconciliation.journal;
     if (!state) return null;

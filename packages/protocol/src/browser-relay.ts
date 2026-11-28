@@ -1,3 +1,10 @@
+import {
+  StandardCdpAttemptReconciliationSchema,
+  StandardCdpChunkSchema,
+  StandardCdpLeaseEvidenceSchema,
+  StandardCdpLeaseReconciliationSchema,
+  StandardCdpModeSchema,
+} from "./standard-cdp.js";
 import { encodeFrameEnvelope, decodeFrameEnvelope } from "@opensteer/browser-core/bytes";
 import { IsoDateTimeSchema } from "@opensteer/core";
 import { z } from "zod";
@@ -122,12 +129,19 @@ const HostToBrowserRelayWireSchema = z.discriminatedUnion("type", [
   z.strictObject({ ...relayRequestBase, type: z.literal("browser.health.request") }),
   z.strictObject({
     ...relayRequestBase,
+    type: z.literal("browser.standard-cdp.reconcile"),
+    lease: StandardCdpLeaseReconciliationSchema.optional(),
+    attempt: StandardCdpAttemptReconciliationSchema.optional(),
+  }),
+  z.strictObject({
+    ...relayRequestBase,
     attachTicket: z
       .string()
       .max(16_384)
       .regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/),
     capability: BrowserCapabilityReferenceSchema,
     channelId: BrowserChannelIdSchema,
+    standardCdp: z.literal(1).optional(),
     type: z.literal("browser.attach"),
   }),
   z.strictObject({
@@ -140,7 +154,7 @@ const HostToBrowserRelayWireSchema = z.discriminatedUnion("type", [
     ...relayEventBase,
     capability: BrowserCapabilityReferenceSchema,
     channelId: BrowserChannelIdSchema,
-    message: BrowserClientMessageSchema,
+    message: z.union([BrowserClientMessageSchema, StandardCdpChunkSchema]),
     type: z.literal("browser.client-message"),
   }),
 ]);
@@ -157,6 +171,11 @@ export type RoutedHostToBrowserRelayMessage = Extract<
 >;
 
 const BrowserRelayToHostWireSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...relayRequestBase,
+    ...StandardCdpLeaseEvidenceSchema.shape,
+    type: z.literal("browser.standard-cdp.reconciled"),
+  }),
   LocalProfileInventorySchema,
   LocalProfileDeletionResultSchema,
   RunnerAuxiliaryHeartbeatSchema,
@@ -180,13 +199,14 @@ const BrowserRelayToHostWireSchema = z.discriminatedUnion("type", [
     capability: BrowserCapabilityReferenceSchema,
     channelId: BrowserChannelIdSchema,
     type: z.literal("browser.attached"),
+    standardCdpMode: StandardCdpModeSchema.optional(),
     initialPage: InitialPageReadySchema.optional(),
   }),
   z.strictObject({
     ...relayEventBase,
     capability: BrowserCapabilityReferenceSchema,
     channelId: BrowserChannelIdSchema,
-    message: BrowserRuntimeServerMessageSchema,
+    message: z.union([BrowserRuntimeServerMessageSchema, StandardCdpChunkSchema]),
     type: z.literal("browser.server-message"),
   }),
   z.strictObject({

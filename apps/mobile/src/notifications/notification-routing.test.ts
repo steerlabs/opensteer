@@ -2,13 +2,8 @@ import {
   buildMobileThreadDeepLink,
   buildMobileNeedsYouDeepLink,
   DeploymentIdSchema,
-  TeamChannelIdSchema,
-  TeamMessageIdSchema,
-  TeamNoticeIdSchema,
-  teamPageAppLink,
   ThreadIdSchema,
 } from "@opensteer/core";
-import { teamNotificationDeepLink } from "@opensteer/control-plane-protocol";
 import { RequestIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -28,13 +23,7 @@ const deepLink = buildMobileThreadDeepLink({ deploymentId, requestId, threadId }
 const push = (data: unknown) => ({ data });
 
 describe("notificationThread", () => {
-  it("opens a teammate's ask in the task it waits in, and one without a task in Needs you", async () => {
-    const inTask = buildMobileThreadDeepLink({ deploymentId, requestId: null, threadId });
-    expect(notificationThread(push({ deepLink: inTask, kind: "team-ask" }))).toMatchObject({
-      deploymentId,
-      requestId: null,
-      threadId,
-    });
+  it("opens a Needs you link in Needs you, never in a task", async () => {
     const payload = push({
       deepLink: buildMobileNeedsYouDeepLink(deploymentId),
       threadId,
@@ -149,54 +138,5 @@ describe("dismissThreadNotifications", () => {
     });
 
     expect(dismiss.mock.calls.map(([identifier]) => identifier)).toEqual(["one", "four"]);
-  });
-});
-
-describe("a team's notifications", () => {
-  const origin = "https://chat.acme.example";
-  const channelId = TeamChannelIdSchema.parse("tch_0192f4a1-6666-4000-8000-000000000006");
-  const teamId = DeploymentIdSchema.parse("dep_0192f4a1-5555-4000-8000-000000000005");
-  // The links exactly as the team's push publication writes them.
-  const message = teamNotificationDeepLink({
-    kind: "team-message",
-    origin,
-    teamId,
-    channelId,
-    messageId: TeamMessageIdSchema.parse("42"),
-  });
-  const notice = teamNotificationDeepLink({
-    kind: "team-notice",
-    origin,
-    teamId,
-    noticeId: TeamNoticeIdSchema.parse("tnt_0192f4a1-7777-4000-8000-000000000007"),
-  });
-
-  it("names the team page alone, whatever the payload says beside it", () => {
-    for (const link of [message, notice])
-      expect(
-        notificationThread(push({ deepLink: link, deploymentId, threadId, kind: "x" })),
-      ).toBeNull();
-    expect(
-      notificationThread(
-        push({
-          deepLink: teamPageAppLink({ origin, target: { kind: "channel", channelId } }, "desktop"),
-        }),
-      ),
-    ).toBeNull();
-  });
-
-  it("is presented over an open thread and never cleared by opening one", async () => {
-    const visible = { deploymentId, threadId };
-    expect(shouldPresentNotification(push({ deepLink: message }), visible, true)).toBe(true);
-    const dismiss = vi.fn(async () => undefined);
-    await dismissThreadNotifications({
-      dismiss,
-      presented: async () => [
-        { identifier: "team", payload: push({ deepLink: message }) },
-        { identifier: "thread", payload: push({ deepLink }) },
-      ],
-      visible,
-    });
-    expect(dismiss.mock.calls).toEqual([["thread"]]);
   });
 });

@@ -5,6 +5,7 @@ import {
   accessModeConflict,
   accountGettingReady,
   composerExecutionSelection,
+  isConnectedAgentTask,
   lastExecutionSelection,
   placementForSelection,
   type ExecutionSelection,
@@ -18,6 +19,7 @@ import { Composer, type ComposerSubmission } from "../composer.js";
 import { personalReferenceCandidates } from "../composer-reference-picker.js";
 import { ExecutionControls } from "../execution-controls.js";
 import { UsageNotice } from "../usage-notice.js";
+import { SignInInvite } from "../sign-in-invite.js";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { act, ActionNotDone, failureWords } from "../use-action.js";
@@ -37,7 +39,9 @@ export function HomeRoute() {
     readonly key: number;
     readonly text: string;
   } | null>(null);
-  const firstRun = (snapshot.tasks?.entries.length ?? 0) === 0 && snapshot.activeTasks.length === 0;
+  const firstRun =
+    !(snapshot.tasks?.entries.some(({ thread }) => !isConnectedAgentTask(thread)) ?? false) &&
+    !snapshot.activeTasks.some(({ thread }) => !isConnectedAgentTask(thread));
   return (
     <TasksHome
       agentHome={snapshot.personalSettings?.agentHome.path ?? null}
@@ -319,6 +323,7 @@ function NewTaskComposer({
       ) : null}
       {discardError ? <p role="status">{discardError}</p> : null}
       <UsageNotice placements={placements} returnFocusTo={inputRef} selection={selection} />
+      <SignInInvite />
     </>
   );
 }

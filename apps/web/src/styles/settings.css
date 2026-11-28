@@ -200,6 +200,15 @@
   overflow: hidden;
 }
 
+/* A settings page shown by itself, outside the app shell (a connected agent's
+   approval page): nothing around it has the window's height, so it takes it
+   itself, as `.app-shell` does. Without this the page grows as tall as its
+   content, `.settings-content` has nothing to scroll, and its
+   `overscroll-behavior` keeps the wheel from the document behind it. */
+.settings--alone {
+  height: 100dvh;
+}
+
 .settings-content {
   flex: 1;
   min-width: 0;
@@ -446,7 +455,7 @@
 
 /* Devices → Computers: the same flat groups as every other page. */
 
-/* ---- Use from anywhere ---- */
+/* ---- Remote access ---- */
 
 .settings-remote {
   align-items: flex-start;
@@ -576,72 +585,6 @@
 
 .settings-advanced > .card {
   margin-top: var(--space-4);
-}
-
-/* ---- A team's own pages ---- */
-
-/* One row that scrolls sideways rather than wrapping; the page keeps the current tab in view. */
-.team-settings-nav {
-  display: flex;
-  gap: var(--space-2);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.partner-settings-form {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-12);
-  min-width: 0;
-  padding: var(--space-16);
-}
-
-.partner-settings-form input {
-  width: 100%;
-  min-width: 0;
-}
-
-.partner-settings-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-8);
-}
-
-.partner-settings-entry + .partner-settings-entry {
-  border-top: 1px solid var(--line);
-}
-
-.team-settings-nav::-webkit-scrollbar {
-  display: none;
-}
-
-@media (max-width: 600px) {
-  .team-settings-nav {
-    margin-inline: calc(-1 * var(--space-16));
-    padding-inline: var(--space-16);
-    scroll-padding-inline: var(--space-16);
-  }
-}
-
-.team-settings-nav__link {
-  flex: none;
-  white-space: nowrap;
-  padding: var(--space-4) var(--space-10);
-  border-radius: var(--radius-xs);
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
-.team-settings-nav__link:hover {
-  color: var(--text);
-  text-decoration: none;
-  background: var(--fill-quiet);
-}
-
-.team-settings-nav__link[aria-current="page"] {
-  background: var(--fill-plate-hover);
-  color: var(--text);
 }
 
 /* ---- Native window chrome ---- */
@@ -1094,15 +1037,18 @@ button.card__row > .card__row-body {
 .settings-messaging-row .card__row-title {
   flex-wrap: wrap;
 }
+/* An account's name is drawn whole, never cut: an address name wraps at its joints. */
 .settings-messaging-row .card__row-title > a {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: break-word;
 }
+/* Its sentences are read whole: a paused note or what the account reports is never cut. */
 .settings-messaging-row .card__row-detail {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  /* break-word, not anywhere: a row never shrinks to its narrowest part and splits an address. */
+  overflow-wrap: break-word;
+  text-overflow: clip;
+  white-space: normal;
 }
 .settings-messaging-row .card__row-actions {
   gap: var(--space-4);
@@ -1208,13 +1154,15 @@ button.card__row > .card__row-body {
 }
 
 /* Agent consent: where access goes, then the four access modes as one card of choices. */
-.agent-consent fieldset {
+.agent-consent fieldset,
+.settings-content__inner fieldset.settings-group {
   min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
 }
-.agent-consent legend {
+.agent-consent legend,
+.settings-content__inner fieldset.settings-group > legend {
   padding: 0;
   margin-bottom: var(--space-8);
 }
@@ -1225,6 +1173,14 @@ button.card__row > .card__row-body {
   margin: 0;
   color: var(--text-soft);
   font-size: var(--text-lg);
+}
+.agent-consent__claim {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .agent-consent__where svg {
   flex: none;
@@ -1240,6 +1196,233 @@ button.card__row > .card__row-body {
   flex: none;
   margin: 0;
   accent-color: var(--ember);
+}
+
+/* A connected agent's mark: its provider's logo when its origin is proven, its initial otherwise. */
+.settings-layout .card__row-glyph.agent-mark {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+  background: var(--sheen) var(--surface-raised);
+  box-shadow: var(--edge-plate);
+  color: var(--text);
+  font-weight: var(--weight-bold);
+}
+.agent-mark .provider-logo {
+  width: 18px;
+  height: 18px;
+}
+.settings-layout .card__row-glyph.agent-mark--large {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  font-size: var(--display-sm);
+}
+.agent-mark--large .provider-logo {
+  width: 24px;
+  height: 24px;
+}
+.agent-consent__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+}
+.agent-consent__identity .settings-section__header {
+  margin: 0;
+}
+.agent-consent__where .agent-consent__verified {
+  color: var(--green);
+}
+.agent-consent__handoff {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+  margin-top: var(--space-12);
+}
+.agent-consent__qr {
+  flex: none;
+  width: 120px;
+  height: 120px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+}
+
+/* What an agent can use: each list opens in place under its row. */
+.agent-grant__list {
+  gap: var(--space-12);
+}
+.agent-grant__option {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+.agent-grant__option .settings-segmented,
+.agent-grant__keep {
+  align-self: flex-start;
+  margin-left: var(--space-28);
+}
+.agent-grant__keep .select-input {
+  min-width: 220px;
+}
+.agent-grant__check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  min-width: 0;
+}
+label.agent-grant__check {
+  cursor: pointer;
+}
+.agent-grant__check > input[type="checkbox"]:not(.switch) {
+  flex: none;
+  margin: 0;
+  accent-color: var(--ember);
+}
+.agent-grant__check .card__row-title .chip {
+  font-weight: var(--weight-strong);
+}
+.agent-grant__plugin {
+  flex-wrap: wrap;
+}
+.agent-grant__plugin .card__row-body {
+  flex: 1 1 160px;
+}
+.agent-grant__plugin .settings-segmented {
+  flex: none;
+}
+.agent-grant__plugin .settings-segmented > button {
+  white-space: nowrap;
+}
+.agent-grant__empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+}
+.agent-grant__empty .card__row-body {
+  flex: 1;
+}
+.agent-grant__list .settings-footnote {
+  margin: 0;
+}
+.agent-grant__warning {
+  color: var(--red-text);
+}
+.agent-grant__caution {
+  color: var(--amber-text);
+}
+
+/* Connected agents: one row per agent, opening its page. */
+.connected-agents__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.connected-agents__list > li + li {
+  border-top: 1px solid var(--line);
+}
+.connected-agents__row {
+  color: inherit;
+  text-decoration: none;
+}
+a.connected-agents__row:hover {
+  background: var(--fill-quiet);
+  text-decoration: none;
+}
+a.connected-agents__row:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: -2px;
+}
+.connected-agents__row .connected-agents__line--attention {
+  color: var(--amber-text);
+}
+.connected-agents__chevron {
+  color: var(--muted);
+}
+.connected-agent__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  align-self: flex-start;
+}
+/* On touch the link keeps its drawn size; only its hit area grows to a finger. */
+@media (any-pointer: coarse) {
+  .connected-agent__back {
+    position: relative;
+  }
+  .connected-agent__back::after {
+    position: absolute;
+    inset: -9px -6px;
+    content: "";
+  }
+}
+.connected-agent__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+}
+.connected-agent__header .settings-section__title {
+  flex: 1;
+  min-width: 0;
+}
+.connected-agent__status {
+  align-items: flex-start;
+}
+.connected-agent__status > .status-dot {
+  margin-top: var(--space-6);
+}
+.connected-agent__status-label {
+  display: block;
+  color: var(--text);
+  font-weight: var(--weight-strong);
+}
+.connected-agent__status-detail {
+  display: block;
+}
+.connected-agent__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin: var(--space-10) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.connected-agent__steps li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--muted);
+}
+.connected-agent__steps li > span {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--rim-control);
+  border-radius: var(--radius-full);
+}
+.connected-agent__steps li[data-state="done"] {
+  color: var(--text-soft);
+}
+.connected-agent__steps li[data-state="done"] svg {
+  width: 14px;
+  height: 14px;
+  color: var(--green);
+}
+.connected-agent__steps li[data-state="current"] {
+  color: var(--text);
+}
+.connected-agent__steps li[data-state="current"] > span {
+  border-color: var(--ember);
+}
+.connected-agent__uncertain {
+  border-color: var(--amber-line);
+  background-color: var(--amber-wash);
+  color: var(--amber-text);
+}
+.connected-agent__uncertain strong {
+  color: var(--amber);
+}
+.connected-agent__end {
+  margin-top: var(--space-10);
 }
 
 /* External agent setup: the address under its step, and the one live line under the steps. */
@@ -1259,4 +1442,229 @@ button.card__row > .card__row-body {
   width: 16px;
   height: 16px;
   color: var(--green);
+}
+
+/* ---- Who a connected agent is: verified, or the name it gave itself ---- */
+
+.agent-who {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  margin: 0;
+}
+
+.agent-who__icon {
+  flex: none;
+  margin-top: var(--space-2);
+  color: var(--muted);
+}
+
+.agent-who--verified .agent-who__icon {
+  color: var(--green);
+}
+
+.agent-who__text {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.agent-who__name {
+  color: var(--text);
+}
+
+.agent-who__claim {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-who__detail {
+  /* Its origin wraps at its own joints (`Address`), never anywhere inside a host. */
+  overflow-wrap: break-word;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.agent-who__withdrawn {
+  color: var(--amber-text);
+  font-size: var(--text-sm);
+}
+
+.agent-who__notice {
+  display: grid;
+  gap: var(--space-6);
+  justify-items: start;
+}
+
+.agent-who__notice p {
+  margin: 0;
+}
+
+.agent-who__notice-title {
+  font-weight: 600;
+}
+
+.agent-consent__warning {
+  margin: 0;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.devices__add {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+
+/* The Messaging overview's one switch for its controls: no frame of its own. */
+.messaging-overview {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+/*
+ * Who "me" is and the code that links it: the sentence keeps a readable measure, and on a narrow
+ * screen Copy and Link go under it instead of squeezing it to a few words a line.
+ */
+.card__row.messaging-me {
+  flex-wrap: wrap;
+}
+.messaging-me > .card__row-body {
+  flex: 1 1 18rem;
+}
+
+/* A page's body while its last read failed (`ReadGate`): a plain group, disabled. */
+.read-gate {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.connected-agents__work {
+  flex: none;
+  white-space: nowrap;
+}
+
+[aria-labelledby="connected-agent-now"],
+[aria-labelledby="connected-agent-earlier"] {
+  margin-block: var(--space-12);
+}
+
+.connected-agent__session {
+  padding: var(--space-12) var(--space-16);
+}
+
+.connected-agent__session + .connected-agent__session {
+  border-top: 1px solid var(--line);
+}
+
+.connected-agent__session-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-8);
+  margin-block-end: var(--space-8);
+}
+
+.connected-agent__session-summary {
+  flex: 1;
+  min-width: min(9rem, 100%);
+  overflow-wrap: anywhere;
+}
+
+.connected-agent__session-title {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.connected-agent__session-place {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.connected-agent__session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.connected-agent__session .session-activity {
+  margin-block: var(--space-8) 0;
+}
+
+.connected-agent__session .session-op__body {
+  overflow-wrap: anywhere;
+}
+
+.connected-agent__session .request-stack {
+  margin-block-start: var(--space-8);
+}
+
+.connected-agent__history-day + .connected-agent__history-day {
+  border-top: 1px solid var(--line);
+}
+
+.connected-agent__history-day h3 {
+  margin: 0;
+  padding: var(--space-8) var(--space-16) var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.connected-agent__history-row {
+  text-align: start;
+  width: 100%;
+}
+
+.connected-agent__history-row:hover {
+  background-color: var(--fill-quiet);
+}
+
+.connected-agent__history-row .card__row-detail {
+  overflow-wrap: anywhere;
+}
+
+.connected-agent__history-row > time,
+.connected-agent__history-row > .icon {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.connected-agent__show-earlier {
+  margin: var(--space-8) var(--space-16);
+}
+
+/* The problem report: what this Home sends, field by field, then exactly as sent. */
+.problem-report {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+}
+.problem-report > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.problem-report dt {
+  color: var(--text-soft);
+}
+.problem-report dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.problem-report__exact {
+  max-height: 240px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

@@ -299,6 +299,8 @@ class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoVi
   }
   private val showing get() = attached && visible && !destroyed
   fun clear(generation: Int) {
+    // Stale: this view already took a newer generation from a picture. Its picture stays.
+    if (generation < queue.generation) return
     queue.clear(generation)
     picture.show(null, null)
   }
@@ -314,6 +316,8 @@ class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoVi
   fun present(bytes: ByteArray, request: PictureRequest, settle: (PictureOutcome) -> Unit) {
     val receipt = PictureReceipt(settle)
     if (!showing) { receipt(PictureOutcome.DROPPED); return }
+    // A newer generation than the view was told: take it, pixels and all, as its clear would have.
+    if (request.generation > queue.generation) clear(request.generation)
     queue.submit(request, bytes, receipt)?.let(::decode)
   }
   private fun decode(job: PictureQueue.Job<ByteArray>) {

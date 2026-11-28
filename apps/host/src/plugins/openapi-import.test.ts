@@ -59,7 +59,7 @@ it.each([
   const result = await Effect.runPromise(
     openapiImport(
       "Example",
-      origin,
+      new URL(origin),
       {
         ...description,
         paths: { "/secured": { get: { responses, security: [{ [scheme]: [] }] } } },
@@ -78,7 +78,7 @@ it("reports operations on other origins in a partial install", async () => {
   const result = await Effect.runPromise(
     openapiImport(
       "Example",
-      origin,
+      new URL(origin),
       {
         ...description,
         paths: {

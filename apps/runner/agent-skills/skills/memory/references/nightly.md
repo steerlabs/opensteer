@@ -24,9 +24,7 @@ Then read everything since, in full, investigating however you judge useful. Rea
 wake lists, Voice included, with `opensteer_task_read`, newest first: follow `nextCursor` until you
 reach messages before its first new one, and read clipped items whole by `itemId`. If the wake says
 there are more, page `opensteer_task_list` as it says. A task's report is
-no substitute for what the person said. A message from a team carries
-`teamSource`: keep its channel and audience beside every memory taken from it, and leave shared
-team facts to team knowledge. Read the light pass's history for today
+no substitute for what the person said. Read the light pass's history for today
 (its worker is the `taskId` of the `memory-light` automation in `opensteer_automation_list`): what
 it raised, what the person answered or dismissed. Read the owner's mail plugins and device
 Messages, Calendar and Reminders from where your last handoff stopped. Find read tools with

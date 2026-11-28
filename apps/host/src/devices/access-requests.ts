@@ -32,12 +32,9 @@ import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
 import type { DeviceService } from "./device-service.js";
 
-export type AccessRequestOrigin = Exclude<
-  RequestOriginInput,
-  { originatingWatchActivationId: string }
->;
+export type AccessRequestOrigin = RequestOriginInput;
 
-/** A Run or Trigger occurrence can ask for durable access. */
+/** A Run, Trigger occurrence, or Watch can ask for durable access. */
 export interface AccessAsker {
   readonly origin: AccessRequestOrigin;
   readonly callId: string;

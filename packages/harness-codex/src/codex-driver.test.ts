@@ -20,10 +20,12 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import {
+  createToolArguments,
   heldToolCallTimeoutMs,
   ModelSelectionSchema,
   createId,
   harnessUsageLimitFailureCode,
+  requestOptionDeclines,
   toolOutputTextMaxBytes,
   utf8ByteLength,
   voiceCallSeed,
@@ -32,8 +34,6 @@ import {
 } from "@opensteer/core";
 import {
   Deferred,
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
   threadTitlePrompt,
   type HarnessAdapter,
   type HarnessEvent,
@@ -47,16 +47,21 @@ import {
   type SupervisedProcess,
 } from "@opensteer/harness";
 import { accountWideLimitActive } from "@opensteer/protocol";
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexHarnessDriver, codexAccessModeConfiguration } from "./index.js";
+import {
+  CodexHarnessDriver,
+  codexAccessModeConfiguration,
+  codexOthersHomeDirectory,
+} from "./index.js";
 import { CodexHarnessConfigSchema, MINIMUM_CODEX_CLI_VERSION } from "./config.js";
+import { CodexStdioClient } from "./process.js";
 
 // A Run outside any task with nothing earlier to state, for a person whose
 // time zone is unknown: its thread context is one fixed line, so these turns
 // carry exactly that context and the inputs and reports each test names.
 const noThreadContext = {
   assignment: null,
-  teamTurnContext: null,
   threadState: { previousAssignment: null, previousRun: null },
   startedAt: "2026-08-22T00:00:00.000Z",
 };
@@ -103,6 +108,7 @@ describe("Codex app-server harness", () => {
       }
       await execution;
       await session.stop();
+      await observer.done;
       const completed = observer.events.filter((event) => event.type === "tool.completed");
       expect(completed).toHaveLength(kind === "duplicate-path" ? 2 : 1);
       const failure = ["failed", "usage", "stop", "cancelled"].includes(kind);
@@ -130,6 +136,30 @@ describe("Codex app-server harness", () => {
       expect(JSON.stringify(observer.events)).not.toMatch(
         /SECRET_BASE64_IMAGE_BYTES|opaque-file-id/,
       );
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("emits run.interrupted when Stop cancels native image generation before a crossing turn/completed arrives", async () => {
+    const fixture = await setup("image-stop-before-completed");
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      const execution = session.execute(fixture.turn("Draw a tree"));
+      await observer.waitFor("assistant.message");
+      await session.interrupt();
+      await execution;
+      await session.stop();
+      await observer.done;
+      const completed = observer.events.filter((event) => event.type === "tool.completed");
+      expect(completed).toHaveLength(1);
+      expect(completed[0]?.data.isError).toBe(true);
+      const terminal = observer.events.findIndex((event) => event.type === "run.interrupted");
+      expect(terminal).toBeGreaterThan(
+        observer.events.findIndex((event) => event.type === "tool.completed"),
+      );
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(false);
     } finally {
       await fixture.adapter.close();
     }
@@ -189,111 +219,105 @@ describe("Codex app-server harness", () => {
     }
   });
 
-  it.each([nativeUserHarnessRuntimeBoundary, isolatedServiceHarnessRuntimeBoundary])(
-    "runs realtime on the Run thread at $kind with no seed turn",
-    async (runtimeBoundary) => {
-      const fixture = await setup("voice-run", {
-        runtimeBoundary,
-        accessMode: "auto-accept-edits",
+  it("runs realtime on the Run thread with no seed turn", async () => {
+    const fixture = await setup("voice-run", {
+      accessMode: "auto-accept-edits",
+    });
+    const offer = new Deferred<string>(),
+      answer = new Deferred<string>();
+    const lifetime = new AbortController();
+    const spoken: string[] = [];
+    let writer:
+      { speak(text: string): Promise<void>; note(text: string): Promise<void> } | undefined;
+    const call = {
+      offer: offer.promise,
+      signal: lifetime.signal,
+      answer: (sdp: string) => answer.resolve(sdp),
+      connect: (value: typeof writer) => {
+        writer = value;
+      },
+      speak: async (_id: string, text: string) => {
+        spoken.push(text);
+        await writer!.speak(text);
+      },
+      end: () => lifetime.abort(),
+    };
+    const session = await fixture.adapter.startSession({ ...fixture.context, voiceCall: call });
+    const events: HarnessEvent[] = [];
+    const consume = (async () => {
+      for await (const event of session.events) events.push(event);
+    })();
+    const execution = session.execute(fixture.turn(voiceCallSeed));
+    try {
+      offer.resolve("private-offer");
+      await vi.waitFor(() => expect(answer.promise).resolves.toBe("fake-answer"), {
+        timeout: 2000,
       });
-      const offer = new Deferred<string>(),
-        answer = new Deferred<string>();
-      const lifetime = new AbortController();
-      const spoken: string[] = [];
-      let writer:
-        { speak(text: string): Promise<void>; note(text: string): Promise<void> } | undefined;
-      const call = {
-        offer: offer.promise,
-        signal: lifetime.signal,
-        answer: (sdp: string) => answer.resolve(sdp),
-        connect: (value: typeof writer) => {
-          writer = value;
-        },
-        speak: async (_id: string, text: string) => {
-          spoken.push(text);
-          await writer!.speak(text);
-        },
-        end: () => lifetime.abort(),
-      };
-      const session = await fixture.adapter.startSession({ ...fixture.context, voiceCall: call });
-      const events: HarnessEvent[] = [];
-      const consume = (async () => {
-        for await (const event of session.events) events.push(event);
-      })();
-      const execution = session.execute(fixture.turn(voiceCallSeed));
-      try {
-        offer.resolve("private-offer");
-        await vi.waitFor(() => expect(answer.promise).resolves.toBe("fake-answer"), {
-          timeout: 2000,
-        });
-        await vi.waitFor(() =>
-          expect(
-            events.flatMap((event) => (event.type === "voice.heard" ? [event.data.text] : [])),
-          ).toEqual(["user words"]),
-        );
-        // A failed turn is spoken as such and leaves the call up.
-        await vi.waitFor(
-          () =>
-            expect(spoken).toEqual([
-              "first answer",
-              "second answer",
-              "Sorry, that didn't go through.",
+      await vi.waitFor(() =>
+        expect(
+          events.flatMap((event) => (event.type === "voice.heard" ? [event.data.text] : [])),
+        ).toEqual(["user words"]),
+      );
+      // A failed turn is spoken as such and leaves the call up.
+      await vi.waitFor(
+        () =>
+          expect(spoken).toEqual([
+            "first answer",
+            "second answer",
+            "Sorry, that didn't go through.",
+          ]),
+        { timeout: 2000 },
+      );
+      expect(lifetime.signal.aborted).toBe(false);
+      expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(0);
+      // The failed turn's open streams are settled, so nothing it began still looks live.
+      await vi.waitFor(
+        () =>
+          expect(events).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                type: "assistant.message",
+                data: expect.objectContaining({
+                  content: [{ text: "Let me che", type: "text" }],
+                }),
+              }),
+              expect.objectContaining({
+                type: "reasoning.completed",
+                data: { blockId: "thought-v3", text: "Looking" },
+              }),
+              expect.objectContaining({
+                type: "tool.completed",
+                data: expect.objectContaining({ callId: "tool-v3", isError: true }),
+              }),
             ]),
-          { timeout: 2000 },
-        );
-        expect(lifetime.signal.aborted).toBe(false);
-        expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(0);
-        // The failed turn's open streams are settled, so nothing it began still looks live.
-        await vi.waitFor(
-          () =>
-            expect(events).toEqual(
-              expect.arrayContaining([
-                expect.objectContaining({
-                  type: "assistant.message",
-                  data: expect.objectContaining({
-                    content: [{ text: "Let me che", type: "text" }],
-                  }),
-                }),
-                expect.objectContaining({
-                  type: "reasoning.completed",
-                  data: { blockId: "thought-v3", text: "Looking" },
-                }),
-                expect.objectContaining({
-                  type: "tool.completed",
-                  data: expect.objectContaining({ callId: "tool-v3", isError: true }),
-                }),
-              ]),
-            ),
-          { timeout: 2000 },
-        );
-        const captured = await fixture.capture();
-        expect(captured.some((r) => r.method === "turn/start")).toBe(false);
-        const start = captured.find((r) => r.method === "thread/start")!.params as JsonRecord;
-        expect(start).toMatchObject({
-          approvalPolicy: "on-request",
-          model: "gpt-5.6-sol",
-          developerInstructions: expect.stringContaining("workspace instructions"),
-        });
-        expect(start.config).toMatchObject({ model_reasoning_effort: "low" });
-        if (runtimeBoundary.kind === "native-user")
-          expect(start).toMatchObject({
-            sandbox: "workspace-write",
-            config: { sandbox_workspace_write: { writable_roots: fixture.context.writableRoots } },
-          });
-        else expect(start.permissions).toBeTruthy();
-      } finally {
-        lifetime.abort();
-        await execution;
-        await session.stop();
-        await consume;
-        await fixture.adapter.close();
-      }
-      expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(1);
+          ),
+        { timeout: 2000 },
+      );
       const captured = await fixture.capture();
-      expect(captured.filter((r) => r.method === "thread/realtime/stop")).toHaveLength(1);
-      expect(captured.some((r) => r.method === "turn/interrupt")).toBe(true);
-    },
-  );
+      expect(captured.some((r) => r.method === "turn/start")).toBe(false);
+      const start = captured.find((r) => r.method === "thread/start")!.params as JsonRecord;
+      expect(start).toMatchObject({
+        approvalPolicy: "on-request",
+        model: "gpt-5.6-sol",
+        developerInstructions: expect.stringContaining("workspace instructions"),
+      });
+      expect(start.config).toMatchObject({ model_reasoning_effort: "low" });
+      expect(start).toMatchObject({
+        sandbox: "workspace-write",
+        config: { sandbox_workspace_write: { writable_roots: fixture.context.writableRoots } },
+      });
+    } finally {
+      lifetime.abort();
+      await execution;
+      await session.stop();
+      await consume;
+      await fixture.adapter.close();
+    }
+    expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(1);
+    const captured = await fixture.capture();
+    expect(captured.filter((r) => r.method === "thread/realtime/stop")).toHaveLength(1);
+    expect(captured.some((r) => r.method === "turn/interrupt")).toBe(true);
+  });
 
   it("keeps a call's context out of a running turn, so its reply is still spoken", async () => {
     const fixture = await setup("voice-note", { accessMode: "auto-accept-edits" });
@@ -517,14 +541,9 @@ describe("Codex app-server harness", () => {
     ).rejects.toThrow();
   });
 
-  it.each([
-    ["approval-required", "opensteer_read_only"],
-    ["auto-accept-edits", "opensteer_workspace_write"],
-    ["auto", "opensteer_workspace_write"],
-    ["full-access", "opensteer_full_access"],
-  ] as const)(
-    "isolates Codex provider state and selects native permissions for %s",
-    async (accessMode, permissionProfile) => {
+  it.each(["approval-required", "auto-accept-edits", "auto", "full-access"] as const)(
+    "keeps an isolated profile's Codex state in its own home and runs %s under Codex's own sandbox",
+    async (accessMode) => {
       const fixture = await setup("reasoning", {
         accessMode,
         additionalWritableRoot: "attached-workspace",
@@ -532,10 +551,11 @@ describe("Codex app-server harness", () => {
           CODEX_HOME: "/ambient/codex-home",
           CODEX_SQLITE_HOME: "/ambient/codex-sqlite",
         },
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
+        providerStateKind: "isolated",
+        sharedEngine: false,
       });
       const session = await fixture.adapter.startSession(fixture.context);
-      await session.execute(fixture.turn("Check the isolated boundary"));
+      await session.execute(fixture.turn("Check the sandbox"));
       await session.stop();
 
       const captured = await fixture.capture();
@@ -543,102 +563,35 @@ describe("Codex app-server harness", () => {
         ?.fakeCodexProcess as JsonRecord | undefined;
       const expectedCodexHome = fixture.context.providerState.providerHomeDirectory;
       if (!expectedCodexHome) throw new Error("Expected an isolated Codex home");
-      const expectedSqliteHome = join(expectedCodexHome, "sqlite");
       expect(processBoundary?.environment).toEqual({
         CODEX_HOME: expectedCodexHome,
-        CODEX_SQLITE_HOME: expectedSqliteHome,
+        CODEX_SQLITE_HOME: join(expectedCodexHome, "sqlite"),
       });
       const argv = processBoundary?.argv as unknown[] | undefined;
       expect(argv).toEqual(expect.arrayContaining(["app-server", "--stdio"]));
-      expect(argv).toContain('default_permissions="opensteer_read_only"');
-      const profileDefinitions = (argv ?? []).filter(
-        (argument): argument is string =>
-          typeof argument === "string" && argument.startsWith("permissions.opensteer_"),
-      );
-      expect(profileDefinitions).toHaveLength(3);
-      for (const definition of profileDefinitions) {
-        expect(definition).toContain(
-          `${JSON.stringify(fixture.context.providerState.privateStateRoot)}="deny"`,
-        );
-        // The store is already denied by its parent. Emitting both makes
-        // bubblewrap mask the parent read-only before mounting the child.
-        expect(definition).not.toContain(
-          `${JSON.stringify(fixture.context.providerState.store.directory)}="deny"`,
-        );
-        // This fixture keeps SQLite outside the private root, so its independent
-        // deny must survive the redundant-descendant reduction.
-        expect(definition).toContain(`${JSON.stringify(expectedSqliteHome)}="deny"`);
-        expect(definition).not.toContain("/tmp/arg0");
-      }
-      const workspaceWriteProfile = profileDefinitions.find((definition) =>
-        definition.startsWith("permissions.opensteer_workspace_write"),
-      );
-      const fullAccessProfile = profileDefinitions.find((definition) =>
-        definition.startsWith("permissions.opensteer_full_access"),
-      );
-      for (const root of fixture.context.writableRoots) {
-        expect(workspaceWriteProfile).toContain(`${JSON.stringify(root)}="write"`);
-        expect(fullAccessProfile).toContain(`${JSON.stringify(root)}="write"`);
-      }
-      expect(fullAccessProfile).toContain('extends=":workspace"');
-      expect(fullAccessProfile).toContain("network={enabled=true}");
-      expect(fullAccessProfile).not.toContain(":root");
-      expect(fullAccessProfile).toContain(
-        `${JSON.stringify(fixture.context.providerState.privateStateRoot)}="deny"`,
-      );
-      expect(fullAccessProfile).toContain(`${JSON.stringify(expectedSqliteHome)}="deny"`);
-      expect(captured.find((message) => message.method === "thread/start")).toMatchObject({
-        params: { permissions: permissionProfile },
-      });
       expect(
-        captured.find((message) => message.method === "thread/start")?.params,
-      ).not.toHaveProperty("sandbox");
-      expect(captured.find((message) => message.method === "turn/start")).toMatchObject({
-        params: { permissions: permissionProfile },
+        (argv ?? []).some(
+          (argument) =>
+            typeof argument === "string" &&
+            (argument.startsWith("permissions.") || argument.startsWith("default_permissions=")),
+        ),
+      ).toBe(false);
+      const threadStart = captured.find((message) => message.method === "thread/start");
+      expect(threadStart).toMatchObject({ params: { sandbox: "read-only" } });
+      expect(threadStart?.params).not.toHaveProperty("permissions");
+      const turnStart = captured.find((message) => message.method === "turn/start");
+      expect(turnStart).toMatchObject({
+        params: {
+          sandboxPolicy: codexAccessModeConfiguration(accessMode, fixture.context.writableRoots)
+            .sandboxPolicy,
+        },
       });
-      expect(
-        captured.find((message) => message.method === "turn/start")?.params,
-      ).not.toHaveProperty("sandboxPolicy");
+      expect(turnStart?.params).not.toHaveProperty("permissions");
       await fixture.adapter.close();
     },
   );
 
-  it("emits one outer deny for production-shaped isolated Codex state", async () => {
-    const fixture = await setup("reasoning", {
-      accessMode: "auto",
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    });
-    const privateStateRoot = fixture.context.providerState.privateStateRoot;
-    const providerHomeDirectory = join(
-      privateStateRoot,
-      "harness-profiles",
-      "isolated",
-      "provider-home",
-    );
-    const providerState = { ...fixture.context.providerState, providerHomeDirectory };
-    const session = await fixture.adapter.startSession({ ...fixture.context, providerState });
-    await session.execute(fixture.turn("Check the production-shaped isolated boundary"));
-    await session.stop();
-
-    const captured = await fixture.capture();
-    const processBoundary = captured.find((message) => message.fakeCodexProcess)
-      ?.fakeCodexProcess as JsonRecord | undefined;
-    const profileDefinitions = ((processBoundary?.argv as unknown[] | undefined) ?? []).filter(
-      (argument): argument is string =>
-        typeof argument === "string" && argument.startsWith("permissions.opensteer_"),
-    );
-    expect(profileDefinitions).toHaveLength(3);
-    for (const definition of profileDefinitions) {
-      expect(definition).toContain(`${JSON.stringify(privateStateRoot)}="deny"`);
-      expect(definition).not.toContain(`${JSON.stringify(providerState.store.directory)}="deny"`);
-      expect(definition).not.toContain(
-        `${JSON.stringify(join(providerHomeDirectory, "sqlite"))}="deny"`,
-      );
-    }
-    await fixture.adapter.close();
-  });
-
-  it("replays the model's command sandbox for a Run, and none at native full access", async () => {
+  it("replays the model's command sandbox for a Run, and none at full access", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-model-command-"));
     temporaryDirectories.push(directory);
     const driver = new CodexHarnessDriver({ launch: fakeLaunch() });
@@ -654,19 +607,21 @@ describe("Codex app-server harness", () => {
     };
 
     const wrapIsolated = await driver.modelCommandLaunch({
-      accessMode: "full-access",
+      accessMode: "auto",
       environment: { PATH: "/usr/bin" },
       providerState: isolated,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       workspacePath: directory,
       writableRoots: [directory],
     });
     const replayed = wrapIsolated(command);
     expect(replayed.executable).toBe(process.execPath);
-    expect(replayed.args).toContain('default_permissions="opensteer_full_access"');
+    expect(replayed.args).toContain('sandbox_mode="workspace-write"');
     expect(
-      replayed.args.some((argument) => argument.startsWith("permissions.opensteer_full_access=")),
-    ).toBe(true);
+      replayed.args.some(
+        (argument) =>
+          argument.startsWith("permissions.") || argument.startsWith("default_permissions="),
+      ),
+    ).toBe(false);
     const separator = replayed.args.indexOf("--");
     expect(replayed.args[separator - 1]).toBe("sandbox");
     expect(replayed.args.slice(separator + 1)).toEqual(["/opt/helper", ...command.args]);
@@ -674,22 +629,33 @@ describe("Codex app-server harness", () => {
     expect(replayed.environment.CODEX_HOME).toBe(isolated.providerHomeDirectory);
     expect(replayed.environment.PATH).toBe("/launch/bin:/usr/bin");
 
-    const wrapNative = await driver.modelCommandLaunch({
+    const readOnly = (
+      await driver.modelCommandLaunch({
+        accessMode: "approval-required",
+        environment: { PATH: "/usr/bin" },
+        providerState: isolated,
+        workspacePath: directory,
+        writableRoots: [directory],
+      })
+    )(command);
+    expect(readOnly.args).toContain('sandbox_mode="read-only"');
+
+    const wrapFullAccess = await driver.modelCommandLaunch({
       accessMode: "full-access",
       environment: { PATH: "/usr/bin" },
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       workspacePath: directory,
       writableRoots: [directory],
     });
-    expect(wrapNative(command)).toEqual(command);
+    expect(wrapFullAccess(command)).toEqual(command);
   });
 
   it("wraps the Run's app-server launch and nothing the Runner runs for itself", async () => {
     const sandboxMarker = "opensteer_sandbox_probe=true";
     const wrapped: HarnessProcessLaunch[] = [];
     const fixture = await setup("happy", {
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
+      providerStateKind: "isolated",
+      sharedEngine: false,
       wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
         wrapped.push(launch);
         const [script, ...rest] = launch.args;
@@ -730,7 +696,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: {},
       providerState: fixture.context.providerState,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: fixture.context.workspacePath,
@@ -760,7 +725,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -817,7 +781,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: stringEnvironment(process.env),
         providerState: testProviderState(directory, "ambient"),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -834,7 +797,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: stringEnvironment(process.env),
         providerState: testProviderState(directory, "ambient"),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -864,7 +826,6 @@ describe("Codex app-server harness", () => {
       config: { model: "gpt-9-retired", reasoningEffort: "high" },
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -885,7 +846,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment({ ...process.env, FAKE_CODEX_CAPTURE_PATH: capturePath }),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -913,7 +873,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -936,24 +895,36 @@ describe("Codex app-server harness", () => {
   it("keeps a cold inspection in starting state beyond the spawn deadline", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-cold-inspection-"));
     temporaryDirectories.push(directory);
-    const inspected = await new CodexHarnessDriver({
-      launch: fakeLaunch("delayed-handshake"),
-    }).inspect?.({
-      config: {
-        startupTimeoutMs: 100,
-      },
-      environment: stringEnvironment({
-        ...process.env,
-        FAKE_CODEX_INITIALIZE_DELAY_MS: "250",
-      }),
-      providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
-      signal: new AbortController().signal,
-      sourceId: "openai",
-      workingDirectory: directory,
-    });
+    // Codex answers initialize only when released; the client's clock is the test's and passes
+    // the spawn deadline first, so the spawn itself races no real-time bound either.
+    const hold = await heldRequests("initialize");
+    const initializeSent = whenSent("initialize");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const inspecting = new CodexHarnessDriver({
+        launch: fakeLaunch("happy"),
+      }).inspect?.({
+        config: {
+          startupTimeoutMs: 100,
+        },
+        environment: stringEnvironment({
+          ...process.env,
+          FAKE_CODEX_HOLD: hold.environment,
+        }),
+        providerState: testProviderState(directory, "ambient"),
+        signal: new AbortController().signal,
+        sourceId: "openai",
+        workingDirectory: directory,
+      });
+      await initializeSent;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await hold.release("initialize");
+      const inspected = await inspecting;
 
-    expect(inspected?.status).toBe("ready");
+      expect(inspected?.status).toBe("ready");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("observes plan usage from the Codex rate limit read", async () => {
@@ -1016,39 +987,6 @@ describe("Codex app-server harness", () => {
     },
   );
 
-  it("keeps the inspection workspace writable while denying Runner-private state", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-managed-inspection-"));
-    temporaryDirectories.push(directory);
-    const capturePath = join(directory, "capture.jsonl");
-    const inspected = await new CodexHarnessDriver({
-      launch: fakeLaunch("vertical"),
-    }).inspect?.({
-      config: {},
-      environment: stringEnvironment({
-        ...process.env,
-        FAKE_CODEX_CAPTURE_PATH: capturePath,
-      }),
-      providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      signal: new AbortController().signal,
-      sourceId: "openai",
-      workingDirectory: directory,
-    });
-
-    expect(inspected?.status).toBe("ready");
-    const captured = parseCaptureJsonl<JsonRecord>(await readFile(capturePath, "utf8"));
-    const processBoundary = captured.find((message) => message.fakeCodexProcess)
-      ?.fakeCodexProcess as JsonRecord | undefined;
-    const deploymentShape = (processBoundary?.argv as unknown[] | undefined)?.find(
-      (argument): argument is string =>
-        typeof argument === "string" &&
-        argument.startsWith("permissions.opensteer_workspace_write"),
-    );
-    expect(deploymentShape).toBeDefined();
-    expect(deploymentShape).toContain(`${JSON.stringify(directory)}="write"`);
-    expect(deploymentShape).toContain(`${JSON.stringify(join(directory, "state"))}="deny"`);
-  });
-
   it("reports authentication as provider state rather than a generic failure", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-auth-inspection-"));
     temporaryDirectories.push(directory);
@@ -1058,7 +996,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1105,7 +1042,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: {},
         providerState: testProviderState(directory, "isolated"),
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -1154,7 +1090,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: stringEnvironment({ ...process.env, FAKE_CODEX_CAPTURE_PATH: capturePath }),
         providerState: testProviderState(directory, kind),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -1190,7 +1125,6 @@ describe("Codex app-server harness", () => {
     const authentication = {
       config: {},
       environment: {},
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1226,7 +1160,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1254,22 +1187,32 @@ describe("Codex app-server harness", () => {
       },
       environment: { ...stringEnvironment(process.env), FAKE_CODEX_CAPTURE_PATH: capturePath },
       providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
     };
     const driver = new CodexHarnessDriver({ launch: fakeLaunch("cold-preparation") });
-    await driver.prepare(context);
-    const preparedMessages = await readFile(capturePath, "utf8");
-    expect(preparedMessages).toContain('"method":"initialize"');
-    expect(preparedMessages).not.toContain('"method":"account/read"');
-    await expect(driver.inspect(context)).resolves.toMatchObject({
-      status: "authentication-required",
-      setupMethods: expect.arrayContaining([
-        expect.objectContaining({ methodId: "codex-subscription" }),
-      ]),
-    });
+    // The cold first initialize takes 350 ms of Codex's own time; the client's clock is the
+    // test's and passes the 100 ms spawn deadline first, so no spawn races a real-time bound.
+    const initializeSent = whenSent("initialize");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const preparing = driver.prepare(context);
+      await initializeSent;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await preparing;
+      const preparedMessages = await readFile(capturePath, "utf8");
+      expect(preparedMessages).toContain('"method":"initialize"');
+      expect(preparedMessages).not.toContain('"method":"account/read"');
+      await expect(driver.inspect(context)).resolves.toMatchObject({
+        status: "authentication-required",
+        setupMethods: expect.arrayContaining([
+          expect.objectContaining({ methodId: "codex-subscription" }),
+        ]),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("cancels preparation while Codex has not answered initialize", async () => {
@@ -1277,22 +1220,21 @@ describe("Codex app-server harness", () => {
     temporaryDirectories.push(directory);
     const lifetime = new AbortController();
     const capturePath = join(directory, "capture.jsonl");
+    const initializeSent = whenSent("initialize");
     const preparation = new CodexHarnessDriver({
       launch: fakeLaunch("handshake-timeout"),
     }).prepare({
       config: {},
       environment: { ...stringEnvironment(process.env), FAKE_CODEX_CAPTURE_PATH: capturePath },
       providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: lifetime.signal,
       sourceId: "openai",
       workingDirectory: directory,
     });
     const rejected = expect(preparation).rejects.toThrow("closed");
     try {
-      await vi.waitFor(async () => {
-        expect(await readFile(capturePath, "utf8")).toContain('"method":"initialize"');
-      });
+      // Sent, and never answered in this scenario: no wait on how fast Codex starts.
+      await initializeSent;
     } finally {
       lifetime.abort();
     }
@@ -1402,7 +1344,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: {},
         providerState,
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -1446,7 +1387,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: stringEnvironment(process.env),
         providerState: testProviderState(directory, "ambient"),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -1488,7 +1428,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: {},
         providerState: testProviderState(directory, "isolated"),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -1514,7 +1453,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1541,7 +1479,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1567,7 +1504,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1869,6 +1805,42 @@ describe("Codex app-server harness", () => {
     expect(completed.data.output.text).not.toContain('"stdout"');
     expect(observer.error).toBeUndefined();
     expect(observer.events.at(-1)?.type).toBe("run.completed");
+    await fixture.adapter.close();
+  });
+
+  it("declines a Codex 0.162.0 cancel-only command approval through requestOptionDeclines", async () => {
+    const fixture = await setup("cancel-only-approval");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    const execution = session.execute(fixture.turn("Run a command"));
+    const opened = await observer.waitFor("request.opened");
+    if (opened.data.request.presentation.kind !== "choice") {
+      throw new Error("Expected choice approval request");
+    }
+    expect(opened.data.request.presentation.options.map((option) => option.id)).toEqual([
+      "allow-once",
+      "cancel",
+    ]);
+    await expect(
+      session.resolveRequest(opened.data.request.id, { kind: "choice", optionId: "reject" }),
+    ).rejects.toThrow("Response does not match the pending Codex Request");
+
+    const decline = opened.data.request.presentation.options.find(requestOptionDeclines);
+    expect(decline?.id).toBe("cancel");
+    await session.resolveRequest(opened.data.request.id, {
+      kind: "choice",
+      optionId: decline!.id,
+    });
+    await execution;
+    await session.stop();
+    await observer.done;
+
+    const captured = await fixture.capture();
+    expect(captured.find((message) => message.id === "cancel-only-approval-rpc")).toEqual({
+      id: "cancel-only-approval-rpc",
+      result: { decision: "cancel" },
+    });
+    expect(observer.events.at(-1)?.type).toBe("run.interrupted");
     await fixture.adapter.close();
   });
 
@@ -2532,64 +2504,58 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
-  it.each([nativeUserHarnessRuntimeBoundary, isolatedServiceHarnessRuntimeBoundary])(
-    "resumes a compacted provider conversation larger than the transport budget on $kind",
-    async (runtimeBoundary) => {
-      const fixture = await setup("resume-large-history", {
-        history: [historyMessage("assistant", "An earlier digest that must not be replayed")],
-        runtimeBoundary,
-      });
-      const reference = "saved-morning-summary";
-      try {
-        for (const modelId of ["gpt-5.6-sol", "gpt-5.6-luna"]) {
-          const session = await fixture.adapter.resumeSession(reference, {
-            ...fixture.context,
-            historyWindow: { ...fixture.context.historyWindow, hasEarlier: true },
-            modelSelection: ModelSelectionSchema.parse({
-              ...fixture.context.modelSelection,
-              modelId,
-            }),
-          });
-          const observer = observe(session.events);
-          await session.execute(fixture.turn("Summarize today's new email"));
-          await session.stop();
-          await observer.done;
-
-          expect(session.providerSessionReference).toBe(reference);
-          expect(observer.error).toBeUndefined();
-          expect(observer.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
-          expect(observer.events.some((event) => event.type === "run.failed")).toBe(false);
-          expect(JSON.stringify(observer.events)).not.toContain("historical-output");
-        }
-
-        const captured = await fixture.capture();
-        expect(
-          captured
-            .filter((message) => message.method === "thread/resume")
-            .map((message) => message.params),
-        ).toEqual([
-          expect.objectContaining({
-            excludeTurns: true,
-            model: "gpt-5.6-sol",
-            threadId: reference,
+  it("resumes a compacted provider conversation larger than the transport budget", async () => {
+    const fixture = await setup("resume-large-history", {
+      history: [historyMessage("assistant", "An earlier digest that must not be replayed")],
+    });
+    const reference = "saved-morning-summary";
+    try {
+      for (const modelId of ["gpt-5.6-sol", "gpt-5.6-luna"]) {
+        const session = await fixture.adapter.resumeSession(reference, {
+          ...fixture.context,
+          historyWindow: { ...fixture.context.historyWindow, hasEarlier: true },
+          modelSelection: ModelSelectionSchema.parse({
+            ...fixture.context.modelSelection,
+            modelId,
           }),
-          expect.objectContaining({
-            excludeTurns: true,
-            model: "gpt-5.6-luna",
-            threadId: reference,
-          }),
-        ]);
-        expect(captured.filter((message) => message.method === "turn/start")).toHaveLength(2);
-        expect(captured.some((message) => message.method === "thread/start")).toBe(false);
-        expect(captured.some((message) => message.method === "thread/inject_items")).toBe(false);
-        expect(JSON.stringify(captured)).not.toContain(
-          "An earlier digest that must not be replayed",
-        );
-      } finally {
-        await fixture.adapter.close();
+        });
+        const observer = observe(session.events);
+        await session.execute(fixture.turn("Summarize today's new email"));
+        await session.stop();
+        await observer.done;
+
+        expect(session.providerSessionReference).toBe(reference);
+        expect(observer.error).toBeUndefined();
+        expect(observer.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
+        expect(observer.events.some((event) => event.type === "run.failed")).toBe(false);
+        expect(JSON.stringify(observer.events)).not.toContain("historical-output");
       }
-    },
-  );
+
+      const captured = await fixture.capture();
+      expect(
+        captured
+          .filter((message) => message.method === "thread/resume")
+          .map((message) => message.params),
+      ).toEqual([
+        expect.objectContaining({
+          excludeTurns: true,
+          model: "gpt-5.6-sol",
+          threadId: reference,
+        }),
+        expect.objectContaining({
+          excludeTurns: true,
+          model: "gpt-5.6-luna",
+          threadId: reference,
+        }),
+      ]);
+      expect(captured.filter((message) => message.method === "turn/start")).toHaveLength(2);
+      expect(captured.some((message) => message.method === "thread/start")).toBe(false);
+      expect(captured.some((message) => message.method === "thread/inject_items")).toBe(false);
+      expect(JSON.stringify(captured)).not.toContain("An earlier digest that must not be replayed");
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
 
   it.each([
     ["resume-missing", "no rollout found"],
@@ -2629,6 +2595,233 @@ describe("Codex app-server harness", () => {
     expect(fixture.context.environment.HOME).toBe(process.env.HOME);
     await session.stop();
     await fixture.adapter.close();
+  });
+
+  describe("whose configuration Codex starts with", () => {
+    const threadStartOf = async (fixture: Fixture) => {
+      const captured = await fixture.capture();
+      const process = captured.find((message) => "fakeCodexProcess" in message)
+        ?.fakeCodexProcess as { argv?: string[] } | undefined;
+      const threadStart = captured.find((message) => message.method === "thread/start");
+      const turnStart = captured.find((message) => message.method === "turn/start");
+      return {
+        argv: process?.argv ?? [],
+        config: ((threadStart?.params ?? {}) as { config?: Record<string, unknown> }).config ?? {},
+        turn: turnStart?.params as Record<string, unknown> | undefined,
+      };
+    };
+
+    /** The first turn's parameters, from a scenario whose turns complete. */
+    const firstTurnOf = async (personalContext: boolean) => {
+      const fixture = await setup("reasoning", {
+        accessMode: "approval-required",
+        personalContext,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      await session.execute(fixture.turn("Hello"));
+      await session.stop();
+      const { turn } = await threadStartOf(fixture);
+      await fixture.adapter.close();
+      return turn;
+    };
+
+    it("starts a Run without personal context with none of the person's configuration", async () => {
+      const fixture = await setup("ambient-extensions", {
+        accessMode: "approval-required",
+        personalContext: false,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { argv, config } = await threadStartOf(fixture);
+      const turn = await firstTurnOf(false);
+      expect(argv).toEqual(
+        expect.arrayContaining(["tools.update_plan.enabled=false", 'web_search="disabled"']),
+      );
+      // No project instruction file, Codex skill, plan tool or web search.
+      expect(config).toMatchObject({
+        "skills.bundled.enabled": false,
+        "tools.update_plan.enabled": false,
+        project_doc_max_bytes: 0,
+        web_search: "disabled",
+      });
+      // No MCP server but Opensteer's: the person's are switched off.
+      expect(config).toMatchObject({
+        'mcp_servers."company.docs".enabled': false,
+        "mcp_servers.github.enabled": false,
+        "mcp_servers.opensteer.enabled": true,
+      });
+      // The instruction file it gets is what it got before: the Run's own.
+      expect(JSON.stringify(turn?.additionalContext)).toContain(
+        "Follow the workspace instructions.",
+      );
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("starts a Run with personal context with Codex's own configuration", async () => {
+      const fixture = await setup("ambient-extensions", {
+        accessMode: "approval-required",
+        personalContext: true,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { argv, config } = await threadStartOf(fixture);
+      const turn = await firstTurnOf(true);
+      expect(argv).not.toContain("tools.update_plan.enabled=false");
+      expect(argv).not.toContain('web_search="disabled"');
+      // Only the features Opensteer needs are set; the rest are the person's.
+      expect(argv).toContain('features={"multi_agent"=false,"multi_agent_v2"=true}');
+      for (const key of [
+        "project_doc_max_bytes",
+        "web_search",
+        "tools.update_plan.enabled",
+        "skills.bundled.enabled",
+        "skills.config",
+      ]) {
+        expect(config).not.toHaveProperty(key);
+      }
+      expect(config.features).toEqual({ multi_agent: false, multi_agent_v2: true });
+      expect(config.allow_login_shell).toBe(false);
+      // The person's servers stay on, approved as their own configuration says.
+      expect(config).not.toHaveProperty('mcp_servers."company.docs".enabled');
+      expect(config).not.toHaveProperty('mcp_servers."company.docs".default_tools_approval_mode');
+      expect(config).not.toHaveProperty("mcp_servers.github.default_tools_approval_mode");
+      // Opensteer's own server, exactly as without personal context.
+      expect(config).toMatchObject({
+        "mcp_servers.opensteer.default_tools_approval_mode": "approve",
+        "mcp_servers.opensteer.enabled": true,
+        "mcp_servers.opensteer.http_headers": {
+          Authorization: `Bearer ${fixture.context.agentTools.token}`,
+        },
+        "mcp_servers.opensteer.url": fixture.context.agentTools.url,
+      });
+      expect(config).not.toHaveProperty("mcp_servers.opensteer.disabled_tools");
+      // Codex reads Agent home's AGENTS.md itself; Opensteer does not repeat it.
+      expect(JSON.stringify(turn?.additionalContext)).not.toContain(
+        "Follow the workspace instructions.",
+      );
+      expect(JSON.stringify(turn?.additionalContext)).not.toContain(
+        "There are no current task instructions",
+      );
+      // The task's mode, on every turn, whatever the person's config.toml says.
+      expect(turn).toMatchObject({
+        approvalPolicy: "untrusted",
+        sandboxPolicy: { networkAccess: false, type: "readOnly" },
+      });
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("says plainly when the person's own server named opensteer runs a command", async () => {
+      const fixture = await setup("person-opensteer-command", { personalContext: true });
+      await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
+        code: "conflict",
+        message: expect.stringContaining(
+          "Your Codex configuration has an MCP server named opensteer that runs a command",
+        ),
+      });
+      await fixture.adapter.close();
+    });
+
+    it("keeps the person's own enabled_tools from filtering Opensteer's tools", async () => {
+      const fixture = await setup("person-opensteer-url", { personalContext: true });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { config } = await threadStartOf(fixture);
+      expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(
+        expect.arrayContaining(["opensteer_task_read"]),
+      );
+      expect(config["mcp_servers.opensteer.disabled_tools"]).toEqual([]);
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("starts a connected agent's or a chat's task with personal context with none of the person's configuration", async () => {
+      const fixture = await setup("ambient-extensions", {
+        accessMode: "approval-required",
+        personalContext: true,
+        personLineage: false,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { argv, config } = await threadStartOf(fixture);
+      expect(argv).toEqual(
+        expect.arrayContaining(['web_search="disabled"', 'cli_auth_credentials_store="file"']),
+      );
+      expect(config).toMatchObject({
+        "mcp_servers.github.enabled": false,
+        project_doc_max_bytes: 0,
+        web_search: "disabled",
+      });
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("starts others' tasks from an Opensteer-owned CODEX_HOME linking auth.json and keeping only model-reaching config", async () => {
+      const root = await mkdtemp(join(tmpdir(), "opensteer-codex-others-home-"));
+      temporaryDirectories.push(root);
+      const personCodexHome = join(root, "person-codex");
+      await mkdir(personCodexHome, { recursive: true });
+      const personAuth = join(personCodexHome, "auth.json");
+      await writeFile(
+        personAuth,
+        JSON.stringify({ OPENAI_API_KEY: "sk-stub", auth_mode: "apikey" }),
+      );
+      await writeFile(
+        join(personCodexHome, "config.toml"),
+        [
+          'model_provider = "corp"',
+          'notify = ["touch", "/tmp/should-not-run"]',
+          'developer_instructions = "PRIVATE-MARKER"',
+          "[model_providers.corp]",
+          'name = "Corp"',
+          'base_url = "https://corp.invalid/v1"',
+          'wire_api = "responses"',
+          'env_key = "CORP_API_KEY"',
+          "[agents.custom]",
+          'description = "PRIVATE-AGENT"',
+        ].join("\n"),
+      );
+      const fixture = await setup("ambient-extensions", {
+        environmentOverrides: { CODEX_HOME: personCodexHome },
+        personalContext: true,
+        personLineage: false,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const captured = await fixture.capture();
+      const processRecord = captured.find((message) => message.fakeCodexProcess)
+        ?.fakeCodexProcess as { environment?: Record<string, string | null> } | undefined;
+      const codexHome = processRecord?.environment?.CODEX_HOME ?? undefined;
+      expect(codexHome).toBeDefined();
+      expect(codexHome).not.toBe(personCodexHome);
+      const authLink = join(codexHome!, "auth.json");
+      expect((await lstat(authLink)).isSymbolicLink()).toBe(true);
+      expect(await readlink(authLink)).toBe(personAuth);
+      const generatedConfig = await readFile(join(codexHome!, "config.toml"), "utf8");
+      expect(generatedConfig).toContain('cli_auth_credentials_store = "file"');
+      expect(generatedConfig).toContain('model_provider = "corp"');
+      expect(generatedConfig).toContain('base_url = "https://corp.invalid/v1"');
+      expect(generatedConfig).not.toContain("notify");
+      expect(generatedConfig).not.toContain("PRIVATE-MARKER");
+      expect(generatedConfig).not.toContain("PRIVATE-AGENT");
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("refuses others' tasks before spawning Codex when the person uses keyring auth or has no auth.json", async () => {
+      const root = await mkdtemp(join(tmpdir(), "opensteer-codex-keyring-"));
+      temporaryDirectories.push(root);
+      const keyringHome = join(root, "keyring-codex");
+      await mkdir(keyringHome, { recursive: true });
+      await writeFile(join(keyringHome, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+      const fixture = await setup("ambient-extensions", {
+        environmentOverrides: { CODEX_HOME: keyringHome },
+        personalContext: true,
+        personLineage: false,
+      });
+      await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage: expect.stringContaining('cli_auth_credentials_store = "file"'),
+      });
+      await fixture.adapter.close();
+    });
   });
 
   it("refuses startup when the required computer_use tool is missing", async () => {
@@ -2680,6 +2873,24 @@ describe("Codex app-server harness", () => {
     });
     await fixture.adapter.close();
   });
+
+  it.each([
+    ["managed-notify", /notify/iu],
+    ["managed-provider-auth", /command/iu],
+    ["managed-provider-aws", /AWS|credential/iu],
+    ["managed-bedrock", /AWS|credential/iu],
+  ] as const)(
+    "refuses %s from system or managed Codex configuration on an others' task with two audiences",
+    async (scenario, ownerPattern) => {
+      const fixture = await setup(scenario);
+      await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage: expect.stringMatching(ownerPattern),
+      });
+      await fixture.adapter.close();
+    },
+  );
 
   it("uses read-only thread startup so Codex cannot persist project trust", async () => {
     const fixture = await setup("trust-boundary");
@@ -2751,13 +2962,56 @@ describe("Codex app-server harness", () => {
   });
 
   it("lets provider initialization outlive the process spawn deadline", async () => {
-    const fixture = await setup("delayed-handshake", {
-      environmentOverrides: { FAKE_CODEX_INITIALIZE_DELAY_MS: "250" },
+    // Codex answers initialize only when released, and the client's clock is the test's: the
+    // clock passes the spawn deadline before that answer, and no answer races a real-time bound
+    // (the startup requests after initialize keep that deadline, 100 ms here).
+    const hold = await heldRequests("initialize");
+    const fixture = await setup("happy", {
+      environmentOverrides: { FAKE_CODEX_HOLD: hold.environment },
       startupTimeoutMs: 100,
     });
-    const session = await fixture.adapter.startSession(fixture.context);
-    await session.stop();
-    await fixture.adapter.close();
+    const initializeSent = whenSent("initialize");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const starting = fixture.adapter.startSession(fixture.context);
+      await initializeSent;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await hold.release("initialize");
+      const session = await starting;
+      vi.useRealTimers();
+      await session.stop();
+    } finally {
+      vi.useRealTimers();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("bounds the startup requests after initialization by the startup deadline, in their own words", async () => {
+    const hold = await heldRequests("experimentalFeature/list");
+    const fixture = await setup("happy", {
+      environmentOverrides: { FAKE_CODEX_HOLD: hold.environment },
+      startupTimeoutMs: 100,
+    });
+    const featureListSent = whenSent("experimentalFeature/list");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let settled = false;
+      const starting = fixture.adapter.startSession(fixture.context).finally(() => {
+        settled = true;
+      });
+      void starting.catch(() => undefined);
+      await featureListSent;
+      await vi.advanceTimersByTimeAsync(99);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(starting).rejects.toThrow(
+        "Codex app-server request experimentalFeature/list timed out after 100ms",
+      );
+    } finally {
+      vi.useRealTimers();
+      await hold.release("experimentalFeature/list");
+      await fixture.adapter.close();
+    }
   });
 
   it("interrupts only the named child turn and leaves the Codex Run live", async () => {
@@ -2980,14 +3234,13 @@ describe("Codex app-server harness", () => {
     ["invalid-json", undefined],
     ["exit", "code 17"],
     ["oversized-line", "line exceeded"],
-    ["request-timeout", "timed out"],
   ] as const)(
     "turns %s into one terminal run failure and an unusable session",
     async (scenario, message) => {
-      const fixture = await setup(scenario, {
-        ...(scenario === "oversized-line" ? { maxProtocolLineBytes: 16 * 1024 } : {}),
-        ...(scenario === "request-timeout" ? { requestTimeoutMs: 100 } : {}),
-      });
+      const fixture = await setup(
+        scenario,
+        scenario === "oversized-line" ? { maxProtocolLineBytes: 16 * 1024 } : {},
+      );
       const session = await fixture.adapter.startSession(fixture.context);
       const observer = observe(session.events);
       await session.execute(fixture.turn("Trigger the failure"));
@@ -3004,6 +3257,36 @@ describe("Codex app-server harness", () => {
       await fixture.adapter.close();
     },
   );
+
+  it("turns an unanswered request into one terminal run failure and an unusable session", async () => {
+    // Codex never answers turn/start here. The client's clock is the test's, so only that
+    // request's deadline (100 ms) ends it, and no request before it races a real-time bound.
+    const fixture = await setup("request-timeout", { requestTimeoutMs: 100 });
+    const turnSent = whenSent("turn/start");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      const executing = session.execute(fixture.turn("Trigger the failure"));
+      await turnSent;
+      await vi.advanceTimersByTimeAsync(100);
+      vi.useRealTimers();
+      await executing;
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data.message).toContain("timed out");
+      await observer.done;
+      expect(observer.error).toBeDefined();
+      await expect(
+        session.execute(fixture.turn("Do not restart or fall back")),
+      ).rejects.toMatchObject({
+        code: expect.stringMatching(/harness_error|timeout/),
+      });
+      await session.stop();
+    } finally {
+      vi.useRealTimers();
+      await fixture.adapter.close();
+    }
+  });
 
   it("reports an exhausted Codex plan as the shared usage-limit failure code", async () => {
     const fixture = await setup("usage-limit");
@@ -3327,6 +3610,658 @@ describe("one Codex app-server per account", () => {
       expect(await runServerPids(fixture)).toHaveLength(2);
       // The replacement never closes a conversation either; closing the adapter ends it.
       await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("stops a turn its engine never ends at once on the shared app-server, once Codex closes its conversation", async () => {
+    const neverReleased = join(await mkdtemp(join(tmpdir(), "opensteer-codex-held-")), "release");
+    // Waiting for the interrupted turn would take this long.
+    const fixture = await setup("long-stream-held", {
+      requestTimeoutMs: 120_000,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        `--release-file=${neverReleased}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Write at length"));
+      await observer.waitFor("assistant.delta");
+      // As the Runner stops a Run: it asks for the interrupt, then stops the session.
+      void stopping.interrupt();
+      await stopping.stop();
+      await observer.done;
+      expect(normalizedTypes(observer.events)).toContain("run.interrupted");
+      expect(normalizedTypes(observer.events)).not.toContain("run.failed");
+      // What ended the wait: Codex said the conversation closed. The server lives on.
+      const captured = await fixture.capture();
+      expect(captured).toContainEqual({ fakeThreadClosed: stopping.providerSessionReference });
+      const framesFor = (threadId: string, method: string) =>
+        captured.filter(
+          (message) =>
+            message.method === method && (message.params as JsonRecord).threadId === threadId,
+        );
+      // One interrupt frame for the stopped turn, no second.
+      expect(framesFor(stopping.providerSessionReference, "turn/interrupt")).toHaveLength(1);
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      // The other task's conversation on the same server is untouched: no frame
+      // stopped or unloaded it, and its next turn runs to its end there.
+      expect(framesFor(other.providerSessionReference, "turn/interrupt")).toHaveLength(0);
+      expect(framesFor(other.providerSessionReference, "thread/unsubscribe")).toHaveLength(0);
+      expect(captured).not.toContainEqual({ fakeThreadClosed: other.providerSessionReference });
+      expect(other.usable).toBe(true);
+      await writeFile(neverReleased, "");
+      const otherObserver = observe(other.events);
+      await other.execute(fixture.turn("Write at length too"));
+      await otherObserver.waitFor("run.completed");
+      expect(await runServerPids(fixture)).toEqual(pids);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("retires the shared app-server when a stopped turn's conversation never closes, and cuts its other turns short", async () => {
+    const neverReleased = join(await mkdtemp(join(tmpdir(), "opensteer-codex-held-")), "release");
+    const fixture = await setup("long-stream-held", {
+      requestTimeoutMs: 500,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        "--never-close",
+        `--release-file=${neverReleased}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const stoppingObserver = observe(stopping.events);
+      const otherObserver = observe(other.events);
+      void stopping.execute(fixture.turn("Write at length"));
+      await stoppingObserver.waitFor("assistant.delta");
+      void other.execute(fixture.turn("Write at length too"));
+      await otherObserver.waitFor("assistant.delta");
+      await stopping.stop();
+      // What ended the wait: the server's process has exited.
+      const [pid] = await runServerPids(fixture);
+      expect(processAlive(pid!)).toBe(false);
+      await otherObserver.done;
+      // The other task's turn was cut short by the server's end with its own cause,
+      // while the stopping task's turn ended as a plain stop.
+      const otherEnd = otherObserver.events.find((event) => event.type === "run.interrupted");
+      expect(otherEnd).toEqual({
+        type: "run.interrupted",
+        data: { status: "interrupted", cause: "engine-retired" },
+      });
+      const stoppingEnd = stoppingObserver.events.find((event) => event.type === "run.interrupted");
+      expect(stoppingEnd).toEqual({
+        type: "run.interrupted",
+        data: { status: "interrupted" },
+      });
+      expect(normalizedTypes(otherObserver.events)).not.toContain("run.failed");
+      expect(other.usable).toBe(false);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it.each([
+    ["is rejected", "--reject-interrupt", 500, 50],
+    ["never answers", "--hang-interrupt", 200, 350],
+  ] as const)(
+    "keeps the shared app-server and another task's turn alive when turn/interrupt %s while unsubscribe closes the conversation",
+    async (_label, flag, requestTimeoutMs, waitAfterStopMs) => {
+      const neverReleased = join(
+        await mkdtemp(join(tmpdir(), "opensteer-codex-interrupt-fail-")),
+        "release",
+      );
+      const fixture = await setup("long-stream-held", {
+        requestTimeoutMs,
+        serverArguments: ["--unique-threads", flag, `--release-file=${neverReleased}`],
+      });
+      try {
+        const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+        const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+        const stoppingObserver = observe(stopping.events);
+        const otherObserver = observe(other.events);
+        void stopping.execute(fixture.turn("Write at length"));
+        await stoppingObserver.waitFor("assistant.delta");
+        const otherRun = other.execute(fixture.turn("Keep running alongside"));
+        await otherObserver.waitFor("assistant.delta");
+        const interrupting = stopping.interrupt();
+        await stopping.stop();
+        await stoppingObserver.done;
+        await interrupting.catch(() => undefined);
+        const pids = await runServerPids(fixture);
+        expect(pids).toHaveLength(1);
+        await expect(
+          vi.waitFor(
+            () => {
+              if (other.usable && processAlive(pids[0]!)) throw new Error("server stayed alive");
+            },
+            { interval: 20, timeout: waitAfterStopMs },
+          ),
+        ).rejects.toThrow("server stayed alive");
+        expect(normalizedTypes(stoppingObserver.events)).toContain("run.interrupted");
+        expect(normalizedTypes(stoppingObserver.events)).not.toContain("run.failed");
+        expect(processAlive(pids[0]!)).toBe(true);
+        expect(other.usable).toBe(true);
+        await writeFile(neverReleased, "");
+        await otherRun;
+        await otherObserver.waitFor("run.completed");
+        expect(normalizedTypes(otherObserver.events)).not.toContain("run.interrupted");
+        expect(normalizedTypes(otherObserver.events)).not.toContain("run.failed");
+        const next = await fixture.adapter.startSession(taskContext(fixture, "next"));
+        expect(await runServerPids(fixture)).toEqual(pids);
+        await Promise.all([other.stop(), next.stop()]);
+      } finally {
+        await fixture.adapter.close();
+      }
+    },
+  );
+
+  it("awaits the in-flight unload when Stop arrives during resume boundary check, before freeing the conversation", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-stop-open-"));
+    const mcpRelease = join(dir, "mcp-release");
+    const closeRelease = join(dir, "close-release");
+    const fixture = await setup("reasoning", {
+      serverArguments: [
+        "--unique-threads",
+        `--hold-mcp-status-file=${mcpRelease}`,
+        `--hold-close-file=${closeRelease}`,
+      ],
+    });
+    try {
+      const initial = await fixture.adapter.startSession(taskContext(fixture, "initial"));
+      const conversation = initial.providerSessionReference;
+      // Let initial stop close immediately so we only hold the resumed stop's close.
+      await writeFile(closeRelease, "");
+      await initial.stop();
+      await rm(closeRelease);
+
+      const stopSignal = new AbortController();
+      let settled = false;
+      const resuming = fixture.adapter
+        .resumeSession(conversation, {
+          ...taskContext(fixture, "resuming"),
+          signal: stopSignal.signal,
+        })
+        .then(
+          (session) => {
+            settled = true;
+            return { ok: true as const, session };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { ok: false as const, error };
+          },
+        );
+
+      await vi.waitFor(async () =>
+        expect(await fixture.capture()).toContainEqual({ fakeMcpStatusHeld: conversation }),
+      );
+      stopSignal.abort(new Error("Stop during boundary check"));
+      await vi.waitFor(async () =>
+        expect(await fixture.capture()).toContainEqual({ fakeCloseHeld: conversation }),
+      );
+      // Boundary check returns while unload is still waiting on thread/closed.
+      await writeFile(mcpRelease, "");
+      await expect(
+        vi.waitFor(
+          () => {
+            if (!settled) throw new Error("still waiting on close");
+          },
+          { interval: 10, timeout: 150 },
+        ),
+      ).rejects.toThrow("still waiting on close");
+      expect(settled).toBe(false);
+
+      await writeFile(closeRelease, "");
+      const outcome = await resuming;
+      expect(outcome.ok).toBe(false);
+      // The next resume does not meet "Another Opensteer session holds this Codex conversation".
+      const next = await fixture.adapter.resumeSession(conversation, taskContext(fixture, "next"));
+      expect(next.providerSessionReference).toBe(conversation);
+      await next.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("interrupts a running child turn before unsubscribing when Stop runs while the root is idle", async () => {
+    const neverReleased = join(await mkdtemp(join(tmpdir(), "opensteer-codex-bg-")), "release");
+    const fixture = await setup("background-children", {
+      requestTimeoutMs: 500,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        `--release-file=${neverReleased}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Delegate in background"));
+      await observer.waitFor("run.phase");
+      // Direct stop (without interrupt()) while root is idle and child turn is still running.
+      await stopping.stop();
+      await observer.done;
+      expect(normalizedTypes(observer.events)).toContain("run.interrupted");
+      expect(normalizedTypes(observer.events)).not.toContain("run.failed");
+      const captured = await fixture.capture();
+      const childThreadId = "codex-child-thread-1";
+      const childInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === childThreadId,
+      );
+      expect(childInterrupts).toHaveLength(1);
+      expect(captured).toContainEqual({ fakeThreadClosed: childThreadId });
+      expect(captured).toContainEqual({ fakeThreadClosed: stopping.providerSessionReference });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("waits for an in-flight turn/start reply and interrupts it once before unsubscribing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-turn-start-"));
+    const turnStartRelease = join(dir, "turn-start-release");
+    const neverReleased = join(dir, "never-release");
+    const fixture = await setup("long-stream-held", {
+      requestTimeoutMs: 1_000,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        `--hold-turn-start-file=${turnStartRelease}`,
+        `--release-file=${neverReleased}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Write at length"));
+      await vi.waitFor(async () =>
+        expect(await fixture.capture()).toContainEqual({
+          fakeTurnStartHeld: stopping.providerSessionReference,
+        }),
+      );
+      void stopping.interrupt();
+      let stopSettled = false;
+      const stopPromise = stopping.stop().finally(() => {
+        stopSettled = true;
+      });
+      await expect(
+        vi.waitFor(
+          () => {
+            if (!stopSettled) throw new Error("waiting for turn/start");
+          },
+          { interval: 10, timeout: 60 },
+        ),
+      ).rejects.toThrow("waiting for turn/start");
+      await writeFile(turnStartRelease, "");
+      await stopPromise;
+      await observer.done;
+      const captured = await fixture.capture();
+      const threadId = stopping.providerSessionReference;
+      const interrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === threadId,
+      );
+      expect(interrupts).toHaveLength(1);
+      const interruptIndex = captured.findIndex(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === threadId,
+      );
+      const unsubscribeIndex = captured.findIndex(
+        (message) =>
+          message.method === "thread/unsubscribe" &&
+          (message.params as JsonRecord).threadId === threadId,
+      );
+      expect(interruptIndex).toBeGreaterThan(-1);
+      expect(unsubscribeIndex).toBeGreaterThan(interruptIndex);
+      expect(captured).toContainEqual({ fakeThreadClosed: threadId });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("sends only one turn/interrupt for a child turn when stopNode is followed by Stop", async () => {
+    const fixture = await setup("subagents-hold", {
+      requestTimeoutMs: 1_000,
+      serverArguments: ["--unique-threads", "--ignore-interrupt"],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Delegate to a researcher"));
+      const nodeStarted = await observer.waitFor("node.started");
+      const childThreadId = nodeStarted.data.sessionRef!;
+      await stopping.stopNode!(nodeStarted.data.nodeId);
+      void stopping.interrupt();
+      await stopping.stop();
+      await observer.done;
+      const captured = await fixture.capture();
+      const childInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === childThreadId,
+      );
+      const rootInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === stopping.providerSessionReference,
+      );
+      expect(childInterrupts).toHaveLength(1);
+      expect(rootInterrupts).toHaveLength(1);
+      expect(captured).toContainEqual({ fakeThreadClosed: childThreadId });
+      expect(captured).toContainEqual({ fakeThreadClosed: stopping.providerSessionReference });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("B7: settles as run.interrupted without waiting for requestTimeoutMs when root turn completes after interrupt idle check while child terminal event never arrives", async () => {
+    const fixture = await setup("subagents-root-completes-after-interrupt", {
+      requestTimeoutMs: 1_500,
+      serverArguments: ["--unique-threads", "--ignore-interrupt"],
+    });
+    try {
+      const session = await fixture.adapter.startSession(taskContext(fixture, "b7-crossing"));
+      const observer = observe(session.events);
+      const execution = session.execute(fixture.turn("Delegate and answer during Stop"));
+      await vi.waitFor(() =>
+        expect(
+          observer.events.some(
+            (event) => event.type === "node.updated" && event.data.stopSupported,
+          ),
+        ).toBe(true),
+      );
+      const childNode = observer.events.find((event) => event.type === "node.started");
+      if (childNode?.type !== "node.started") throw new Error("Expected child node");
+      const childThreadId = childNode.data.sessionRef!;
+
+      // Interrupt while root is executing and child ignores interrupt (child never emits turn/completed).
+      // Root delivers final_answer + turn/completed("completed") AFTER #performInterrupt's idle check.
+      const startedInterruptAt = Date.now();
+      await session.interrupt();
+      await execution;
+      const elapsedMs = Date.now() - startedInterruptAt;
+      // Must settle from what it knows rather than waiting the full 1500ms requestTimeoutMs.
+      expect(elapsedMs).toBeLessThan(1_000);
+
+      // Final answer is preserved in transcript, yet Run outcome is run.interrupted (never run.completed / run.failed).
+      expect(
+        observer.events.some(
+          (event) =>
+            event.type === "assistant.message" &&
+            event.data.content.some(
+              (part) => part.type === "text" && part.text === "Root delivered its final answer",
+            ),
+        ),
+      ).toBe(true);
+      expect(observer.events.some((event) => event.type === "run.interrupted")).toBe(true);
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(false);
+      expect(observer.events.some((event) => event.type === "run.failed")).toBe(false);
+
+      // Stop proof still independently unloads and closes the child thread.
+      await session.stop();
+      await observer.done;
+      const captured = await fixture.capture();
+      expect(captured).toContainEqual({ fakeThreadClosed: childThreadId });
+      expect(captured).toContainEqual({ fakeThreadClosed: session.providerSessionReference });
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("B7b: remembers stopNode called between node.started and child turn/started and interrupts the child turn once it arrives", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-b7b-"));
+    const releaseFile = join(dir, "release-child-turn");
+    const fixture = await setup("subagents-hold", {
+      requestTimeoutMs: 2_000,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        `--hold-child-turn-start-file=${releaseFile}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "b7b-stopping"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Delegate to a researcher"));
+      const nodeStarted = await observer.waitFor("node.started");
+      const childThreadId = nodeStarted.data.sessionRef!;
+
+      // Forced order: call stopNode BEFORE child turn/started has been sent.
+      const stoppingNode = stopping.stopNode!(nodeStarted.data.nodeId);
+      await writeFile(releaseFile, "go", "utf8");
+      await stoppingNode;
+
+      void stopping.interrupt();
+      await stopping.stop();
+      await observer.done;
+      const captured = await fixture.capture();
+      const childInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === childThreadId,
+      );
+      expect(childInterrupts).toHaveLength(1);
+    } finally {
+      await fixture.adapter.close();
+      await rm(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("W7: clears remembered stopNode state once sent so a later turn of the same child in the same Run is not interrupted", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-w7-"));
+    const releaseFile = join(dir, "release-child-turn");
+    const fixture = await setup("subagents-hold", {
+      requestTimeoutMs: 2_000,
+      serverArguments: [
+        "--unique-threads",
+        "--second-child-turn-after-interrupt",
+        `--hold-child-turn-start-file=${releaseFile}`,
+      ],
+    });
+    try {
+      const session = await fixture.adapter.startSession(taskContext(fixture, "w7-second-turn"));
+      const observer = observe(session.events);
+      const executing = session.execute(fixture.turn("Delegate to a researcher"));
+      const nodeStarted = await observer.waitFor("node.started");
+      const childThreadId = nodeStarted.data.sessionRef!;
+
+      // Remember stopNode before child-turn-1 starts.
+      const stoppingNode = session.stopNode!(nodeStarted.data.nodeId);
+      await writeFile(releaseFile, "go", "utf8");
+      await stoppingNode;
+      await executing;
+      await session.stop();
+      await observer.done;
+
+      const captured = await fixture.capture();
+      const childInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === childThreadId,
+      );
+      expect(childInterrupts).toHaveLength(1);
+      expect((childInterrupts[0]!.params as JsonRecord).turnId).toBe("child-turn-1");
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(true);
+    } finally {
+      await fixture.adapter.close();
+      await rm(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("H2(a): interrupts a late follow-up turn/start reply after the old active-turn path is unavailable and retries root unload without retiring neighbours", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-late-turn-start-"));
+    const turnStartRelease = join(dir, "turn-start-release");
+    const childCloseRelease = join(dir, "child-close-release");
+    const fixture = await setup("subagents-late-root-followup", {
+      requestTimeoutMs: 5_000,
+      threadCloseMaxMs: 400,
+      serverArguments: [
+        "--unique-threads",
+        "--unique-turns",
+        `--hold-followup-turn-start-file=${turnStartRelease}`,
+        `--delay-child-unsubscribe-ms=250`,
+        `--hold-close-file=${childCloseRelease}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Start a background child"));
+      // Wait for root turn 1 to finish while child 1 stays running (active.root === "idle").
+      await observer.waitFor("run.phase");
+      // Steer starts a follow-up turn/start (no execute() active-turn interrupt fallback).
+      const steering = stopping.steer!({
+        attachments: new Map(),
+        input: fixture.turn("Follow up on root").inputs[0]!,
+      }).catch(() => undefined);
+      await vi.waitFor(async () =>
+        expect(await fixture.capture()).toContainEqual({
+          fakeTurnStartHeld: stopping.providerSessionReference,
+        }),
+      );
+      // stop() waits 400ms for rootStart, then round 0 unsubscribes root and child:
+      // root's unload times out at +400ms (unclosed.add(root)), while child's
+      // thread/unsubscribe replies at +250ms and emits fakeCloseHeld so its own
+      // 400ms close window runs until +650ms.
+      const stopPromise = stopping.stop();
+      await vi.waitFor(
+        async () =>
+          expect((await fixture.capture()).some((message) => "fakeCloseHeld" in message)).toBe(
+            true,
+          ),
+        { interval: 10 },
+      );
+      const closeHeldAt = Date.now();
+      await vi.waitFor(() => expect(Date.now() - closeHeldAt).toBeGreaterThanOrEqual(180), {
+        interval: 10,
+      });
+      // Deliver the late root turn/start reply AFTER root's round-0 unload returned false
+      // and with no execute() active-turn interrupt path.
+      await writeFile(turnStartRelease, "");
+      await vi
+        .waitFor(
+          async () =>
+            expect(await fixture.capture()).toContainEqual({
+              fakeThreadClosed: stopping.providerSessionReference,
+            }),
+          { interval: 10, timeout: 120 },
+        )
+        .catch(() => undefined);
+      await writeFile(childCloseRelease, "");
+      await stopPromise;
+      await steering;
+      await observer.done;
+      const captured = await fixture.capture();
+      const threadId = stopping.providerSessionReference;
+      const interrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === threadId,
+      );
+      expect(interrupts).toHaveLength(1);
+      expect(captured).toContainEqual({ fakeThreadClosed: threadId });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("H2(b): interrupts a late sibling child turn/started after root idle stop and closes cleanly without retiring neighbours", async () => {
+    const fixture = await setup("subagents-late-sibling", {
+      requestTimeoutMs: 1_000,
+      serverArguments: ["--unique-threads", "--ignore-interrupt"],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Delegate to researchers"));
+      await observer.waitFor("run.phase");
+      // Root is now idle while child 1 runs; interrupt() interrupts child 1 and
+      // publishes terminal immediately, while the server emits a late sibling child
+      // turn/started. Stop must still interrupt that sibling once and close it cleanly.
+      await stopping.interrupt();
+      await stopping.stop();
+      await observer.done;
+      const captured = await fixture.capture();
+      const siblingInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).turnId === "sibling-turn-1",
+      );
+      expect(siblingInterrupts).toHaveLength(1);
+      const siblingThreadId = (siblingInterrupts[0]!.params as JsonRecord).threadId as string;
+      expect(captured).toContainEqual({ fakeThreadClosed: siblingThreadId });
+      expect(captured).toContainEqual({ fakeThreadClosed: stopping.providerSessionReference });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("H3: retireEngine retires only the shared server its session ran on and leaves another shared server alive", async () => {
+    const fixture = await setup("happy", {
+      serverArguments: ["--unique-threads"],
+    });
+    try {
+      const first = await fixture.adapter.startSession(taskContext(fixture, "first"));
+      fixture.adapter.recycle?.();
+      const second = await fixture.adapter.startSession(taskContext(fixture, "second"));
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(2);
+      const [firstPid, secondPid] = pids;
+      expect(processAlive(firstPid!)).toBe(true);
+      expect(processAlive(secondPid!)).toBe(true);
+      expect(typeof first.retireEngine).toBe("function");
+      await first.retireEngine!("Retire only the failing conversation's shared server");
+      expect(processAlive(firstPid!)).toBe(false);
+      expect(processAlive(secondPid!)).toBe(true);
+      expect(second.usable).toBe(true);
+      await second.stop();
     } finally {
       await fixture.adapter.close();
     }
@@ -3780,7 +4715,6 @@ function compatibleContext(directory: string, kind: "ambient" | "isolated") {
     config: { baseUrl: "https://openrouter.ai/api/v1" },
     environment: {},
     providerState: testProviderState(directory, kind),
-    runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId: "openai-compatible",
     workingDirectory: directory,
@@ -3813,7 +4747,7 @@ interface SetupOptions {
   readonly accessMode?: HarnessSessionContext["accessMode"];
   readonly additionalWritableRoot?: string;
   readonly commandEnvironment?: Readonly<Record<string, string>>;
-  /** Without one the session gets an app-server of its own, as a sandboxed Run does. */
+  /** Without one the session gets an app-server of its own. */
   readonly sharedEngine?: false;
   readonly environmentOverrides?: Readonly<Record<string, string>>;
   readonly executable?: string;
@@ -3823,12 +4757,15 @@ interface SetupOptions {
   readonly maxStderrBytes?: number;
   readonly maxWriteBufferBytes?: number;
   readonly machineAccessNotice?: string;
+  readonly personalContext?: boolean;
+  /** Defaults to `personalContext`: the person's own task unless a test says otherwise. */
+  readonly personLineage?: boolean;
   readonly requestTimeoutMs?: number;
   readonly retryBudgetMs?: number;
   readonly providerStateKind?: "ambient" | "isolated";
-  readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly shutdownGraceMs?: number;
   readonly startupTimeoutMs?: number;
+  readonly threadCloseMaxMs?: number;
   readonly wrapProcessLaunch?: HarnessSessionContext["wrapProcessLaunch"];
 }
 
@@ -3839,12 +4776,57 @@ interface Fixture {
   turn(text: string): HarnessRunInput;
 }
 
+/** Requests the fake app-server holds until the test releases them (`FAKE_CODEX_HOLD`). */
+async function heldRequests(...methods: string[]) {
+  const directory = await mkdtemp(join(tmpdir(), "codex-held-"));
+  temporaryDirectories.push(directory);
+  const files = Object.fromEntries(
+    methods.map((method, index) => [method, join(directory, `release-${index}`)]),
+  );
+  return {
+    environment: JSON.stringify(files),
+    release: async (method: string) => await writeFile(files[method]!, ""),
+  };
+}
+
+/**
+ * Resolves once the client has sent `method` to Codex: its own deadline, if it has one, is armed
+ * by then. Observes the client's calls, so it needs no clock.
+ */
+function whenSent(method: string): Promise<void> {
+  const sent = Promise.withResolvers<void>();
+  for (const name of ["request", "lifecycleRequest"] as const) {
+    const original = CodexStdioClient.prototype[name] as (
+      this: CodexStdioClient,
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    vi.spyOn(CodexStdioClient.prototype, name).mockImplementation(function (
+      this: CodexStdioClient,
+      ...args: unknown[]
+    ) {
+      const answer = original.apply(this, args);
+      if (args[0] === method) sent.resolve();
+      return answer;
+    });
+  }
+  return sent.promise;
+}
+
 async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixture> {
   const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-test-"));
   temporaryDirectories.push(directory);
+  const defaultCodexHome = join(directory, "ambient-codex-home");
+  if (!options.environmentOverrides?.CODEX_HOME) {
+    await mkdir(defaultCodexHome, { recursive: true });
+    await writeFile(
+      join(defaultCodexHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "sk-test-stub", auth_mode: "apikey" }),
+    );
+  }
   const capturePath = join(directory, "capture.jsonl");
   const environment = stringEnvironment({
     ...process.env,
+    CODEX_HOME: defaultCodexHome,
     ...options.environmentOverrides,
     ...(scenario === "ambient-extensions"
       ? { FAKE_CODEX_AMBIENT_SKILL_PATH: join(directory, "ambient-skill", "SKILL.md") }
@@ -3860,6 +4842,9 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       arguments: options.executable ? [] : [fakeServer, ...(options.serverArguments ?? [])],
       executable: options.executable ?? process.execPath,
     },
+    ...(options.threadCloseMaxMs !== undefined
+      ? { threadCloseMaxMs: options.threadCloseMaxMs }
+      : {}),
     ...(options.retryBudgetMs !== undefined ? { retryBudgetMs: options.retryBudgetMs } : {}),
   });
   const harnessInstanceId = createId("harnessInstance") as HarnessInstanceId;
@@ -3883,9 +4868,9 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     instanceId: harnessInstanceId,
   });
   const context: HarnessSessionContext = {
+    personalContext: options.personalContext ?? false,
+    personLineage: options.personLineage ?? options.personalContext ?? false,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     accessMode: options.accessMode ?? "full-access",
     agentTools: {
       tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
@@ -3917,12 +4902,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     },
     instructions: "Follow the workspace instructions.",
     platformGuide: "Opensteer platform guide.",
-    providerState: testProviderState(
-      directory,
-      options.providerStateKind ??
-        (options.runtimeBoundary?.kind === "isolated-service" ? "isolated" : "ambient"),
-    ),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
+    providerState: testProviderState(directory, options.providerStateKind ?? "ambient"),
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gpt-5.6-sol",
       options: { effort: "low" },
@@ -4121,7 +5101,6 @@ async function codexEnvironments(
       config: {},
       environment: {},
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory,
@@ -4138,7 +5117,6 @@ async function inspectScenario(scenario: string): Promise<HarnessInspectionResul
     config: {},
     environment: stringEnvironment(process.env),
     providerState: testProviderState(directory, "ambient"),
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId: "openai",
     workingDirectory: directory,
@@ -4327,6 +5305,83 @@ describe("Codex Thread naming", () => {
       await fixture.adapter.close();
     }
   });
+
+  it("runs ambient background text from the Opensteer-owned CODEX_HOME and refuses keyring logins without spawning", async () => {
+    const ambientHome = await mkdtemp(join(tmpdir(), "opensteer-codex-bg-ambient-"));
+    temporaryDirectories.push(ambientHome);
+    await writeFile(
+      join(ambientHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "sk-bg-stub", auth_mode: "apikey" }),
+    );
+    await writeFile(
+      join(ambientHome, "config.toml"),
+      [
+        'notify = ["echo", "never-run-for-bg"]',
+        'developer_instructions = "person-secret"',
+        'model_provider = "openai"',
+        "",
+      ].join("\n"),
+    );
+    let launched: HarnessProcessLaunch | undefined;
+    const fixture = await setup("thread-name", {
+      environmentOverrides: { CODEX_HOME: ambientHome },
+      providerStateKind: "ambient",
+    });
+    try {
+      expect(
+        await fixture.adapter.generateText!({
+          context: {
+            ...fixture.context,
+            scratchDirectory: fixture.context.threadStateDirectory,
+            wrapProcessLaunch: (launch) => {
+              launched = launch;
+              return launch;
+            },
+          },
+          modelSelection: fixture.context.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
+      const expectedHome = codexOthersHomeDirectory(fixture.context.providerState, ambientHome);
+      expect(launched?.environment.CODEX_HOME).toBe(expectedHome);
+      expect(launched?.args).toContain('cli_auth_credentials_store="file"');
+      const writtenConfig = await readFile(join(expectedHome, "config.toml"), "utf8");
+      expect(writtenConfig).not.toContain("never-run-for-bg");
+      expect(writtenConfig).not.toContain("person-secret");
+    } finally {
+      await fixture.adapter.close();
+    }
+
+    const keyringHome = await mkdtemp(join(tmpdir(), "opensteer-codex-bg-keyring-"));
+    temporaryDirectories.push(keyringHome);
+    await writeFile(join(keyringHome, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+    let keyringSpawns = 0;
+    const keyringFixture = await setup("thread-name", {
+      environmentOverrides: { CODEX_HOME: keyringHome },
+      providerStateKind: "ambient",
+    });
+    try {
+      expect(
+        await keyringFixture.adapter.generateText!({
+          context: {
+            ...keyringFixture.context,
+            scratchDirectory: keyringFixture.context.threadStateDirectory,
+            wrapProcessLaunch: (launch) => {
+              keyringSpawns += 1;
+              return launch;
+            },
+          },
+          modelSelection: keyringFixture.context.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: false, failure: "unavailable" });
+      expect(keyringSpawns).toBe(0);
+    } finally {
+      await keyringFixture.adapter.close();
+    }
+  });
 });
 
 it("delivers distinct full names for two plugins and a loose review skill", async () => {
@@ -4371,6 +5426,15 @@ it("retains tool-result image files without provider base64", async () => {
     await fixture.adapter.close();
   }
 });
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 describe("Codex provider retry visibility and budget", () => {
   it("surfaces retry notices, ignores userMessage items for recovery, and emits recovered on model output", async () => {
@@ -4540,6 +5604,180 @@ describe("Codex provider retry visibility and budget", () => {
       const failed = await observer.waitFor("run.failed");
       expect(failed.data.message).toContain("Selected model is at capacity.");
       expect(observer.events.some((event) => event.type === "run.retry")).toBe(false);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("clears the retry budget on Stop during a retry wait and ends with run.interrupted without failing or retiring the shared app-server", async () => {
+    const fixture = await setup("retry-budget-exceeded", {
+      retryBudgetMs: 120,
+      serverArguments: ["--unique-threads"],
+    });
+    const retryingSession = await fixture.adapter.startSession(fixture.context);
+    const siblingSession = await fixture.adapter.startSession({
+      ...fixture.context,
+      threadId: createId("thread"),
+      threadStateDirectory: join(fixture.context.workspacePath, "state", "threads", "sibling"),
+    });
+    const retryingObserver = observe(retryingSession.events);
+    const siblingObserver = observe(siblingSession.events);
+    const turnAbort = new AbortController();
+    try {
+      const turn = { ...fixture.turn("Go"), signal: turnAbort.signal };
+      const running = retryingSession.execute(turn);
+      await retryingObserver.waitFor("run.retry");
+      const retryCountAtStop = retryingObserver.events.filter((e) => e.type === "run.retry").length;
+      turnAbort.abort(new Error("user stopped"));
+      await running;
+      // Shared app-server stayed alive and usable for the sibling session. Running
+      // the sibling through its own retry budget also proves past the original
+      // budget window that the stopped turn's retry timer never fired `run.failed`.
+      expect(siblingSession.usable).toBe(true);
+      await siblingSession.execute(fixture.turn("Go"));
+      await siblingObserver.waitFor("run.failed");
+      expect(retryingObserver.events.some((e) => e.type === "run.interrupted")).toBe(true);
+      expect(retryingObserver.events.some((e) => e.type === "run.failed")).toBe(false);
+      expect(retryingObserver.events.filter((e) => e.type === "run.retry")).toHaveLength(
+        retryCountAtStop,
+      );
+    } finally {
+      await retryingSession.stop();
+      await siblingSession.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("keeps the shared Codex app-server alive for sibling sessions when one thread exhausts its retry budget", async () => {
+    const fixture = await setup("retry-budget-exceeded", {
+      retryBudgetMs: 100,
+      serverArguments: ["--unique-threads"],
+    });
+    const stalled = await fixture.adapter.startSession(fixture.context);
+    const sibling = await fixture.adapter.startSession({
+      ...fixture.context,
+      threadId: createId("thread"),
+      threadStateDirectory: join(fixture.context.workspacePath, "state", "threads", "sibling-2"),
+    });
+    const stalledObserver = observe(stalled.events);
+    const siblingObserver = observe(sibling.events);
+    try {
+      await stalled.execute(fixture.turn("Go"));
+      await stalledObserver.waitFor("run.failed");
+      expect(sibling.usable).toBe(true);
+      expect(siblingObserver.events.some((e) => e.type === "run.interrupted")).toBe(false);
+      expect(siblingObserver.events.some((e) => e.type === "run.failed")).toBe(false);
+    } finally {
+      await stalled.stop();
+      await sibling.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("does not retire or disturb a running shared Codex app-server when an others' task is refused before start", async () => {
+    const keyringHome = await mkdtemp(join(tmpdir(), "opensteer-codex-shared-refuse-"));
+    temporaryDirectories.push(keyringHome);
+    await writeFile(join(keyringHome, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+    const fixture = await setup("reasoning", {
+      environmentOverrides: { CODEX_HOME: keyringHome },
+      personalContext: true,
+      providerStateKind: "ambient",
+      serverArguments: ["--unique-threads"],
+    });
+    const ownSession = await fixture.adapter.startSession(fixture.context);
+    const ownObserver = observe(ownSession.events);
+    try {
+      await expect(async () =>
+        fixture.adapter.startSession({
+          ...fixture.context,
+          personLineage: false,
+          threadId: createId("thread"),
+          threadStateDirectory: join(fixture.context.workspacePath, "state", "threads", "others"),
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(ownSession.usable).toBe(true);
+      await ownSession.execute(fixture.turn("Still alive"));
+      await ownObserver.waitFor("run.completed");
+      expect(ownObserver.events.some((e) => e.type === "run.interrupted")).toBe(false);
+      expect(ownObserver.events.some((e) => e.type === "run.failed")).toBe(false);
+    } finally {
+      await ownSession.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("defers tool argument formatting to Runner so ordinary calls stay byte-identical and oversized secret commands redact before truncation (M1)", async () => {
+    const fixture = await setup("oversized-mcp-tool-args");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Run oversized tool calls"));
+      await observer.waitFor("run.completed");
+      const started = observer.events.filter((e) => e.type === "tool.started");
+      expect(started).toHaveLength(3);
+
+      const smallExpectedRaw = { query: "status", limit: 10, nested: { ok: true } };
+      const largeExpectedRaw = {
+        query: "bulk-read",
+        items: Array.from({ length: 5000 }, (_, i) => `item-${i}-0123456789abcdef`),
+      };
+      // Ordinary calls (both under and over the 64 KiB cap): Runner's
+      // redact-then-format produces byte-identical arguments to the old
+      // driver-side createToolArguments(rawArgs).
+      const smallAfter = createToolArguments(
+        redactToolArgumentsForStorage(started[0]!.data.arguments, started[0]!.data.tool),
+      );
+      const smallBefore = createToolArguments(smallExpectedRaw);
+      expect(JSON.stringify(smallAfter)).toBe(JSON.stringify(smallBefore));
+
+      const largeAfter = createToolArguments(
+        redactToolArgumentsForStorage(started[1]!.data.arguments, started[1]!.data.tool),
+      );
+      const largeBefore = createToolArguments(largeExpectedRaw);
+      expect(JSON.stringify(largeAfter)).toBe(JSON.stringify(largeBefore));
+      // Confirm the oversized ordinary call actually exercised the >64 KiB formatter path.
+      expect(typeof (largeAfter as Record<string, unknown>).items).toBe("string");
+
+      // Reviewer regression check: ordinary non-command tool strings starting with `{` and
+      // containing `\uXXXX` stay byte-identical through redact + createToolArguments.
+      const editRaw = {
+        file_path: "/repo/a.ts",
+        old_string: '{\n  const dash = "\\u2014";\n  return dash;\n}',
+      };
+      const bashRaw = { command: '{ printf "\\u00e9"; echo done; } > out.txt' };
+      expect(
+        JSON.stringify(
+          createToolArguments(
+            redactToolArgumentsForStorage(editRaw, { namespace: "codex", name: "apply_patch" }),
+          ),
+        ),
+      ).toBe(JSON.stringify(createToolArguments(editRaw)));
+      expect(
+        JSON.stringify(
+          createToolArguments(
+            redactToolArgumentsForStorage(bashRaw, { namespace: "codex", name: "shell" }),
+          ),
+        ),
+      ).toBe(JSON.stringify(createToolArguments(bashRaw)));
+
+      // Oversized trigger.secrets.set (>64 KiB): driver passes raw object (not
+      // pre-formatted to a string), so Runner redacts secrets and undeclared pad
+      // BEFORE createToolArguments runs — zero secret markers survive.
+      const secretRaw = started[2]!.data.arguments as Record<string, unknown>;
+      expect(typeof secretRaw.command).toBe("object");
+      const secretStored = createToolArguments(
+        redactToolArgumentsForStorage(secretRaw, started[2]!.data.tool),
+      );
+      expect(JSON.stringify(secretStored)).not.toContain("CODEX_OVERSIZED_SECRET_MARKER");
+      expect(secretStored).toEqual({
+        command: {
+          type: "trigger.secrets.set",
+          triggerId: "trg_00000000-0000-4000-8000-000000000001",
+          pad: "[redacted]",
+          set: "[redacted]",
+        },
+      });
     } finally {
       await session.stop();
       await fixture.adapter.close();

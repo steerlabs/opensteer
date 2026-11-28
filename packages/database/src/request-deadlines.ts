@@ -9,10 +9,6 @@ export async function nextPersonalRequestDeadline(database: Kysely<DatabaseSchem
     select least(
       (select (payload->>'expiresAt')::timestamptz from requests
        where ${pendingSignIn} order by payload->>'expiresAt', id limit 1),
-      (select consent_expires_at from personal_team_requests
-       where kind='ask' and terminal_state is null and local_decision is null
-         and consent_expires_at is not null
-       order by consent_expires_at, team_deployment_id, request_id limit 1),
       (select edit_lease_expires_at from thread_inputs
        where edit_lease_id is not null and edit_lease_expires_at is not null
        order by edit_lease_expires_at limit 1),

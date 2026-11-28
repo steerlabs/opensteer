@@ -1,0 +1,275 @@
+import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { heartbeatUrl } from "@opensteer/shared/heartbeat";
+import {
+  BrowserPoolHostReleaseSchema,
+  CloudComputerBootReleaseSchema,
+  CloudComputerHostnameSchema,
+  CloudComputerLocationSchema,
+  CloudComputerPlanSchema,
+  CloudComputerRegionSchema,
+  CloudComputerReleaseSchema,
+  CloudComputerReleaseManifestUrlSchema,
+  defaultBrowserPoolAdminPort,
+  defaultBrowserPoolAgentPort,
+  defaultBrowserPoolRelayPort,
+} from "@opensteer/control-plane-protocol";
+import { z } from "zod";
+
+/** Reserve 10% of the durable ext4 profile disk for root blocks, journal, and inode tables. */
+export const browserPoolProfileDiskOverheadRatio = 0.1;
+
+const prefix = "OPENSTEER_CLOUD_COMPUTER_";
+
+/** Resolve settings staged by the Account deployment's optional runtime secret mount. */
+export function withManagedHomeConfigFiles(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const directory = env.OPENSTEER_MANAGED_HOME_CONFIG_DIRECTORY;
+  if (directory === undefined) return env;
+  const result = { ...env };
+  for (const file of readdirSync(directory, { withFileTypes: true })) {
+    if (
+      !file.isFile() ||
+      !/^OPENSTEER_CLOUD_COMPUTER_[A-Z0-9_]+$/u.test(file.name) ||
+      file.name.endsWith("_FILE")
+    )
+      continue;
+    const variable = `${file.name}_FILE`;
+    if (env[file.name] === undefined && env[variable] === undefined)
+      result[variable] = join(directory, file.name);
+  }
+  return result;
+}
+
+export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
+  if (!Object.keys(env).some((key) => key.startsWith(prefix) && env[key] !== undefined)) return;
+  function read<T>(key: string, schema: z.ZodType<T>): T {
+    const name = prefix + key;
+    const file = env[`${name}_FILE`];
+    let value = env[name];
+    if (file !== undefined && value !== undefined)
+      throw new Error(`Configure one of ${name} and ${name}_FILE`);
+    try {
+      if (file !== undefined) value = readFileSync(file, "utf8").trimEnd();
+    } catch {
+      throw new Error(`Could not read ${name}_FILE`);
+    }
+    const result = schema.safeParse(value);
+    if (!result.success) throw new Error(`Missing or invalid ${name}`);
+    return result.data;
+  }
+
+  const release = read(
+    "RELEASE_JSON",
+    z
+      .string()
+      .transform((text, ctx) => {
+        try {
+          return JSON.parse(text) as unknown;
+        } catch {
+          ctx.addIssue({ code: "custom", message: "Invalid release JSON" });
+          return z.NEVER;
+        }
+      })
+      .pipe(CloudComputerReleaseSchema.merge(CloudComputerBootReleaseSchema)),
+  );
+  const has = (key: string) =>
+    env[`${prefix}${key}`] !== undefined || env[`${prefix}${key}_FILE`] !== undefined;
+  const integer = (min: number, max: number) =>
+    z.string().regex(/^\d+$/u).transform(Number).pipe(z.number().int().min(min).max(max));
+  const region = read("REGION", CloudComputerLocationSchema);
+  // An installed Cloud Computer updates only from the feed its boot answer gave it: without one it
+  // could never be updated short of a replacement.
+  if (!has("RELEASE_MANIFEST_URL"))
+    throw new Error(
+      `Cloud Computers need a release feed to update from: set ${prefix}RELEASE_MANIFEST_URL`,
+    );
+  // A Cloud Computer's browser runs in the browser pool, always: none runs in its own VM.
+  if (!has("POOL_SLOTS_PER_HOST") || !has("POOL_RELEASE_JSON"))
+    throw new Error(
+      `Cloud Computers need the browser pool: set ${prefix}POOL_SLOTS_PER_HOST and ${prefix}POOL_RELEASE_JSON`,
+    );
+  const browserPool = (() => {
+    const slotsPerHost = read("POOL_SLOTS_PER_HOST", integer(1, 16_384));
+    const profileMib = has("POOL_PROFILE_MIB")
+      ? read("POOL_PROFILE_MIB", integer(64, 1_048_576))
+      : 2048;
+    const profileDiskSizeGb = has("POOL_PROFILE_DISK_SIZE_GB")
+      ? read("POOL_PROFILE_DISK_SIZE_GB", integer(10, 65_536))
+      : 500;
+    const usableProfileDiskMib = Math.floor(
+      profileDiskSizeGb * 1024 * (1 - browserPoolProfileDiskOverheadRatio),
+    );
+    if (slotsPerHost * profileMib > usableProfileDiskMib) {
+      throw new Error(
+        `Browser pool slots (${slotsPerHost} * ${profileMib} MiB) exceed usable profile disk ` +
+          `capacity (${usableProfileDiskMib} MiB of ${profileDiskSizeGb} GiB with 10% filesystem overhead reserved)`,
+      );
+    }
+    return {
+      slotsPerHost,
+      release: read(
+        "POOL_RELEASE_JSON",
+        z
+          .string()
+          .transform((text, ctx) => {
+            try {
+              return JSON.parse(text) as unknown;
+            } catch {
+              ctx.addIssue({ code: "custom", message: "Invalid pool release JSON" });
+              return z.NEVER;
+            }
+          })
+          .pipe(BrowserPoolHostReleaseSchema),
+      ),
+      machineType: has("POOL_MACHINE_TYPE")
+        ? read("POOL_MACHINE_TYPE", CloudComputerLocationSchema)
+        : "n2-standard-8",
+      guestVcpus: has("POOL_GUEST_VCPUS") ? read("POOL_GUEST_VCPUS", integer(1, 32)) : 2,
+      guestMemoryMib: has("POOL_GUEST_MEMORY_MIB")
+        ? read("POOL_GUEST_MEMORY_MIB", integer(256, 65_536))
+        : 2048,
+      profileMib,
+      profileDiskSizeGb,
+      agentPort: has("POOL_AGENT_PORT")
+        ? read("POOL_AGENT_PORT", integer(1, 65_535))
+        : defaultBrowserPoolAgentPort,
+      relayPort: has("POOL_RELAY_PORT")
+        ? read("POOL_RELAY_PORT", integer(1, 65_535))
+        : defaultBrowserPoolRelayPort,
+    };
+  })();
+  // Every Home's firewall lets its Host reach these two ports only, after rejecting the mail
+  // ports (deploy/home/firewall.sh): ports it would refuse leave no path to any browser. Each
+  // pool host also serves the provisioner's admin port (7311 unless the provisioner says
+  // otherwise with its lease, which is refused on a clash); none may be the same.
+  const refusedPorts = [25, 465, 587, defaultBrowserPoolAdminPort];
+  if (
+    browserPool.agentPort === browserPool.relayPort ||
+    refusedPorts.includes(browserPool.agentPort) ||
+    refusedPorts.includes(browserPool.relayPort)
+  )
+    throw new Error(
+      "The browser pool's agent and relay ports must differ and must not be 25, 465, 587 or the pool's admin port",
+    );
+  return {
+    provisionerEmail: read(
+      "PROVISIONER_EMAIL",
+      z.email().refine((value) => value.endsWith(".iam.gserviceaccount.com")),
+    ),
+    domain: read("DOMAIN", CloudComputerHostnameSchema.max(214)),
+    region,
+    browserPool,
+    ...(env[`${prefix}REGION_LABEL`] !== undefined ||
+    env[`${prefix}REGION_LABEL_FILE`] !== undefined
+      ? { regionLabel: read("REGION_LABEL", CloudComputerRegionSchema.shape.label) }
+      : {}),
+    serverType: read("SERVER_TYPE", CloudComputerLocationSchema),
+    release,
+    releaseManifestUrl: read("RELEASE_MANIFEST_URL", CloudComputerReleaseManifestUrlSchema),
+    ...(env[`${prefix}BACKUP_KEY_PROJECT`] !== undefined ||
+    env[`${prefix}BACKUP_KEY_PROJECT_FILE`] !== undefined
+      ? {
+          backupKeyProject: read(
+            "BACKUP_KEY_PROJECT",
+            z.string().regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/u),
+          ),
+        }
+      : {}),
+    stripeKey: read(
+      "STRIPE_SECRET_KEY",
+      z.string().regex(/^(?:sk|rk)_(?:test|live)_[A-Za-z0-9]{8,}$/u),
+    ),
+    stripeWebhookSecret: read(
+      "STRIPE_WEBHOOK_SECRET",
+      z.string().regex(/^whsec_[A-Za-z0-9]{8,}$/u),
+    ),
+    stripePortalConfigurationId: read(
+      "STRIPE_PORTAL_CONFIGURATION_ID",
+      z.string().regex(/^bpc_[A-Za-z0-9_]{1,128}$/u),
+    ),
+    stripePriceId: read("STRIPE_PRICE_ID", z.string().regex(/^price_[A-Za-z0-9]{1,128}$/u)),
+    plan: {
+      name: read("PLAN_NAME", CloudComputerPlanSchema.shape.name),
+      currency: read("CURRENCY", CloudComputerPlanSchema.shape.currency),
+      amountMinor: read(
+        "PRICE_MINOR",
+        z
+          .string()
+          .regex(/^\d+$/u)
+          .transform(Number)
+          .pipe(CloudComputerPlanSchema.shape.amountMinor),
+      ),
+    },
+    ipv6Enabled:
+      env[`${prefix}IPV6`] === undefined && env[`${prefix}IPV6_FILE`] === undefined
+        ? false
+        : read("IPV6", z.enum(["off", "on"])) === "on",
+    /**
+     * A person who paid and has no ready Cloud Computer this many minutes after its readiness
+     * began is a page. At least 15, and keep it above the provisioner's own readiness deadline
+     * (`OPENSTEER_HOME_READINESS_TIMEOUT_MS`, 10 minutes by default), inside which a first set-up
+     * (a few minutes) and a restore before boot-complete finish or are reported failed.
+     */
+    notReadyAfterMinutes:
+      env[`${prefix}NOT_READY_MINUTES`] === undefined &&
+      env[`${prefix}NOT_READY_MINUTES_FILE`] === undefined
+        ? 30
+        : read(
+            "NOT_READY_MINUTES",
+            z.string().regex(/^\d+$/u).transform(Number).pipe(z.number().int().min(15).max(1_440)),
+          ),
+    /** Sent a GET after each clean billing pass, so a monitor knows the pass still runs. */
+    heartbeatUrl:
+      env[`${prefix}HEARTBEAT_URL`] === undefined &&
+      env[`${prefix}HEARTBEAT_URL_FILE`] === undefined
+        ? undefined
+        : read(
+            "HEARTBEAT_URL",
+            z
+              .string()
+              .transform((value, ctx) => {
+                try {
+                  return heartbeatUrl(value);
+                } catch {
+                  ctx.addIssue({ code: "custom", message: "Invalid heartbeat address" });
+                  return z.NEVER;
+                }
+              })
+              .pipe(z.instanceof(URL)),
+          ),
+    interval:
+      env[`${prefix}PRICE_INTERVAL`] === undefined &&
+      env[`${prefix}PRICE_INTERVAL_FILE`] === undefined
+        ? ("month" as const)
+        : read("PRICE_INTERVAL", z.enum(["day", "week", "month", "year"])),
+  };
+}
+
+export type CloudComputerConfig = NonNullable<ReturnType<typeof loadCloudComputerConfig>>;
+
+const googleRegionLabels = new Map([
+  ["us-central1", "Council Bluffs, IA"],
+  ["us-east1", "Moncks Corner, SC"],
+  ["us-east4", "Ashburn, VA"],
+  ["us-west1", "The Dalles, OR"],
+  ["us-west2", "Los Angeles, CA"],
+  ["northamerica-northeast1", "Montréal"],
+  ["europe-west1", "St. Ghislain"],
+  ["europe-west2", "London"],
+  ["europe-west3", "Frankfurt"],
+  ["europe-west4", "Eemshaven"],
+  ["asia-east1", "Taiwan"],
+  ["asia-northeast1", "Tokyo"],
+  ["asia-southeast1", "Singapore"],
+  ["australia-southeast1", "Sydney"],
+]);
+
+export function cloudComputerRegion(
+  id: string,
+  config: Pick<CloudComputerConfig, "region" | "regionLabel">,
+) {
+  const label =
+    (id === config.region ? config.regionLabel : undefined) ??
+    googleRegionLabels.get(id.replace(/-[a-z]$/u, ""));
+  return label ? { id, label } : undefined;
+}

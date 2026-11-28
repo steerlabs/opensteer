@@ -76,6 +76,22 @@ final class GrantTests: BrokerTestCase {
     XCTAssertEqual(entries.last?.account, "a•••@example.com")
   }
 
+  func testFreshApprovalIgnoresAnExistingGrant() async throws {
+    try await harness.ready(items: [Self.alex])
+    let desktop = try await harness.client()
+    try await allow(desktop, "alex@example.com")
+    let id = UUID().uuidString.lowercased()
+    guard case .object(var fields) = Fixtures.request(id) else {
+      return XCTFail("Invalid request fixture")
+    }
+    fields["alwaysAsk"] = .bool(true)
+    let reply = try await desktop.call("signin.request", .object(fields))
+    XCTAssertEqual(reply.result?["decision"], .string("approve"))
+    XCTAssertNil(reply.result?["login"])
+    _ = try await desktop.call("signin.cancel", Fixtures.transaction(id))
+    XCTAssertEqual(try harness.savedGrants().map(\.key), [Fixtures.grantKey()])
+  }
+
   /// G1: the grant answers only for its own Deployment, personal Deployment and site.
   func testAGrantMatchesOnlyItsDeploymentAndSite() async throws {
     try await harness.ready(items: [

@@ -6,10 +6,8 @@ import {
   type FileOpenInput,
   type PersonalReferenceNavigationPorts,
   type ReferenceDestination,
-  type ReferenceNavigationPorts,
 } from "@opensteer/client/references";
-import type { TeamSessionClient } from "@opensteer/client/team";
-import { classifyHref, teamPageUrl, type ThreadId } from "@opensteer/core";
+import { classifyHref, type ThreadId } from "@opensteer/core";
 import { tabRoute } from "../browser/surface-route.js";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
@@ -153,16 +151,13 @@ export function PersonalReferenceProvider(props: {
             return;
         }
       },
-      openTeamPage: async (page) => {
-        navigation.navigate("JoinTeam", { link: teamPageUrl(page) });
-      },
       openFile: async (input: FileOpenInput) => {
         navigation.navigate("FileViewer", { deploymentId, threadId, ...input });
       },
     };
     const open = async (href: string): Promise<void> => {
       const link = classifyHref(href);
-      if (link.kind !== "reference" && link.kind !== "team-page" && link.kind !== "file") return;
+      if (link.kind !== "reference" && link.kind !== "file") return;
       // As T3 does, a newer tap replaces one still on its way.
       current.current?.abort();
       const controller = new AbortController();
@@ -174,7 +169,6 @@ export function PersonalReferenceProvider(props: {
       let host: HostClient | null = null;
       try {
         void Haptics.selectionAsync();
-        if (link.kind === "team-page") return await ports.openTeamPage(link.page);
         host = await attachedHost(mobile, deploymentId, controller.signal);
         if (link.kind === "file") {
           const { path, ...position } = link.file;
@@ -213,44 +207,6 @@ export function PersonalReferenceProvider(props: {
       open,
     };
   }, [client, deploymentId, mobile, navigation, threadId]);
-  return (
-    <ReferenceNavigationContext.Provider value={value}>
-      {props.children}
-    </ReferenceNavigationContext.Provider>
-  );
-}
-
-/**
- * The words of one team: its pages open through that team's own session and
- * its authorized reads. A personal Opensteer's references and files mean
- * nothing here, so they stay words.
- */
-export function TeamReferenceProvider(props: {
-  readonly children: ReactNode;
-  readonly client: TeamSessionClient | null;
-  readonly origin: string;
-  readonly teamId: string;
-}): ReactNode {
-  const { client, origin, teamId } = props;
-  const navigation = useNavigation();
-  const value = useMemo((): ReferenceNavigation => {
-    const ports: ReferenceNavigationPorts = {
-      openReference: async () => undefined,
-      openTeamPage: async (page) => {
-        navigation.navigate("JoinTeam", { link: teamPageUrl(page) });
-      },
-    };
-    return {
-      context: { kind: "team", client, origin, teamId },
-      ports,
-      open: async (href) => {
-        const link = classifyHref(href);
-        if (link.kind !== "team-page") return;
-        void Haptics.selectionAsync();
-        await ports.openTeamPage(link.page).catch(cannotOpen);
-      },
-    };
-  }, [client, navigation, origin, teamId]);
   return (
     <ReferenceNavigationContext.Provider value={value}>
       {props.children}

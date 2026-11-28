@@ -4,22 +4,31 @@ Release builders consume a green main SHA; there is no local release requalifica
 [release.yml](../.github/workflows/release.yml) and the [desktop-builds skill](../.agents/skills/desktop-builds/SKILL.md).
 Tim performs every credential operation; agents never read or operate on key material.
 
-## Fresh baseline and team servers
+## Fresh baseline
 
 Supported Personal databases upgrade in place. Migration 0038 converts Personal state after the
 plugin migrations. Desktop Start fresh renames personal data aside and creates a new Deployment
 identity. Phones then pair again, and the old Account/Connect entry remains removable. Test reset
 only in disposable fixtures or a VM.
 
-Self-hosted team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
-scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
-there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
-and each tag's version names the images it runs. The Personal Host and apps update together at
-Personal API version 65. Version 65 carries full inline transcript messages with 1 MiB detail
-snapshots and requires an update for clients on version 64 or older. Agent-enabled Runners update
-alongside the Host and negotiate
-`run-events-v2` separately. Team keeps its own API compatibility window.
-Hosted teams use the hosted release policy instead.
+The Personal Host and apps update together at Personal API version 66. Version 65 carried full
+inline transcript messages with 1 MiB detail snapshots; version 66 removed every team declaration
+from the wire, and both require an update for clients on an earlier version. Agent-enabled
+Runners update alongside the Host and negotiate `run-events-v2` separately.
+
+## Chats are connected agents (Personal API 66)
+
+Slack and iMessage chats become connected agents: each is listed with the other connected agents,
+with what it can use, Stop and Disconnect, and on Messaging the person links "me" with a code and
+adds chats. Routes and sender approvals are gone; migration 0053 converts each active route to a
+chat that only "me" can give work to, and ties tasks from before the update to "Messages before
+the update", whose tasks run without the person's personal context. A paused account holds its
+chats' replies and Runs; Slack does not deliver what is sent meanwhile, iMessage does.
+
+**Rolling back** to a build before this one keeps the person's data but not every behaviour: the old
+build cannot link a second identity on an account or create an iMessage connection with two or more
+addresses (the one-"me" index refuses it); identities the update unlinked stay unlinked; chats
+disconnected on the new build stay ended. Nothing gets wider than it was before the update.
 
 ## Build inputs and local proof
 
@@ -175,19 +184,6 @@ unavailable until every owning storage root reconciles its inventory ([profile
 authority](browser-sessions.md#profile-state)). Restoring runtime storage backwards too is outside
 this guarantee.
 
-## Team images
-
-The team Host (`host` target, kind set at runtime) and team gateway (`team-gateway`) publish to
-`ghcr.io/steerlabs/opensteer-team-host` and `-team-gateway` as one linux/amd64 and linux/arm64
-index per version, each architecture built on its own native runner. An insider publishes
-version `X.Y.Z` before its tag; Stable promotion reuses that `X.Y.Z`, so Stable
-runs the bytes Beta ran. GHCR tags are mutable, so [team-images.sh](../.github/scripts/team-images.sh)
-writes a version once and refuses one that records another source. There are no moving channel
-tags: the release tags are the channel feed. The `team-images` job outputs `host_image` and
-`gateway_image` as digest references; hosted teams take a Host digest only through
-promotion, and only self-hosted teams use the gateway. Tim makes both
-packages public once, after their first push.
-
 ## Account service
 
 The `account` job ships the Account service on every automatic insider release, before that
@@ -198,6 +194,11 @@ it needs, never falling back to a weaker path. A reasonless refusal stays retrya
 status alone never proves an external effect did not happen. New pods migrate at startup while the previous release serves, so add
 first and drop or rename only once no running release reads the old shape. Secrets stay in
 Secret Manager; [deploy/account](../deploy/account) holds only their names and versions.
+
+Rollback is forward-only once a release has migrated. The Account and the Host both refuse to
+start against a database that recorded a migration they do not know, so an earlier image cannot
+be redeployed over a migrated database. Roll forward with a fix, or restore the database snapshot
+taken before the migrating release together with that earlier image.
 
 Outside this repo, the GitHub environment `account` (main only) is the sole caller the Workload
 Identity provider `github-account-deployer` in `opensteer-admin`'s `github` pool admits. Its

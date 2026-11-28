@@ -1,4 +1,4 @@
-import { programEnvironment } from "@opensteer/harness";
+import { programEnvironment, spawnSupervised, type SupervisedProcess } from "@opensteer/harness";
 import {
   createPrivateFileAtomically,
   readPrivateFileText,
@@ -8,42 +8,70 @@ import {
 import { delay } from "@opensteer/shared/delay";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import { setPrivateFileMode } from "@opensteer/shared/privateFiles";
-import { spawnSupervised, type SupervisedProcess } from "@opensteer/harness";
 import type { RunnerConfig } from "@opensteer/config";
 import {
-  TriggerProgramEventSchema,
-  TriggerProgramSchema,
+  assertAutomationSecretsWithinBounds,
+  automationSecretEnvName,
+  AutomationScriptSchema,
+  AutomationSecretValueSchema,
+  normalizeScriptText,
+  scriptFileExtension,
   WATCH_LOG_TAIL_BYTES,
   WATCH_START_RETRY_MS,
-  type TriggerProgram,
+  type AutomationScript,
 } from "@opensteer/triggers";
-import { createId, type EnvironmentId, type TriggerWatchActivationId } from "@opensteer/core";
+import {
+  createId,
+  type EnvironmentId,
+  type ThreadId,
+  type TriggerWatchActivationId,
+} from "@opensteer/core";
 import type { RunnerOperationalReport, WatchReconcileActivation } from "@opensteer/protocol";
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { mkdir, readdir, rm } from "node:fs/promises";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { z } from "zod";
 import type { RunnerMessageSink } from "../runtime/runtime.js";
 import type { AgentHomeAccess, AgentHomeWorkspace } from "../folders/agent-home.js";
-import { triggerProgramRuntimeSource } from "../agent/program-runtime.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
-import type { ProgramLaunchPlanner } from "../agent/program-executor.js";
+import {
+  resolveAutomationCliPaths,
+  resolveInterpreterExecutable,
+  type ProgramLaunchPlanner,
+} from "../agent/script-executor.js";
+
+const WatchScriptResponseSchema = z.strictObject({
+  script: AutomationScriptSchema,
+  secrets: z.record(z.string(), z.string()).default({}),
+});
+
+const CachedWatchScriptSchema = z.strictObject({
+  hasSecrets: z.boolean(),
+  script: AutomationScriptSchema,
+});
+
+interface LoadedWatchScript {
+  readonly script: AutomationScript;
+  readonly secrets: Readonly<Record<string, string>>;
+}
 
 interface ActiveWatch {
   abort: AbortController;
-  capabilitiesPath: string;
   desired: WatchReconcileActivation;
-  /** The program's stand-ins for the Host, from start until the watch stops or expires. */
+  /** The script's stand-ins for the Host, from start until the watch stops or expires. */
   endpoints?: ProgramEndpointSet;
+  executionDirectory: string;
   healthySince: string | null;
   lastError: string | null;
   lastExitCode: number | null;
   leaseTimer?: NodeJS.Timeout;
-  observed: "starting" | "running" | "backoff" | "expired" | "stopped";
+  observed: "starting" | "running" | "backoff" | "halted" | "expired" | "stopped";
   process: SupervisedProcess | undefined;
+  renewingToken?: Promise<boolean>;
   restartCount: number;
+  /** Memory-only script + secrets payload for this active watch; secrets never touch disk. */
+  scriptPayload?: LoadedWatchScript;
   sink: RunnerMessageSink;
   stderrTail: Buffer;
   stdoutTail: Buffer;
@@ -51,33 +79,60 @@ interface ActiveWatch {
 }
 
 export interface WatchSupervisorOptions {
+  readonly cliBinDirectory?: string;
+  readonly cliScriptPath?: string;
   readonly environmentId: EnvironmentId;
+  /** True while the Watch's anchor task has an unconfirmed Stop on this Runner (W3). */
+  readonly isAnchorHeld?: (anchorThreadId: ThreadId) => boolean;
   readonly nodeExecutable: string;
-  /** Confines one program launch; see the Runner's own program launches. */
+  /** Plans one script launch; see the Runner's own automation script launches. */
   readonly planLaunch: (
     executionId: string,
     launch: Parameters<ProgramLaunchPlanner>[0],
   ) => ReturnType<ProgramLaunchPlanner>;
   readonly privateStateDirectory: string;
-  /** Ends whatever an execution's program left running. */
-  readonly terminate: (executionId: string) => Promise<unknown>;
+  /** Monotonic delay before restarting a crashed watch (default: 1s doubling up to 5m). */
+  readonly restartBackoffMs?: (restartCount: number) => number;
+  readonly onStopped?: (
+    report: Extract<
+      RunnerOperationalReport,
+      {
+        readonly type: "runner.watch-status";
+      }
+    >,
+  ) => void;
+  /** Ends whatever an execution's script left running. */
+  readonly terminate: (
+    executionId: string,
+  ) => Promise<import("../runtime/execution-containment.js").TerminationProof>;
   readonly transport: Pick<RunnerConfig, "mode">;
   readonly agentHome: AgentHomeAccess;
 }
 
-const maximumProgramResponseBytes = 6 * 512 * 1_024 + 1_024;
+const maximumScriptResponseBytes = 6 * 512 * 1_024 + 1_024;
 const maximumBackoffMs = 5 * 60_000;
-const programCacheDirectory = "program-cache-v2";
+const scriptCacheDirectory = "script-cache-v1";
+
+/** Monotonically growing pause before restarting a crashed watch (1s, 2s, 4s, ..., capped at 5m). */
+export function watchRestartBackoffMs(restartCount: number): number {
+  return Math.min(maximumBackoffMs, 1_000 * 2 ** Math.min(Math.max(restartCount - 1, 0), 18));
+}
 
 export class WatchSupervisor {
+  readonly #cliBinDirectory: string;
+  readonly #cliScriptPath: string;
   readonly #environmentId: EnvironmentId;
+  readonly #isAnchorHeld?: WatchSupervisorOptions["isAnchorHeld"];
   readonly #nodeExecutable: string;
   readonly #planLaunch: WatchSupervisorOptions["planLaunch"];
+  readonly #onStopped: WatchSupervisorOptions["onStopped"];
+  readonly #restartBackoffMs: (restartCount: number) => number;
   readonly #terminate: WatchSupervisorOptions["terminate"];
   readonly #transport: WatchSupervisorOptions["transport"];
   readonly #executionRoot: string;
   readonly #privateRoot: string;
   readonly #watches = new Map<TriggerWatchActivationId, ActiveWatch>();
+  readonly #stopped = new Map<string, "ended" | "never-seen">();
   readonly #agentHome: AgentHomeAccess;
   readonly #statusTimer: NodeJS.Timeout;
   #closed = false;
@@ -86,10 +141,16 @@ export class WatchSupervisor {
   #reconcileTail: Promise<void> = Promise.resolve();
 
   constructor(options: WatchSupervisorOptions) {
+    const cliDefaults = resolveAutomationCliPaths(import.meta.url, process.env);
+    this.#cliBinDirectory = resolve(options.cliBinDirectory ?? cliDefaults.cliBinDirectory);
+    this.#cliScriptPath = resolve(options.cliScriptPath ?? cliDefaults.cliScriptPath);
     this.#environmentId = options.environmentId;
+    this.#isAnchorHeld = options.isAnchorHeld;
     this.#nodeExecutable = options.nodeExecutable;
     this.#planLaunch = options.planLaunch;
+    this.#restartBackoffMs = options.restartBackoffMs ?? watchRestartBackoffMs;
     this.#terminate = options.terminate;
+    this.#onStopped = options.onStopped;
     this.#transport = options.transport;
     this.#privateRoot = resolve(options.privateStateDirectory, "watches");
     this.#executionRoot = join(this.#privateRoot, "executions", randomUUID());
@@ -118,14 +179,40 @@ export class WatchSupervisor {
     return applied;
   }
 
-  async connectionLost(sink: RunnerMessageSink): Promise<void> {
+  async connectionLost(_sink: RunnerMessageSink): Promise<void> {
+    // Always-running watches stay alive across Home disconnects and restarts (T12 / AA11);
+    // the next watch.reconcile refreshes their sink and stops any that are no longer desired.
+    await this.#reconcileTail;
+  }
+
+  async stopAttempt(
+    activationId: TriggerWatchActivationId,
+    generation: number,
+    sink: RunnerMessageSink,
+  ): Promise<import("@opensteer/protocol").AttemptStopState> {
     const stopped = this.#reconcileTail.then(async () => {
-      const active = [...this.#watches.entries()].filter(([, watch]) => watch.sink === sink);
-      await Promise.allSettled(active.map(([, watch]) => this.#stop(watch, true)));
-      for (const [activationId] of active) this.#watches.delete(activationId);
+      const key = `${activationId}:${generation}`;
+      const prior = this.#stopped.get(key);
+      if (prior) return prior;
+      const active = this.#watches.get(activationId);
+      if (!active || active.desired.executionGeneration !== generation) {
+        this.#stopped.set(key, "never-seen");
+        return "never-seen" as const;
+      }
+      active.sink = sink;
+      try {
+        await this.#stop(active, true);
+        this.#watches.delete(activationId);
+        return "ended" as const;
+      } catch {
+        return "still-ending" as const;
+      }
     });
-    this.#reconcileTail = stopped.catch(() => undefined);
-    await stopped;
+    this.#reconcileTail = stopped.then(
+      () => undefined,
+      () => undefined,
+    );
+    return stopped;
   }
 
   async #applyReconcile(
@@ -149,34 +236,39 @@ export class WatchSupervisor {
         next.executionGeneration !== active.desired.executionGeneration ||
         next.revisionId !== active.desired.revisionId
       ) {
-        await this.#stop(active, true);
-        this.#watches.delete(activationId);
+        active.sink = sink;
+        try {
+          await this.#stop(active, true);
+          this.#watches.delete(activationId);
+        } catch {
+          continue;
+        }
       }
     }
     for (const item of command.desired) {
+      if (this.#stopped.has(`${item.activationId}:${item.executionGeneration}`)) continue;
       const existing = this.#watches.get(item.activationId);
       if (existing) {
+        if (
+          existing.abort.signal.aborted ||
+          existing.desired.executionGeneration !== item.executionGeneration
+        )
+          continue;
         existing.desired = item;
         existing.sink = sink;
-        await this.#writeCapabilities(existing);
+        await this.#ensureEndpoints(existing);
         this.#armLease(existing);
-        if (existing.observed === "expired" || existing.observed === "stopped") {
-          existing.abort = new AbortController();
-          existing.observed = "starting";
-          existing.task = this.#run(existing);
-        }
         await this.#report(existing);
         continue;
       }
       const active: ActiveWatch = {
         abort: new AbortController(),
-        capabilitiesPath: join(
+        desired: item,
+        executionDirectory: join(
           this.#executionRoot,
           item.activationId,
           String(item.executionGeneration),
-          "capabilities.json",
         ),
-        desired: item,
         healthySince: null,
         lastError: null,
         lastExitCode: null,
@@ -188,11 +280,11 @@ export class WatchSupervisor {
         process: undefined,
       };
       this.#watches.set(item.activationId, active);
-      await this.#writeCapabilities(active);
+      await this.#ensureEndpoints(active);
       this.#armLease(active);
       active.task = this.#run(active);
     }
-    await this.#evictProgramCache(new Set(command.desired.map(({ revisionId }) => revisionId)));
+    await this.#evictScriptCache(new Set(command.desired.map(({ revisionId }) => revisionId)));
     this.#lastReconcileGeneration = command.reconcileGeneration;
   }
 
@@ -208,9 +300,12 @@ export class WatchSupervisor {
 
   async #run(active: ActiveWatch): Promise<void> {
     while (!active.abort.signal.aborted && active.observed !== "expired") {
+      if (this.#isAnchorHeld?.(active.desired.anchorThreadId)) {
+        await this.#haltForHeldAnchor(active);
+        break;
+      }
       let workspace: AgentHomeWorkspace | undefined;
       let materializationRoot: string | undefined;
-      let programFile: string | undefined;
       active.observed = "starting";
       await this.#report(active);
       try {
@@ -220,8 +315,8 @@ export class WatchSupervisor {
         });
       } catch (error) {
         if (active.abort.signal.aborted) break;
-        // An unavailable Agent home is not the program crashing, so it never counts toward the
-        // restart limit that pauses the Trigger; the Watch starts once the folder is back.
+        // An unavailable Agent home is not the script crashing, so it never counts toward the
+        // restart counter; the Watch starts once the folder is back.
         active.lastExitCode = null;
         active.lastError = safeMessage(error, {
           fallback: "Agent home is unavailable",
@@ -232,124 +327,148 @@ export class WatchSupervisor {
         await delay(WATCH_START_RETRY_MS, active.abort.signal).catch(() => undefined);
         continue;
       }
+      let containmentProven = true;
       try {
-        const program = await this.#cachedProgram(active);
-        const materialized = await this.#materialize(active, program, workspace.path);
+        const loaded = await this.#loadScript(active);
+        const materialized = await this.#materialize(active, loaded.script);
         materializationRoot = materialized.root;
-        programFile = materialized.programFile;
-        const environment = watchEnvironment(active, materialized.eventFile);
-        const arguments_ = ["--enable-source-maps"];
-        if (program.language === "typescript") arguments_.push("--experimental-transform-types");
-        arguments_.push(materialized.runtimeFile);
+        const environment = this.#watchEnvironment(active, materialized.eventFile, loaded.secrets);
+        const executable = loaded.script.interpreter
+          ? resolveInterpreterExecutable(
+              loaded.script.interpreter[0]!,
+              environment.PATH ?? "",
+              environment.PATHEXT,
+            )
+          : this.#nodeExecutable;
+        const args = loaded.script.interpreter
+          ? [...loaded.script.interpreter.slice(1), materialized.scriptFile]
+          : [materialized.scriptFile];
         const launch = (
           await this.#planLaunch(active.desired.activationId, {
             environment,
-            privateDirectory: dirname(active.capabilitiesPath),
+            privateDirectory: active.executionDirectory,
             workspacePath: workspace.path,
           })
-        )({ args: arguments_, cwd: workspace.path, environment, executable: this.#nodeExecutable });
+        )({ args, cwd: workspace.path, environment, executable });
         active.abort.signal.throwIfAborted();
-        const process = spawnSupervised({
+        const child = spawnSupervised({
           args: launch.args,
           cwd: launch.cwd,
           environment: launch.environment,
           executable: launch.executable,
           maxOutputBytes: Number.MAX_SAFE_INTEGER,
+          stdin: "closed",
         });
-        active.process = process;
+        const output = Promise.all([
+          this.#consume(child.stdout, active, "stdout"),
+          this.#consume(child.stderr, active, "stderr"),
+        ]);
+        active.process = child;
         active.healthySince = new Date().toISOString();
         active.lastError = null;
         active.observed = "running";
-        await this.#report(active);
-        const output = Promise.all([
-          this.#consume(process.stdout, active, "stdout"),
-          this.#consume(process.stderr, active, "stderr"),
-        ]);
-        const exit = await process.exited;
-        await output;
-        active.process = undefined;
-        active.lastExitCode = exit.code;
-        if (active.abort.signal.aborted) break;
-        active.restartCount += 1;
-        active.lastError = exit.signal
-          ? `Watch program ended from ${exit.signal}`
-          : `Watch program exited with code ${String(exit.code)}`;
+        try {
+          await this.#report(active);
+          const exit = await child.exited;
+          await output;
+          active.process = undefined;
+          active.lastExitCode = exit.code;
+          if (active.abort.signal.aborted) break;
+          active.restartCount += 1;
+          active.lastError = exit.signal
+            ? `Watch script ended from ${exit.signal}`
+            : `Watch script exited with code ${String(exit.code)}`;
+        } catch (error) {
+          await output.catch(() => undefined);
+          throw error;
+        }
       } catch (error) {
         active.process = undefined;
         if (active.abort.signal.aborted) break;
         active.restartCount += 1;
         active.lastExitCode = null;
         active.lastError = safeMessage(error, {
-          fallback: "Watch program failed",
+          fallback: "Watch script failed",
           maximumLength: 20_000,
         });
       } finally {
+        // Contain any orphaned grandchildren before cleaning up or spawning the next restart (Y5 / AA11).
+        const proof = await this.#terminate(active.desired.activationId).catch(
+          () => "unverifiable" as const,
+        );
+        containmentProven = proof === "proven";
         if (materializationRoot) {
           await rm(materializationRoot, { force: true, recursive: true }).catch(() => undefined);
         }
-        if (programFile) await rm(programFile, { force: true }).catch(() => undefined);
       }
       if (active.abort.signal.aborted) break;
+      if (!containmentProven) {
+        active.lastError = active.lastError
+          ? `${active.lastError} (stopped restarting because prior process containment could not be verified)`
+          : "Watch stopped restarting because prior process containment could not be verified.";
+        active.observed = "halted";
+        await this.#report(active);
+        break;
+      }
+      if (this.#isAnchorHeld?.(active.desired.anchorThreadId)) {
+        await this.#haltForHeldAnchor(active);
+        break;
+      }
       active.observed = "backoff";
       await this.#report(active);
-      const ceiling = Math.min(
-        maximumBackoffMs,
-        1_000 * 2 ** Math.min(Math.max(active.restartCount - 1, 0), 18),
-      );
-      await delay(Math.floor(Math.random() * (ceiling + 1)), active.abort.signal).catch(
+      await delay(this.#restartBackoffMs(active.restartCount), active.abort.signal).catch(
         () => undefined,
       );
     }
   }
 
+  async #haltForHeldAnchor(active: ActiveWatch): Promise<void> {
+    if (active.leaseTimer) clearTimeout(active.leaseTimer);
+    const endpoints = active.endpoints;
+    delete active.endpoints;
+    delete active.scriptPayload;
+    endpoints?.revoke();
+    await endpoints?.close().catch(() => undefined);
+    if (this.#watches.get(active.desired.activationId) === active) {
+      this.#watches.delete(active.desired.activationId);
+    }
+    active.lastError = active.lastError
+      ? `${active.lastError} (stopped restarting while its task's previous Stop is unconfirmed)`
+      : "Watch stopped restarting while its task's previous Stop is unconfirmed.";
+    active.observed = "halted";
+    await this.#report(active);
+  }
+
   async #materialize(
     active: ActiveWatch,
-    program: TriggerProgram,
-    workspacePath: string,
+    script: AutomationScript,
   ): Promise<{
     readonly eventFile: string;
-    readonly programFile: string;
     readonly root: string;
-    readonly runtimeFile: string;
+    readonly scriptFile: string;
   }> {
-    const root = join(dirname(active.capabilitiesPath), `attempt-${randomUUID()}`);
+    const root = join(active.executionDirectory, `attempt-${randomUUID()}`);
     await securePrivateDirectory(root);
-    const programFile = join(
-      workspacePath,
-      `.opensteer-watch-${active.desired.activationId}-${active.desired.executionGeneration}-${randomUUID()}.${
-        program.language === "typescript" ? "ts" : "mjs"
-      }`,
-    );
-    const runtimeFile = join(root, "runtime.mjs");
+    const extension = scriptFileExtension(script.interpreter);
+    const scriptFile = join(root, `script${extension}`);
     const eventFile = join(root, "event.json");
-    const event = TriggerProgramEventSchema.parse({
-      id: createId("triggerOccurrence"),
+    const event = {
+      automationId: active.desired.triggerId,
+      firedAt: new Date().toISOString(),
+      firingId: createId("triggerOccurrence"),
+      kind: "watch" as const,
       payload: null,
-      receivedAt: new Date().toISOString(),
-      source: { kind: "watch" },
-      trigger: {
-        anchorThreadId: active.desired.anchorThreadId,
-        id: active.desired.triggerId,
-        revisionId: active.desired.revisionId,
-      },
-    });
+      taskId: active.desired.anchorThreadId,
+    };
     try {
+      const normalized = normalizeScriptText(script.text, process.platform);
       await Promise.all([
-        writeFile(programFile, program.source, { flag: "wx", mode: 0o600 }).then(() =>
-          setPrivateFileMode(programFile),
-        ),
-        replacePrivateFileAtomically(
-          runtimeFile,
-          triggerProgramRuntimeSource(pathToFileURL(programFile).href),
-        ),
+        replacePrivateFileAtomically(scriptFile, normalized),
         replacePrivateFileAtomically(eventFile, JSON.stringify(event)),
       ]);
-      return { eventFile, programFile, root, runtimeFile };
+      return { eventFile, root, scriptFile };
     } catch (error) {
-      await Promise.all([
-        rm(programFile, { force: true }).catch(() => undefined),
-        rm(root, { force: true, recursive: true }).catch(() => undefined),
-      ]);
+      await rm(root, { force: true, recursive: true }).catch(() => undefined);
       throw error;
     }
   }
@@ -358,15 +477,15 @@ export class WatchSupervisor {
     if (this.#privateRootPrepared) return;
     await securePrivateDirectory(this.#privateRoot);
     await rm(join(this.#privateRoot, "executions"), { force: true, recursive: true });
-    // Program validation is an execution contract. An older Runner's
-    // unversioned cache is disposable and cannot establish current semantics.
+    // Legacy v5 program caches are disposable and replaced by script-cache-v1.
     await rm(join(this.#privateRoot, "program-cache"), { force: true, recursive: true });
+    await rm(join(this.#privateRoot, "program-cache-v2"), { force: true, recursive: true });
     await securePrivateDirectory(this.#executionRoot);
     this.#privateRootPrepared = true;
   }
 
-  async #evictProgramCache(desiredRevisionIds: ReadonlySet<string>): Promise<void> {
-    const cacheRoot = join(this.#privateRoot, programCacheDirectory);
+  async #evictScriptCache(desiredRevisionIds: ReadonlySet<string>): Promise<void> {
+    const cacheRoot = join(this.#privateRoot, scriptCacheDirectory);
     let entries;
     try {
       entries = await readdir(cacheRoot, { withFileTypes: true });
@@ -382,19 +501,28 @@ export class WatchSupervisor {
     );
   }
 
-  async #cachedProgram(active: ActiveWatch): Promise<TriggerProgram> {
+  async #loadScript(active: ActiveWatch): Promise<LoadedWatchScript> {
+    if (active.scriptPayload) return active.scriptPayload;
     const cachePath = join(
       this.#privateRoot,
-      programCacheDirectory,
+      scriptCacheDirectory,
       `${active.desired.revisionId}.json`,
     );
-    const cached = await readPrivateFileText(cachePath, maximumProgramResponseBytes, {
-      exposed: () => new Error("Cached watch program permissions are unsafe"),
-      invalid: () => new Error("Cached watch program is invalid"),
+    const cachedText = await readPrivateFileText(cachePath, maximumScriptResponseBytes, {
+      exposed: () => new Error("Cached watch script permissions are unsafe"),
+      invalid: () => new Error("Cached watch script is invalid"),
     });
-    if (cached) return TriggerProgramSchema.parse(JSON.parse(cached));
+    if (cachedText) {
+      const cached = CachedWatchScriptSchema.parse(JSON.parse(cachedText));
+      // Only reuse disk cache when the automation has no sealed secrets; secrets never touch disk.
+      if (!cached.hasSecrets) {
+        const loaded: LoadedWatchScript = { script: cached.script, secrets: {} };
+        active.scriptPayload = loaded;
+        return loaded;
+      }
+    }
     const url = new URL(
-      `/internal/v1/triggers/revisions/${active.desired.revisionId}/program`,
+      `/internal/v1/triggers/revisions/${active.desired.revisionId}/script`,
       active.desired.capabilities.mcp.url,
     );
     const response = await fetch(url, {
@@ -402,53 +530,101 @@ export class WatchSupervisor {
       redirect: "error",
       signal: active.abort.signal,
     });
-    if (!response.ok) throw new Error(`Watch program fetch failed (${response.status})`);
-    const program = TriggerProgramSchema.parse(
+    if (!response.ok) throw new Error(`Watch script fetch failed (${response.status})`);
+    const loaded = WatchScriptResponseSchema.parse(
       await readBoundedJson(response, {
         expectedContentType: "application/json",
-        maximumBytes: maximumProgramResponseBytes,
+        maximumBytes: maximumScriptResponseBytes,
         signal: active.abort.signal,
-        sizeError: () => new Error("Watch program response exceeds its limit"),
+        sizeError: () => new Error("Watch script response exceeds its limit"),
       }),
     );
     await mkdir(dirname(cachePath), { mode: 0o700, recursive: true });
-    await createPrivateFileAtomically(cachePath, JSON.stringify(program));
-    return program;
+    await createPrivateFileAtomically(
+      cachePath,
+      JSON.stringify({
+        hasSecrets: Object.keys(loaded.secrets).length > 0,
+        script: loaded.script,
+      }),
+    );
+    active.scriptPayload = loaded;
+    return loaded;
   }
 
   /**
-   * The capabilities the program reads: its stand-ins, with the Host's
-   * expiries. The Host tokens behind them change with each reconcile; what the
-   * program holds does not, and never works anywhere but here.
+   * Starts the script's in-memory Host stand-ins (never written to disk, AA11).
+   * The Host tokens behind them renew on demand; what the script holds stays in env only.
    */
-  async #writeCapabilities(active: ActiveWatch): Promise<void> {
+  async #ensureEndpoints(active: ActiveWatch): Promise<void> {
+    await securePrivateDirectory(active.executionDirectory);
     active.endpoints ??= await startProgramEndpoints({
       capabilities: () => active.desired.capabilities,
+      resolveBrowserToken: () => this.#freshBrowserToken(active),
+      resolveMcpToken: () => this.#freshMcpToken(active),
       transport: this.#transport,
     });
-    const { endpoints } = active.endpoints;
-    const { capabilities } = active.desired;
-    await replacePrivateFileAtomically(
-      active.capabilitiesPath,
-      JSON.stringify({
-        browserCdp:
-          endpoints.browserCdp && capabilities.browserCdp
-            ? { ...endpoints.browserCdp, expiresAt: capabilities.browserCdp.expiresAt }
-            : null,
-        mcp: { ...endpoints.mcp, expiresAt: capabilities.mcp.expiresAt },
-      }),
-    );
   }
 
-  /** Ends the program's access to the Host and whatever it left running. */
+  async #freshMcpToken(active: ActiveWatch): Promise<string> {
+    const expiresAt = Date.parse(active.desired.capabilities.mcp.expiresAt);
+    if (Number.isFinite(expiresAt) && expiresAt - Date.now() > 60_000) {
+      return active.desired.capabilities.mcp.token;
+    }
+    await this.#renewCapabilities(active);
+    return active.desired.capabilities.mcp.token;
+  }
+
+  async #freshBrowserToken(active: ActiveWatch): Promise<string> {
+    const browserCdp = active.desired.capabilities.browserCdp;
+    if (!browserCdp) return "";
+    const expiresAt = Date.parse(browserCdp.expiresAt);
+    if (Number.isFinite(expiresAt) && expiresAt - Date.now() > 60_000) {
+      return browserCdp.token;
+    }
+    await this.#renewCapabilities(active);
+    return active.desired.capabilities.browserCdp?.token ?? "";
+  }
+
+  async #renewCapabilities(active: ActiveWatch): Promise<boolean> {
+    const renew = active.sink.renewProxyToken;
+    if (!renew || active.abort.signal.aborted) return false;
+    active.renewingToken ??= renew({
+      activationId: active.desired.activationId,
+      executionGeneration: active.desired.executionGeneration,
+      kind: "watch",
+    })
+      .then((answer) => {
+        if (!answer?.mcp || this.#watches.get(active.desired.activationId) !== active) {
+          return false;
+        }
+        active.desired = {
+          ...active.desired,
+          capabilities: {
+            browserCdp: answer.browserCdp,
+            mcp: answer.mcp,
+          },
+        };
+        this.#armLease(active);
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => {
+        delete active.renewingToken;
+      });
+    return active.renewingToken;
+  }
+
+  /** Ends the script's access to the Host and whatever it left running. */
   async #endExecution(active: ActiveWatch): Promise<void> {
     const endpoints = active.endpoints;
     delete active.endpoints;
+    delete active.scriptPayload;
     endpoints?.revoke();
     await active.process?.terminate(5_000).catch(() => undefined);
     await active.task?.catch(() => undefined);
     await endpoints?.close();
-    await this.#terminate(active.desired.activationId).catch(() => undefined);
+    if ((await this.#terminate(active.desired.activationId)) !== "proven")
+      throw new Error("Watch containment could not be verified");
   }
 
   #armLease(active: ActiveWatch): void {
@@ -460,7 +636,7 @@ export class WatchSupervisor {
     const expiresAt = Math.min(...expirations.map((value) => new Date(value).getTime()));
     active.leaseTimer = setTimeout(
       () => {
-        void this.#expire(active);
+        void this.#expire(active).catch(() => undefined);
       },
       Math.max(0, expiresAt - Date.now()),
     );
@@ -469,9 +645,11 @@ export class WatchSupervisor {
 
   async #expire(active: ActiveWatch): Promise<void> {
     if (this.#watches.get(active.desired.activationId) !== active) return;
-    active.observed = "expired";
+    if (await this.#renewCapabilities(active)) return;
+    if (this.#watches.get(active.desired.activationId) !== active) return;
     active.abort.abort(new Error("Watch capability lease expired"));
     await this.#endExecution(active);
+    active.observed = "expired";
     await this.#report(active);
   }
 
@@ -513,7 +691,48 @@ export class WatchSupervisor {
       stdoutTail: watchTailText(active.stdoutTail),
       type: "runner.watch-status",
     };
+    if (message.observed === "stopped" || message.observed === "expired") {
+      this.#stopped.set(`${message.activationId}:${message.executionGeneration}`, "ended");
+      this.#onStopped?.(message);
+    }
     await active.sink.send(message).catch(() => undefined);
+  }
+
+  #watchEnvironment(
+    active: ActiveWatch,
+    eventFile: string,
+    secrets: Readonly<Record<string, string>>,
+  ): Record<string, string> {
+    const environment = programEnvironment();
+    // Z11: drop empty, `.`, and relative PATH entries so Agent home in cwd can never hijack commands.
+    const absolutePathEntries = (environment.PATH ?? "")
+      .split(delimiter)
+      .filter((entry) => entry.length > 0 && isAbsolute(entry));
+    environment.PATH = [this.#cliBinDirectory, ...absolutePathEntries].join(delimiter);
+    if (Object.keys(secrets).length > 0) {
+      assertAutomationSecretsWithinBounds(secrets);
+      for (const [name, value] of Object.entries(secrets)) {
+        AutomationSecretValueSchema.parse(value);
+        environment[automationSecretEnvName(name)] = value;
+      }
+    }
+    environment.OPENSTEER_ACTIVATION_ID = active.desired.activationId;
+    environment.OPENSTEER_AUTOMATION_ID = active.desired.triggerId;
+    environment.OPENSTEER_CLI = this.#cliScriptPath;
+    environment.OPENSTEER_EVENT = eventFile;
+    environment.OPENSTEER_NODE = this.#nodeExecutable;
+    environment.OPENSTEER_TRIGGER_ID = active.desired.triggerId;
+    environment.OPENSTEER_WATCH = "1";
+    const endpoints = active.endpoints?.endpoints;
+    if (endpoints) {
+      environment.OPENSTEER_MCP_TOKEN = endpoints.mcp.token;
+      environment.OPENSTEER_MCP_URL = endpoints.mcp.url;
+      if (endpoints.browserCdp) {
+        environment.OPENSTEER_CDP_TOKEN = endpoints.browserCdp.token;
+        environment.OPENSTEER_CDP_URL = endpoints.browserCdp.url;
+      }
+    }
+    return environment;
   }
 }
 
@@ -523,14 +742,4 @@ function watchTailText(value: Buffer): string {
   bytes = bytes.subarray(bytes.byteLength - WATCH_LOG_TAIL_BYTES);
   while (bytes.byteLength > 0 && (bytes[0]! & 0xc0) === 0x80) bytes = bytes.subarray(1);
   return bytes.toString("utf8");
-}
-
-function watchEnvironment(active: ActiveWatch, eventFile: string): Record<string, string> {
-  const environment = programEnvironment();
-  environment.OPENSTEER_ACTIVATION_ID = active.desired.activationId;
-  environment.OPENSTEER_CAPABILITIES_PATH = active.capabilitiesPath;
-  environment.OPENSTEER_EVENT_PATH = eventFile;
-  environment.OPENSTEER_TRIGGER_ID = active.desired.triggerId;
-  environment.OPENSTEER_WATCH = "1";
-  return environment;
 }

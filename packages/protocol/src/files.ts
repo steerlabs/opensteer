@@ -22,12 +22,20 @@ const FolderFileEntrySchema = z.strictObject({
   /** A safe display label. Navigation always uses `key`, never this value. */
   name: z.string().min(1).max(1_024),
   sizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  revision: z
+    .string()
+    .regex(/^[\w-]{43}\.[\w-]{43}$/u)
+    .optional(),
 });
 
 export const FolderDirectoryPageSchema = z.strictObject({
   cursor: FolderFileCursorSchema.nullable(),
   entries: z.array(FolderFileEntrySchema).max(500),
   parentKey: FolderFileKeySchema,
+  rootScope: z
+    .string()
+    .regex(/^[\w-]{43}$/u)
+    .optional(),
   /** Opaque digest of the returned page and directory metadata. */
   revision: z
     .string()

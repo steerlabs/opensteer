@@ -1,11 +1,12 @@
+import { isConnectedAgentTask } from "./agent-work.js";
 import { assignmentTitle, workerAssignment } from "./assignment-presentation.js";
 import {
   requestTitleText,
+  runTerminationUnprovenCode,
   type IconName,
   type MarkColor,
   type WaitingRequest,
 } from "@opensteer/core";
-import type { NeedsYouTeamAskEntry } from "@opensteer/protocol";
 import {
   mainDoneTasks,
   type HostSnapshot,
@@ -14,7 +15,7 @@ import {
   type ThreadSummary,
 } from "./client.js";
 import { startOfDay } from "./automation-presentation.js";
-import { threadStartHold } from "./thread-activity.js";
+import { threadStartWait } from "./thread-activity.js";
 import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { conversationSurfaces, type SurfaceItem } from "./surfaces.js";
 import { formatRelativeTime } from "./thread-list-model.js";
@@ -26,11 +27,15 @@ export type TaskTone = "needs-you" | "working" | "waiting" | "failed" | "finishe
 
 export interface TaskRow {
   readonly threadId: string;
-  readonly teamOrigin: import("@opensteer/core").TeamTaskOrigin | null;
+  /** This row can be searched and opened, but belongs to a connected agent's own work. */
+  readonly connectedAgentTask?: true;
+  readonly originConnectionId?: string;
   readonly title: string;
   readonly icon: IconName | null;
   readonly color: MarkColor | null;
   readonly tone: TaskTone;
+  /** Machine failure code when `tone === "failed"`, e.g. `execution_termination_unproven`. */
+  readonly failureCode?: string | null;
   /** What is happening, in words: what it needs, where it works, why it stopped, what it said. */
   readonly line: string;
   /** Where a working task is acting, as briefly as a person would say it: a site, an app or a phone. */
@@ -107,6 +112,8 @@ export function sameTaskListSource(previous: TaskListSource, next: TaskListSourc
 export interface TaskListOptions {
   /** The task this screen shows. */
   readonly openThreadId?: string | null | undefined;
+  /** The web Tasks list's navigation skips connected agents' own tasks. */
+  readonly personTasksOnly?: boolean;
   /**
    * The list this screen last drew. An unread Done task waits in Ready, and
    * reading it would move it to Done under the reader who just opened it, so
@@ -234,7 +241,6 @@ function arrange(
     ({ thread }) => thread.listed && thread.purpose === "task",
   );
   const asks = attributedRequests(snapshot, entries);
-  const teamAsks = teamAsksByTask(snapshot);
   const working: TaskRow[] = [];
   const ready: TaskRow[] = [];
   const done: TaskRow[] = [];
@@ -243,12 +249,8 @@ function arrange(
     openThreadId != null &&
     previous?.ready.some(({ threadId, done }) => done && threadId === openThreadId) === true;
   for (const entry of entries) {
-    const row = rowOf(
-      snapshot,
-      entry,
-      asks.get(entry.thread.id) ?? [],
-      teamAsks.get(entry.thread.id) ?? [],
-    );
+    const row = rowOf(snapshot, entry, asks.get(entry.thread.id) ?? []);
+    if (options.personTasksOnly && row.connectedAgentTask) continue;
     if (row.done)
       (row.unread || (holdOpen && row.threadId === openThreadId) ? ready : done).push(row);
     else if (row.stopped) ready.push(row);
@@ -301,25 +303,19 @@ function attributedRequests(
   return byThread;
 }
 
-/** Teammates' asks awaiting the reader, by the task each waits in. */
-function teamAsksByTask(snapshot: TaskListSource): ReadonlyMap<string, NeedsYouTeamAskEntry[]> {
-  const byTask = new Map<string, NeedsYouTeamAskEntry[]>();
-  for (const entry of snapshot.needsYou?.entries ?? []) {
-    if (entry.kind !== "team-ask" || !entry.task) continue;
-    byTask.set(entry.task.threadId, [...(byTask.get(entry.task.threadId) ?? []), entry]);
-  }
-  return byTask;
-}
-
 function rowOf(
   snapshot: TaskListSource,
   entry: TaskEntry,
   asks: readonly WaitingRequest[],
-  teamAsks: readonly NeedsYouTeamAskEntry[],
 ): TaskRow {
   const { thread } = entry;
   const held = snapshot.threads.find(({ id }) => id === thread.id) ?? thread;
+  const connectedAgentTask = isConnectedAgentTask(held) || isConnectedAgentTask(thread);
+  const originConnectionId = connectedAgentTask
+    ? undefined
+    : (thread.originConnectionId ?? held.originConnectionId);
   const tone = thread.pendingRequests > 0 || asks.length > 0 ? "needs-you" : taskTone(thread);
+  const failureCode = entry.failureCode ?? thread.failureCode ?? null;
   const done = thread.doneAt !== null;
   const stopped = tone === "finished" || tone === "failed";
   const unread = isThreadUnread({
@@ -329,16 +325,18 @@ function rowOf(
   const surface = tone === "working" ? workingSurface(snapshot, thread.id) : null;
   return {
     threadId: thread.id,
-    teamOrigin: thread.teamOrigin,
+    ...(connectedAgentTask ? { connectedAgentTask: true } : {}),
+    ...(originConnectionId ? { originConnectionId } : {}),
     title: held.title,
     icon: held.icon,
     color: held.color,
     tone,
+    ...(failureCode ? { failureCode } : {}),
     line:
       tone === "waiting"
         ? (taskWaitingReason(snapshot, thread.id)?.label ?? "Waiting")
         : tone === "needs-you" && asks.length === 0
-          ? teamAskLine(teamAsks) || "Needs you"
+          ? "Needs you"
           : taskLine(entry, tone, asks, surface),
     place: surface === null ? null : placeName(surface),
     done,
@@ -387,16 +385,6 @@ function taskTone(thread: ThreadSummary): Exclude<TaskTone, "needs-you"> {
   return "finished";
 }
 
-/** "Maya: Can you check the ferry times?", the first ask waiting in the task. */
-function teamAskLine(asks: readonly NeedsYouTeamAskEntry[]): string {
-  const [first] = asks;
-  if (!first) return "";
-  const { asker, bodyMarkdown } = first.presentation;
-  const name = asker.actor === "agent" ? `${asker.displayName}'s agent` : asker.displayName;
-  const line = bodyMarkdown.trim().split("\n", 1)[0] ?? "";
-  return asks.length > 1 ? `${name}: ${line} · ${asks.length - 1} more` : `${name}: ${line}`;
-}
-
 function taskLine(
   entry: TaskEntry,
   tone: TaskTone,
@@ -419,7 +407,9 @@ function taskLine(
     case "waiting":
       return "Waiting";
     case "failed":
-      return entry.failure ?? "Couldn’t finish";
+      return (entry.failureCode ?? entry.thread.failureCode) === runTerminationUnprovenCode
+        ? "Couldn’t confirm it stopped"
+        : (entry.failure ?? "Couldn’t finish");
     case "finished":
       return entry.lastReply ?? "Finished";
   }
@@ -442,14 +432,14 @@ export function taskTime(row: TaskRow, now: number): string | null {
 export function taskRowLabel(row: TaskRow): string {
   const title = row.title;
   const head = row.unread && row.tone !== "needs-you" ? `${title}, unread` : title;
-  const state = stateWord(row.tone);
+  const state = stateWord(row.tone, row.failureCode);
   if (state === null) return `${head}: ${row.line}`;
   return row.line.toLocaleLowerCase() === state.toLocaleLowerCase()
     ? `${head}, ${state}`
     : `${head}, ${state}: ${row.line}`;
 }
 
-function stateWord(tone: TaskTone): string | null {
+function stateWord(tone: TaskTone, failureCode?: string | null): string | null {
   switch (tone) {
     case "needs-you":
       return "needs you";
@@ -459,7 +449,9 @@ function stateWord(tone: TaskTone): string | null {
       // The line already says it.
       return null;
     case "failed":
-      return "couldn’t finish";
+      return failureCode === runTerminationUnprovenCode
+        ? "couldn’t confirm it stopped"
+        : "couldn’t finish";
     case "finished":
       return "finished";
   }
@@ -472,13 +464,13 @@ function stateWord(tone: TaskTone): string | null {
 export function sameTaskRow(left: TaskRow, right: TaskRow): boolean {
   return (
     left.threadId === right.threadId &&
-    left.teamOrigin?.teamId === right.teamOrigin?.teamId &&
-    left.teamOrigin?.channelId === right.teamOrigin?.channelId &&
-    left.teamOrigin?.threadRootId === right.teamOrigin?.threadRootId &&
+    left.connectedAgentTask === right.connectedAgentTask &&
+    left.originConnectionId === right.originConnectionId &&
     left.title === right.title &&
     left.icon === right.icon &&
     left.color === right.color &&
     left.tone === right.tone &&
+    (left.failureCode ?? null) === (right.failureCode ?? null) &&
     left.line === right.line &&
     left.place === right.place &&
     left.unread === right.unread &&
@@ -525,7 +517,13 @@ export function taskAttention(snapshot: TaskListSource): readonly TaskAttention[
   });
 }
 export type TaskWaitingReasonKind =
-  "paused-queue" | "other-reader" | "account-preparing" | "computer-offline" | "open-helper";
+  | "paused-queue"
+  | "other-reader"
+  | "account-preparing"
+  | "computer-offline"
+  | "open-helper"
+  | "stop-unconfirmed"
+  | "waiting-for-run";
 export interface TaskWaitingReason {
   readonly kind: TaskWaitingReasonKind;
   readonly label: string;
@@ -582,9 +580,10 @@ export function taskWaitingReason(
       ? [queuedRun(thread)]
       : [];
   if (own.length === 0) return null;
-  const preparing = threadStartHold({
+  const wait = threadStartWait({
     thread: {
       ...thread,
+      runStartHoldReason: thread.runStartHoldReason ?? shellRow?.runStartHoldReason ?? null,
       harnessLabel:
         thread.harnessLabel ||
         snapshot.harnesses.find(({ id }) => id === thread.harnessInstanceId)?.name ||
@@ -593,7 +592,11 @@ export function taskWaitingReason(
     runQueue: own,
     environments: snapshot.environments,
   });
-  if (preparing) return { kind: "account-preparing", label: preparing };
+  if (wait) {
+    // The task list names an account getting ready, and its agents stopped, as it always has.
+    const kind = wait.kind === "agents-stopped" ? "account-preparing" : wait.kind;
+    return { kind, label: wait.label };
+  }
   const environment = snapshot.environments.find(
     (environment) => environment.id === thread.environmentId,
   );
@@ -616,7 +619,7 @@ export function doneTaskList(snapshot: TaskListSource, deploymentId?: string): D
   if (!list) return null;
   const rows = list.entries
     .filter(({ thread }) => thread.listed && thread.doneAt !== null)
-    .map((entry) => rowOf(snapshot, entry, [], []))
+    .map((entry) => rowOf(snapshot, entry, []))
     .filter((row) => row.done && !row.unread)
     // Pages merge in asked order; Done reads newest Done first.
     .sort(
@@ -625,6 +628,15 @@ export function doneTaskList(snapshot: TaskListSource, deploymentId?: string): D
         right.threadId.localeCompare(left.threadId),
     );
   return { rows, total: list.window.totalItems, hasMore: list.window.hasMore };
+}
+
+/** The Home counts the person's Done window. Hide any session row still held from a frame. */
+export function personDoneTaskList(
+  snapshot: TaskListSource,
+  deploymentId?: string,
+): DoneTaskList | null {
+  const list = doneTaskList(snapshot, deploymentId);
+  return list && { ...list, rows: list.rows.filter((row) => !row.connectedAgentTask) };
 }
 
 export interface DoneDay {
@@ -663,7 +675,7 @@ const unseenQuietWindowMs = 7 * 24 * 60 * 60 * 1_000;
  * counts as far as that list has been read.
  */
 export function quietlyMoved(
-  list: DoneTaskList | null,
+  list: Pick<DoneTaskList, "rows"> | null,
   seenThrough: string | null,
   now: number,
 ): readonly TaskRow[] {
@@ -691,11 +703,14 @@ export function quietSeenScope(
     : null;
 }
 
-function queuedRun(thread: Pick<HostSnapshot["threads"][number], "id" | "askedAt">) {
+function queuedRun(
+  thread: Pick<HostSnapshot["threads"][number], "id" | "askedAt" | "runStartHoldReason">,
+) {
   return {
     id: `queued:${thread.id}`,
     threadId: thread.id,
     status: "queued" as const,
+    ...(thread.runStartHoldReason ? { startHoldReason: thread.runStartHoldReason } : {}),
     createdAt: thread.askedAt,
     runOrdinal: 0,
   };

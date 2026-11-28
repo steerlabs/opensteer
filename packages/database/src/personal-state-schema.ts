@@ -14,13 +14,11 @@ import type {
   RunAttemptId,
   RunId,
   RunFailure,
+  RunInterruptedCause,
   RunRetry,
   RunnerId,
   TabId,
-  TeamSource,
-  TeamRunDelivery,
   RunUsage,
-  TeamAgentRequestId,
   ThreadId,
   ToolIdentity,
   ToolOutput,
@@ -38,7 +36,6 @@ import type { PersonalChange } from "@opensteer/protocol/personal-sync";
 import type { TranscriptMessageRefs } from "@opensteer/protocol/transcript";
 import { sql, type Generated, type Kysely } from "kysely";
 import type { DatabaseSchema, Timestamp } from "./schema.js";
-import { runNewsAt, unreadTaskSql } from "./personal-attention-store.js";
 
 export type PersonalScopeKey = "shell" | `thread:${string}` | `node:${string}`;
 /** `reset` rows are Host-only: a scope whose commit outgrew the feed is repaired by snapshot. */
@@ -65,6 +62,7 @@ export interface FinishIntent {
   readonly requestCancellationReason?: import("@opensteer/core").RequestCancellationReason;
   readonly queuedInputCancellation?: "activation-input" | "authority-cohort" | "seed-input";
   readonly failure?: RunFailure;
+  readonly interruptedCause?: RunInterruptedCause;
   readonly statement?: {
     readonly ordinal: number;
     readonly runnerId: RunnerId;
@@ -134,7 +132,6 @@ export interface TranscriptPreview {
   readonly truncated?: boolean;
   readonly version?: number;
   readonly assignment?: AssignmentSummary;
-  readonly teamSource?: TeamSource;
   readonly completedAt?: string;
   readonly tool?: ToolIdentity | null;
   readonly requestKind?: Request["kind"];
@@ -142,9 +139,10 @@ export interface TranscriptPreview {
   readonly endedAt?: string;
   readonly replyMessageId?: MessageId;
   readonly failure?: RunFailure;
+  readonly interruptedCause?: RunInterruptedCause;
+  readonly stopConfirmedAt?: string;
   readonly retry?: RunRetry;
   readonly usage?: RunUsage;
-  readonly runDelivery?: TeamRunDelivery;
   readonly messageKind?: Extract<MessageKind, "input" | "assistant" | "continuation">;
   readonly messageAuthor?: MessageAuthor;
   readonly edit?: MessageEdit;
@@ -216,10 +214,8 @@ export interface RunnerEventReceiptTable {
 
 export interface PersonalAttentionTable {
   id: string;
-  kind: "request" | "team-ask" | "failed-ask";
+  kind: "request";
   requestId: RequestId | null;
-  teamDeploymentId: DeploymentId | null;
-  teamRequestId: TeamAgentRequestId | null;
   threadId: ThreadId | null;
   sortAt: Timestamp;
   expiresAt: Date | null;
@@ -229,14 +225,50 @@ export interface PersonalAttentionTable {
 export const uncertainEarlierRun =
   "started_at is null and binding_generation is not null and not runner_safety_terminal and execute_claim_state <> 'unclaimed'";
 
-const revisionKeys = `array[${durablePersonalResourceKinds.map((kind) => `'${kind}'`).join(",")}]`;
-const resourceRevisionCheck = durablePersonalResourceKinds
-  .map(
-    (kind) => `jsonb_typeof(resource_revisions->'${kind}') = 'string' and
+/**
+ * The default and CHECK of `client_sync_state.resource_revisions` for these kinds: every kind's
+ * revision present as a string at most the head, and no other key.
+ */
+export function resourceRevisionsDdl(kinds: readonly string[]) {
+  const keys = `array[${kinds.map((kind) => `'${kind}'`).join(",")}]`;
+  const each = kinds
+    .map(
+      (kind) => `jsonb_typeof(resource_revisions->'${kind}') = 'string' and
     (resource_revisions->>'${kind}') ~ '^(0|[1-9][0-9]{0,18})$' and
     (resource_revisions->>'${kind}')::numeric <= sequence`,
-  )
-  .join(" and ");
+    )
+    .join(" and ");
+  return {
+    defaultValue: JSON.stringify(Object.fromEntries(kinds.map((kind) => [kind, "0"]))),
+    check: `jsonb_typeof(resource_revisions) = 'object'
+      and resource_revisions ?& ${keys}
+      and resource_revisions - ${keys} = '{}'::jsonb and ${each}`,
+  };
+}
+
+/**
+ * The durable resource kinds 0038 was released with, frozen: a migration never reads a live list,
+ * so a Home that ran it and a Home that runs it now hold the same default and CHECK. 0110 retires
+ * `team-replies` from both.
+ */
+export const releasedResourceRevisionKinds = [
+  "settings",
+  "identity",
+  "owner-profile",
+  "environment",
+  "machine",
+  "harness",
+  "harness-catalog",
+  "tab",
+  "tab-layout",
+  "browser-profile",
+  "browser-placement",
+  "browser-home",
+  "browser-availability",
+  "plugin",
+  "team-replies",
+] as const;
+const releasedResourceRevisions = resourceRevisionsDdl(releasedResourceRevisionKinds);
 
 const retainedStateDdl = `
   alter table deployment_event_state rename to client_sync_state;
@@ -248,7 +280,7 @@ const retainedStateDdl = `
       check (pruned_through_sequence between 0 and sequence),
     add column retained_change_count integer not null default 0 check (retained_change_count between 0 and 4096),
     add column last_commit_at timestamptz not null default clock_timestamp(),
-    add column resource_revisions jsonb not null default '${JSON.stringify(emptyPersonalResourceRevisions)}',
+    add column resource_revisions jsonb not null default '${releasedResourceRevisions.defaultValue}',
     add column pending_request_count integer not null default 0 check (pending_request_count >= 0),
     add column pending_device_access_request_count integer not null default 0
       check (pending_device_access_request_count between 0 and pending_request_count),
@@ -257,9 +289,7 @@ const retainedStateDdl = `
     add column pending_requests_revision bigint not null default 0
       check (pending_requests_revision between 0 and sequence),
     add column upgrade_cursor jsonb,
-    add check (jsonb_typeof(resource_revisions) = 'object'
-      and resource_revisions ?& ${revisionKeys}
-      and resource_revisions - ${revisionKeys} = '{}'::jsonb and ${resourceRevisionCheck});
+    add check (${releasedResourceRevisions.check});
 
   create table client_changes (
     deployment_id text not null references client_sync_state(deployment_id) on delete cascade,
@@ -707,6 +737,23 @@ export async function applyInlineTranscriptMessages(database: Kysely<DatabaseSch
 }
 
 export const stoppedRunsNotNewsMigrationName = "0044_stopped_runs_are_not_news";
+
+// 0044's two fragments, frozen as main released them: the live `runNewsAt` and `unreadTaskSql`
+// (personal-attention-store.ts) may change, and a Home that ran 0044 before must not differ
+// from one that runs it now.
+const releasedUnreadTask = sql<boolean>`(select listed and purpose='task' and status<>'archived'
+    and removed_at is null and latest_run_completed_at is not null
+    and (last_visited_at is null or latest_run_completed_at>last_visited_at)
+  from threads t left join thread_visits v on v.thread_id=t.id and v.user_id=t.created_by
+  where t.id=threads.id)`;
+function releasedRunNewsAt(run: string) {
+  const status = sql.ref(`${run}.status`);
+  return sql<Date | null>`case when ${status} in ('completed','failed') or (${status}='interrupted'
+    and ${sql.ref(`${run}.started_at`)} is not null
+    and not exists (select from commands where commands.run_id=${sql.ref(`${run}.id`)}
+      and commands.type='run.interrupt' and commands.authority_source->>'kind'='user-session'))
+    then ${sql.ref(`${run}.completed_at`)} end`;
+}
 /**
  * A Run its owner stopped, or one that ended before it started, no longer makes its task unread.
  * Earlier Hosts labelled every Stop the person's own (`user-session`), so first restore who really
@@ -732,13 +779,13 @@ export async function applyStoppedRunsNotNews(database: Kysely<DatabaseSchema>) 
       from commands where type='run.interrupt' and authority_source->>'kind'='user-session') legacy
     where commands.id=legacy.id and (legacy.team is not null or legacy.caller is not null);
     update threads set latest_run_completed_at=news.at
-    from (select source.id,(select ${runNewsAt("runs")} from runs
+    from (select source.id,(select ${releasedRunNewsAt("runs")} from runs
         where runs.thread_id=source.id and runs.maintenance is null
         order by runs.run_ordinal desc limit 1) as at
       from threads source where source.latest_run_completed_at is not null) news
     where threads.id=news.id and threads.latest_run_completed_at is distinct from news.at;
     update client_sync_state set epoch=gen_random_uuid(),
-      unread_task_count=(select count(*) from threads where ${unreadTaskSql});
+      unread_task_count=(select count(*) from threads where ${releasedUnreadTask});
   `.execute(database);
 }
 

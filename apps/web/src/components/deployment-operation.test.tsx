@@ -100,7 +100,7 @@ function snapshot(input: {
             canonicalOrigin: "https://test.example.com",
             failure: input.failure ?? null,
             id: deploymentId,
-            kind: "team",
+            kind: "personal",
             lastUsedAt: null,
             name: "Test deployment",
             onThisComputer: false,

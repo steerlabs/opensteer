@@ -75,7 +75,9 @@ integration("mixed workspace layout", () => {
           ? actor.ownerId
           : actor.kind === "run"
             ? actor.claims.requestedBy
-            : actor.caller.userId),
+            : actor.kind === "browser-binding"
+              ? actor.authority.ownerId
+              : actor.caller.userId),
       canReadTask: async () => true,
       authorize: async () => {},
       authorizeMembership: async () => {},

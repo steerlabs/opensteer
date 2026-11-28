@@ -33,14 +33,15 @@ export * from "./places.js";
 export * from "./person-show.js";
 
 export * from "./resource-access.js";
+export * from "./agent-grants.js";
+export * from "./agent-sessions.js";
+export * from "./agent-operation-endings.js";
 
 export * from "./background-models.js";
 
 export * from "./model-selection.js";
 export * from "./model-candidates.js";
 export * from "./personal.js";
-export * from "./team.js";
-export * from "./team-links.js";
 
 export * from "./idle-compaction.js";
 

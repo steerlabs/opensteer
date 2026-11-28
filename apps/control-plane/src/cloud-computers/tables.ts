@@ -1,0 +1,161 @@
+import type { ColumnType, Generated } from "kysely";
+import type {
+  CloudComputerDesired,
+  CloudComputerId,
+  CloudComputerProviderWrite,
+  CloudComputerReport,
+  GoogleComputeServerRef,
+  ControlPlaneAccountId,
+} from "@opensteer/control-plane-protocol";
+import type { NullableTimestamp, Timestamp } from "../database/schema.js";
+import type { CloudComputerConfig } from "./config.js";
+
+export type BillingStatus =
+  "active" | "payment_failed" | "past_due" | "unpaid" | "canceled" | "inactive";
+
+export interface CloudComputerTable {
+  id: CloudComputerId;
+  accountId: ControlPlaneAccountId | null;
+  generation: number;
+  state: CloudComputerDesired["state"];
+  hostname: string;
+  region: string;
+  serverType: string;
+  release: ColumnType<CloudComputerConfig["release"], string, string>;
+  setupCodeDigest: string | null;
+  sealedSetupCode: string | null;
+  bootstrapDigest: string | null;
+  sealedBootstrapToken: string | null;
+  bootstrapExpiresAt: NullableTimestamp;
+  backupKeyProject: Generated<string | null>;
+  backupKeyVersion: Generated<number | null>;
+  bootstrapReceipt: ColumnType<unknown, string | null, string | null>;
+  bootstrapReceiptAt: NullableTimestamp;
+  oidcClientId: string | null;
+  sealedOidcClientSecret: string | null;
+  sealedHostCredential: string | null;
+  claimAttempt: Generated<number>;
+  claimNextAt: NullableTimestamp;
+  claimError: string | null;
+  readinessStartedAt: Timestamp;
+  phase: CloudComputerReport["phase"];
+  providerServerId: string | null;
+  providerServerRef: Generated<GoogleComputeServerRef | null>;
+  ipv4: string | null;
+  ipv6: string | null;
+  deploymentId: string | null;
+  hostKeyFingerprint: string | null;
+  lastError: CloudComputerReport["lastError"];
+  operatorSuspension: string | null;
+  ownerSuspended: Generated<boolean>;
+  egressUnavailable: Generated<boolean>;
+  stripeCheckoutId: string;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  stripePriceId: string;
+  billingCurrency: string;
+  billingStatus: BillingStatus;
+  renewsAt: Generated<Date | null>;
+  revision: Generated<number>;
+  everReady: Generated<boolean>;
+  generationReady: Generated<boolean>;
+  /** When it last became ready; see `report`. A computer with none has never been ready. */
+  readyAt: Generated<Date | null>;
+  /** When the current outage began; null while it is ready. See `report` and `watch`. */
+  downAt: Generated<Date | null>;
+  /** When the current run of outages began, kept across short ready spells. See `watch`. */
+  unstableSince: Generated<Date | null>;
+  /** When it last left active (a Suspend, billing that stopped); null while active. */
+  inactiveSince: Generated<Date | null>;
+  dnsQuarantined: Generated<boolean>;
+  createAttempted: Generated<boolean>;
+  bootCompletedAt: NullableTimestamp;
+  lastBackupAt: Generated<Date | null>;
+  lastBackupSnapshotId: Generated<string | null>;
+  completedBootDigest: string | null;
+  previousProviderServerId: string | null;
+  previousProviderServerRef: Generated<GoogleComputeServerRef | null>;
+  restoreSnapshot: string | null;
+  ipv6Enabled: Generated<boolean>;
+  deletionRequestedAt: NullableTimestamp;
+  /** Set once the billing pass settled this computer's deletion with Stripe; see `reconcileBilling`. */
+  billingSettledAt: Generated<Date | null>;
+  /** Set when cancelling this deleted computer's subscription first failed; see `#settleDeletion`. */
+  cancelFailedAt: Generated<Date | null>;
+  vmDestroyedAt: Generated<Date | null>;
+  backupsUnreadableAt: Generated<Date | null>;
+  backupObjectsRemovedAt: Generated<Date | null>;
+  backupCleanupAttemptedAt: Generated<Date | null>;
+  ownerAccessAt: Generated<Date | null>;
+  /** Always `pool`: a Cloud Computer's browser runs in the browser pool (0040_browser_always_pooled). */
+  browserMode: Generated<"pool">;
+  browserSlotErasedAt: Generated<Date | null>;
+  pendingProviderWrites: ColumnType<CloudComputerProviderWrite[], string | undefined, string>;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  reportedAt: NullableTimestamp;
+  deletedAt: NullableTimestamp;
+  tombstonedAt: NullableTimestamp;
+}
+
+/** The latest health report a Cloud Computer sent; see health-migration.ts. */
+export interface CloudComputerHealthTable {
+  computerId: CloudComputerId;
+  receivedAt: Timestamp;
+  report: ColumnType<import("@opensteer/protocol/problems").HomeHealthReport, string, string>;
+}
+
+export interface CloudComputerCheckoutTable {
+  accountId: ControlPlaneAccountId;
+  requestId: string;
+  expiresAt: Timestamp;
+  createdAt: Timestamp;
+  lastStripeAttemptAt: NullableTimestamp;
+  targetComputerId: CloudComputerId | null;
+  paidAt: Generated<Date | null>;
+  returnUrl: Generated<string | null>;
+  stripeSessionId: string | null;
+  url: string | null;
+  stripePriceId: string;
+  currency: string;
+  status: "open" | "completed" | "expired" | "refunded";
+}
+
+export interface CloudComputerEgressEndpointTable {
+  id: string;
+  url: string;
+  username: string;
+  sealedPassword: string;
+  publicAddress: Generated<string | null>;
+  retired: Generated<boolean>;
+  needsRotation: Generated<boolean>;
+  computerId: CloudComputerId | null;
+}
+
+export interface CloudComputerStripeEventTable {
+  id: string;
+  type: string;
+  receivedAt: Timestamp;
+  deferredCheckout: ColumnType<unknown, string | null | undefined, string | null>;
+}
+
+export interface CloudComputerBackupTargetTable {
+  id: string;
+  endpoint: string;
+  bucket: string;
+  prefix: string;
+  principalFingerprint: string;
+  region: Generated<string>;
+  sealedCredentials: string;
+  computerId: CloudComputerId | null;
+  checkoutKey: string | null;
+  purgeComputerId: Generated<CloudComputerId | null>;
+  needsRotation: Generated<boolean>;
+}
+
+export interface CloudComputerBackupNamespaceTable {
+  endpoint: string;
+  bucket: string;
+  prefix: string;
+  principalFingerprint: string;
+}

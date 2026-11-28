@@ -53,7 +53,13 @@ export function AnsweredQuestionView(props: {
           onToggle={props.onToggle}
           open={open}
         >
-          <Markdown excerpt={excerpt} text={question.detail} />
+          {question.detailFormat === "plain" ? (
+            <AppText role="caption" tone="soft">
+              {question.detail}
+            </AppText>
+          ) : (
+            <Markdown excerpt={excerpt} text={question.detail} />
+          )}
         </MessageFold>
       ) : null}
       {question.answers.map(({ prompt, answer }, index) => (

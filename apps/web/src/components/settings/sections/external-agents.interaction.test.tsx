@@ -2,9 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
-import { UserIdSchema } from "@opensteer/core";
 import { MockHostClient } from "@opensteer/client/mock";
-import type { AgentConnection } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShellContext } from "../../app-shell.js";
 import type { SettingsView } from "../primitives.js";
@@ -46,31 +44,7 @@ function button(label: string) {
   return found;
 }
 
-describe("External agents in web and desktop Settings", () => {
-  it("lists a connection's scope and removes only that connection", async () => {
-    const row: AgentConnection = {
-      id: `mcn_${crypto.randomUUID()}`,
-      userId: UserIdSchema.parse("usr_0192f4a1-0000-4000-8000-000000000001"),
-      label: "Research agent",
-      clientName: "Example",
-      accessMode: "auto",
-      createdAt: "2026-11-01T00:00:00Z",
-      expiresAt: "2026-12-01T00:00:00Z",
-      lastUsedAt: null,
-    };
-    host = new MockHostClient({ latencyMs: 0, connections: [row] });
-    const dispatch = vi.spyOn(host, "dispatch");
-    const page = await mount(host);
-    await vi.waitFor(() => expect(page.textContent).toContain("Research agent"));
-    expect(page.textContent).toContain("Auto. Not used yet.");
-    await act(async () => button("Remove Research agent").click());
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "connection.revoke", connectionId: row.id }),
-    );
-    expect(page.textContent).not.toContain("Research agent");
-    expect(page.textContent).not.toContain("Connected");
-  });
-
+describe("Connected agents: adding an agent", () => {
   it("keeps a failed first load visible and recovers on an explicit retry", async () => {
     host = new MockHostClient({ latencyMs: 0 });
     Object.defineProperty(host.rpc, "connections.list", {
@@ -78,12 +52,14 @@ describe("External agents in web and desktop Settings", () => {
       configurable: true,
     });
     const page = await mount(host);
-    await vi.waitFor(() => expect(page.textContent).toContain("Your agents couldn’t be loaded"));
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain("Couldn't load your connected agents."),
+    );
     expect(button("Add Another agent").disabled).toBe(true);
     const retry = [...page.querySelectorAll("button")].find((b) => b.textContent === "Try again")!;
     await act(async () => retry.click());
     await vi.waitFor(() => expect(button("Add Another agent").disabled).toBe(false));
-    expect(page.textContent).not.toContain("Your agents couldn’t be loaded");
+    expect(page.textContent).not.toContain("Couldn't load your connected agents.");
   });
 
   it("waits for the initial connection list before taking the setup baseline", async () => {
@@ -101,7 +77,7 @@ describe("External agents in web and desktop Settings", () => {
       configurable: true,
     });
     const page = await mount(host);
-    await vi.waitFor(() => expect(page.textContent).toContain("Turn on Use from anywhere first"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Turn on Remote access first"));
     expect(button("Add Another agent").disabled).toBe(true);
     await act(async () => finish!({ ok: true, data: { connections: [] } }));
     expect(button("Add Another agent").disabled).toBe(false);
@@ -123,8 +99,10 @@ describe("External agents in web and desktop Settings", () => {
       },
     });
     const page = await mount(host);
-    await vi.waitFor(() => expect(page.textContent).toContain("Turn on Use from anywhere first"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Turn on Remote access first"));
     expect(button("Add ChatGPT").disabled).toBe(true);
+    expect(button("Add Perplexity").disabled).toBe(true);
+    expect(button("Add Claude Code").disabled).toBe(false);
     await act(async () => button("Add Another agent").click());
     const dialog = document.querySelector('[role="dialog"]')!;
     // A Personal Host reached on its own computer offers its loopback address.
@@ -142,6 +120,6 @@ describe("External agents in web and desktop Settings", () => {
         },
       });
     });
-    await vi.waitFor(() => expect(dialog.textContent).toContain("Terminal agent is connected."));
+    await vi.waitFor(() => expect(dialog.textContent).toContain("“Terminal agent” is connected."));
   });
 });

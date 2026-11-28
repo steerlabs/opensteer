@@ -25,6 +25,7 @@ export function tabStrip(
   layout: TabLayout,
   known: { has(tabId: TabId): boolean },
   previous?: TabStrip,
+  sharedTabs: readonly TabId[] = [],
 ): TabStrip {
   const reuse = new Map(
     previous?.entries.map((entry) => [
@@ -41,12 +42,25 @@ export function tabStrip(
       continue;
     }
     const tabIds = item.group.tabIds.filter((id) => known.has(id));
+    // A group shows while any of its tabs does. The Home keeps a group its last tab leaves,
+    // so Undo can put the tab back in it; until then there is nothing of it to draw.
+    if (!tabIds.length) continue;
     const old = reuse.get(item.group.groupId);
     entries.push(
       old?.kind === "group" && old.group === item.group && sameIds(old.tabIds, tabIds)
         ? old
         : { kind: "group", group: item.group, tabIds },
     );
+  }
+  if (sharedTabs.length) {
+    const listed = new Set(
+      entries.flatMap((entry) => (entry.kind === "tab" ? [entry.tabId] : entry.tabIds)),
+    );
+    for (const tabId of sharedTabs) {
+      if (listed.has(tabId)) continue;
+      const old = reuse.get(tabId);
+      entries.push(old?.kind === "tab" ? old : { kind: "tab", tabId });
+    }
   }
   const ordered = entries.flatMap((entry) => (entry.kind === "tab" ? [entry.tabId] : entry.tabIds));
   const visible = entries.flatMap((entry) =>

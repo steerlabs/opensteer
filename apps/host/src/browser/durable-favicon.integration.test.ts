@@ -267,7 +267,7 @@ integration("Durable tab icons", () => {
     };
     await new TabStore(host.store.database).open(initialWrite, "history-member");
     await host.runtime.browser.pageTabs.admitted!(initialWrite);
-    const sessionId = opened.sessionId;
+    let sessionId = opened.sessionId;
     const initialNavigation = runtime.lastClaims()?.initialNavigation;
     expect(initialNavigation).toMatchObject({ url: "https://amazon.com/" });
     expect(runtime.receivedCommands().some((command) => command.type === "cdp.command")).toBe(
@@ -538,11 +538,15 @@ integration("Durable tab icons", () => {
     await sendSurfaces([surface(opened.tabId, "https://latest.example/", "latest")]);
     const saved = new TabStore(host.store.database);
     await saved.reopen(host.ownerId, opened.tabId, "history-reopen");
-    await host.runtime.browser.pageTabs.activate(
+    // The closed tab let go of its page: reopened, it loads in a page of its own, in a new session.
+    const reopened = await host.runtime.browser.pageTabs.activate(
       host.ownerId,
       (await saved.get(host.ownerId, opened.tabId))!,
       "history-view",
     );
+    if (reopened.kind !== "page") throw new Error("The reopened tab has no page.");
+    expect(reopened.sessionId).not.toBe(sessionId);
+    sessionId = reopened.sessionId;
     viewer.close();
     await closed(viewer);
     viewer = new WebSocket(
@@ -698,6 +702,105 @@ integration("Durable tab icons", () => {
       { timeout: 5_000 },
     );
   }, 60_000);
+
+  it("writes the rest of a batch when one tab is on an extension's page (P4)", async () => {
+    const database = await createMachineAccessDatabase(databaseUrl!);
+    cleanups.push(() => database.drop());
+    const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
+    cleanups.push(() => host.close());
+    const caller = await connectCallerMachine(host, {
+      name: "Batch caller",
+      token: await host.hostingRunnerEnrollmentToken,
+    });
+    cleanups.push(() => caller.close());
+    await dispatchCallerRun(host, caller, { key: "batch", title: "Batch" });
+    const runtime = await startBrowserRuntime(
+      host.hostPort,
+      await enrollmentToken(host, {
+        allowedModules: ["browser"],
+        idempotencyKey: "batch-browser",
+        name: "Batch browser",
+      }),
+      { agentReady: true, targetedStreaming: true, personalTabs: true },
+    );
+    cleanups.push(() => runtime.close());
+    await until(() => (host.runtime.browser.available ? true : undefined));
+    const opened = await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "browser.session.start",
+        idempotencyKey: "batch-session",
+        input: { placement: { kind: "runner", runnerId: runtime.runnerId }, fresh: true },
+      },
+      { headers: host.ownerHeaders },
+    );
+    if (opened.type !== "browser.session.start") throw new Error("Unexpected command");
+    const sessionId = opened.session.id;
+    const db = host.store.database;
+    const row = (id: string) =>
+      db
+        .selectFrom("personalTabs")
+        .selectAll()
+        .where("id", "=", TabIdSchema.parse(id))
+        .executeTakeFirst();
+    const ids = ["page-a", "page-b", "page-c", "page-d"];
+    for (const id of ids) {
+      const tabId = TabIdSchema.parse(id);
+      await new TabStore(db).open(
+        {
+          id: tabId,
+          ownerId: host.ownerId,
+          computerId: DeviceIdSchema.parse(runtime.runnerId),
+          kind: "page",
+          title: id,
+          url: "about:blank",
+          openedBy: "person",
+          pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
+        },
+        `fixture:${id}`,
+      );
+      await host.runtime.browser.pageTabs.admitted!(
+        (await new TabStore(db).get(host.ownerId, tabId))!,
+      );
+    }
+    const descriptor = (id: string, url: string, order: number) => ({
+      id,
+      title: id.toUpperCase(),
+      url,
+      order,
+      openerId: null,
+    });
+    const surface = (id: string, url: string, order: number) => ({
+      ...descriptor(id, url, order),
+      active: order === 0,
+      documentId: `document-${id}`,
+      geometryRevision: 1,
+    });
+    // The tabs as they are, then one batch: a web tab, an extension's options page the person
+    // has open, a tab that navigates, and a fourth that closes.
+    runtime.publishTabs({
+      surfaces: ids.map((id, order) => surface(id, "about:blank", order)),
+    });
+    runtime.publishTabs({
+      surfaces: [
+        descriptor("page-a", "https://a.example/", 0),
+        descriptor("page-b", `chrome-extension://${"a".repeat(32)}/options.html`, 1),
+        descriptor("page-c", "https://c.example/after", 2),
+      ],
+      closed: ["page-d"],
+    });
+    await until(
+      async () =>
+        (await row("page-c"))?.url === "https://c.example/after" && (await row("page-d"))?.closedAt
+          ? true
+          : undefined,
+      async () => ({ c: await row("page-c"), d: await row("page-d") }),
+    );
+    expect((await row("page-a"))?.url).toBe("https://a.example/");
+    // The extension's page is skipped: its row keeps its last web address.
+    expect((await row("page-b"))?.url).toBe("about:blank");
+  });
 
   it("stores live icons, survives Runtime end and Host restart, and serves them lazily to the owner", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);

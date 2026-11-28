@@ -42,6 +42,26 @@ describe("DesktopLocalRunnerTargetResolver", () => {
     await expect(resolver.isCurrent(target)).resolves.toBe(true);
   });
 
+  it("accepts a Home on its own server at its canonical HTTPS origin", async () => {
+    const connection = homeConnection();
+    const deploymentId = connection.authority.document.deploymentId;
+    const resolver = new DesktopLocalRunnerTargetResolver({
+      catalog: catalogStore([connection]),
+      supervisedDeploymentId: async () => null,
+    });
+
+    const target = await resolver.resolve(deploymentId);
+
+    expect(target).toMatchObject({
+      accessRoute: null,
+      deploymentId,
+      deploymentShape: { kind: "personal" },
+      hostUrl: "https://home.opensteer.test",
+      mayRunAgents: false,
+    });
+    await expect(resolver.isCurrent(target)).resolves.toBe(true);
+  });
+
   it("refuses the Mac that hosts the Personal Deployment", async () => {
     const connection = personalConnection({ route: routeOrigin });
     const deploymentId = connection.authority.document.deploymentId;
@@ -64,17 +84,6 @@ describe("DesktopLocalRunnerTargetResolver", () => {
 
     await expect(resolver.resolve(connection.authority.document.deploymentId)).rejects.toThrow(
       "no live remote access route",
-    );
-  });
-
-  it("refuses team Hosts as local Runner targets", async () => {
-    const connection = teamConnection();
-    const resolver = new DesktopLocalRunnerTargetResolver({
-      catalog: catalogStore([connection]),
-      supervisedDeploymentId: async () => null,
-    });
-    await expect(resolver.resolve(connection.authority.document.deploymentId)).rejects.toThrow(
-      "Team servers do not run agents or enroll computers.",
     );
   });
 });
@@ -113,22 +122,22 @@ function personalConnection(options: { readonly route: string | null }) {
   });
 }
 
-function teamConnection() {
-  const canonicalOrigin = "https://cloud.opensteer.test";
+function homeConnection() {
+  const canonicalOrigin = "https://home.opensteer.test";
   return DeploymentConnectionSchema.parse({
     authority: envelope({
       canonicalOrigin,
       deploymentId: createId("deployment"),
-      deploymentShape: { kind: "team" },
+      deploymentShape: { kind: "personal" },
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
     }),
     bootstrapMethods: ["password"],
     createdAt: now,
     endpoints: [{ kind: "canonical", origin: canonicalOrigin, verifiedAt: now }],
-    kind: "team",
+    kind: "personal",
     lastUsedAt: null,
-    name: "Cloud",
+    name: "Home",
     reachability: "canonical",
     source: { kind: "manual" },
     updatedAt: now,
