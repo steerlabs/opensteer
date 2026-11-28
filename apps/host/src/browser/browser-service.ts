@@ -31,11 +31,7 @@ import {
   standardCdpMaxLivePerRunner,
 } from "./standard-cdp-transport.js";
 import type { DeviceId } from "@opensteer/core";
-import {
-  authorizeTabTarget,
-  tabReadAuthority,
-  tabReadAuthorityWithRevision,
-} from "../tabs/tab-authority.js";
+import { authorizeTabTarget, tabReadAuthority } from "../tabs/tab-authority.js";
 import type { PageTabsPort } from "../tabs/tab-service.js";
 import type { TabActor } from "../tabs/ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
@@ -46,6 +42,7 @@ import {
   admitExecution,
   getBrowserPoolSessionForTeardown,
   listBrowserStandardCdpLeases,
+  readLiveAgentConnectionRow,
   releaseBrowserStandardCdpLease,
   executionAccess,
   executionMayManageExtensions,
@@ -8444,6 +8441,7 @@ export class BrowserService {
 
   /** Release unreachable tabs, or return null when an executor still needs them. */
   async pruneBindingTabs(
+    connectionId: string,
     actor: Extract<TabActor, { kind: "browser-binding" }>,
     watchedTab: TabId | null,
     canRelease: (grantRevision: number | undefined) => boolean,
@@ -8467,19 +8465,19 @@ export class BrowserService {
     if (watchedTab) candidates.add(watchedTab);
     if (!candidates.size) return false;
     const rows = await tabs.rows(ownerId, [...candidates]);
-    const authority = await tabReadAuthorityWithRevision(actor, tabs.database).catch(
-      (error: unknown) => {
-        // A Stop or Disconnect can end the binding while the cleanup reads its tabs.
-        if (error instanceof OpensteerError && ["forbidden", "not_found"].includes(error.code))
-          return null;
-        throw error;
-      },
-    );
+    const reachable = await tabReadAuthority(actor, tabs.database).catch((error: unknown) => {
+      // A Stop or Disconnect can end the binding while the cleanup reads its tabs.
+      if (error instanceof OpensteerError && ["forbidden", "not_found"].includes(error.code))
+        return null;
+      throw error;
+    });
     const allowed = new Set<TabId>();
-    if (authority)
-      for (const row of rows) if (await authority.reachable(row, "read-write")) allowed.add(row.id);
-    // Check after the authority reads in case another executor started in the meantime.
-    if (!canRelease(authority?.grantRevision)) return null;
+    if (reachable)
+      for (const row of rows) if (await reachable(row, "read-write")) allowed.add(row.id);
+    // Target checks can re-read authority. The revision after those checks bounds every grant
+    // they could have seen, including a narrowing that committed while checking the tabs.
+    const standing = await readLiveAgentConnectionRow(tabs.database, ownerId, connectionId);
+    if (!canRelease(standing?.grantRevision)) return null;
     this.releaseHolds(
       agentBindingId,
       (sessionId, tabId, holder) =>

@@ -67,6 +67,7 @@ import type { TabActor } from "../tabs/ports.js";
 const defaultExecutionMs = 120_000;
 
 type PruneBindingTabs = (
+  connectionId: string,
   actor: Extract<TabActor, { kind: "browser-binding" }>,
   watchedTab: TabId | null,
   canRelease: (grantRevision: number | undefined) => boolean,
@@ -711,6 +712,7 @@ export class AgentSessionService {
               if (!work || (this.#resetRevision.get(id) ?? -1) >= revision) return;
               const watchedTab = this.workingIn.tabOf(id);
               const lostWatch = await this.#pruneBindingTabs(
+                connectionId,
                 {
                   kind: "browser-binding",
                   authority: { agentBindingId: binding, ownerId: userId },
@@ -719,7 +721,7 @@ export class AgentSessionService {
                 watchedTab,
                 (grantRevision) => {
                   // A later narrowing may already have committed. Keep the places of work
-                  // admitted before the grant that actually decided this prune.
+                  // admitted before the latest grant this prune could have read.
                   const unsettled = [...this.#running.values()].filter(
                     (attempt) =>
                       attempt.sessionId === id &&
