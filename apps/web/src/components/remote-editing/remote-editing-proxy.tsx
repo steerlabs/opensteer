@@ -1,4 +1,4 @@
-import { DisplayEditingRefusal } from "@opensteer/client/integrations";
+import { DisplayEditingRefusal, DisplayEditingStopped } from "@opensteer/client/integrations";
 import { presentFailure } from "../use-action.js";
 import {
   useCallback,
@@ -165,8 +165,8 @@ export function RemoteEditingProxy({
   // said by the shared presenter, never as the exception's text.
   const failure = useCallback(
     (reason: unknown) => {
-      if (reason instanceof DisplayEditingRefusal) {
-        refusalShown.current = reason.message;
+      if (reason instanceof DisplayEditingRefusal || reason instanceof DisplayEditingStopped) {
+        refusalShown.current = reason instanceof DisplayEditingRefusal ? reason.message : null;
         refuse(reason.message);
       } else refuse(presentFailure(reason, "edit remotely"));
     },

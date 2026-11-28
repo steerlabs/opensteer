@@ -27,7 +27,8 @@ import type { DisplayUnavailableReason } from "./computer-watch-status.js";
 
 /** The contract's bound on one input batch (`DisplayInputEventsSchema`). */
 export const maxDisplayInputEvents = 64;
-export const maxDisplayInputBytes = 256 * 1_024;
+/** The Mac helper's admission bound on one serialized input batch (`OwnerInputAdmission.maxBytes`). */
+export const maxDisplayInputBytes = 128 * 1_024;
 /** Thrown before sending when a single event or atomic batch exceeds the wire size bound (A4). */
 export class DisplayInputTooLargeError extends Error {}
 /** Viewer JSON is a state or editing line; anything near this is not one. */

@@ -140,8 +140,8 @@ export function OwnerView({
   const shown = live && !restarting && !timedOut ? display.picture : null;
   const inputAvailable = display.snapshot.input === "available";
   useEffect(() => {
-    if (!visible) display.lease?.resetInput();
-  }, [visible, display.lease]);
+    if (!visible) (display.editing ?? display.lease)?.resetInput();
+  }, [visible, display.editing, display.lease]);
 
   const [zoomed, setZoomed] = useState(false);
   const [reopening, setReopening] = useState(false);

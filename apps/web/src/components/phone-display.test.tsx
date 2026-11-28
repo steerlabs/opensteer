@@ -606,6 +606,20 @@ function proxyInput(
 function remoteEvents() {
   return inputs().flatMap((message) => message.events as Record<string, unknown>[]);
 }
+function ackInputs() {
+  act(() => {
+    let acked = 0;
+    while (acked < inputs().length) {
+      const batch = inputs()[acked]!;
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: batch.sequence,
+        outcome: "dispatched",
+      });
+      acked += 1;
+    }
+  });
+}
 function hardware(field: HTMLElement, key: string, code: string, extra: KeyboardEventInit = {}) {
   act(() => {
     field.dispatchEvent(
@@ -636,6 +650,7 @@ describe("negotiated phone viewer wire", () => {
     hardware(field, "ArrowLeft", "ArrowLeft");
     hardware(field, "Backspace", "Backspace");
     hardware(field, "Backspace", "Backspace");
+    ackInputs();
     expect(remoteEvents()).toEqual([
       {
         kind: "key",
@@ -900,6 +915,13 @@ describe("negotiated phone viewer wire", () => {
     const field = await negotiatedPhone();
     trustedPaste(field, { "text/plain": "one\ntwo 🦊" });
     trustedPaste(field, { "text/plain": "rich", "text/html": "<b>rich</b>" });
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: inputs()[0]!.sequence,
+        outcome: "dispatched",
+      }),
+    );
     expect(remoteEvents()).toEqual([
       { kind: "paste", text: "one\ntwo 🦊", contextId: editingContext.contextId },
       { kind: "paste", text: "rich", contextId: editingContext.contextId },
@@ -1283,15 +1305,11 @@ describe("Mac owner viewer", () => {
       canvas().dispatchEvent(wheel);
     });
     expect(remoteEvents().some((event) => event.kind === "scroll")).toBe(false);
-    act(() => {
-      for (const batch of inputs())
-        sockets[0]!.deliver({
-          type: "display.input.result",
-          sequence: batch.sequence,
-          outcome: "dispatched",
-        });
+    ackInputs();
+    await until(() => {
+      ackInputs();
+      return remoteEvents().some((event) => event.kind === "scroll");
     });
-    await until(() => remoteEvents().some((event) => event.kind === "scroll"));
     expect(remoteEvents()).toEqual([
       { kind: "mouse", phase: "move", button: "none", modifiers: ["shift"], x: 0.25, y: 0.5 },
       {
@@ -1365,6 +1383,7 @@ describe("Mac owner viewer", () => {
         }),
       );
     });
+    ackInputs();
     act(() => root!.unmount());
     root = null;
     expect(remoteEvents()).toContainEqual(
@@ -1375,6 +1394,91 @@ describe("Mac owner viewer", () => {
     );
     expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
     expect(sockets[0]!.closed).toBe(true);
+  });
+  it("releases held mouse and keys and drops queued edits on unmount with an outstanding receipt", async () => {
+    const field = await negotiatedMacOwner();
+    hardware(field, "F2", "F2");
+    act(() => {
+      canvas().dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true,
+          pointerType: "mouse",
+          pointerId: 7,
+          isPrimary: true,
+          button: 0,
+          buttons: 1,
+          clientX: 270,
+          clientY: 390,
+        }),
+      );
+    });
+    act(() => {
+      canvas().dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          buttons: 1,
+          detail: 1,
+          clientX: 270,
+          clientY: 390,
+        }),
+      );
+    });
+    // Acknowledge F2-down and mouse-down so both are held on the device, then leave an edit pending.
+    ackInputs();
+    proxyInput(field, "a");
+    proxyInput(field, "b");
+    const pendingSeq = inputs().at(-1)!.sequence;
+    act(() => root!.unmount());
+    root = null;
+    expect(remoteEvents()).toContainEqual(
+      expect.objectContaining({ kind: "mouse", phase: "cancel", button: "left" }),
+    );
+    expect(remoteEvents()).toContainEqual(
+      expect.objectContaining({ kind: "key", action: "up", code: "F2" }),
+    );
+    expect(remoteEvents()).not.toContainEqual(
+      expect.objectContaining({ kind: "edit", edit: expect.objectContaining({ text: "b" }) }),
+    );
+    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
+    // Late receipt for the pending edit must not drain queued edits.
+    const countAfterUnmount = inputs().length;
+    sockets[0]!.deliver({
+      type: "display.input.result",
+      sequence: pendingSeq,
+      outcome: "dispatched",
+    });
+    expect(inputs()).toHaveLength(countAfterUnmount);
+  });
+  it("drops queued edits on blur with an outstanding receipt so a late receipt never drains them", async () => {
+    const field = await negotiatedMacOwner();
+    act(() => field.focus());
+    hardware(field, "F2", "F2");
+    ackInputs();
+    proxyInput(field, "a");
+    proxyInput(field, "b");
+    const pendingSeq = inputs().at(-1)!.sequence;
+    act(() => field.blur());
+    expect(remoteEvents()).toContainEqual(
+      expect.objectContaining({ kind: "key", action: "up", code: "F2" }),
+    );
+    expect(remoteEvents()).not.toContainEqual(
+      expect.objectContaining({ kind: "edit", edit: expect.objectContaining({ text: "b" }) }),
+    );
+    expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
+    const countAfterBlur = inputs().length;
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.input.result",
+        sequence: pendingSeq,
+        outcome: "dispatched",
+      }),
+    );
+    expect(inputs()).toHaveLength(countAfterBlur);
+    expect(remoteEvents()).not.toContainEqual(
+      expect.objectContaining({ kind: "edit", edit: expect.objectContaining({ text: "b" }) }),
+    );
   });
 });
 
