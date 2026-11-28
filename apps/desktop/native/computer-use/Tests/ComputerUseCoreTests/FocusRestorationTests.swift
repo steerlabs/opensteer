@@ -3,6 +3,13 @@ import XCTest
 @testable import ComputerUseCore
 
 final class FocusRestorationTests: XCTestCase {
+  func testVerifiedAgentRestorationDoesNotRequireBothAppKitNotices() {
+    XCTAssertTrue(FocusEnforcer.restorationAcknowledged(
+      restored: true, originalActivated: true, targetDeactivated: false, afterAgentInput: true))
+    XCTAssertFalse(FocusEnforcer.restorationAcknowledged(
+      restored: true, originalActivated: true, targetDeactivated: false, afterAgentInput: false))
+  }
+
   func testSiblingEnforcerStopDeactivatesTheRemainingBeliefDespiteARound() {
     let (kind, deactivated, activated) = (FocusEvents.appKitDefined, FocusEvents.deactivated, FocusEvents.activated)
     let roundDropsAll: (UInt32, Int64) -> Bool = { _, _ in true }

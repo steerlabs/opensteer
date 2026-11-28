@@ -57,6 +57,13 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
   ]
   static let afterInputWatch: TimeInterval = 0.25
 
+  static func restorationAcknowledged(
+    restored: Bool, originalActivated: Bool, targetDeactivated: Bool, afterAgentInput: Bool
+  ) -> Bool {
+    // After agent input the window server's verified foreground and window order are enough.
+    !restored || afterAgentInput || originalActivated && targetDeactivated
+  }
+
   /// Nil when macOS refuses the taps that guard the person's focus; no input
   /// is then sent.
   init?(pid: pid_t) {
@@ -1023,7 +1030,9 @@ private final class Round: @unchecked Sendable {
           front: currentFront, original: original.processIdentifier, attemptedRestore: restored)
         if !raised, currentFront == original.processIdentifier {
           let state = seen.current
-          let acknowledged = !restored || state.originalActivated && state.targetDeactivated
+          let acknowledged = FocusEnforcer.restorationAcknowledged(
+            restored: restored, originalActivated: state.originalActivated,
+            targetDeactivated: state.targetDeactivated, afterAgentInput: afterInput && act != nil)
           let quiet = !(enforcement != nil || restored || state.realActivationObserved)
             || Round.now() - state.lastEventTime >= 0.1
           if acknowledged && quiet {
