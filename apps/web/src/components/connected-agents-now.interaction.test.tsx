@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { ClientOperationError } from "@opensteer/client/connections";
-import { placeList } from "@opensteer/client/host";
+import { BrowserProfileIdSchema, DeviceIdSchema } from "@opensteer/core";
+import { placeList, readTaskActivity } from "@opensteer/client/host";
 import {
   mockAgentWorkThreads,
   mockConnectedAgents,
@@ -256,6 +257,65 @@ it("keeps the last operations for a task whose activity refresh fails", async ()
   expect(refresh).toHaveBeenCalledTimes(1);
   expect(dialog.textContent).toContain("Run a script on Shopping");
   expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");
+});
+
+it("names one place and its device when two sessions use the same profile on that device", async () => {
+  await mount("/", options("same-place"));
+  expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");
+  const { tabs, browserProfiles } = client.getSnapshot();
+  const tab = tabs.get("mock-tab-1-0")!;
+  const profile = browserProfiles.find(({ name }) => name === "Shopping")!;
+  const [operation] = await readTaskActivity(client, mockAgentWorkThreads.working);
+  const { id, name } = operation!.target.device!;
+  await act(async () => {
+    tabs.replaceRows(
+      [...tabs.rows.values()].map((row) =>
+        row === tab
+          ? {
+              ...tab,
+              profile: { profileId: BrowserProfileIdSchema.parse(profile.id), name: profile.name },
+              computer: { computerId: id, name },
+            }
+          : row,
+      ),
+      tabs.complete,
+    );
+    client.mockAgentWorksIn(mockAgentWorkThreads.shopping, tab.tabId);
+  });
+  expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");
+  const dialog = await openPanel();
+  expect(dialog.querySelector(".agents-now-panel__header")?.textContent).toContain(name);
+  expect(dialog.querySelectorAll(".agents-now-panel__row")).toHaveLength(2);
+});
+
+it("follows a device place in Now before Watch or another activity read", async () => {
+  await mount("/", options("one"));
+  expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");
+  const threadId = mockAgentWorkThreads.shopping;
+  const refresh = vi.fn(async () => {
+    throw new Error("Activity is still from the browser call");
+  });
+  Object.defineProperty(client.rpc, "threads.activity", { value: refresh, configurable: true });
+  await act(async () => {
+    client.mockComputerUseSessionTask(threadId, { actingAppKeys: [] });
+    const machine = client
+      .getSnapshot()
+      .machines.find(({ computerUse }) =>
+        computerUse?.sessions.some((session) => session.threadId === threadId),
+      )!;
+    client.mockAgentWorksIn(threadId, null, machine.id, {
+      grant: {
+        kind: "computer-app",
+        deviceId: machine.id,
+        approvalId: "approval-safari",
+        app: { kind: "mac-app", bundleId: "com.apple.Safari", teamId: null },
+      },
+      name: "Safari",
+      device: { id: DeviceIdSchema.parse(machine.id), name: machine.name },
+    });
+  });
+  expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Safari");
+  expect(refresh).not.toHaveBeenCalled();
 });
 
 it("removes a deleted profile from Now while keeping the running session and its Stop", async () => {

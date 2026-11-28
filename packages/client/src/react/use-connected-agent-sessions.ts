@@ -1,13 +1,14 @@
 import { readTaskActivity, taskActivityKey } from "../host/agent-work.js";
-import { shownOperations } from "../host/approved-app-names.js";
+import { shownOperations, shownTarget } from "../host/approved-app-names.js";
 import { useApprovedAppNames } from "./use-approved-app-names.js";
 import type { ChatScreenHost } from "../host/chat-screen-host.js";
 import type { HostSnapshot, ThreadSummary, WaitingRequestView } from "../host/client.js";
 import { connectedAgentsNow } from "../host/connected-agents-now.js";
+import { watchSessionPlace } from "../host/agent-place-links.js";
 import { threadInDirectory } from "../host/host-snapshot-selectors.js";
 import type { HostSnapshotSource } from "../host/host-snapshot-store.js";
 import { useHostSelector } from "./use-host-snapshot.js";
-import type { AgentOperationView } from "@opensteer/core";
+import type { AgentOperationTarget, AgentOperationView } from "@opensteer/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 function selectTasks(snapshot: HostSnapshot, connectionId: string | undefined) {
@@ -127,27 +128,60 @@ export function useConnectedAgentWork(
     return () => controller.abort();
   }, [hostClient, activeTasks, activityRead, readActivity]);
   const activity = read?.client === hostClient ? read.byTask : undefined;
+  const selectPlaces = useCallback(
+    (snapshot: HostSnapshot) =>
+      tasks.map(({ id }) => {
+        const place = watchSessionPlace(snapshot, id);
+        return { id, place, tab: place?.tabId ? snapshot.tabs.get(place.tabId) : undefined };
+      }),
+    [tasks],
+  );
+  const places = useHostSelector(
+    hostClient,
+    selectPlaces,
+    (a, b) =>
+      a.length === b.length &&
+      a.every(
+        (entry, i) =>
+          entry.id === b[i]!.id && entry.place === b[i]!.place && entry.tab === b[i]!.tab,
+      ),
+  );
+  const targets = useMemo(() => {
+    const current = new Map<string, AgentOperationTarget>();
+    for (const { id, place, tab } of places) {
+      if (place?.target) current.set(id, place.target);
+      else if (tab?.kind === "page" && tab.profile)
+        current.set(id, {
+          grant: { kind: "browser-profile", profileId: tab.profile.profileId },
+          name: tab.profile.name,
+          device: { id: tab.computer.computerId, name: tab.computer.name },
+        });
+    }
+    return current;
+  }, [places]);
   const profiles = useHostSelector(hostClient, (snapshot) => {
-    if (!activity) return null;
     const inventory = snapshot.browserProfiles;
     return snapshot.loadedResources.includes("browser-profile") ? inventory : null;
   });
   // What each agent is working in, as the person sees it: a Mac app by the name they approved.
-  const names = useApprovedAppNames(
-    hostClient,
-    activity ? [...activity.values()].flat().map(({ target }) => target) : [],
-  );
+  const names = useApprovedAppNames(hostClient, [
+    ...targets.values(),
+    ...[...(activity?.values() ?? [])].flat().map(({ target }) => target),
+  ]);
   const view = useMemo(
     () =>
-      activity
+      activity || targets.size
         ? connectedAgentsNow({
             tasks,
             waitingRequests,
-            operations: shownOperations([...activity.values()].flat(), names),
+            operations: shownOperations([...(activity?.values() ?? [])].flat(), names),
+            currentPlaces: new Map(
+              [...targets].map(([id, target]) => [id, shownTarget(target, names)]),
+            ),
             profileIds: profiles ? new Set(profiles.map(({ id }) => id)) : undefined,
           })
         : base,
-    [activity, base, names, profiles, tasks, waitingRequests],
+    [activity, base, names, profiles, targets, tasks, waitingRequests],
   );
   return { view, tasks, activity, refresh };
 }

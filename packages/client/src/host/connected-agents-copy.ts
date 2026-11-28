@@ -330,6 +330,8 @@ export const connectedAgentsCopy = {
     "You changed what {agent} can use while it was in the middle of something. Part of it may have happened. Check what it was working on before you rely on it.",
   "disconnect.uncertain.detail.tab-closed":
     "You closed the tab {agent} was using while it was in the middle of something. Part of it may have happened. Check what it was working on before you rely on it.",
+  "disconnect.uncertain.detail.profile-deleted":
+    "You deleted the browser profile {agent} was using. Part of its work may have happened. Check before you rely on it.",
   "disconnect.uncertain.device": "It was on {device}.",
 } as const;
 
