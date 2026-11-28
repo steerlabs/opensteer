@@ -3577,7 +3577,7 @@ export async function createHostRuntime(
       resetBinding: (bindingId, revision) =>
         browserScripts.resetBrowserScriptsForBinding(bindingId, revision),
       releaseBindingPlaces: (bindingId) => browser.releaseHolds(bindingId),
-      pruneBindingTabs: (actor, watchedTab) => browser.pruneBindingTabs(actor, watchedTab),
+      pruneBindingTabs: (...args) => browser.pruneBindingTabs(...args),
       // Where a session works now goes to the person who owns the Home, and to no one else.
       onWorkingIn: (ownerUserId, notice) =>
         realtime.sendToUsers([ownerUserId], { type: "host.agent-working-in", ...notice }),

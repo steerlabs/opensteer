@@ -131,6 +131,15 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
   return tabTargetAuthority(actor, database, lineage);
 }
 
+/** A cleanup needs the revision of the same grant that decides reach. */
+export async function tabReadAuthorityWithRevision(actor: TabActor, database: TabDatabase) {
+  const lineage = await admitTabActor(actor, database, "read");
+  return {
+    reachable: tabTargetAuthority(actor, database, lineage),
+    grantRevision: lineage?.grantRevision,
+  };
+}
+
 function tabTargetAuthority(
   actor: TabActor,
   database: TabDatabase,

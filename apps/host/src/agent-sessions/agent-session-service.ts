@@ -69,7 +69,8 @@ const defaultExecutionMs = 120_000;
 type PruneBindingTabs = (
   actor: Extract<TabActor, { kind: "browser-binding" }>,
   watchedTab: TabId | null,
-) => Promise<boolean>;
+  canRelease: (grantRevision: number | undefined) => boolean,
+) => Promise<boolean | null>;
 
 function directOperationAction(tool: string, target: string): string {
   switch (tool) {
@@ -416,7 +417,7 @@ export class AgentSessionService {
     ) => void | Promise<void>;
     /** Let go of all the tabs a binding holds. */
     readonly releaseBindingPlaces?: (bindingId: string) => void;
-    /** Release only the tabs a narrowed binding no longer reaches; reports whether Watch lost its tab. */
+    /** Release unreachable tabs; returns whether Watch lost its tab, or null if deferred. */
     readonly pruneBindingTabs?: PruneBindingTabs;
   }) {
     this.#store = options.store;
@@ -704,11 +705,10 @@ export class AgentSessionService {
             this.#releaseBindingPlaces(binding);
           };
           if (ending !== "narrowed") releasePlaces();
-          const reset = async () => {
+          const reset = async (): Promise<void> => {
             if (revision !== undefined) {
               const work = this.#worked.get(id);
               if (!work || (this.#resetRevision.get(id) ?? -1) >= revision) return;
-              this.#resetRevision.set(id, revision);
               const watchedTab = this.workingIn.tabOf(id);
               const lostWatch = await this.#pruneBindingTabs(
                 {
@@ -717,7 +717,20 @@ export class AgentSessionService {
                   threadId,
                 },
                 watchedTab,
+                (grantRevision) => {
+                  // A later narrowing may already have committed. Keep the places of work
+                  // admitted before the grant that actually decided this prune.
+                  const unsettled = [...this.#running.values()].filter(
+                    (attempt) =>
+                      attempt.sessionId === id &&
+                      (grantRevision === undefined || attempt.grantRevision < grantRevision),
+                  );
+                  if (!unsettled.length) return true;
+                  resetAfter(unsettled.map(({ result }) => result));
+                  return false;
+                },
               );
+              if (lostWatch === null) return;
               if (lostWatch && watchedTab) this.workingIn.forgetTab(userId, watchedTab, id);
               if (
                 (this.#worked.get(id)?.grantRevision ?? revision) < revision &&
@@ -728,12 +741,18 @@ export class AgentSessionService {
               releasePlaces();
             }
             await this.#resetBinding(binding, revision);
+            if (
+              revision !== undefined &&
+              this.#worked.has(id) &&
+              (this.#resetRevision.get(id) ?? -1) < revision
+            )
+              this.#resetRevision.set(id, revision);
+          };
+          const resetAfter = (work: readonly Promise<unknown>[]) => {
+            void Promise.allSettled(work).then(reset).catch(this.#onError);
           };
           if (!running.length) await reset();
-          else
-            void Promise.allSettled(running.map(([, attempt]) => attempt.result))
-              .then(reset)
-              .catch(this.#onError);
+          else resetAfter(running.map(([, attempt]) => attempt.result));
         }),
     );
   }

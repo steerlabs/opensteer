@@ -582,7 +582,7 @@ integration("page tab adapter", () => {
     const release = Promise.withResolvers<void>();
     const sessions = new AgentSessionService({
       store,
-      pruneBindingTabs: (actor, watchedTab) => browser.pruneBindingTabs(actor, watchedTab),
+      pruneBindingTabs: (...args) => browser.pruneBindingTabs(...args),
     });
     const opened = await tabService.open(
       { kind: "person", ownerId: f.userId },
